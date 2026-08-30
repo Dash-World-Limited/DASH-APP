@@ -1,0 +1,46 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# builds
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# environment — NEVER commit real secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# database (local SQLite dev store)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+packages/db/prisma/dev.db*
+
+# local object storage (MinIO stand-in)
+.storage/
+uploads/
+
+# logs
+*.log
+npm-debug.log*
+logs/
+
+# test + coverage
+coverage/
+.vitest/
+playwright-report/
+test-results/
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

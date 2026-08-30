@@ -1,0 +1,233 @@
+import { describe, expect, it } from 'vitest';
+import {
+  allowedTransitionsFor,
+  assertTransition,
+  canTransition,
+  customerLabel,
+  evaluateCustomerCancellation,
+  isActive,
+  isPaid,
+  isTerminal,
+  ORDER_STATUSES,
+  OrderTransitionError,
+  phaseOf,
+  vendorRejectionOutcome,
+  type OrderStatus,
+  type TransitionActor,
+} from './index.js';
+
+const ACTORS: readonly TransitionActor[] = ['customer', 'vendor', 'rider', 'ops', 'system'];
+
+describe('state machine integrity', () => {
+  it('gives every status a label, a phase, and a defined transition set', () => {
+    for (const status of ORDER_STATUSES) {
+      expect(customerLabel(status)).toBeTruthy();
+      expect(phaseOf(status)).toBeTruthy();
+      expect(Array.isArray(allowedTransitionsFor(status, 'ops'))).toBe(true);
+    }
+  });
+
+  it('never allows a self-transition', () => {
+    for (const status of ORDER_STATUSES) {
+      for (const actor of ACTORS) {
+        expect(canTransition(status, status, actor)).toBe(false);
+      }
+    }
+  });
+
+  it('only ever transitions to a real status', () => {
+    for (const status of ORDER_STATUSES) {
+      for (const actor of ACTORS) {
+        for (const next of allowedTransitionsFor(status, actor)) {
+          expect(ORDER_STATUSES).toContain(next);
+        }
+      }
+    }
+  });
+
+  it('leaves no status unreachable except the initial draft', () => {
+    const reachable = new Set<OrderStatus>();
+    for (const status of ORDER_STATUSES) {
+      for (const actor of ACTORS) {
+        for (const next of allowedTransitionsFor(status, actor)) reachable.add(next);
+      }
+    }
+    for (const status of ORDER_STATUSES) {
+      if (status === 'draft') continue;
+      expect(reachable.has(status), `${status} is unreachable`).toBe(true);
+    }
+  });
+
+  it('lets operations act on every live order — the 9pm Friday escape hatch', () => {
+    for (const status of ORDER_STATUSES) {
+      if (isTerminal(status)) continue;
+      // `draft` is deliberately excluded: an unsubmitted basket is the
+      // customer's private workspace, and ops has no business reaching into it.
+      // The escape hatch starts the moment an order becomes shared work.
+      if (status === 'draft') continue;
+      expect(
+        allowedTransitionsFor(status, 'ops').length,
+        `ops is stuck at ${status}`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps operations out of a customer’s unsubmitted basket', () => {
+    expect(allowedTransitionsFor('draft', 'ops')).toHaveLength(0);
+    expect(allowedTransitionsFor('draft', 'vendor')).toHaveLength(0);
+    expect(allowedTransitionsFor('draft', 'rider')).toHaveLength(0);
+  });
+});
+
+describe('who may do what', () => {
+  it('lets a vendor accept or reject a placed order', () => {
+    expect(canTransition('placed', 'accepted', 'vendor')).toBe(true);
+    expect(canTransition('placed', 'rejected', 'vendor')).toBe(true);
+  });
+
+  it('does not let a vendor cancel an order that is already with a rider', () => {
+    expect(canTransition('picked_up', 'cancelled', 'vendor')).toBe(false);
+    expect(canTransition('en_route', 'cancelled', 'vendor')).toBe(false);
+  });
+
+  it('does not let a customer mark their own order delivered', () => {
+    expect(canTransition('en_route', 'delivered', 'customer')).toBe(false);
+    expect(canTransition('arrived', 'delivered', 'customer')).toBe(false);
+  });
+
+  it('does not let a rider accept an order on the vendor’s behalf', () => {
+    expect(canTransition('placed', 'accepted', 'rider')).toBe(false);
+  });
+
+  it('only lets the system confirm payment — never a client claiming it paid', () => {
+    expect(canTransition('payment_pending', 'placed', 'system')).toBe(true);
+    expect(canTransition('payment_pending', 'placed', 'customer')).toBe(false);
+    expect(canTransition('payment_pending', 'placed', 'vendor')).toBe(false);
+    expect(canTransition('payment_pending', 'placed', 'rider')).toBe(false);
+    // Not even ops — payment truth comes from the provider webhook alone.
+    expect(canTransition('payment_pending', 'placed', 'ops')).toBe(false);
+  });
+
+  it('does not let a customer refund themselves', () => {
+    expect(canTransition('delivered', 'refunded', 'customer')).toBe(false);
+    expect(canTransition('cancelled', 'refunded', 'customer')).toBe(false);
+  });
+
+  it('lets a customer raise a dispute after delivery', () => {
+    expect(canTransition('delivered', 'disputed', 'customer')).toBe(true);
+  });
+
+  it('allows reassignment back into the dispatch pool', () => {
+    expect(canTransition('rider_assigned', 'ready', 'ops')).toBe(true);
+    expect(canTransition('rider_arrived', 'ready', 'system')).toBe(true);
+  });
+});
+
+describe('assertTransition', () => {
+  it('permits a legal move', () => {
+    expect(() => assertTransition('placed', 'accepted', 'vendor')).not.toThrow();
+  });
+
+  it('rejects an illegal move with a message naming the legal ones', () => {
+    try {
+      assertTransition('delivered', 'preparing', 'vendor');
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(OrderTransitionError);
+      expect((error as OrderTransitionError).from).toBe('delivered');
+      expect((error as OrderTransitionError).to).toBe('preparing');
+    }
+  });
+
+  it('rejects a repeated transition rather than absorbing it silently', () => {
+    // A double-tap on "mark ready" must be caught by route idempotency, not
+    // swallowed here where it would mask a real bug.
+    expect(() => assertTransition('ready', 'ready', 'vendor')).toThrow(OrderTransitionError);
+  });
+
+  it('rejects skipping the middle of the delivery flow', () => {
+    expect(() => assertTransition('accepted', 'delivered', 'rider')).toThrow(OrderTransitionError);
+    expect(() => assertTransition('placed', 'picked_up', 'rider')).toThrow(OrderTransitionError);
+  });
+});
+
+describe('status groupings', () => {
+  it('classifies paid states', () => {
+    expect(isPaid('placed')).toBe(true);
+    expect(isPaid('delivered')).toBe(true);
+    expect(isPaid('draft')).toBe(false);
+    expect(isPaid('payment_pending')).toBe(false);
+    expect(isPaid('cancelled')).toBe(false);
+  });
+
+  it('classifies active operational states', () => {
+    expect(isActive('preparing')).toBe(true);
+    expect(isActive('en_route')).toBe(true);
+    expect(isActive('delivered')).toBe(false);
+    expect(isActive('draft')).toBe(false);
+  });
+
+  it('classifies terminal states', () => {
+    expect(isTerminal('refunded')).toBe(true);
+    expect(isTerminal('disputed')).toBe(true);
+    expect(isTerminal('delivered')).toBe(false);
+  });
+});
+
+describe('phases', () => {
+  it('collapses the machine into a four-step customer timeline', () => {
+    expect(phaseOf('placed')).toBe('confirming');
+    expect(phaseOf('preparing')).toBe('preparing');
+    expect(phaseOf('rider_assigned')).toBe('preparing');
+    expect(phaseOf('en_route')).toBe('on_the_way');
+    expect(phaseOf('delivered')).toBe('complete');
+    expect(phaseOf('cancelled')).toBe('stopped');
+  });
+});
+
+describe('customer cancellation policy', () => {
+  it('is free before the vendor starts cooking', () => {
+    for (const status of ['placed', 'vendor_reviewing', 'accepted'] as const) {
+      const outcome = evaluateCustomerCancellation(status);
+      expect(outcome.allowed).toBe(true);
+      expect(outcome.feeBasisPoints).toBe(0);
+      expect(outcome.refundBasisPoints).toBe(10_000);
+    }
+  });
+
+  it('charges once the vendor has incurred cost', () => {
+    const outcome = evaluateCustomerCancellation('preparing');
+    expect(outcome.allowed).toBe(true);
+    expect(outcome.feeBasisPoints).toBe(3000);
+    expect(outcome.refundBasisPoints).toBe(7000);
+    expect(outcome.reasonCode).toBe('fee_after_preparation_started');
+  });
+
+  it('refuses once the food is with the rider', () => {
+    for (const status of ['picked_up', 'en_route', 'arrived'] as const) {
+      const outcome = evaluateCustomerCancellation(status);
+      expect(outcome.allowed).toBe(false);
+      expect(outcome.refundBasisPoints).toBe(0);
+    }
+  });
+
+  it('always splits fee and refund to exactly 100%', () => {
+    for (const status of ORDER_STATUSES) {
+      const outcome = evaluateCustomerCancellation(status);
+      if (!outcome.allowed || status === 'draft') continue;
+      expect(outcome.feeBasisPoints + outcome.refundBasisPoints).toBe(10_000);
+    }
+  });
+
+  it('always gives an explanation the customer can read', () => {
+    for (const status of ORDER_STATUSES) {
+      expect(evaluateCustomerCancellation(status).explanation.length).toBeGreaterThan(10);
+    }
+  });
+
+  it('makes the customer whole when the vendor rejects', () => {
+    const outcome = vendorRejectionOutcome();
+    expect(outcome.refundBasisPoints).toBe(10_000);
+    expect(outcome.feeBasisPoints).toBe(0);
+  });
+});

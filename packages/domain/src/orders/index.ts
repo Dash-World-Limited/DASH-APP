@@ -1,0 +1,444 @@
+/**
+ * Order lifecycle.
+ *
+ * A single explicit state machine. Every transition names who is allowed to make
+ * it, so "can a vendor cancel a delivered order?" has one answer in one file
+ * rather than being re-litigated in each route.
+ *
+ * The machine is pure: it decides whether a transition is legal and what the
+ * next state is. Persisting the change, writing the audit event, and emitting
+ * the websocket notification are the caller's job.
+ */
+
+export const ORDER_STATUSES = [
+  /** Basket being built. Not yet an order anyone else can see. */
+  'draft',
+  /** Payment authorization in flight. Held here until the provider answers. */
+  'payment_pending',
+  /** Paid/authorized and queued for the vendor. */
+  'placed',
+  /** Vendor has opened it but not yet decided. */
+  'vendor_reviewing',
+  /** Vendor committed to fulfil. */
+  'accepted',
+  'preparing',
+  /** Food is up; waiting on a rider. */
+  'ready',
+  'rider_assigned',
+  'rider_arrived',
+  'picked_up',
+  'en_route',
+  /** Rider is at the customer, before handover completes. */
+  'arrived',
+  'delivered',
+  'cancelled',
+  /** Vendor declined. Distinct from cancelled — different refund and metrics. */
+  'rejected',
+  'refunded',
+  'disputed',
+] as const;
+
+export type OrderStatus = (typeof ORDER_STATUSES)[number];
+
+/** Who initiated a transition. Determines which transitions are permitted. */
+export type TransitionActor = 'customer' | 'vendor' | 'rider' | 'ops' | 'system';
+
+/** Terminal states. Nothing leaves these except via a dispute or refund. */
+export const TERMINAL_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+  'refunded',
+  'disputed',
+]);
+
+/** States where the customer's money has been taken and is at risk. */
+export const PAID_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+  'placed',
+  'vendor_reviewing',
+  'accepted',
+  'preparing',
+  'ready',
+  'rider_assigned',
+  'rider_arrived',
+  'picked_up',
+  'en_route',
+  'arrived',
+  'delivered',
+]);
+
+/** States in which the order is live work for operations. */
+export const ACTIVE_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+  'placed',
+  'vendor_reviewing',
+  'accepted',
+  'preparing',
+  'ready',
+  'rider_assigned',
+  'rider_arrived',
+  'picked_up',
+  'en_route',
+  'arrived',
+]);
+
+/** States where a rider is holding the order. */
+export const RIDER_HOLDING_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+  'picked_up',
+  'en_route',
+  'arrived',
+]);
+
+interface TransitionRule {
+  readonly to: OrderStatus;
+  /** Actors permitted to make this transition unaided. */
+  readonly actors: readonly TransitionActor[];
+}
+
+/**
+ * The transition table.
+ *
+ * `ops` appears on nearly every rule because operations must be able to unstick
+ * a real order at 9pm on a Friday. Every ops transition is audit-logged with a
+ * mandatory reason code — the escape hatch is wide, but never silent.
+ */
+const TRANSITIONS: Readonly<Record<OrderStatus, readonly TransitionRule[]>> = {
+  draft: [
+    { to: 'payment_pending', actors: ['customer'] },
+    { to: 'cancelled', actors: ['customer', 'system'] },
+  ],
+  payment_pending: [
+    // `system` only: this is driven by the payment provider webhook, never by a
+    // client asserting that it paid.
+    { to: 'placed', actors: ['system'] },
+    { to: 'draft', actors: ['system'] }, // payment failed, basket returned
+    { to: 'cancelled', actors: ['customer', 'ops', 'system'] },
+  ],
+  placed: [
+    { to: 'vendor_reviewing', actors: ['vendor', 'system'] },
+    { to: 'accepted', actors: ['vendor', 'ops', 'system'] }, // system = auto-accept
+    { to: 'rejected', actors: ['vendor', 'ops'] },
+    { to: 'cancelled', actors: ['customer', 'ops', 'system'] },
+  ],
+  vendor_reviewing: [
+    { to: 'accepted', actors: ['vendor', 'ops'] },
+    { to: 'rejected', actors: ['vendor', 'ops'] },
+    { to: 'cancelled', actors: ['customer', 'ops', 'system'] },
+  ],
+  accepted: [
+    { to: 'preparing', actors: ['vendor', 'ops'] },
+    // Dispatch can find a rider while the kitchen is still cooking.
+    { to: 'rider_assigned', actors: ['ops', 'system'] },
+    { to: 'cancelled', actors: ['ops', 'system'] },
+    { to: 'rejected', actors: ['vendor', 'ops'] },
+  ],
+  preparing: [
+    { to: 'ready', actors: ['vendor', 'ops'] },
+    { to: 'rider_assigned', actors: ['ops', 'system'] },
+    { to: 'cancelled', actors: ['ops'] },
+  ],
+  ready: [
+    { to: 'rider_assigned', actors: ['ops', 'system'] },
+    { to: 'rider_arrived', actors: ['rider', 'ops', 'system'] },
+    { to: 'picked_up', actors: ['rider', 'ops'] }, // customer-pickup orders
+    { to: 'cancelled', actors: ['ops'] },
+  ],
+  rider_assigned: [
+    { to: 'rider_arrived', actors: ['rider', 'ops', 'system'] },
+    // Reassignment drops back to `ready` and re-enters dispatch.
+    { to: 'ready', actors: ['ops', 'system'] },
+    { to: 'cancelled', actors: ['ops'] },
+  ],
+  rider_arrived: [
+    { to: 'picked_up', actors: ['rider', 'ops'] },
+    { to: 'ready', actors: ['ops', 'system'] },
+    { to: 'cancelled', actors: ['ops'] },
+  ],
+  picked_up: [
+    { to: 'en_route', actors: ['rider', 'ops', 'system'] },
+    { to: 'cancelled', actors: ['ops'] },
+  ],
+  en_route: [
+    { to: 'arrived', actors: ['rider', 'ops', 'system'] },
+    { to: 'delivered', actors: ['rider', 'ops'] },
+    { to: 'cancelled', actors: ['ops'] },
+  ],
+  arrived: [
+    { to: 'delivered', actors: ['rider', 'ops'] },
+    { to: 'cancelled', actors: ['ops'] },
+  ],
+  delivered: [
+    { to: 'disputed', actors: ['customer', 'ops'] },
+    { to: 'refunded', actors: ['ops'] },
+  ],
+  cancelled: [{ to: 'refunded', actors: ['ops', 'system'] }],
+  rejected: [{ to: 'refunded', actors: ['ops', 'system'] }],
+  refunded: [{ to: 'disputed', actors: ['customer', 'ops'] }],
+  disputed: [{ to: 'refunded', actors: ['ops'] }],
+};
+
+export class OrderTransitionError extends Error {
+  constructor(
+    readonly from: OrderStatus,
+    readonly to: OrderStatus,
+    readonly actor: TransitionActor,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'OrderTransitionError';
+  }
+}
+
+export function isOrderStatus(value: string): value is OrderStatus {
+  return (ORDER_STATUSES as readonly string[]).includes(value);
+}
+
+/** Every state reachable from `from` by anyone. */
+export function allowedTransitions(from: OrderStatus): readonly OrderStatus[] {
+  return (TRANSITIONS[from] ?? []).map((rule) => rule.to);
+}
+
+/** States reachable from `from` by this specific actor. Drives UI buttons. */
+export function allowedTransitionsFor(
+  from: OrderStatus,
+  actor: TransitionActor,
+): readonly OrderStatus[] {
+  return (TRANSITIONS[from] ?? [])
+    .filter((rule) => rule.actors.includes(actor))
+    .map((rule) => rule.to);
+}
+
+export function canTransition(
+  from: OrderStatus,
+  to: OrderStatus,
+  actor: TransitionActor,
+): boolean {
+  return (TRANSITIONS[from] ?? []).some(
+    (rule) => rule.to === to && rule.actors.includes(actor),
+  );
+}
+
+/**
+ * Gate a transition. Throws on an illegal move.
+ *
+ * Note that a same-state "transition" is rejected rather than treated as a
+ * no-op: a duplicate `mark ready` tap should be caught by idempotency at the
+ * route, not silently absorbed here where it would hide a real bug.
+ */
+export function assertTransition(
+  from: OrderStatus,
+  to: OrderStatus,
+  actor: TransitionActor,
+): void {
+  if (from === to) {
+    throw new OrderTransitionError(from, to, actor, `Order is already ${from}.`);
+  }
+  if (!canTransition(from, to, actor)) {
+    const legal = allowedTransitionsFor(from, actor);
+    throw new OrderTransitionError(
+      from,
+      to,
+      actor,
+      legal.length === 0
+        ? `A ${actor} cannot change an order that is ${from}.`
+        : `Cannot move an order from ${from} to ${to}. Allowed: ${legal.join(', ')}.`,
+    );
+  }
+}
+
+export function isTerminal(status: OrderStatus): boolean {
+  return TERMINAL_STATUSES.has(status);
+}
+
+export function isActive(status: OrderStatus): boolean {
+  return ACTIVE_STATUSES.has(status);
+}
+
+export function isPaid(status: OrderStatus): boolean {
+  return PAID_STATUSES.has(status);
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation policy
+// ---------------------------------------------------------------------------
+
+/**
+ * What a customer is charged for cancelling, expressed in basis points of the
+ * order subtotal. The principle: the customer bears cost only once someone else
+ * has incurred cost on their behalf.
+ */
+export interface CancellationOutcome {
+  readonly allowed: boolean;
+  /** Fee as basis points of subtotal. 0 = free. */
+  readonly feeBasisPoints: number;
+  /** Portion of the paid total to return, in basis points. */
+  readonly refundBasisPoints: number;
+  /** Shown to the customer before they confirm. */
+  readonly explanation: string;
+  readonly reasonCode: CancellationReasonCode;
+}
+
+export type CancellationReasonCode =
+  | 'free_before_vendor_accepts'
+  | 'fee_after_preparation_started'
+  | 'no_refund_after_pickup'
+  | 'not_cancellable'
+  | 'vendor_rejected'
+  | 'ops_override';
+
+/**
+ * Customer-initiated cancellation policy.
+ *
+ * Deliberately generous before `preparing`: the vendor has spent nothing, and
+ * charging for a change of mind in the first 90 seconds is the fastest way to
+ * lose a customer. Once food is being cooked, the vendor is compensated.
+ */
+export function evaluateCustomerCancellation(status: OrderStatus): CancellationOutcome {
+  switch (status) {
+    case 'draft':
+      return {
+        allowed: true,
+        feeBasisPoints: 0,
+        refundBasisPoints: 0,
+        explanation: 'Nothing has been charged yet.',
+        reasonCode: 'free_before_vendor_accepts',
+      };
+
+    case 'payment_pending':
+    case 'placed':
+    case 'vendor_reviewing':
+    case 'accepted':
+      return {
+        allowed: true,
+        feeBasisPoints: 0,
+        refundBasisPoints: 10_000,
+        explanation: 'Your order has not been prepared yet, so you get a full refund.',
+        reasonCode: 'free_before_vendor_accepts',
+      };
+
+    case 'preparing':
+    case 'ready':
+    case 'rider_assigned':
+    case 'rider_arrived':
+      return {
+        allowed: true,
+        feeBasisPoints: 3_000, // 30% — covers vendor ingredient and labour cost
+        refundBasisPoints: 7_000,
+        explanation:
+          'Your order is already being prepared. A 30% charge covers the vendor, and the rest is refunded.',
+        reasonCode: 'fee_after_preparation_started',
+      };
+
+    case 'picked_up':
+    case 'en_route':
+    case 'arrived':
+      return {
+        allowed: false,
+        feeBasisPoints: 10_000,
+        refundBasisPoints: 0,
+        explanation:
+          'Your order is already on its way. Contact support if something is wrong with it.',
+        reasonCode: 'no_refund_after_pickup',
+      };
+
+    case 'delivered':
+    case 'cancelled':
+    case 'rejected':
+    case 'refunded':
+    case 'disputed':
+      return {
+        allowed: false,
+        feeBasisPoints: 0,
+        refundBasisPoints: 0,
+        explanation: 'This order can no longer be cancelled.',
+        reasonCode: 'not_cancellable',
+      };
+  }
+}
+
+/**
+ * When a vendor rejects, the customer is never at fault and is always made whole
+ * — including the delivery fee they had already paid.
+ */
+export function vendorRejectionOutcome(): CancellationOutcome {
+  return {
+    allowed: true,
+    feeBasisPoints: 0,
+    refundBasisPoints: 10_000,
+    explanation: 'The vendor could not take this order. You have been fully refunded.',
+    reasonCode: 'vendor_rejected',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Progress, for customer-facing timelines
+// ---------------------------------------------------------------------------
+
+/**
+ * Coarse phase for the tracking UI. Several statuses collapse into one phase so
+ * the customer sees a four-step timeline rather than a fifteen-step one.
+ */
+export type OrderPhase = 'confirming' | 'preparing' | 'on_the_way' | 'complete' | 'stopped';
+
+export function phaseOf(status: OrderStatus): OrderPhase {
+  switch (status) {
+    case 'draft':
+    case 'payment_pending':
+    case 'placed':
+    case 'vendor_reviewing':
+      return 'confirming';
+    case 'accepted':
+    case 'preparing':
+    case 'ready':
+    case 'rider_assigned':
+    case 'rider_arrived':
+      return 'preparing';
+    case 'picked_up':
+    case 'en_route':
+    case 'arrived':
+      return 'on_the_way';
+    case 'delivered':
+      return 'complete';
+    case 'cancelled':
+    case 'rejected':
+    case 'refunded':
+    case 'disputed':
+      return 'stopped';
+  }
+}
+
+/** Short customer-facing label. Never exposes internal status names. */
+export function customerLabel(status: OrderStatus): string {
+  switch (status) {
+    case 'draft':
+      return 'Basket';
+    case 'payment_pending':
+      return 'Confirming payment';
+    case 'placed':
+      return 'Sent to vendor';
+    case 'vendor_reviewing':
+      return 'Vendor is reviewing';
+    case 'accepted':
+      return 'Order confirmed';
+    case 'preparing':
+      return 'Being prepared';
+    case 'ready':
+      return 'Ready for pickup';
+    case 'rider_assigned':
+      return 'Rider on the way to vendor';
+    case 'rider_arrived':
+      return 'Rider at the vendor';
+    case 'picked_up':
+      return 'Picked up';
+    case 'en_route':
+      return 'On the way to you';
+    case 'arrived':
+      return 'Rider has arrived';
+    case 'delivered':
+      return 'Delivered';
+    case 'cancelled':
+      return 'Cancelled';
+    case 'rejected':
+      return 'Could not be fulfilled';
+    case 'refunded':
+      return 'Refunded';
+    case 'disputed':
+      return 'Under review';
+  }
+}

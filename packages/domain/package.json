@@ -1,0 +1,23 @@
+{
+  "name": "@dash/domain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./money": "./src/money/index.ts",
+    "./geo": "./src/geo/index.ts",
+    "./pricing": "./src/pricing/index.ts",
+    "./dispatch": "./src/dispatch/index.ts",
+    "./orders": "./src/orders/index.ts",
+    "./ledger": "./src/ledger/index.ts",
+    "./permissions": "./src/permissions/index.ts",
+    "./ports": "./src/ports/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  }
+}
