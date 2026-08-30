@@ -11,10 +11,14 @@ Everything needed to pick this up cold. Read this first, then
 | | |
 |---|---|
 | **Tag** | `v0.1.0-mvp` |
-| **Commit** | recorded in the commit immediately following the tag — resolve with `git rev-parse v0.1.0-mvp` |
+| **Commit** | `6d536234828ac4f362764a79f8a6488ca305fa3d` (short: `6d53623`) |
 | **Date** | 2026-08-30 |
 | **Branch** | `main` |
 | **Scope** | Local MVP. Complete order lifecycle, no external integration, never deployed. |
+
+> The hash is recorded here by the commit *after* the tag — a commit cannot
+> contain its own hash. The tag points at `6d53623`; this line just saves you
+> the lookup.
 
 ```bash
 git show v0.1.0-mvp --stat | head -30   # what the milestone contains
