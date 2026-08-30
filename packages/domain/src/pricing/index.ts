@@ -166,6 +166,23 @@ export interface Quote {
   /** Portion of discounts the vendor absorbs — feeds vendor settlement. */
   readonly vendorFundedDiscount: Kobo;
   readonly platformFundedDiscount: Kobo;
+  /**
+   * The funded totals split by what they discounted. Settlement needs this
+   * split, not just the totals, because the two behave completely differently:
+   *
+   *   - An ITEM discount means the vendor is still paid full menu price while
+   *     the customer paid less. Someone has to cover the gap, so it is a real
+   *     cost to whoever funded it.
+   *   - A DELIVERY discount means a fee was simply never charged. There is no
+   *     gap to cover, because nobody was going to receive that money.
+   *
+   * Treating them alike double-counts the delivery waiver and unbalances the
+   * ledger. See `computeSettlement`.
+   */
+  readonly vendorFundedItemDiscount: Kobo;
+  readonly platformFundedItemDiscount: Kobo;
+  readonly vendorFundedDeliveryDiscount: Kobo;
+  readonly platformFundedDeliveryDiscount: Kobo;
   /** Inputs echoed back so the quote is self-describing in storage. */
   readonly inputs: {
     readonly mode: FulfilmentMode;
@@ -343,8 +360,10 @@ export function buildQuote(input: QuoteInput): Quote {
   // --- 3. Discounts ---------------------------------------------------------
   let itemDiscountTotal = ZERO;
   let deliveryDiscountTotal = ZERO;
-  let vendorFundedDiscount = ZERO;
-  let platformFundedDiscount = ZERO;
+  let vendorFundedItemDiscount = ZERO;
+  let platformFundedItemDiscount = ZERO;
+  let vendorFundedDeliveryDiscount = ZERO;
+  let platformFundedDeliveryDiscount = ZERO;
   const appliedCodes: string[] = [];
 
   for (const discount of input.discounts ?? []) {
@@ -354,15 +373,18 @@ export function buildQuote(input: QuoteInput): Quote {
     const amount = computeDiscount(discount, remainingItems, remainingDelivery);
     if (amount === 0) continue;
 
+    const split = splitFunding(discount, amount);
+
     if (discount.kind === 'free_delivery') {
       deliveryDiscountTotal = add(deliveryDiscountTotal, amount);
+      vendorFundedDeliveryDiscount = add(vendorFundedDeliveryDiscount, split.vendor);
+      platformFundedDeliveryDiscount = add(platformFundedDeliveryDiscount, split.platform);
     } else {
       itemDiscountTotal = add(itemDiscountTotal, amount);
+      vendorFundedItemDiscount = add(vendorFundedItemDiscount, split.vendor);
+      platformFundedItemDiscount = add(platformFundedItemDiscount, split.platform);
     }
 
-    const split = splitFunding(discount, amount);
-    vendorFundedDiscount = add(vendorFundedDiscount, split.vendor);
-    platformFundedDiscount = add(platformFundedDiscount, split.platform);
     appliedCodes.push(discount.code);
 
     lines.push({
@@ -380,7 +402,9 @@ export function buildQuote(input: QuoteInput): Quote {
     const remainingDelivery = atLeastZero(subtract(deliveryFeeWithSurge, deliveryDiscountTotal));
     if (input.itemsSubtotal >= membership.freeDeliveryMinimumSubtotal && remainingDelivery > 0) {
       deliveryDiscountTotal = add(deliveryDiscountTotal, remainingDelivery);
-      platformFundedDiscount = add(platformFundedDiscount, remainingDelivery);
+      // Membership free delivery is a delivery waiver funded by the platform:
+      // the fee is simply not charged, so it must not also be booked as a cost.
+      platformFundedDeliveryDiscount = add(platformFundedDeliveryDiscount, remainingDelivery);
       lines.push({
         kind: 'discount',
         label: 'Dash+ free delivery',
@@ -490,8 +514,12 @@ export function buildQuote(input: QuoteInput): Quote {
     tip,
     walletCreditApplied,
     total,
-    vendorFundedDiscount,
-    platformFundedDiscount,
+    vendorFundedDiscount: add(vendorFundedItemDiscount, vendorFundedDeliveryDiscount),
+    platformFundedDiscount: add(platformFundedItemDiscount, platformFundedDeliveryDiscount),
+    vendorFundedItemDiscount,
+    platformFundedItemDiscount,
+    vendorFundedDeliveryDiscount,
+    platformFundedDeliveryDiscount,
     inputs: {
       mode,
       distanceMetres: input.trip?.distanceMetres ?? 0,
@@ -523,7 +551,11 @@ function resolveSurge(input: QuoteInput): number {
 // ---------------------------------------------------------------------------
 
 export interface SettlementSplit {
-  /** Owed to the vendor: their food revenue, less commission and their discount share. */
+  /**
+   * Owed to the vendor: food revenue, less commission and any delivery waiver
+   * they funded. May be NEGATIVE when a vendor-funded waiver exceeds their net
+   * revenue on a small order — that is a debit the vendor owes, not an error.
+   */
   readonly vendorPayable: Kobo;
   readonly vendorCommission: Kobo;
   /** Owed to the rider: delivery pay plus the full tip. */
@@ -537,9 +569,22 @@ export interface SettlementSplit {
 /**
  * Divide a delivered order's money between vendor, rider, and platform.
  *
- * Invariant asserted by the finance tests: `vendorPayable + riderPayable +
- * platformRevenue + taxCollected` equals what the customer actually paid plus
- * any platform-funded discount (which the platform absorbs as a cost).
+ * The invariant, asserted by the finance tests and enforced again by the
+ * double-entry ledger before anything is written:
+ *
+ *   vendorPayable + riderPayable + platformRevenue + taxCollected
+ *     === total + walletCreditApplied
+ *
+ * Item discounts and delivery discounts are handled separately, and getting
+ * that wrong is exactly what unbalanced the ledger the first time this ran:
+ *
+ *   - An ITEM discount is a real cost. The vendor is paid full menu price while
+ *     the customer paid less, so the funder covers the gap out of their own
+ *     money — hence `platformFundedItemDiscount` reduces platform revenue.
+ *   - A DELIVERY discount is NOT a cost. The fee was never charged, so
+ *     `quote.deliveryFee` is already zero and nobody was ever going to be paid
+ *     it. Subtracting it again would count the same waiver twice and create
+ *     money that does not exist.
  */
 export function computeSettlement(input: {
   quote: Quote;
@@ -550,19 +595,39 @@ export function computeSettlement(input: {
 }): SettlementSplit {
   const { quote } = input;
 
-  // The vendor is paid on the food revenue they actually generated: full menu
-  // price, less only the portion of discounts they agreed to fund.
-  const vendorGross = subtract(quote.itemsSubtotal, quote.vendorFundedDiscount);
+  // The vendor is paid on the food revenue they generated: full menu price,
+  // less only the item discounts they agreed to fund.
+  const vendorGross = subtract(quote.itemsSubtotal, quote.vendorFundedItemDiscount);
   const vendorCommission = percentOf(vendorGross, input.commissionBasisPoints);
-  const vendorPayable = atLeastZero(subtract(vendorGross, vendorCommission));
+
+  // A vendor who funded free delivery pays for it out of their settlement — the
+  // platform still owes the rider regardless of who waived the customer's fee.
+  //
+  // This is deliberately NOT clamped at zero. On a small basket a vendor-funded
+  // delivery waiver can exceed the vendor's food revenue net of commission, so
+  // the vendor genuinely owes the platform for that order. Clamping to zero
+  // would silently destroy the difference — a randomised contract test caught
+  // exactly that, losing 127 kobo on one order. A negative payable is a real
+  // debit balance that nets against the vendor's next settlement, and the
+  // ledger records signed amounts precisely so it can represent one.
+  const vendorPayable = subtract(
+    subtract(vendorGross, vendorCommission),
+    quote.vendorFundedDeliveryDiscount,
+  );
 
   const riderPayable = add(input.riderDeliveryPay, quote.tip);
 
-  // Platform keeps its fees and commission, pays the rider, and absorbs the
-  // discounts it chose to fund.
+  // Platform keeps commission and fees, recovers any vendor-funded delivery
+  // waiver, pays the rider, and absorbs the item discounts it chose to fund.
   const platformRevenue = subtract(
-    add(vendorCommission, quote.serviceFee, quote.deliveryFee, quote.smallOrderFee),
-    add(input.riderDeliveryPay, quote.platformFundedDiscount),
+    add(
+      vendorCommission,
+      quote.serviceFee,
+      quote.deliveryFee,
+      quote.smallOrderFee,
+      quote.vendorFundedDeliveryDiscount,
+    ),
+    add(input.riderDeliveryPay, quote.platformFundedItemDiscount),
   );
 
   return {

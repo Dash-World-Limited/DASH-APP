@@ -1,0 +1,609 @@
+/**
+ * Operations, support, and finance routes.
+ *
+ * The staff console. Everything here is permission-gated, most of it is
+ * audit-logged, and the financial actions additionally require a recent step-up
+ * authentication (enforced inside `assertPermission`).
+ */
+
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { kobo } from '@dash/domain/money';
+import { ACTIVE_STATUSES, assertTransition, type OrderStatus } from '@dash/domain/orders';
+import { buildRefund, buildWalletCredit, verifyLedgerIntegrity } from '@dash/domain/ledger';
+import { postLedgerTransaction, writeAudit } from '@dash/db';
+import { ApiError } from '../http/errors.js';
+import { actorOf, requirePermission, requireScope } from '../http/context.js';
+
+export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
+  const { prisma, queue } = app.services;
+
+  // -------------------------------------------------------------------------
+  // GET /v1/ops/live — the dispatch board
+  // -------------------------------------------------------------------------
+  app.get('/v1/ops/live', { preHandler: requirePermission('ops:livemap:read') }, async (request) => {
+    const actor = actorOf(request);
+
+    const orders = await prisma.order.findMany({
+      where: {
+        status: { in: [...ACTIVE_STATUSES] },
+        // A city-scoped dispatcher sees only their own cities.
+        ...(actor.cityIds && actor.cityIds.length > 0
+          ? { vendor: { cityId: { in: [...actor.cityIds] } } }
+          : {}),
+      },
+      select: {
+        id: true,
+        code: true,
+        status: true,
+        total: true,
+        createdAt: true,
+        placedAt: true,
+        estimatedReadyAt: true,
+        riderId: true,
+        vendor: { select: { name: true } },
+        branch: { select: { name: true, latitude: true, longitude: true } },
+        zone: { select: { name: true } },
+        rider: {
+          select: {
+            id: true,
+            lastLatitude: true,
+            lastLongitude: true,
+            locationReportedAt: true,
+            identity: { select: { displayName: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 200,
+    });
+
+    const now = Date.now();
+
+    return {
+      orders: orders.map((order) => {
+        const ageMinutes = Math.round((now - order.createdAt.getTime()) / 60_000);
+        const locationAge = order.rider?.locationReportedAt
+          ? Math.round((now - order.rider.locationReportedAt.getTime()) / 1000)
+          : null;
+
+        return {
+          id: order.id,
+          code: order.code,
+          status: order.status,
+          vendor: order.vendor.name,
+          zone: order.zone?.name ?? null,
+          ageMinutes,
+          // The three things a dispatcher actually scans for.
+          alerts: [
+            ...(!order.riderId && ageMinutes > 12 ? ['unassigned_too_long' as const] : []),
+            ...(order.estimatedReadyAt && order.estimatedReadyAt.getTime() < now - 600_000
+              ? ['preparation_overdue' as const]
+              : []),
+            ...(locationAge !== null && locationAge > 120 ? ['rider_location_stale' as const] : []),
+          ],
+          rider: order.rider
+            ? {
+                id: order.rider.id,
+                name: order.rider.identity.displayName,
+                latitude: order.rider.lastLatitude,
+                longitude: order.rider.lastLongitude,
+                locationAgeSeconds: locationAge,
+              }
+            : null,
+          pickup: { latitude: order.branch.latitude, longitude: order.branch.longitude },
+        };
+      }),
+    };
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /v1/ops/orders/:id/reassign
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/ops/orders/:id/reassign',
+    { preHandler: requirePermission('ops:dispatch:reassign') },
+    async (request) => {
+      const body = z
+        .object({
+          // Mandatory. An intervention without a recorded reason is not
+          // auditable, and this is the escape hatch most open to abuse.
+          reasonCode: z.enum([
+            'rider_unresponsive',
+            'rider_incident',
+            'wrong_vehicle',
+            'customer_request',
+            'other',
+          ]),
+          note: z.string().trim().max(280).optional(),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+      const order = await prisma.order.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, status: true, riderId: true, vendor: { select: { cityId: true } } },
+      });
+      if (!order) throw ApiError.notFound();
+      requireScope(actor, { cityId: order.vendor.cityId });
+
+      assertTransition(order.status as OrderStatus, 'ready', 'ops');
+
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: 'ready',
+            riderId: null,
+            statusEvents: {
+              create: {
+                fromStatus: order.status,
+                toStatus: 'ready',
+                actorType: 'ops',
+                actorId: actor.identityId,
+                reasonCode: body.reasonCode,
+                reason: body.note ?? null,
+              },
+            },
+          },
+        });
+
+        if (order.riderId) {
+          await tx.rider.update({
+            where: { id: order.riderId },
+            data: { availability: 'idle' },
+          });
+          await tx.dispatchOffer.updateMany({
+            where: { orderId: order.id, riderId: order.riderId, status: 'accepted' },
+            data: { status: 'withdrawn' },
+          });
+        }
+      });
+
+      await queue.enqueue({
+        name: 'dispatch.find_rider',
+        payload: { orderId: order.id },
+        idempotencyKey: `dispatch_${order.id}_reassign_${Date.now()}`,
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'ops.order.reassigned',
+        resourceType: 'order',
+        resourceId: order.id,
+        before: { riderId: order.riderId },
+        after: { reasonCode: body.reasonCode },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return { reassigned: true };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/ops/zones/:id/pause
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/ops/zones/:id/pause',
+    { preHandler: requirePermission('ops:zone:pause') },
+    async (request) => {
+      const body = z
+        .object({
+          paused: z.boolean(),
+          reason: z.string().trim().min(3).max(200),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+      const zone = await prisma.zone.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, cityId: true, isActive: true, name: true },
+      });
+      if (!zone) throw ApiError.notFound();
+      requireScope(actor, { cityId: zone.cityId });
+
+      await prisma.zone.update({
+        where: { id: zone.id },
+        data: {
+          isActive: !body.paused,
+          pausedAt: body.paused ? new Date() : null,
+          pausedReason: body.paused ? body.reason : null,
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: body.paused ? 'ops.zone.paused' : 'ops.zone.resumed',
+        resourceType: 'zone',
+        resourceId: zone.id,
+        before: { isActive: zone.isActive },
+        after: { isActive: !body.paused, reason: body.reason },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return { zone: zone.name, paused: body.paused };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/ops/zones/:id/surge
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/ops/zones/:id/surge',
+    { preHandler: requirePermission('ops:surge:write') },
+    async (request) => {
+      const body = z
+        .object({
+          multiplier: z.number().min(1).max(3),
+          reason: z.string().trim().min(3).max(200),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+      const zone = await prisma.zone.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, cityId: true, surgeMultiplier: true, name: true },
+      });
+      if (!zone) throw ApiError.notFound();
+      requireScope(actor, { cityId: zone.cityId });
+
+      // The city's configured ceiling is the real limit; the schema bound above
+      // is only a first filter. Pricing applies the cap again at quote time, so
+      // a bad value here can never reach a customer.
+      const rule = await prisma.pricingRule.findFirst({
+        where: { cityId: zone.cityId },
+        orderBy: { effectiveFrom: 'desc' },
+        select: { maximumSurgeMultiplier: true },
+      });
+      const ceiling = rule?.maximumSurgeMultiplier ?? 2;
+      if (body.multiplier > ceiling) {
+        throw ApiError.unprocessable(`Surge in this city is capped at ${ceiling}×.`);
+      }
+
+      await prisma.zone.update({
+        where: { id: zone.id },
+        data: { surgeMultiplier: body.multiplier },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'ops.zone.surge_changed',
+        resourceType: 'zone',
+        resourceId: zone.id,
+        before: { surgeMultiplier: zone.surgeMultiplier },
+        after: { surgeMultiplier: body.multiplier, reason: body.reason },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return { zone: zone.name, surgeMultiplier: body.multiplier };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /v1/support/cases
+  // -------------------------------------------------------------------------
+  app.get('/v1/support/cases', { preHandler: requirePermission('support:case:read') }, async (request) => {
+    const query = z
+      .object({
+        status: z.enum(['open', 'pending', 'resolved', 'closed', 'all']).default('open'),
+        limit: z.coerce.number().int().min(1).max(100).default(50),
+      })
+      .parse(request.query);
+
+    const cases = await prisma.supportCase.findMany({
+      where: query.status === 'all' ? {} : { status: query.status },
+      select: {
+        id: true,
+        code: true,
+        subject: true,
+        category: true,
+        priority: true,
+        status: true,
+        assignedTo: true,
+        createdAt: true,
+        firstResponseDueAt: true,
+        orderId: true,
+      },
+      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+      take: query.limit,
+    });
+
+    return {
+      cases: cases.map((supportCase) => ({
+        ...supportCase,
+        slaBreached:
+          supportCase.firstResponseDueAt !== null &&
+          supportCase.firstResponseDueAt.getTime() < Date.now(),
+      })),
+    };
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /v1/support/cases/:id/compensate
+  //
+  // Issues wallet credit. Requires step-up (enforced by assertPermission) and
+  // is capped, because a compromised support account is a direct route to
+  // draining money.
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/support/cases/:id/compensate',
+    { preHandler: requirePermission('support:compensation:issue') },
+    async (request) => {
+      const body = z
+        .object({
+          amount: z.number().int().min(100).max(50_000_00),
+          reason: z.string().trim().min(5).max(280),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+
+      const supportCase = await prisma.supportCase.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, customerId: true, code: true },
+      });
+      if (!supportCase?.customerId) throw ApiError.notFound();
+
+      const draft = buildWalletCredit({
+        customerId: supportCase.customerId,
+        idempotencyKey: `compensation_${supportCase.id}_${Date.now()}`,
+        actorId: actor.identityId,
+        occurredAt: new Date(),
+        amount: kobo(body.amount),
+        reason: 'goodwill',
+        note: body.reason,
+      });
+
+      const posted = await postLedgerTransaction(prisma, draft);
+
+      await prisma.supportAction.create({
+        data: {
+          caseId: supportCase.id,
+          actorId: actor.identityId,
+          kind: 'compensation',
+          body: body.reason,
+          amount: body.amount,
+          ledgerTransactionId: posted.id,
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'support.compensation.issued',
+        resourceType: 'support_case',
+        resourceId: supportCase.id,
+        after: { amount: body.amount, reason: body.reason, ledgerTransactionId: posted.id },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return { credited: true, amount: body.amount, ledgerTransactionId: posted.id };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/finance/orders/:id/refund
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/finance/orders/:id/refund',
+    { preHandler: requirePermission('finance:refund:approve') },
+    async (request) => {
+      const body = z
+        .object({
+          amount: z.number().int().min(1),
+          destination: z.enum(['payment_method', 'wallet']).default('payment_method'),
+          bearer: z.enum(['platform', 'vendor']).default('platform'),
+          reason: z.string().trim().min(5).max(280),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+
+      const order = await prisma.order.findUnique({
+        where: { id: request.params.id },
+        select: {
+          id: true,
+          total: true,
+          customerId: true,
+          vendorId: true,
+          payments: { select: { id: true, amount: true, status: true, providerReference: true } },
+        },
+      });
+      if (!order) throw ApiError.notFound();
+
+      const captured = order.payments.find((payment) => payment.status === 'captured');
+      if (!captured) throw ApiError.conflict('This order has no captured payment to refund.');
+
+      // A refund can never exceed what was actually taken. Without this, a typo
+      // in an admin form becomes free money.
+      if (body.amount > captured.amount) {
+        throw ApiError.unprocessable('A refund cannot exceed the amount that was charged.');
+      }
+
+      const amount = kobo(body.amount);
+      const draft = buildRefund({
+        orderId: order.id,
+        idempotencyKey: `refund_${order.id}_${body.amount}_${body.destination}`,
+        actorId: actor.identityId,
+        occurredAt: new Date(),
+        customerId: order.customerId,
+        vendorId: order.vendorId,
+        toPaymentMethod: body.destination === 'payment_method' ? amount : kobo(0),
+        toWallet: body.destination === 'wallet' ? amount : kobo(0),
+        ...(body.bearer === 'vendor' ? { fromVendorPayable: amount } : {}),
+        note: body.reason,
+      });
+
+      const posted = await postLedgerTransaction(prisma, draft);
+
+      await prisma.refund.create({
+        data: {
+          paymentId: captured.id,
+          amount: body.amount,
+          reason: body.reason,
+          status: 'pending',
+          idempotencyKey: draft.idempotencyKey,
+          requestedBy: actor.identityId,
+          approvedBy: actor.identityId,
+          approvedAt: new Date(),
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'finance.refund.approved',
+        resourceType: 'order',
+        resourceId: order.id,
+        after: { amount: body.amount, destination: body.destination, bearer: body.bearer },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return { refunded: true, amount: body.amount, replayed: posted.replayed };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /v1/finance/ledger/integrity
+  //
+  // The check that must never fail. Run nightly in production; exposed here so
+  // finance can confirm on demand.
+  // -------------------------------------------------------------------------
+  app.get(
+    '/v1/finance/ledger/integrity',
+    { preHandler: requirePermission('finance:ledger:read') },
+    async () => {
+      const transactions = await prisma.ledgerTransaction.findMany({
+        select: {
+          referenceType: true,
+          referenceId: true,
+          kind: true,
+          idempotencyKey: true,
+          actorId: true,
+          occurredAt: true,
+          entries: { select: { accountKind: true, ownerId: true, amount: true, memo: true } },
+        },
+        take: 5000,
+        orderBy: { createdAt: 'desc' },
+      });
+
+      const result = verifyLedgerIntegrity(
+        transactions.map((transaction) => ({
+          kind: transaction.kind as never,
+          idempotencyKey: transaction.idempotencyKey,
+          referenceType: transaction.referenceType,
+          referenceId: transaction.referenceId,
+          actorId: transaction.actorId,
+          occurredAt: transaction.occurredAt,
+          entries: transaction.entries.map((entry) => ({
+            accountKind: entry.accountKind as never,
+            ownerId: entry.ownerId ?? undefined,
+            amount: kobo(entry.amount),
+            memo: entry.memo,
+          })),
+        })),
+      );
+
+      return {
+        transactionsChecked: transactions.length,
+        balanced: result.balanced,
+        totalDriftKobo: result.totalDrift,
+        offending: result.offending,
+      };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /v1/admin/audit
+  // -------------------------------------------------------------------------
+  app.get('/v1/admin/audit', { preHandler: requirePermission('admin:audit:read') }, async (request) => {
+    const query = z
+      .object({
+        resourceType: z.string().max(40).optional(),
+        resourceId: z.string().max(64).optional(),
+        action: z.string().max(60).optional(),
+        limit: z.coerce.number().int().min(1).max(200).default(50),
+      })
+      .parse(request.query);
+
+    const logs = await prisma.auditLog.findMany({
+      where: {
+        ...(query.resourceType ? { resourceType: query.resourceType } : {}),
+        ...(query.resourceId ? { resourceId: query.resourceId } : {}),
+        ...(query.action ? { action: { contains: query.action } } : {}),
+      },
+      select: {
+        id: true,
+        action: true,
+        resourceType: true,
+        resourceId: true,
+        before: true,
+        after: true,
+        ipAddress: true,
+        createdAt: true,
+        identity: { select: { id: true, displayName: true, email: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: query.limit,
+    });
+
+    return { logs };
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /v1/admin/feature-flags
+  // -------------------------------------------------------------------------
+  app.get(
+    '/v1/admin/feature-flags',
+    { preHandler: requirePermission('admin:featureflag:write') },
+    async () => {
+      const flags = await prisma.featureFlag.findMany({ orderBy: { key: 'asc' } });
+      return { flags };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PATCH /v1/admin/feature-flags/:key
+  // -------------------------------------------------------------------------
+  app.patch<{ Params: { key: string } }>(
+    '/v1/admin/feature-flags/:key',
+    { preHandler: requirePermission('admin:featureflag:write') },
+    async (request) => {
+      const body = z
+        .object({
+          isEnabled: z.boolean().optional(),
+          rolloutPercent: z.number().int().min(0).max(100).optional(),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+      const existing = await prisma.featureFlag.findUnique({ where: { key: request.params.key } });
+      if (!existing) throw ApiError.notFound();
+
+      const updated = await prisma.featureFlag.update({
+        where: { key: request.params.key },
+        data: {
+          ...(body.isEnabled !== undefined ? { isEnabled: body.isEnabled } : {}),
+          ...(body.rolloutPercent !== undefined ? { rolloutPercent: body.rolloutPercent } : {}),
+          updatedBy: actor.identityId,
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'admin.feature_flag.updated',
+        resourceType: 'feature_flag',
+        resourceId: existing.key,
+        before: { isEnabled: existing.isEnabled, rolloutPercent: existing.rolloutPercent },
+        after: { isEnabled: updated.isEnabled, rolloutPercent: updated.rolloutPercent },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return { flag: updated };
+    },
+  );
+}

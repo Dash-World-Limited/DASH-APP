@@ -8,6 +8,7 @@
  */
 
 export * from './money/index.js';
+export * from './crypto/index.js';
 export * from './geo/index.js';
 export * from './permissions/index.js';
 export * from './orders/index.js';

@@ -193,6 +193,17 @@ export function balanceOf(
  * vendor, the rider, the tax authority — and what we keep. Wallet credit spent
  * is drawn down from the customer's liability balance rather than arriving as
  * new cash.
+ *
+ * On promotions: `platformRevenue` arrives NET of any platform-funded item
+ * discount (that is how `computeSettlement` reports it), but the ledger records
+ * revenue GROSS with the promotion as a separate expense line. Netting it into
+ * revenue would balance too, and would hide how much the platform spends
+ * acquiring orders — the number finance most needs to see.
+ *
+ * Only *item* discounts appear here. A delivery-fee waiver is not an expense:
+ * the fee was never charged, so there is nothing to book. Passing the combined
+ * figure is what unbalanced this transaction the first time it ran against a
+ * member's order.
  */
 export function buildOrderCapture(input: {
   orderId: string;
@@ -209,10 +220,14 @@ export function buildOrderCapture(input: {
   /** Held until the rider is assigned and completes; posted to rider_payable. */
   riderPayable: Kobo;
   riderId?: string | undefined;
+  /** Net of any platform-funded item discount, as computeSettlement reports it. */
   platformRevenue: Kobo;
   taxCollected: Kobo;
-  /** Discount the platform funded — an expense recognised at capture. */
-  platformFundedDiscount: Kobo;
+  /**
+   * Platform-funded discount on ITEMS only — booked as acquisition expense.
+   * Never include a delivery waiver here; see the note above.
+   */
+  platformFundedItemDiscount: Kobo;
 }): LedgerTransactionDraft {
   const entries: LedgerEntryDraft[] = [];
 
@@ -234,20 +249,24 @@ export function buildOrderCapture(input: {
     });
   }
 
-  if (input.platformFundedDiscount > 0) {
+  if (input.platformFundedItemDiscount > 0) {
     entries.push({
       accountKind: 'promotion_expense',
-      amount: input.platformFundedDiscount,
-      memo: 'platform_funded_discount',
+      amount: input.platformFundedItemDiscount,
+      memo: 'platform_funded_item_discount',
     });
   }
 
-  if (input.vendorPayable > 0) {
+  // Posted whenever non-zero, not merely when positive. A vendor who funded a
+  // delivery waiver larger than their net revenue owes the platform for that
+  // order, which is a positive (debit) entry here. Skipping it would drop the
+  // amount on the floor and unbalance the transaction.
+  if (input.vendorPayable !== 0) {
     entries.push({
       accountKind: 'vendor_payable',
       ownerId: input.vendorId,
       amount: negate(input.vendorPayable),
-      memo: 'owed_to_vendor',
+      memo: input.vendorPayable > 0 ? 'owed_to_vendor' : 'owed_by_vendor',
     });
   }
 
@@ -268,10 +287,14 @@ export function buildOrderCapture(input: {
     });
   }
 
-  if (input.platformRevenue !== 0) {
+  // Revenue is credited GROSS — the net figure plus the promotion expense
+  // booked above. The two lines together net to the real margin, while keeping
+  // acquisition spend visible as its own number.
+  const grossRevenue = add(input.platformRevenue, input.platformFundedItemDiscount);
+  if (grossRevenue !== 0) {
     entries.push({
       accountKind: 'platform_revenue',
-      amount: negate(input.platformRevenue),
+      amount: negate(grossRevenue),
       memo: 'platform_revenue',
     });
   }

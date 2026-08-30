@@ -32,4 +32,22 @@ export default tseslint.config(
       'no-console': 'off',
     },
   },
+  {
+    // Developer scripts are Node programs whose whole job is printing to a
+    // terminal, so `console` and the Node globals are expected here.
+    files: ['scripts/**/*.mjs', 'packages/db/src/seed.ts'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        Buffer: 'readonly',
+        URL: 'readonly',
+      },
+    },
+    rules: {
+      'no-console': 'off',
+    },
+  },
 );

@@ -1,0 +1,20 @@
+{
+  "name": "@dash/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "//": "Prisma commands are driven from the repo root (npm run db:*) so that the single root .env is the only place DATABASE_URL is defined.",
+  "dependencies": {
+    "@dash/domain": "*",
+    "@prisma/client": "^6.2.1"
+  },
+  "devDependencies": {
+    "prisma": "^6.2.1"
+  }
+}

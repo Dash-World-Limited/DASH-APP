@@ -616,6 +616,203 @@ describe('computeSettlement', () => {
     expect(distributed).toBe(collected);
   });
 
+  /**
+   * The regression suite for the bug that unbalanced the ledger on the first
+   * real checkout.
+   *
+   * The original `computeSettlement` subtracted the whole platform-funded
+   * discount from platform revenue. That is right for an item discount and
+   * wrong for a delivery waiver: the delivery fee was never charged, so
+   * deducting it again counted the same waiver twice and invented money.
+   *
+   * Only the item-discount case was covered before, so the suite passed while
+   * the free-delivery path was broken. All four combinations are pinned now.
+   */
+  describe('money conservation across every discount shape', () => {
+    const cases = [
+      { label: 'no discount at all', discounts: [] as AppliedDiscount[], membership: undefined },
+      {
+        label: 'platform-funded item discount',
+        discounts: [
+          {
+            code: 'P_ITEM',
+            promotionId: 'p',
+            kind: 'percentage_off_items',
+            basisPoints: 1000,
+            fundedBy: 'platform',
+          } satisfies AppliedDiscount,
+        ],
+        membership: undefined,
+      },
+      {
+        label: 'vendor-funded item discount',
+        discounts: [
+          {
+            code: 'V_ITEM',
+            promotionId: 'p',
+            kind: 'fixed_off_items',
+            amount: naira(800),
+            fundedBy: 'vendor',
+          } satisfies AppliedDiscount,
+        ],
+        membership: undefined,
+      },
+      {
+        label: 'platform-funded free delivery',
+        discounts: [
+          {
+            code: 'P_SHIP',
+            promotionId: 'p',
+            kind: 'free_delivery',
+            fundedBy: 'platform',
+          } satisfies AppliedDiscount,
+        ],
+        membership: undefined,
+      },
+      {
+        label: 'vendor-funded free delivery',
+        discounts: [
+          {
+            code: 'V_SHIP',
+            promotionId: 'p',
+            kind: 'free_delivery',
+            fundedBy: 'vendor',
+          } satisfies AppliedDiscount,
+        ],
+        membership: undefined,
+      },
+      {
+        label: 'shared-funding item discount',
+        discounts: [
+          {
+            code: 'S_ITEM',
+            promotionId: 'p',
+            kind: 'fixed_off_items',
+            amount: naira(1000),
+            fundedBy: 'shared',
+            vendorShareBasisPoints: 3500,
+          } satisfies AppliedDiscount,
+        ],
+        membership: undefined,
+      },
+      {
+        label: 'membership free delivery (the case that broke)',
+        discounts: [] as AppliedDiscount[],
+        membership: {
+          freeDeliveryEligible: true,
+          freeDeliveryMinimumSubtotal: naira(1000),
+          serviceFeeDiscountBasisPoints: 5000,
+          surgeExempt: true,
+        } satisfies MembershipBenefits,
+      },
+      {
+        label: 'membership plus a platform item discount',
+        discounts: [
+          {
+            code: 'P_ITEM',
+            promotionId: 'p',
+            kind: 'percentage_off_items',
+            basisPoints: 1500,
+            fundedBy: 'platform',
+          } satisfies AppliedDiscount,
+        ],
+        membership: {
+          freeDeliveryEligible: true,
+          freeDeliveryMinimumSubtotal: naira(1000),
+          serviceFeeDiscountBasisPoints: 5000,
+          surgeExempt: false,
+        } satisfies MembershipBenefits,
+      },
+    ];
+
+    for (const scenario of cases) {
+      it(`balances with ${scenario.label}`, () => {
+        const quote = buildQuote({
+          rules: { ...RULES, taxBasisPoints: 750 },
+          mode: 'delivery',
+          itemsSubtotal: naira(8000),
+          trip: TRIP,
+          tip: naira(500),
+          discounts: scenario.discounts,
+          ...(scenario.membership ? { membership: scenario.membership } : {}),
+        });
+
+        const split = computeSettlement({
+          quote,
+          commissionBasisPoints: 1800,
+          riderDeliveryPay: naira(600),
+        });
+
+        const distributed =
+          split.vendorPayable + split.riderPayable + split.platformRevenue + split.taxCollected;
+        const collected = quote.total + quote.walletCreditApplied;
+
+        expect(distributed, `${scenario.label} drifted by ${distributed - collected} kobo`).toBe(
+          collected,
+        );
+      });
+    }
+
+    it('splits funded discounts by what they discount', () => {
+      const quote = buildQuote({
+        rules: RULES,
+        mode: 'delivery',
+        itemsSubtotal: naira(8000),
+        trip: TRIP,
+        discounts: [
+          { code: 'A', promotionId: 'a', kind: 'free_delivery', fundedBy: 'platform' },
+          {
+            code: 'B',
+            promotionId: 'b',
+            kind: 'fixed_off_items',
+            amount: naira(500),
+            fundedBy: 'vendor',
+          },
+        ],
+      });
+
+      expect(quote.platformFundedDeliveryDiscount).toBe(naira(760));
+      expect(quote.platformFundedItemDiscount).toBe(0);
+      expect(quote.vendorFundedItemDiscount).toBe(naira(500));
+      expect(quote.vendorFundedDeliveryDiscount).toBe(0);
+
+      // The totals still add up to the split parts.
+      expect(quote.platformFundedDiscount).toBe(
+        quote.platformFundedItemDiscount + quote.platformFundedDeliveryDiscount,
+      );
+      expect(quote.vendorFundedDiscount).toBe(
+        quote.vendorFundedItemDiscount + quote.vendorFundedDeliveryDiscount,
+      );
+    });
+
+    it('charges a vendor who funded free delivery for it', () => {
+      const platformFunded = buildQuote({
+        rules: RULES,
+        mode: 'delivery',
+        itemsSubtotal: naira(8000),
+        trip: TRIP,
+        discounts: [{ code: 'P', promotionId: 'p', kind: 'free_delivery', fundedBy: 'platform' }],
+      });
+      const vendorFunded = buildQuote({
+        rules: RULES,
+        mode: 'delivery',
+        itemsSubtotal: naira(8000),
+        trip: TRIP,
+        discounts: [{ code: 'V', promotionId: 'v', kind: 'free_delivery', fundedBy: 'vendor' }],
+      });
+
+      const settle = (quote: ReturnType<typeof buildQuote>) =>
+        computeSettlement({ quote, commissionBasisPoints: 1800, riderDeliveryPay: naira(600) });
+
+      // The customer pays the same either way.
+      expect(platformFunded.total).toBe(vendorFunded.total);
+      // But the vendor is out of pocket by exactly the waived fee.
+      expect(settle(platformFunded).vendorPayable - settle(vendorFunded).vendorPayable).toBe(
+        naira(760),
+      );
+    });
+  });
+
   it('conserves money across randomised orders', () => {
     for (let i = 0; i < 200; i += 1) {
       const quote = buildQuote({

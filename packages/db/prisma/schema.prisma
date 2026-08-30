@@ -1,0 +1,1289 @@
+// DASH APP — data model
+//
+// Authored to stay portable between SQLite (local development) and PostgreSQL
+// + PostGIS (production). See ADR-0003. The rules that keep that door open:
+//
+//   * No SQLite-only features, no `Unsupported()` columns.
+//   * Geometry is ordinary columns — Float lat/lng, JSON polygon rings — never
+//     a PostGIS `geography` type here. Spatial logic lives behind `GeoPort`.
+//   * Money is always `Int` (kobo). Never Decimal, never Float.
+//   * Enums are `String` columns constrained by Zod at the API boundary,
+//     because SQLite has no native enum. Postgres can promote them later.
+//   * Every public identifier is a CUID, never a sequential integer, so ids
+//     cannot be enumerated or used to infer volume.
+
+generator client {
+  provider = "prisma-client-js"
+  // No custom `output`. npm workspaces hoist @prisma/client to the root
+  // node_modules, and it resolves the generated client relative to itself — a
+  // package-local output directory would generate a client nothing imports.
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// Identity, sessions, permissions
+// ===========================================================================
+
+model Identity {
+  id String @id @default(cuid())
+
+  // E.164. Nullable because staff may sign in by email only.
+  phone String? @unique
+  email String? @unique
+
+  // Only ever set for staff accounts. Customers and riders use OTP.
+  passwordHash String?
+
+  // Staff accounts must carry MFA before they can reach the admin console.
+  mfaSecret     String?
+  mfaEnrolledAt DateTime?
+
+  displayName String?
+  locale      String  @default("en-NG")
+
+  status String @default("active") // active | suspended | deleted
+
+  // Set when the customer requests deletion. The row is retained until the
+  // financial retention window passes, then hard-deleted by a scheduled job.
+  deletionRequestedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roles           IdentityRole[]
+  sessions        Session[]
+  devices         Device[]
+  otpChallenges   OtpChallenge[]
+  customer        Customer?
+  rider           Rider?
+  vendorUsers     VendorUser[]
+  auditLogs       AuditLog[]
+  legalAcceptances LegalAcceptance[]
+
+  @@index([status])
+}
+
+model IdentityRole {
+  id         String @id @default(cuid())
+  identityId String
+  role       String // matches Role in @dash/domain/permissions
+
+  // Scope qualifiers. Which apply depends on the role.
+  vendorId String?
+  branchId String?
+  cityId   String?
+
+  grantedBy String?
+  createdAt DateTime @default(now())
+
+  identity Identity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@unique([identityId, role, vendorId, cityId])
+  @@index([identityId])
+  @@index([role])
+}
+
+model Session {
+  id         String @id @default(cuid())
+  identityId String
+
+  // Only the SHA-256 of the refresh token is stored. A database leak must not
+  // yield usable tokens.
+  refreshTokenHash String @unique
+
+  // Rotation lineage. If a token that was already rotated is presented again,
+  // the whole family is revoked — that is a replay, meaning the token leaked.
+  previousSessionId String?
+  rotatedAt         DateTime?
+
+  deviceId  String?
+  ipAddress String?
+  userAgent String?
+
+  // Set when the user completes a step-up challenge. Read by assertPermission.
+  steppedUpAt DateTime?
+
+  // Populated when an admin is impersonating this identity, so every action
+  // taken during the impersonation is attributable to the real actor.
+  impersonatedBy String?
+
+  expiresAt DateTime
+  revokedAt DateTime?
+  revokedReason String?
+
+  createdAt    DateTime @default(now())
+  lastSeenAt   DateTime @default(now())
+
+  identity Identity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  device   Device?  @relation(fields: [deviceId], references: [id])
+
+  @@index([identityId])
+  @@index([expiresAt])
+}
+
+model Device {
+  id         String @id @default(cuid())
+  identityId String
+
+  platform     String // ios | android | web
+  pushToken    String?
+  model        String?
+  appVersion   String?
+
+  trustedAt DateTime?
+  createdAt DateTime  @default(now())
+  lastSeenAt DateTime @default(now())
+
+  identity Identity  @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@index([identityId])
+}
+
+model OtpChallenge {
+  id         String  @id @default(cuid())
+  identityId String?
+
+  // The destination is stored so an OTP issued to one number cannot be redeemed
+  // for another.
+  destination String
+  channel     String // sms | email
+
+  // Hashed, never stored in clear. In development the plain code is logged to
+  // the console instead; DEV_EXPOSE_OTP is hard-blocked in production.
+  codeHash String
+
+  purpose String // login | step_up | phone_change | delete_account
+
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5)
+  consumedAt  DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  identity Identity? @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@index([destination, purpose])
+  @@index([expiresAt])
+}
+
+// ===========================================================================
+// Geography and market configuration
+// ===========================================================================
+
+model City {
+  id       String @id @default(cuid())
+  slug     String @unique
+  name     String
+  country  String @default("NG")
+  currency String @default("NGN")
+  timezone String @default("Africa/Lagos")
+
+  // Straight-line to road-distance ratio for this city. Lagos differs from a
+  // grid city; this is data, not a constant in code.
+  detourFactor Float @default(1.4)
+
+  centreLatitude  Float
+  centreLongitude Float
+
+  isLive    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  zones        Zone[]
+  vendors      Vendor[]
+  pricingRules PricingRule[]
+
+  @@index([slug])
+}
+
+model Zone {
+  id     String @id @default(cuid())
+  cityId String
+  name   String
+  slug   String
+
+  // GeoJSON-order ring: [[lng, lat], ...], or { outer, holes }.
+  // Parsed by parsePolygon() in @dash/domain/geo. In PostgreSQL this becomes a
+  // geography column with a GiST index; the JSON stays as the source of truth
+  // for editing.
+  polygon String
+
+  // Cached bounding box — a cheap pre-filter before the exact polygon test.
+  minLatitude  Float
+  maxLatitude  Float
+  minLongitude Float
+  maxLongitude Float
+
+  // Ops can pause a zone during a flood, a fuel shortage, or unrest.
+  isActive    Boolean   @default(true)
+  pausedAt    DateTime?
+  pausedReason String?
+
+  // Manual demand multiplier, capped by the city's pricing rule.
+  surgeMultiplier Float @default(1.0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  city     City      @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  branches Branch[]
+  orders   Order[]
+
+  @@unique([cityId, slug])
+  @@index([cityId, isActive])
+}
+
+model PricingRule {
+  id      String  @id @default(cuid())
+  cityId  String
+  // Null = the city default. A zone-specific rule overrides it.
+  zoneId  String?
+  version String
+
+  baseDeliveryFee       Int // kobo
+  includedMetres        Int
+  perKilometreFee       Int
+  perMinuteFee          Int
+  minimumDeliveryFee    Int
+  maximumDeliveryFee    Int
+  serviceFeeBasisPoints Int
+  serviceFeeCap         Int
+  smallOrderThreshold   Int
+  smallOrderFee         Int
+  taxBasisPoints        Int   @default(0)
+  maximumSurgeMultiplier Float @default(2.0)
+
+  effectiveFrom DateTime @default(now())
+  effectiveTo   DateTime?
+
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  city City @relation(fields: [cityId], references: [id], onDelete: Cascade)
+
+  @@index([cityId, effectiveFrom])
+}
+
+// ===========================================================================
+// Customers
+// ===========================================================================
+
+model Customer {
+  id         String @id @default(cuid())
+  identityId String @unique
+
+  referralCode     String  @unique
+  referredByCode   String?
+  dietaryPreferences String? // JSON array
+
+  marketingOptIn Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  identity      Identity       @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  addresses     Address[]
+  carts         Cart[]
+  orders        Order[]
+  reviews       Review[]
+  subscriptions Subscription[]
+  redemptions   PromotionRedemption[]
+
+  @@index([referralCode])
+}
+
+model Address {
+  id         String @id @default(cuid())
+  customerId String
+
+  label        String? // Home, Work
+  line1        String
+  landmark     String?
+  instructions String?
+  contactPhone String
+
+  latitude  Float
+  longitude Float
+
+  isDefault Boolean   @default(false)
+  archivedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  orders   Order[]
+
+  @@index([customerId])
+}
+
+// ===========================================================================
+// Vendors and catalogue
+// ===========================================================================
+
+model Vendor {
+  id     String @id @default(cuid())
+  cityId String
+
+  name        String
+  slug        String  @unique
+  description String?
+  category    String // restaurant | grocery | pharmacy | retail | market
+  logoKey     String?
+  coverKey    String?
+
+  // KYB lifecycle.
+  status          String    @default("pending") // pending | approved | suspended | rejected
+  approvedAt      DateTime?
+  approvedBy      String?
+  rejectionReason String?
+
+  // Commission in basis points, from the signed contract.
+  commissionBasisPoints Int @default(1800)
+
+  // Settlement destination. Account numbers are stored encrypted at rest by the
+  // application layer; the raw value never appears in a log or an export.
+  bankName          String?
+  bankAccountLast4  String?
+  bankAccountCipher String?
+
+  // Auto-accept incoming orders after this many seconds. 0 disables it.
+  autoAcceptSeconds Int @default(0)
+
+  ratingAverage Float @default(0)
+  ratingCount   Int   @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  city        City          @relation(fields: [cityId], references: [id])
+  branches    Branch[]
+  vendorUsers VendorUser[]
+  categories  MenuCategory[]
+  items       MenuItem[]
+  orders      Order[]
+  documents   VendorDocument[]
+  reviews     Review[]
+
+  @@index([cityId, status])
+  @@index([category])
+}
+
+model Branch {
+  id       String @id @default(cuid())
+  vendorId String
+  zoneId   String?
+
+  name    String
+  address String
+  phone   String?
+
+  latitude  Float
+  longitude Float
+
+  // How far this branch will deliver, on top of the zone rules.
+  deliveryRadiusMetres Int @default(8000)
+
+  // open | closed | busy — `busy` extends quoted prep times without going dark.
+  state          String @default("closed")
+  busyExtraMinutes Int  @default(0)
+
+  supportsDelivery      Boolean @default(true)
+  supportsPickup        Boolean @default(true)
+  supportsVendorDelivery Boolean @default(false)
+
+  minimumOrder         Int @default(0) // kobo
+  defaultPrepMinutes   Int @default(20)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vendor Vendor        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  zone   Zone?         @relation(fields: [zoneId], references: [id])
+  hours  OperatingHour[]
+  orders Order[]
+  stock  ItemStock[]
+
+  @@index([vendorId])
+  @@index([zoneId, isActive])
+}
+
+model OperatingHour {
+  id       String @id @default(cuid())
+  branchId String
+
+  dayOfWeek Int // 0 = Sunday
+  // Minutes from midnight, local to the city's timezone. Integers rather than
+  // times so an overnight window (22:00–02:00) is expressible as 1320–1560.
+  opensAtMinute  Int
+  closesAtMinute Int
+
+  // A dated override for a holiday, closing early, etc.
+  overrideDate DateTime?
+  isClosed     Boolean   @default(false)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([branchId, dayOfWeek])
+}
+
+model VendorUser {
+  id         String @id @default(cuid())
+  vendorId   String
+  identityId String
+  branchId   String?
+
+  role String // vendor_owner | vendor_manager | vendor_staff
+
+  invitedBy  String?
+  acceptedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  vendor   Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  identity Identity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@unique([vendorId, identityId])
+  @@index([identityId])
+}
+
+model VendorDocument {
+  id       String @id @default(cuid())
+  vendorId String
+
+  kind      String // cac_certificate | tax_id | food_licence | owner_id
+  // Random object key in a private bucket. Never a public URL.
+  objectKey String
+  mimeType  String
+  sizeBytes Int
+
+  status       String    @default("pending") // pending | approved | rejected
+  reviewedBy   String?
+  reviewedAt   DateTime?
+  rejectionReason String?
+
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, status])
+}
+
+model MenuCategory {
+  id       String @id @default(cuid())
+  vendorId String
+
+  name        String
+  description String?
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  vendor Vendor     @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  items  MenuItem[]
+
+  @@index([vendorId, isActive])
+}
+
+model MenuItem {
+  id         String @id @default(cuid())
+  vendorId   String
+  categoryId String
+
+  name        String
+  description String?
+  imageKey    String?
+
+  // Menu price in kobo. The server always re-reads this at checkout; a price
+  // sent by a client is never trusted.
+  price Int
+
+  prepMinutes Int     @default(15)
+  isAvailable Boolean @default(true)
+
+  // Regulated items (pharmacy, alcohol) need an explicit acknowledgement.
+  requiresAgeCheck Boolean @default(false)
+  allergens        String? // JSON array
+
+  sortOrder Int      @default(0)
+  archivedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vendor         Vendor          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  category       MenuCategory    @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  modifierGroups ModifierGroup[]
+  orderItems     OrderItem[]
+  stock          ItemStock[]
+
+  @@index([vendorId, isAvailable])
+  @@index([categoryId])
+}
+
+model ModifierGroup {
+  id     String @id @default(cuid())
+  itemId String
+
+  name        String
+  // Enforced server-side at checkout, never only in the UI.
+  minSelect   Int    @default(0)
+  maxSelect   Int    @default(1)
+  sortOrder   Int    @default(0)
+
+  item    MenuItem   @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  options Modifier[]
+
+  @@index([itemId])
+}
+
+model Modifier {
+  id      String @id @default(cuid())
+  groupId String
+
+  name        String
+  priceDelta  Int     @default(0) // kobo, may be negative
+  isAvailable Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  group ModifierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+}
+
+model ItemStock {
+  id       String @id @default(cuid())
+  itemId   String
+  branchId String
+
+  // Null means "not tracked" — a kitchen cooking to order. A number means a
+  // finite count, decremented on order acceptance.
+  quantity Int?
+
+  isAvailable Boolean  @default(true)
+  updatedAt   DateTime @updatedAt
+
+  item   MenuItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  branch Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, branchId])
+  @@index([branchId, isAvailable])
+}
+
+// ===========================================================================
+// Riders
+// ===========================================================================
+
+model Rider {
+  id         String @id @default(cuid())
+  identityId String @unique
+
+  status String @default("pending") // pending | approved | suspended | rejected
+
+  vehicleType  String @default("motorcycle")
+  vehiclePlate String?
+
+  // Availability and presence.
+  availability      String    @default("offline") // offline | idle | on_delivery | on_break
+  lastLatitude      Float?
+  lastLongitude     Float?
+  locationReportedAt DateTime?
+
+  qualityScore   Float     @default(80)
+  lastAssignedAt DateTime?
+
+  // Cash handling. A rider over their float cap stops being offered COD orders.
+  canCarryCash   Boolean @default(false)
+  cashFloatCap   Int     @default(0) // kobo
+  cashFloatHeld  Int     @default(0) // kobo
+
+  // Zones the rider may work. Empty = unrestricted.
+  allowedZoneIds String? // JSON array
+
+  approvedAt DateTime?
+  approvedBy String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  identity   Identity        @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  documents  RiderDocument[]
+  offers     DispatchOffer[]
+  orders     Order[]
+  locations  RiderLocation[]
+
+  @@index([availability, status])
+}
+
+model RiderDocument {
+  id      String @id @default(cuid())
+  riderId String
+
+  kind      String // drivers_licence | national_id | vehicle_papers | passport_photo
+  objectKey String
+  mimeType  String
+  sizeBytes Int
+
+  status          String    @default("pending")
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  rejectionReason String?
+  expiresAt       DateTime?
+
+  createdAt DateTime @default(now())
+
+  rider Rider @relation(fields: [riderId], references: [id], onDelete: Cascade)
+
+  @@index([riderId, status])
+}
+
+model RiderLocation {
+  id      String @id @default(cuid())
+  riderId String
+
+  latitude  Float
+  longitude Float
+  accuracy  Float?
+  heading   Float?
+  speed     Float?
+
+  // Set when the point failed the jump check, with the implied speed, so a
+  // spoofing pattern can be investigated without polluting live tracking.
+  rejectedReason String?
+
+  recordedAt DateTime
+  createdAt  DateTime @default(now())
+
+  rider Rider @relation(fields: [riderId], references: [id], onDelete: Cascade)
+
+  // Location history is pruned on a retention schedule — see docs/SECURITY.md.
+  @@index([riderId, recordedAt])
+}
+
+// ===========================================================================
+// Carts and orders
+// ===========================================================================
+
+model Cart {
+  id         String @id @default(cuid())
+  customerId String
+  branchId   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer Customer   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items    CartItem[]
+
+  @@index([customerId])
+}
+
+model CartItem {
+  id     String @id @default(cuid())
+  cartId String
+  itemId String
+
+  quantity     Int
+  // JSON array of modifier ids. Re-priced server-side at checkout.
+  modifierIds  String?
+  instructions String?
+
+  createdAt DateTime @default(now())
+
+  cart Cart @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  @@index([cartId])
+}
+
+model Order {
+  id     String @id @default(cuid())
+  // Short human-readable reference for support calls, e.g. "DASH-7F3K2M".
+  code   String @unique
+
+  customerId String
+  vendorId   String
+  branchId   String
+  addressId  String?
+  zoneId     String?
+  riderId    String?
+
+  status String @default("draft")
+  mode   String @default("delivery") // delivery | pickup | vendor_delivery
+
+  // --- The quote, frozen at checkout -------------------------------------
+  // Stored as individual columns for querying plus the full explained
+  // breakdown as JSON, so a receipt can be reproduced exactly.
+  itemsSubtotal   Int
+  discountTotal   Int @default(0)
+  deliveryFee     Int @default(0)
+  serviceFee      Int @default(0)
+  smallOrderFee   Int @default(0)
+  surgeAmount     Int @default(0)
+  tax             Int @default(0)
+  tip             Int @default(0)
+  walletApplied   Int @default(0)
+  total           Int
+
+  vendorFundedDiscount   Int @default(0)
+  platformFundedDiscount Int @default(0)
+
+  // Full QuoteLine[] and inputs, for dispute resolution.
+  quoteBreakdown String
+  pricingRuleVersion String
+
+  // --- Trip ---------------------------------------------------------------
+  distanceMetres Int?
+  durationMinutes Int?
+  distanceSource String?
+
+  // --- Verification codes -------------------------------------------------
+  // Hashed. A rider who can read the database still cannot complete a delivery
+  // without the customer reading the PIN aloud.
+  pickupCodeHash   String?
+  deliveryPinHash  String?
+
+  // --- Timing -------------------------------------------------------------
+  scheduledFor  DateTime?
+  placedAt      DateTime?
+  acceptedAt    DateTime?
+  readyAt       DateTime?
+  pickedUpAt    DateTime?
+  deliveredAt   DateTime?
+  cancelledAt   DateTime?
+
+  estimatedReadyAt    DateTime?
+  estimatedDeliveryAt DateTime?
+
+  cancellationReason String?
+  cancelledBy        String?
+
+  contactless  Boolean @default(false)
+  instructions String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer     Customer            @relation(fields: [customerId], references: [id])
+  vendor       Vendor              @relation(fields: [vendorId], references: [id])
+  branch       Branch              @relation(fields: [branchId], references: [id])
+  address      Address?            @relation(fields: [addressId], references: [id])
+  zone         Zone?               @relation(fields: [zoneId], references: [id])
+  rider        Rider?              @relation(fields: [riderId], references: [id])
+  items        OrderItem[]
+  statusEvents OrderStatusEvent[]
+  offers       DispatchOffer[]
+  payments     Payment[]
+  reviews      Review[]
+  proofs       DeliveryProof[]
+
+  @@index([customerId, createdAt])
+  @@index([vendorId, status])
+  @@index([riderId, status])
+  @@index([status, createdAt])
+  @@index([zoneId, status])
+}
+
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String
+  itemId  String?
+
+  // Denormalised deliberately. If the vendor renames or reprices the dish
+  // tomorrow, the receipt must still show what was actually bought and paid.
+  nameSnapshot  String
+  priceSnapshot Int
+
+  quantity     Int
+  // JSON: [{ id, name, priceDelta }] — also snapshotted.
+  modifiers    String?
+  lineTotal    Int
+  instructions String?
+
+  // Retail/grocery substitution.
+  substitutedForItemId String?
+  substitutionNote     String?
+
+  order Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  item  MenuItem? @relation(fields: [itemId], references: [id])
+
+  @@index([orderId])
+}
+
+model OrderStatusEvent {
+  id      String @id @default(cuid())
+  orderId String
+
+  fromStatus String?
+  toStatus   String
+
+  actorType String // customer | vendor | rider | ops | system
+  actorId   String?
+  reason    String?
+
+  // Ops interventions carry a mandatory reason code.
+  reasonCode String?
+
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+}
+
+model DeliveryProof {
+  id      String @id @default(cuid())
+  orderId String
+
+  kind      String // photo | signature | pin_verified
+  objectKey String?
+  // Coarsened before storage — see coarsen() in @dash/domain/geo.
+  latitude  Float?
+  longitude Float?
+
+  capturedAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+}
+
+// ===========================================================================
+// Dispatch
+// ===========================================================================
+
+model DispatchOffer {
+  id      String @id @default(cuid())
+  orderId String
+  riderId String
+
+  round  Int    @default(1)
+  status String @default("pending") // pending | accepted | declined | expired | withdrawn
+
+  score          Float
+  // The full ScoreFactor[] that produced the score, so a dispatcher can answer
+  // "why that rider?" from the record alone.
+  scoreBreakdown String
+  ruleVersion    String
+
+  pickupEtaSeconds     Int
+  pickupDistanceMetres Int
+
+  expiresAt  DateTime
+  respondedAt DateTime?
+  declineReason String?
+
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  rider Rider @relation(fields: [riderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, round])
+  @@index([riderId, status])
+  @@index([expiresAt])
+}
+
+// ===========================================================================
+// Payments
+// ===========================================================================
+
+model Payment {
+  id      String @id @default(cuid())
+  orderId String
+
+  provider          String // mock | paystack
+  providerReference String @unique
+
+  amount   Int
+  currency String @default("NGN")
+  method   String // card | bank | wallet | cash
+
+  status String @default("pending")
+
+  // Required on every create/capture/refund so a retry cannot double-charge.
+  idempotencyKey String @unique
+
+  authorizationUrl String?
+  failureReason    String?
+
+  authorizedAt DateTime?
+  capturedAt   DateTime?
+  failedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order    Order            @relation(fields: [orderId], references: [id])
+  refunds  Refund[]
+  webhooks PaymentWebhook[]
+
+  @@index([orderId])
+  @@index([status])
+}
+
+model Refund {
+  id        String @id @default(cuid())
+  paymentId String
+
+  amount Int
+  reason String
+  status String @default("pending")
+
+  providerReference String?
+  idempotencyKey    String @unique
+
+  requestedBy String
+  approvedBy  String?
+  approvedAt  DateTime?
+
+  createdAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+
+  @@index([paymentId])
+}
+
+model PaymentWebhook {
+  id        String  @id @default(cuid())
+  paymentId String?
+
+  provider String
+  // The provider's own event id. Unique, so a replayed webhook is a no-op
+  // rather than a second capture.
+  eventId  String
+  eventType String
+
+  signatureValid Boolean
+  processedAt    DateTime?
+  processingError String?
+
+  // Raw body retained for dispute evidence and replay debugging.
+  rawPayload String
+
+  receivedAt DateTime @default(now())
+
+  payment Payment? @relation(fields: [paymentId], references: [id])
+
+  @@unique([provider, eventId])
+  @@index([processedAt])
+}
+
+// ===========================================================================
+// Ledger — append-only. No updates, no deletes, ever.
+// ===========================================================================
+
+model LedgerTransaction {
+  id   String @id @default(cuid())
+  kind String
+
+  idempotencyKey String @unique
+
+  referenceType String
+  referenceId   String
+
+  actorId String
+  note    String?
+
+  occurredAt DateTime
+  createdAt  DateTime @default(now())
+
+  entries LedgerEntry[]
+
+  @@index([referenceType, referenceId])
+  @@index([kind, occurredAt])
+}
+
+model LedgerEntry {
+  id            String @id @default(cuid())
+  transactionId String
+
+  accountKind String
+  ownerId     String?
+
+  // Signed, debit-positive. Entries in a transaction must sum to exactly zero;
+  // this is asserted in code before the write and by a nightly reconciliation.
+  amount Int
+  memo   String
+
+  createdAt DateTime @default(now())
+
+  transaction LedgerTransaction @relation(fields: [transactionId], references: [id])
+
+  @@index([accountKind, ownerId])
+  @@index([transactionId])
+}
+
+// ===========================================================================
+// Promotions, loyalty, subscriptions
+// ===========================================================================
+
+model Promotion {
+  id   String @id @default(cuid())
+  code String @unique
+  name String
+
+  kind        String // percentage_off_items | fixed_off_items | free_delivery | fixed_off_total
+  basisPoints Int?
+  amount      Int?
+  maximumDiscount Int?
+
+  fundedBy               String @default("platform")
+  vendorShareBasisPoints Int?
+
+  // Eligibility.
+  minimumSubtotal   Int     @default(0)
+  firstOrderOnly    Boolean @default(false)
+  cityIds           String? // JSON array, null = all
+  vendorIds         String?
+  categorySlugs     String?
+
+  // Quotas.
+  totalQuota       Int?
+  perCustomerQuota Int     @default(1)
+  usedCount        Int     @default(0)
+
+  startsAt DateTime
+  endsAt   DateTime?
+  isActive Boolean  @default(true)
+
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  redemptions PromotionRedemption[]
+
+  @@index([code, isActive])
+  @@index([startsAt, endsAt])
+}
+
+model PromotionRedemption {
+  id          String @id @default(cuid())
+  promotionId String
+  customerId  String
+  orderId     String?
+
+  amountApplied Int
+  createdAt     DateTime @default(now())
+
+  promotion Promotion @relation(fields: [promotionId], references: [id])
+  customer  Customer  @relation(fields: [customerId], references: [id])
+
+  @@index([promotionId, customerId])
+}
+
+model Subscription {
+  id         String @id @default(cuid())
+  customerId String
+
+  plan   String @default("dash_plus")
+  status String @default("active") // trialing | active | paused | cancelled | expired
+
+  freeDeliveryMinimumSubtotal   Int @default(0)
+  serviceFeeDiscountBasisPoints Int @default(0)
+  surgeExempt                   Boolean @default(false)
+
+  pricePerPeriod Int
+  periodDays     Int @default(30)
+
+  trialEndsAt   DateTime?
+  currentPeriodEnd DateTime
+  cancelledAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, status])
+}
+
+// ===========================================================================
+// Reviews and support
+// ===========================================================================
+
+model Review {
+  id         String @id @default(cuid())
+  orderId    String
+  customerId String
+  vendorId   String?
+
+  subject String // vendor | rider | item
+  rating  Int
+  comment String?
+
+  // Moderation.
+  status      String    @default("published") // pending | published | hidden
+  hiddenReason String?
+  vendorResponse String?
+  respondedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  order    Order    @relation(fields: [orderId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+  vendor   Vendor?  @relation(fields: [vendorId], references: [id])
+
+  @@index([vendorId, status])
+  @@index([orderId])
+}
+
+model SupportCase {
+  id   String @id @default(cuid())
+  code String @unique
+
+  // Any of these may be null — a case can be about a rider with no order.
+  customerId String?
+  orderId    String?
+  vendorId   String?
+  riderId    String?
+
+  subject  String
+  category String
+  priority String @default("normal") // low | normal | high | urgent
+  status   String @default("open")   // open | pending | resolved | closed
+
+  assignedTo String?
+  resolvedAt DateTime?
+  resolution String?
+
+  // SLA clock.
+  firstResponseDueAt DateTime?
+  firstRespondedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  actions SupportAction[]
+
+  @@index([status, priority])
+  @@index([assignedTo, status])
+}
+
+model SupportAction {
+  id     String @id @default(cuid())
+  caseId String
+
+  actorId String
+  kind    String // note | reply | compensation | refund_request | escalation | status_change
+  body    String?
+
+  // Set when the action moved money, linking to the ledger transaction.
+  ledgerTransactionId String?
+  amount              Int?
+
+  isInternal Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  supportCase SupportCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, createdAt])
+}
+
+// ===========================================================================
+// Governance
+// ===========================================================================
+
+model AuditLog {
+  id String @id @default(cuid())
+
+  identityId String?
+  // Set when the action was taken during an impersonation session.
+  onBehalfOf String?
+
+  action       String
+  resourceType String
+  resourceId   String?
+
+  // Before/after JSON for configuration and permission changes. Never contains
+  // secrets, tokens, card data, or full account numbers.
+  before String?
+  after  String?
+
+  ipAddress String?
+  userAgent String?
+  requestId String?
+
+  createdAt DateTime @default(now())
+
+  identity Identity? @relation(fields: [identityId], references: [id])
+
+  @@index([identityId, createdAt])
+  @@index([resourceType, resourceId])
+  @@index([action, createdAt])
+}
+
+model FeatureFlag {
+  id   String @id @default(cuid())
+  key  String @unique
+
+  description String?
+  isEnabled   Boolean @default(false)
+
+  // Targeting. Null = applies everywhere.
+  cityIds        String? // JSON array
+  vendorIds      String?
+  // 0–100. Deterministic per identity, not random per request.
+  rolloutPercent Int     @default(100)
+
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LegalDocument {
+  id      String @id @default(cuid())
+  slug    String
+  version String
+
+  title   String
+  body    String
+
+  effectiveFrom DateTime
+  createdAt     DateTime @default(now())
+
+  acceptances LegalAcceptance[]
+
+  @@unique([slug, version])
+}
+
+model LegalAcceptance {
+  id         String @id @default(cuid())
+  identityId String
+  documentId String
+
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  identity Identity      @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  document LegalDocument @relation(fields: [documentId], references: [id])
+
+  @@unique([identityId, documentId])
+  @@index([identityId])
+}
+
+model IdempotencyKey {
+  id  String @id @default(cuid())
+  key String @unique
+
+  identityId String?
+  endpoint   String
+
+  // Cached response, so a retry returns the original result rather than
+  // re-executing a side effect.
+  statusCode   Int?
+  responseBody String?
+
+  lockedAt   DateTime?
+  completedAt DateTime?
+  expiresAt  DateTime
+
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
