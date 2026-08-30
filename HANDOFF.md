@@ -22,7 +22,10 @@ Everything needed to pick this up cold. Read this first, then
 
 ```bash
 git show v0.1.0-mvp --stat | head -30   # what the milestone contains
-git rev-parse v0.1.0-mvp                # exact commit hash
+# v0.1.0-mvp is an ANNOTATED tag, so bare rev-parse returns the tag OBJECT
+# hash, not the commit. The ^{commit} suffix dereferences it.
+git rev-parse v0.1.0-mvp^{commit}       # 6d53623… — the commit
+git rev-parse v0.1.0-mvp                # 9ee2c26… — the tag object, not what you want
 ```
 
 ---

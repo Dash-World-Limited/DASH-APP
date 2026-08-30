@@ -170,7 +170,7 @@ still balances.
 | | |
 |---|---|
 | Tag | `v0.1.0-mvp` |
-| Commit | `git rev-parse v0.1.0-mvp` |
+| Commit | `6d536234828ac4f362764a79f8a6488ca305fa3d` (`git rev-parse v0.1.0-mvp^{commit}`) |
 | Unit tests | **268** across 8 files, all passing |
 | Smoke checks | **48**, all passing (`scripts/smoke.mjs`) |
 | Dispatch checks | **20**, all passing (`scripts/dispatch-check.mjs`) |
