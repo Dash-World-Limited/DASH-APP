@@ -7,9 +7,11 @@ customers, riders, vendors, operations, support, and finance.
 Original product and implementation. Not derived from any existing platform's
 code, assets, or copy.
 
-> **Status: early.** The domain core is built and tested. There is no running
-> server or UI yet. `docs/PROGRESS.md` is the honest, current account of what
-> works, what is stubbed, and what has not been started — read it before
+> **Status: working, incomplete.** You can browse, order, pay (through a mock
+> adapter), and watch a vendor accept it — end to end, in a browser. Dispatch
+> does not yet reach a rider, no external integration has been tested against a
+> live service, and there is no CI. `docs/PROGRESS.md` is the honest account of
+> what works, what is stubbed, and what has not been started — read it before
 > assuming any capability exists.
 
 ---
@@ -26,15 +28,27 @@ production path to PostgreSQL + PostGIS looks like.
 ## Getting started
 
 ```bash
-npm install
-npm test
+npm run setup
 ```
+
+That installs, creates the database, and seeds a fictional Lagos. Then:
+
+```bash
+npm run dev
+```
+
+The web app is on http://127.0.0.1:3000 and the API on http://127.0.0.1:4000.
+Sign-in details for every seeded role are in `docs/PROGRESS.md`.
 
 ## Repository layout
 
 ```
 dash-app/
+├── apps/
+│   ├── api/             # Fastify API — auth, ordering, dispatch, finance
+│   └── web/             # Next.js — customer, vendor, rider, ops surfaces
 ├── packages/
+│   ├── db/              # Prisma schema, seed, ledger posting
 │   └── domain/          # Pure business core — no I/O, no framework, no clock
 │       └── src/
 │           ├── money/         Branded integer kobo, exact percentage math
@@ -83,18 +97,22 @@ cannot drift.
 ## Testing
 
 ```bash
-npm test                 # full suite
+npm test                 # 249 unit tests
 npx vitest run --coverage packages/domain
+node scripts/smoke.mjs   # 48 end-to-end checks against a running API
 ```
 
-229 tests, 96.98% statement coverage on the domain core, with thresholds
-enforced in `vitest.config.ts` so a regression fails rather than quietly
-eroding.
+~97% statement coverage on the domain core, with thresholds enforced in
+`vitest.config.ts` so a regression fails rather than quietly eroding.
 
 The suite is deliberately adversarial in the places that matter — cross-tenant
 access sweeps, self-promotion attempts, GPS spoofing, discount stacking, promo
 codes gamed to dodge fees, and money-conservation checks across randomised
 orders.
+
+`scripts/smoke.mjs` needs a running API and a seeded database. It places a real
+order and probes the authorization boundaries, including price tampering,
+cross-tenant reads, step-up enforcement, and unsigned webhooks.
 
 ## Documentation
 

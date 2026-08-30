@@ -3,7 +3,7 @@
 Updated at the end of every milestone. If you are picking this up cold, read
 this file first, then `docs/DECISIONS.md`.
 
-**Last updated:** 2026-08-30 · end of Milestone 2 (API and data layer)
+**Last updated:** 2026-08-30 · end of Milestone 3 (web app)
 
 ---
 
@@ -104,6 +104,35 @@ response while `DEV_EXPOSE_OTP=true`).
 Coverage on `packages/domain`: ~97% statements, ~95% branches. Thresholds
 enforced in `vitest.config.ts` at 80/75/80/80.
 
+### Milestone 3 — The web app
+- **`apps/web`** — one Next.js 15 app (ADR-0004) with the customer, vendor,
+  rider, and operations surfaces. 11 routes, ~113 kB first load.
+- Original design system: Midnight Graphite / Dash Gold / Warm Ivory, with a
+  dark "field" surface for the rider and ops screens because both are read
+  outdoors or in a dim dispatch room.
+- Accessibility taken seriously rather than retrofitted: a visible focus ring on
+  every control, `prefers-reduced-motion` honoured globally, pinch-zoom left
+  enabled, 44px minimum touch targets on rider controls, a skip link, and
+  labelled live regions instead of a screenful of unannounced grey boxes.
+- **The basket stores no prices** — only item ids, quantities, and modifier ids.
+  Every naira comes from `/v1/orders/quote` on each change, so a tampered
+  `localStorage` basket cannot influence what anyone is charged.
+- Verified in a real browser end to end: browse → customise an item with
+  required modifier groups → sign in by OTP → quote → checkout → vendor accepts
+  → order advances. The ledger stayed balanced across the whole run.
+
+**Flows confirmed working in the browser, not just by API call:**
+- Serviceability resolves the customer's zone and rejects unserviceable points.
+- Required modifier groups block "add to basket" until satisfied, matching the
+  server rule that would reject it anyway.
+- Membership free delivery renders as an explained line, and the service fee is
+  halved — the exact scenario that had unbalanced the ledger.
+- The delivery PIN is shown once at checkout and never returned by any
+  subsequent order read.
+- The vendor queue shows the customer's first name only, their food revenue
+  rather than the customer's total, and no phone number.
+- The ops board hides ledger status from a dispatcher, who lacks the permission.
+
 ---
 
 ## Bugs found and fixed while building
@@ -158,6 +187,25 @@ Recorded because each one would have been expensive to find in production.
    the difference. Now the payable stays signed, and the ledger posts a debit
    entry that nets against the vendor's next settlement.
 
+6. **Dark-surface text was invisible.** `body { color: var(--ink) }` resolves the
+   variable once, at the body. The rider and ops screens redefine `--ink` on a
+   nested wrapper, but nothing re-reads it unless a rule sets `color` again — so
+   every element inside inherited the body's *light-theme* colour and rendered
+   near-black text on a near-black surface. Order codes on the live board were
+   unreadable. Fixed by re-declaring `color` and `background` on the surface
+   itself.
+
+7. **A hydration mismatch on every authenticated page.** `hasSession()` reads
+   `sessionStorage`, which does not exist on the server, so the server rendered
+   "signed out" and the client rendered "signed in". React reported the mismatch
+   and discarded the server HTML. Replaced with a `useHasSession()` hook that
+   returns false until an effect has run.
+
+8. **`/v1/auth/me` was called four times per page load.** The header and the
+   permission hook each fetched the identity independently. Added request
+   deduplication and a 30-second cache, invalidated on any session change.
+   Measured before and after in the browser: four requests down to one.
+
 ---
 
 ## Deliberate policy decisions worth reviewing
@@ -185,9 +233,16 @@ wrong for DASH APP, it is a small change now and a migration later.
 
 ## In progress / next
 
-**Milestone 3 — the web app.** A single Next.js app (`apps/web`, ADR-0004) with
-route groups for customer, rider, vendor, and admin. Nothing is clickable yet;
-the API is currently driven only by `scripts/smoke.mjs`.
+**Milestone 4 — dispatch and live tracking.** The largest remaining gap. In
+order:
+
+1. A queue worker that consumes `dispatch.find_rider`, runs the (already built
+   and tested) scoring engine, creates `DispatchOffer` rows, and handles the
+   offer timeout / re-offer / escalate cycle. Until this exists, no order ever
+   reaches a rider, and the rider app has nothing to accept.
+2. Real rider pay rules, replacing the flat ₦600 constant in `confirmOrderPaid`.
+3. WebSocket push, replacing polling on the tracking, vendor, and ops screens.
+4. An automated API integration suite against a test-scoped database, and CI.
 
 ---
 
@@ -199,8 +254,11 @@ the API is currently driven only by `scripts/smoke.mjs`.
   so it cannot be mistaken for a working integration. Nothing here should be
   described as "Paystack integration works" until it is run against real sandbox
   keys.
-- **No UI exists yet.** The API is complete enough to run a full order; there is
-  no interface for a human to do it through.
+- **The refresh token lives in `sessionStorage`, not an httpOnly cookie.** It
+  dies with the tab, which is better than `localStorage`, but it is still
+  readable by any script on the origin. The correct production fix is an
+  httpOnly cookie set by the API — that needs CSRF protection and a same-site
+  deployment, neither of which exists yet.
 - **Dispatch is not wired to a worker.** The scoring engine is written and
   tested, and `dispatch.find_rider` jobs are enqueued at checkout and on vendor
   accept, but no handler consumes them yet — so orders never actually reach a

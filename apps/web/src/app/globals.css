@@ -1,0 +1,123 @@
+@import 'tailwindcss';
+
+/**
+ * DASH APP design tokens.
+ *
+ * Gold is a brand accent, not a surface colour — it appears on the wordmark and
+ * on primary actions, and nowhere else. Customer screens are bright and warm;
+ * rider and operations screens trade warmth for contrast and larger targets,
+ * because they are read outdoors, in a hurry, one-handed.
+ */
+@theme {
+  /* Brand */
+  --color-graphite-50: #f6f7f8;
+  --color-graphite-100: #e9ebed;
+  --color-graphite-200: #cbd0d6;
+  --color-graphite-400: #6b7480;
+  --color-graphite-600: #3a4048;
+  --color-graphite-800: #1a1e23;
+  --color-graphite-900: #0b0d10;
+
+  --color-gold-50: #fbf7e8;
+  --color-gold-200: #efdfa4;
+  --color-gold-400: #d4af37;
+  --color-gold-500: #bd9a2a;
+  --color-gold-600: #9a7c1f;
+
+  --color-ivory: #faf8f2;
+
+  --color-emerald-50: #e7f7f0;
+  --color-emerald-400: #13a86b;
+  --color-emerald-600: #0d8353;
+
+  --color-coral-50: #fdecec;
+  --color-coral-400: #ef5b5b;
+  --color-coral-600: #c93c3c;
+
+  --color-slate-400: #64748b;
+
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --radius-card: 0.875rem;
+}
+
+:root {
+  --surface: var(--color-ivory);
+  --surface-raised: #ffffff;
+  --ink: var(--color-graphite-900);
+  --ink-muted: var(--color-graphite-400);
+  --line: var(--color-graphite-100);
+}
+
+/**
+ * Rider and operations surfaces invert to dark.
+ *
+ * This is not a theme preference — it is a legibility decision. Both are used
+ * outdoors in direct Lagos sun or in a dim dispatch room, where a bright
+ * full-screen white surface is genuinely hard to read.
+ */
+[data-surface='field'] {
+  --surface: var(--color-graphite-900);
+  --surface-raised: var(--color-graphite-800);
+  --ink: #ffffff;
+  --ink-muted: var(--color-graphite-200);
+  --line: var(--color-graphite-600);
+
+  /*
+   * Re-declaring `color` and `background` here is NOT redundant.
+   *
+   * `body { color: var(--ink) }` resolves the variable once, at the body. A
+   * descendant that redefines `--ink` changes the token for its own subtree,
+   * but nothing re-reads it unless a rule sets `color` again — so without these
+   * two lines every element inside inherits the body's *light-theme* colour and
+   * renders near-black text on a near-black surface.
+   *
+   * That is exactly what happened: order codes on the ops board were invisible.
+   */
+  color: var(--ink);
+  background: var(--surface);
+}
+
+* {
+  border-color: var(--line);
+}
+
+body {
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Respect a reduced-motion preference everywhere, with no per-component opt-in. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* A visible focus ring on every interactive element. Never removed. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-gold-400);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@keyframes dash-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.dash-pulse {
+  animation: dash-pulse 1.6s ease-in-out infinite;
+}
