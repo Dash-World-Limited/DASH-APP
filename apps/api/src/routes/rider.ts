@@ -15,7 +15,11 @@ import { z } from 'zod';
 import { verifyOtp } from '@dash/domain/crypto';
 import { checkLocationJump, coarsen } from '@dash/domain/geo';
 import { assertTransition, RIDER_HOLDING_STATUSES, type OrderStatus } from '@dash/domain/orders';
-import { writeAudit } from '@dash/db';
+import { kobo } from '@dash/domain/money';
+import { computeRiderPay, DEFAULT_RIDER_PAY_RULES } from '@dash/domain/pay';
+import { buildRiderAssignment } from '@dash/domain/ledger';
+import type { VehicleType } from '@dash/domain/dispatch';
+import { postLedgerTransaction, writeAudit, type PrismaClient } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission, requireScope } from '../http/context.js';
 
@@ -446,7 +450,23 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
       const actor = actorOf(request);
       const order = await prisma.order.findUnique({
         where: { id: request.params.id },
-        select: { id: true, status: true, riderId: true, deliveryPinHash: true },
+        select: {
+          id: true,
+          status: true,
+          riderId: true,
+          deliveryPinHash: true,
+          distanceMetres: true,
+          tip: true,
+          quoteBreakdown: true,
+          acceptedAt: true,
+          pickedUpAt: true,
+          rider: { select: { vehicleType: true } },
+          offers: {
+            where: { status: 'accepted' },
+            select: { pickupDistanceMetres: true },
+            take: 1,
+          },
+        },
       });
       if (!order) throw ApiError.notFound();
       requireScope(actor, { riderId: order.riderId ?? undefined });
@@ -496,6 +516,56 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
             where: { id: order.riderId },
             data: { availability: 'idle' },
           });
+
+          // --- Assign the reserved pay to the rider who actually rode --------
+          // At capture no rider existed, so the delivery pay was reserved
+          // against an unowned balance. Now the real numbers are known, so the
+          // reservation is released and the rider is credited. Without this the
+          // money sits in an account nobody can draw from and the rider's
+          // earnings screen reads zero after a completed delivery.
+          const quote = JSON.parse(order.quoteBreakdown) as {
+            inputs?: { surgeMultiplier?: number };
+          };
+
+          const reserved = computeRiderPay({
+            rules: DEFAULT_RIDER_PAY_RULES,
+            vehicleType: 'motorcycle',
+            tripMetres: order.distanceMetres ?? 0,
+            approachMetres: 0,
+            waitingMinutes: 0,
+            surgeMultiplier: quote.inputs?.surgeMultiplier ?? 1,
+            tip: kobo(0),
+          });
+
+          // Waiting time is measured from the rider arriving to the food being
+          // handed over. Only the vendor's delay is billable.
+          const waitingMinutes =
+            order.acceptedAt && order.pickedUpAt
+              ? Math.max(0, (order.pickedUpAt.getTime() - order.acceptedAt.getTime()) / 60_000)
+              : 0;
+
+          const actual = computeRiderPay({
+            rules: DEFAULT_RIDER_PAY_RULES,
+            vehicleType: (order.rider?.vehicleType ?? 'motorcycle') as VehicleType,
+            tripMetres: order.distanceMetres ?? 0,
+            approachMetres: order.offers[0]?.pickupDistanceMetres ?? 0,
+            waitingMinutes,
+            surgeMultiplier: quote.inputs?.surgeMultiplier ?? 1,
+            tip: kobo(order.tip),
+          });
+
+          await postLedgerTransaction(
+            tx as unknown as PrismaClient,
+            buildRiderAssignment({
+              orderId: order.id,
+              riderId: order.riderId,
+              idempotencyKey: `rider_assign_${order.id}`,
+              actorId: actor.identityId,
+              occurredAt: new Date(),
+              reservedPay: reserved.deliveryPay,
+              actualPay: actual.total,
+            }),
+          );
         }
       });
 

@@ -13,7 +13,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { generatePin, generateReference, hashOtp } from '@dash/domain/crypto';
-import { add, kobo, naira, ZERO, type Kobo } from '@dash/domain/money';
+import { add, kobo, ZERO, type Kobo } from '@dash/domain/money';
 import {
   assertTransition,
   customerLabel,
@@ -31,6 +31,7 @@ import {
   type PricingRules,
 } from '@dash/domain/pricing';
 import { buildOrderCapture } from '@dash/domain/ledger';
+import { computeRiderPay, DEFAULT_RIDER_PAY_RULES } from '@dash/domain/pay';
 import { postLedgerTransaction, writeAudit, type PrismaClient } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission, requireScope, withIdempotency } from '../http/context.js';
@@ -913,6 +914,7 @@ export async function confirmOrderPaid(
       total: true,
       walletApplied: true,
       itemsSubtotal: true,
+      distanceMetres: true,
       quoteBreakdown: true,
       vendorFundedDiscount: true,
       platformFundedDiscount: true,
@@ -931,10 +933,32 @@ export async function confirmOrderPaid(
   if (order.status !== 'payment_pending') return;
 
   const quote = JSON.parse(order.quoteBreakdown) as Parameters<typeof computeSettlement>[0]['quote'];
+
+  // Rider pay is reserved at capture, before a rider is even assigned, so the
+  // money is committed the moment the customer pays rather than appearing later
+  // out of nowhere. It is computed from the trip, NOT copied from the delivery
+  // fee — the fee is what the market bears, the pay is what the work is worth,
+  // and coupling them would let a surge discount quietly cut a rider's earnings.
+  //
+  // Vehicle type is unknown at this point, so the estimate assumes a
+  // motorcycle. Milestone 4 note: when the rider is assigned, the difference
+  // between this reservation and their actual entitlement is posted as an
+  // adjusting ledger entry rather than by editing this one.
+  const riderPay = computeRiderPay({
+    rules: DEFAULT_RIDER_PAY_RULES,
+    vehicleType: 'motorcycle',
+    tripMetres: order.distanceMetres ?? 0,
+    // No rider is assigned yet, so there is no approach leg to pay for.
+    approachMetres: 0,
+    waitingMinutes: 0,
+    surgeMultiplier: quote.inputs?.surgeMultiplier ?? 1,
+    tip: kobo(0),
+  });
+
   const settlement = computeSettlement({
     quote,
     commissionBasisPoints: order.vendor.commissionBasisPoints,
-    riderDeliveryPay: naira(600),
+    riderDeliveryPay: riderPay.deliveryPay,
   });
 
   await prisma.$transaction(async (tx) => {

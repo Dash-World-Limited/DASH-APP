@@ -16,6 +16,7 @@ import {
   buildPayout,
   buildRefund,
   buildReversal,
+  buildRiderAssignment,
   buildWalletCredit,
   isBalanced,
   LedgerError,
@@ -311,6 +312,78 @@ describe('buildRefund', () => {
         toWallet: ZERO,
         fromVendorPayable: naira(5000),
       }),
+    ).toThrow(LedgerError);
+  });
+});
+
+describe('buildRiderAssignment', () => {
+  const base = {
+    orderId: 'ord_1',
+    riderId: 'rid_1',
+    idempotencyKey: 'assign_1',
+    actorId: 'rider_identity',
+    occurredAt: AT,
+  };
+
+  it('moves reserved pay from the unowned pool to the rider', () => {
+    const draft = buildRiderAssignment({ ...base, reservedPay: naira(600), actualPay: naira(600) });
+    expectBalances(draft);
+
+    // The reservation is released from the account with no owner…
+    const release = draft.entries.find(
+      (e) => e.accountKind === 'rider_payable' && e.ownerId === undefined,
+    );
+    expect(release?.amount).toBe(naira(600));
+
+    // …and credited to the rider who actually rode.
+    const credit = draft.entries.find(
+      (e) => e.accountKind === 'rider_payable' && e.ownerId === 'rid_1',
+    );
+    expect(credit?.amount).toBe(naira(-600));
+
+    // Reserved exactly matched actual, so the platform is unaffected.
+    expect(draft.entries.find((e) => e.accountKind === 'platform_revenue')).toBeUndefined();
+  });
+
+  it('charges the platform when the rider earned more than was reserved', () => {
+    // A long approach leg and a tip mean the real entitlement exceeds the
+    // reservation made before a rider existed.
+    const draft = buildRiderAssignment({ ...base, reservedPay: naira(600), actualPay: naira(950) });
+    expectBalances(draft);
+    expect(draft.entries.find((e) => e.accountKind === 'platform_revenue')?.amount).toBe(
+      naira(350),
+    );
+  });
+
+  it('returns the surplus to the platform when the rider earned less', () => {
+    const draft = buildRiderAssignment({ ...base, reservedPay: naira(600), actualPay: naira(450) });
+    expectBalances(draft);
+    expect(draft.entries.find((e) => e.accountKind === 'platform_revenue')?.amount).toBe(
+      naira(-150),
+    );
+  });
+
+  it('leaves the rider with exactly their entitlement, whatever was reserved', () => {
+    for (let i = 0; i < 200; i += 1) {
+      const reservedPay = kobo(Math.floor(Math.random() * 200_000));
+      const actualPay = kobo(Math.floor(Math.random() * 200_000));
+      const draft = buildRiderAssignment({ ...base, reservedPay, actualPay });
+
+      expectBalances(draft);
+
+      const riderEntries = draft.entries.filter(
+        (e) => e.accountKind === 'rider_payable' && e.ownerId === 'rid_1',
+      );
+      expect(balanceOf('rider_payable', riderEntries)).toBe(actualPay);
+    }
+  });
+
+  it('rejects negative amounts', () => {
+    expect(() =>
+      buildRiderAssignment({ ...base, reservedPay: naira(-1), actualPay: naira(600) }),
+    ).toThrow(LedgerError);
+    expect(() =>
+      buildRiderAssignment({ ...base, reservedPay: naira(600), actualPay: naira(-1) }),
     ).toThrow(LedgerError);
   });
 });

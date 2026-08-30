@@ -30,6 +30,7 @@ import { registerVendorRoutes } from './routes/vendor.js';
 import { registerRiderRoutes } from './routes/rider.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
+import { registerDispatchWorker } from './workers/dispatch.js';
 
 export interface BuildOptions {
   config?: Config;
@@ -164,6 +165,11 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerRiderRoutes(app);
   await registerAdminRoutes(app);
   await registerWebhookRoutes(app);
+
+  // --- Background workers ----------------------------------------------------
+  // Registered after routes so the queue handlers exist before the first job
+  // can be enqueued by a request.
+  registerDispatchWorker({ prisma: services.prisma, queue: services.queue, log: app.log });
 
   return app;
 }

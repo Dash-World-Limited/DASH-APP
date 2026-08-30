@@ -3,7 +3,7 @@
 Updated at the end of every milestone. If you are picking this up cold, read
 this file first, then `docs/DECISIONS.md`.
 
-**Last updated:** 2026-08-30 · end of Milestone 3 (web app)
+**Last updated:** 2026-08-30 · end of Milestone 4a (dispatch loop closed)
 
 ---
 
@@ -26,7 +26,15 @@ node scripts/smoke.mjs
 ```
 
 That places a real order, has the vendor accept it, and probes the authorization
-boundaries — 48 checks, all passing. `npm test` runs the 249 unit tests.
+boundaries — 48 checks. Then close the full loop:
+
+```bash
+node scripts/dispatch-check.mjs
+```
+
+That takes one order from payment through dispatch, a rider accepting the offer,
+the PIN handover, and the rider being paid — 20 checks. `npm test` runs the 268
+unit tests.
 
 ### Development sign-in
 
@@ -100,7 +108,7 @@ response while `DEV_EXPOSE_OTP=true`).
 - Replaying an `Idempotency-Key` returns the original order rather than
   charging twice.
 
-**Test results:** 249 unit tests passing; 48/48 end-to-end smoke checks passing.
+**Test results:** 268 unit tests passing; 48/48 smoke checks and 20/20 dispatch checks passing.
 Coverage on `packages/domain`: ~97% statements, ~95% branches. Thresholds
 enforced in `vitest.config.ts` at 80/75/80/80.
 
@@ -132,6 +140,28 @@ enforced in `vitest.config.ts` at 80/75/80/80.
 - The vendor queue shows the customer's first name only, their food revenue
   rather than the customer's total, and no phone number.
 - The ops board hides ledger status from a dispatcher, who lacks the permission.
+
+### Milestone 4a — Dispatch loop closed
+- **Dispatch worker** (`apps/api/src/workers/dispatch.ts`) consumes
+  `dispatch.find_rider`, runs the scoring engine, writes `DispatchOffer` rows
+  with the full score breakdown, and drives the offer → timeout → re-offer →
+  escalate cycle. Escalation to a human dispatcher is a first-class outcome
+  rather than an infinite retry.
+- **Rider pay** (`@dash/domain/pay`) replaces the flat ₦600 constant: base,
+  distance, a paid approach leg, waiting time beyond a free allowance, a
+  vehicle running-cost multiplier, a 70% share of any surge, a hard minimum for
+  any completed delivery, and a cap so a GPS glitch cannot produce a five-figure
+  payout. Every term is explained in the rider's earnings breakdown.
+- Rider pay is computed from the trip, never copied from the customer's delivery
+  fee — the fee is what the market bears, the pay is what the work is worth, and
+  coupling them would let a surge discount quietly cut a rider's earnings.
+
+**The complete loop now runs end to end**, verified by
+`scripts/dispatch-check.mjs` (20/20): rider goes online → GPS spoof rejected →
+customer orders → vendor accepts → dispatch offers → rider accepts → the exact
+address is revealed only after acceptance → progress through pickup → a wrong
+PIN is refused → the right PIN completes it → the rider is paid → the ledger
+still balances.
 
 ---
 
@@ -206,6 +236,24 @@ Recorded because each one would have been expensive to find in production.
    deduplication and a 30-second cache, invalidated on any session change.
    Measured before and after in the browser: four requests down to one.
 
+9. **Rider pay was reserved to an account no rider could draw from.** Found by
+   the dispatch check: a rider completed a delivery and their earnings screen
+   still read ₦0. Pay is reserved at payment capture — deliberately, so the
+   money is committed the moment the customer pays — but no rider exists yet at
+   that point, so the `rider_payable` entry was written with a null owner. The
+   ledger balanced perfectly the whole time; the money simply sat in a pool
+   nobody owned. Completion now posts a `buildRiderAssignment` transaction that
+   releases the reservation, credits the actual rider their true entitlement
+   (real approach distance, real waiting time, their vehicle, their tip), and
+   books the difference against platform revenue.
+
+10. **The dispatch worker logged that it found nobody, but not why.** The
+    scoring engine records an exclusion reason for every rejected rider — that
+    is the whole point of it — and the worker was throwing them away. "No rider
+    was found" is unactionable; "all three were zone-restricted" is a
+    configuration fix. Now summarised by reason in one log line, which is how
+    the zone misconfiguration above was diagnosed in seconds.
+
 ---
 
 ## Deliberate policy decisions worth reviewing
@@ -233,16 +281,14 @@ wrong for DASH APP, it is a small change now and a migration later.
 
 ## In progress / next
 
-**Milestone 4 — dispatch and live tracking.** The largest remaining gap. In
-order:
+**Milestone 4b — the remainder.**
 
-1. A queue worker that consumes `dispatch.find_rider`, runs the (already built
-   and tested) scoring engine, creates `DispatchOffer` rows, and handles the
-   offer timeout / re-offer / escalate cycle. Until this exists, no order ever
-   reaches a rider, and the rider app has nothing to accept.
-2. Real rider pay rules, replacing the flat ₦600 constant in `confirmOrderPaid`.
-3. WebSocket push, replacing polling on the tracking, vendor, and ops screens.
-4. An automated API integration suite against a test-scoped database, and CI.
+1. WebSocket push, replacing polling on the tracking, vendor, and ops screens.
+2. An automated API integration suite against a test-scoped database, and CI.
+   `smoke.mjs` and `dispatch-check.mjs` prove the flows but need a running
+   server and are not wired into a pipeline.
+3. Batched/stacked dispatch — the scoring engine supports capacity and vehicle
+   compatibility, but nothing groups compatible orders yet.
 
 ---
 
@@ -259,14 +305,17 @@ order:
   readable by any script on the origin. The correct production fix is an
   httpOnly cookie set by the API — that needs CSRF protection and a same-site
   deployment, neither of which exists yet.
-- **Dispatch is not wired to a worker.** The scoring engine is written and
-  tested, and `dispatch.find_rider` jobs are enqueued at checkout and on vendor
-  accept, but no handler consumes them yet — so orders never actually reach a
-  rider. Milestone 4.
-- **Rider pay is a constant.** `confirmOrderPaid` passes a flat ₦600 to
-  `computeSettlement`. Real distance- and time-based rider pay rules are
-  Milestone 4, and until they exist every rider earnings figure is a
-  placeholder.
+- **Dispatch runs in-process on an in-memory queue.** Jobs are lost on restart,
+  which is why `QUEUE_PROVIDER=memory` is rejected in production. Redis + BullMQ
+  is the production target and the worker code is unchanged by that switch.
+- **A rider must be zone-permitted to be offered an order.** The seed gives each
+  rider exactly one zone, which is more restrictive than a real operation would
+  be. It is data, not code — but it means a rider can be online, nearby, and
+  still correctly receive nothing.
+- **Rider pay assumes a motorcycle at reservation time.** No rider is assigned
+  when payment is captured, so the reservation uses a motorcycle rate and a zero
+  approach leg. The true-up on delivery corrects it, but the reserved figure is
+  an estimate rather than a promise.
 - **SQLite is dev-only.** No concurrent writers, no PostGIS. The in-TypeScript
   geo path loads a city's candidate zones and tests them in process — correct at
   Lagos zone counts (tens), but it will not scale nationally without the PostGIS

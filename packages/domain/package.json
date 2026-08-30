@@ -10,6 +10,7 @@
     "./geo": "./src/geo/index.ts",
     "./pricing": "./src/pricing/index.ts",
     "./dispatch": "./src/dispatch/index.ts",
+    "./pay": "./src/pay/index.ts",
     "./orders": "./src/orders/index.ts",
     "./ledger": "./src/ledger/index.ts",
     "./permissions": "./src/permissions/index.ts",

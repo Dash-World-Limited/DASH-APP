@@ -417,6 +417,82 @@ export function buildRefund(input: {
   return draft;
 }
 
+/**
+ * Assign reserved rider pay to the rider who actually completed the delivery.
+ *
+ * At capture time no rider exists yet, so the delivery pay is reserved against
+ * an *unowned* `rider_payable` balance. Without this step it stays there
+ * forever: the money is committed and balanced, but no rider can ever draw it,
+ * and their earnings screen shows zero after a completed delivery.
+ *
+ * On completion the real entitlement is known — the actual approach distance,
+ * the real waiting time, the vehicle they rode — so this releases the
+ * reservation, credits the rider their true amount, and books the difference
+ * against platform revenue. Reserving low and truing up is deliberate: the
+ * money is committed the moment the customer pays, and the correction is a
+ * visible ledger entry rather than an edit to history.
+ */
+export function buildRiderAssignment(input: {
+  orderId: string;
+  riderId: string;
+  idempotencyKey: string;
+  actorId: string;
+  occurredAt: Date;
+  /** What was set aside at capture, against the unowned pool. */
+  reservedPay: Kobo;
+  /** What the rider is actually owed, including their tip. */
+  actualPay: Kobo;
+}): LedgerTransactionDraft {
+  if (input.actualPay < 0 || input.reservedPay < 0) {
+    throw new LedgerError('Rider pay amounts cannot be negative');
+  }
+
+  const entries: LedgerEntryDraft[] = [];
+
+  // Release the reservation from the unowned pool (debit reduces a liability).
+  if (input.reservedPay > 0) {
+    entries.push({
+      accountKind: 'rider_payable',
+      amount: input.reservedPay,
+      memo: 'release_unassigned_rider_reservation',
+    });
+  }
+
+  // Credit the actual rider.
+  if (input.actualPay > 0) {
+    entries.push({
+      accountKind: 'rider_payable',
+      ownerId: input.riderId,
+      amount: negate(input.actualPay),
+      memo: 'owed_to_rider',
+    });
+  }
+
+  // The true-up. A rider who earned more than reserved costs the platform the
+  // difference; one who earned less returns it.
+  const difference = kobo(input.reservedPay - input.actualPay);
+  if (difference !== 0) {
+    entries.push({
+      accountKind: 'platform_revenue',
+      amount: negate(difference),
+      memo: difference > 0 ? 'rider_reservation_surplus' : 'rider_reservation_shortfall',
+    });
+  }
+
+  const draft: LedgerTransactionDraft = {
+    kind: 'order_settlement',
+    idempotencyKey: input.idempotencyKey,
+    referenceType: 'order',
+    referenceId: input.orderId,
+    entries,
+    actorId: input.actorId,
+    occurredAt: input.occurredAt,
+  };
+
+  assertBalanced(draft);
+  return draft;
+}
+
 /** Pay out an accumulated vendor or rider balance. Clears the liability. */
 export function buildPayout(input: {
   kind: 'vendor_payout' | 'rider_payout';

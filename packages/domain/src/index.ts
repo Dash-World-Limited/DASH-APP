@@ -14,5 +14,6 @@ export * from './permissions/index.js';
 export * from './orders/index.js';
 export * from './pricing/index.js';
 export * from './dispatch/index.js';
+export * from './pay/index.js';
 export * from './ledger/index.js';
 export * from './ports/index.js';
