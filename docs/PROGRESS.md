@@ -3,7 +3,7 @@
 Updated at the end of every milestone. If you are picking this up cold, read
 this file first, then `docs/DECISIONS.md`.
 
-**Last updated:** 2026-08-30 · end of Milestone 4a (dispatch loop closed)
+**Last updated:** 2026-08-30 · tag `v0.1.0-mvp` (local MVP complete)
 
 ---
 
@@ -82,7 +82,7 @@ response while `DEV_EXPOSE_OTP=true`).
   | `ports` | Adapter interfaces for payments, maps, SMS, email, push, storage, queue, clock |
 
 ### Milestone 2 — Data layer and API
-- **`@dash/db`** — Prisma schema, 40 models, authored portable between SQLite
+- **`@dash/db`** — Prisma schema, 46 models, authored portable between SQLite
   (dev) and PostgreSQL + PostGIS (production) per ADR-0003. Covers identity,
   sessions, geography, vendors, catalogue, riders, orders, dispatch, payments,
   the ledger, promotions, support, and governance.
@@ -109,8 +109,8 @@ response while `DEV_EXPOSE_OTP=true`).
   charging twice.
 
 **Test results:** 268 unit tests passing; 48/48 smoke checks and 20/20 dispatch checks passing.
-Coverage on `packages/domain`: ~97% statements, ~95% branches. Thresholds
-enforced in `vitest.config.ts` at 80/75/80/80.
+Coverage on `packages/domain` at that point: ~97% statements. See the tag
+summary below for the final figures.
 
 ### Milestone 3 — The web app
 - **`apps/web`** — one Next.js 15 app (ADR-0004) with the customer, vendor,
@@ -162,6 +162,34 @@ customer orders → vendor accepts → dispatch offers → rider accepts → the
 address is revealed only after acceptance → progress through pickup → a wrong
 PIN is refused → the right PIN completes it → the rider is paid → the ledger
 still balances.
+
+---
+
+## Milestone summary — `v0.1.0-mvp`
+
+| | |
+|---|---|
+| Tag | `v0.1.0-mvp` |
+| Commit | `git rev-parse v0.1.0-mvp` |
+| Unit tests | **268** across 8 files, all passing |
+| Smoke checks | **48**, all passing (`scripts/smoke.mjs`) |
+| Dispatch checks | **20**, all passing (`scripts/dispatch-check.mjs`) |
+| Domain coverage | **93.98%** statements · **94.77%** branches · **94.25%** functions |
+| Lint | clean |
+| Typecheck | clean across all four workspaces |
+| Web build | succeeds — 11 routes, ~113 kB first load |
+| Prisma models | 46 |
+| API endpoints | 51 |
+
+Coverage fell from ~97% to ~94% when `packages/domain/src/pay` landed in
+Milestone 4a. Thresholds in `vitest.config.ts` remain 80/75/80/80, so this is
+comfortably above the gate — but it is a real decline and worth reversing.
+
+### Pinned versions
+
+Node 24.19.0 · npm 11.17.0 · TypeScript 5.9.3 · Fastify 5.12.1 · Prisma 6.19.3 ·
+Next 15.5.24 · React 19.2.8 · Zod 3.25.76 · jose 5.10.0 · Tailwind 4.3.3 ·
+Vitest 2.1.9 · ESLint 9.39.5 · tsx 4.23.13
 
 ---
 
@@ -302,9 +330,11 @@ wrong for DASH APP, it is a small change now and a migration later.
   keys.
 - **The refresh token lives in `sessionStorage`, not an httpOnly cookie.** It
   dies with the tab, which is better than `localStorage`, but it is still
-  readable by any script on the origin. The correct production fix is an
-  httpOnly cookie set by the API — that needs CSRF protection and a same-site
-  deployment, neither of which exists yet.
+  readable by any script on the origin. This is the single biggest weakness in
+  the system and is the next milestone. See `SECURITY.md` and `ROADMAP.md`.
+- **No CSRF protection.** Not exploitable today — the API is pure Bearer auth
+  with no cookie session — but it becomes mandatory the moment cookies land, and
+  must ship in the same change.
 - **Dispatch runs in-process on an in-memory queue.** Jobs are lost on restart,
   which is why `QUEUE_PROVIDER=memory` is rejected in production. Redis + BullMQ
   is the production target and the worker code is unchanged by that switch.

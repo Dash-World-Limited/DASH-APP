@@ -1,0 +1,273 @@
+# Security
+
+What DASH APP defends against today, how, and what is still open.
+
+**Scope:** this describes `v0.1.0-mvp`, a local development MVP. It has never
+been deployed, never handled real money, and never held real personal data. Do
+not read any control below as production-hardened until it is listed under
+[Verified](#verified) — most are implemented but only tested locally.
+
+Nigerian data-protection (NDPA 2023) and consumer-law obligations have **not**
+been reviewed by qualified counsel. Nothing here is legal advice.
+
+---
+
+## Reporting a vulnerability
+
+This is a pre-release project with no public deployment. If you find something,
+open an issue in the repository or contact the maintainer directly. Please do
+not open a public issue for anything affecting money movement or authentication
+until it has been discussed.
+
+---
+
+## Threat model
+
+Who we assume is hostile, and what they are after.
+
+| Actor | Wants | Primary defence |
+|---|---|---|
+| A customer | Free or cheap food; someone else's order details | Server-side repricing; object-level scope checks |
+| A rider | Pay for deliveries not made; another rider's earnings | Delivery PIN; GPS plausibility checks; scope checks |
+| A vendor | A competitor's orders, prices, or volumes | Tenant scoping; 404-not-403 on cross-tenant probes |
+| A support agent | Quiet self-enrichment via credits and refunds | Step-up auth; four-eyes on high-risk actions; audit log |
+| An outsider | Account takeover; free orders; the customer list | Rate limits; no user enumeration; hashed tokens |
+| A compromised dependency | Anything | Least privilege; no secrets in source; redacted logs |
+
+The assumption throughout: **every client is hostile, including our own apps.**
+The web app is a convenience layer over an API that must be safe on its own.
+
+---
+
+## Implemented controls
+
+### Authentication
+
+- **Passwords** — scrypt (N=16384, r=8, p=1), 16-byte random salt embedded in a
+  versioned `s1$salt$hash` string. Argon2id would be stronger but needs a native
+  module this environment cannot build; the version tag makes migrating a matter
+  of re-hashing on next successful login.
+- **OTP** — CSPRNG-generated via `randomInt`, hashed with the same scrypt
+  construction, single-use, 5-minute expiry, 5-attempt limit. Requesting a new
+  code invalidates any outstanding one.
+- **Tokens** — access tokens are JWTs (HS256, 15 min). Refresh tokens are opaque
+  256-bit random values stored only as a SHA-256 digest. Plain SHA-256 rather
+  than scrypt is deliberate: a refresh token already has full entropy, so there
+  is no dictionary to attack and a slow KDF would add latency for nothing.
+- **Separate secrets and audiences** for access and refresh tokens. If one
+  secret signed both, a refresh token would verify as an access token — a full
+  bypass. `config.ts` refuses to start if the two secrets are equal.
+- **Refresh rotation with reuse detection** — every refresh mints a new token and
+  retires the old one. Presenting a retired token revokes the whole session
+  family, forward and backward through the `previousSessionId` chain. Losing a
+  session is far cheaper than leaving a stolen one live.
+- **Revocation is immediate.** `authenticate()` rebuilds the actor from the
+  database on every request, so a revoked session or a removed role takes effect
+  at once rather than after the access token expires.
+
+### Authorization
+
+- **60 explicit permissions, 12 roles.** Code asks *"may this actor do this
+  thing?"*, never *"what is this actor?"*. Deny by default.
+- **Permission ≠ ownership.** `assertPermission()` and `assertScope()` are
+  separate and both must pass.
+- **Cross-tenant probes return 404, not 403.** A 403 confirms the record exists.
+  The scope check throws with the literal message `Not found.`
+- **Step-up authentication** for anything that moves money, changes who can do
+  what, or exports data in bulk. Valid for 15 minutes. A super admin with every
+  permission still cannot approve a refund without it — asserted in
+  `scripts/smoke.mjs`.
+- **Four-eyes** required on settlement approval, payout approval, manual ledger
+  adjustments, and role edits.
+- **Client-supplied roles are ignored.** `buildActor()` recomputes permissions
+  from the identity's role rows. A `permissions` field in a request body is
+  discarded — asserted in `permissions.test.ts`.
+
+### Input and output
+
+- Every request body, query, and param validated with Zod at the boundary.
+- One error shape everywhere: `{ error: { code, message, requestId } }`. Public
+  messages are safe; stacks, constraint names, and which record failed a scope
+  check go to the log against `requestId` and never cross the wire.
+- Validation errors return field paths and messages but **never the received
+  value** — a rejected password must not echo back.
+- Cursor pagination with hard caps on every list endpoint.
+- `bodyLimit` 1 MB.
+
+### Money integrity
+
+- Double-entry ledger, append-only. `assertBalanced()` rejects any transaction
+  whose entries do not sum to zero, before the write.
+- Idempotency keys required on order creation, payment capture, refunds, and
+  payouts. Replaying a key returns the original result rather than acting twice.
+- Refunds cannot exceed the captured amount.
+- `GET /v1/finance/ledger/integrity` re-verifies the whole ledger on demand.
+- No mutable balance columns anywhere.
+
+### Rate limiting
+
+Global 300/min, keyed by identity when authenticated and by IP when not — keying
+anonymous traffic by IP alone would let one signed-in user exhaust the budget for
+everyone behind the same NAT. Tighter per-route limits where abuse is cheap:
+
+| Route | Limit | Why |
+|---|---|---|
+| `POST /v1/auth/otp/request` | 5 / 10 min | Sends SMS. Costs money, and can be weaponised to spam a stranger's phone. |
+| `POST /v1/auth/otp/verify` | 10 / 10 min | Brute-forcing a 6-digit code. |
+| `POST /v1/auth/login` | 10 / 15 min | Credential stuffing. |
+| `POST /v1/rider/deliveries/:id/complete` | 8 / 10 min | A 4-digit PIN is only 10,000 possibilities; the attempt limit is what makes it meaningful. |
+| `POST /v1/vendor/orders/:id/verify-pickup` | 10 / 5 min | Same reasoning. |
+| `POST /v1/webhooks/payments` | 600 / min | Providers retry aggressively; still bounded. |
+
+### No user enumeration
+
+- `POST /v1/auth/otp/request` returns an identical response whether or not the
+  number has an account.
+- `POST /v1/auth/login` compares against a decoy hash when the account does not
+  exist, so response time does not reveal which emails are registered, and
+  returns the same message for a wrong password and a missing account.
+
+### Webhooks
+
+1. Verify the signature before parsing anything meaningful.
+2. Store the raw event keyed on `(provider, eventId)` — the unique constraint is
+   what enforces replay protection.
+3. Re-verify the payment with the provider rather than trusting the body.
+4. Reject an amount that does not match the payment record.
+5. **Answer 200 to a hostile request.** Returning 401 would tell someone probing
+   the endpoint that their signature was the only thing wrong.
+
+Even the mock adapter verifies a signature, because a check that only runs in
+production is a check that has never been tested.
+
+### Privacy
+
+- Rider location is collected **only while the rider is online**. Going offline
+  stops it, and the API rejects points from an offline rider.
+- Implausible GPS jumps are rejected and recorded with the implied speed, not
+  silently dropped — a repeated pattern is evidence.
+- Delivery-proof coordinates are coarsened to 4 dp (~11 m) before storage: enough
+  to show the rider was at the address, not enough to build a movement history.
+- A rider is shown a **coarsened drop-off area** (3 dp) before accepting an
+  offer, and the exact address only after.
+- Vendors see the customer's **first name only** — no phone number, no full
+  address. The rider needs those; the kitchen does not.
+- The delivery PIN is returned exactly once, at checkout, and never appears in
+  any subsequent order read — asserted in `scripts/smoke.mjs`.
+- Audit-log payloads pass through `redact()`, which strips ~17 sensitive key
+  names at any nesting depth. The audit log is one of the widest-read tables in
+  the system, so redaction happens at the write, not the read.
+- Pino redacts `authorization`, `cookie`, `idempotency-key`, `password`, `code`,
+  and `refreshToken` from all request logging.
+
+### Uploads
+
+MIME allowlist (JPEG, PNG, WebP, PDF), 8 MB cap, empty files rejected. Object
+keys are 24 random bytes and are **never** derived from a user-supplied
+filename, so a filename cannot traverse a path or collide across tenants. Path
+resolution refuses anything escaping the base directory. Signed URLs carry an
+HMAC-shaped digest over key and expiry.
+
+### Production boot guards
+
+`apps/api/src/config.ts` refuses to start when `NODE_ENV=production` and any of
+the following hold:
+
+- `DEV_EXPOSE_OTP` is true
+- either JWT secret still holds the `.env.example` placeholder
+- the two JWT secrets are equal
+- `DATABASE_URL` is SQLite
+- `PAYMENT_PROVIDER=mock`
+- `STORAGE_PROVIDER=local`
+- `QUEUE_PROVIDER=memory`
+- Paystack is selected without a secret key or webhook secret
+
+The process exits with a readable list of what is wrong. It does not warn and
+continue.
+
+The seed script independently refuses to run against `NODE_ENV=production`.
+
+---
+
+## Verified
+
+Controls actually exercised by an automated check, not merely written:
+
+| Control | Where |
+|---|---|
+| Client-supplied prices ignored; server reprices from DB | `smoke.mjs` |
+| Cross-tenant vendor access returns 404 with `Not found.` | `smoke.mjs` |
+| Customer cannot reach ops, vendor, or audit endpoints | `smoke.mjs` |
+| Super admin still needs step-up for a refund | `smoke.mjs` |
+| Wrong password and missing account are indistinguishable | `smoke.mjs` |
+| OTP request reveals nothing about whether a number is registered | `smoke.mjs` |
+| Delivery PIN never echoed back in an order payload | `smoke.mjs` |
+| Vendor never sees the customer's phone number | `smoke.mjs` |
+| Unsigned webhook answered 200, does nothing | `smoke.mjs` |
+| Replayed idempotency key does not double-charge | `smoke.mjs` |
+| Forged and absent tokens rejected | `smoke.mjs` |
+| Implausible GPS jump rejected | `dispatch-check.mjs` |
+| Exact address hidden until the offer is accepted | `dispatch-check.mjs` |
+| Wrong delivery PIN cannot complete a delivery | `dispatch-check.mjs` |
+| Ledger balances after a full delivery | both |
+| Cross-tenant scope denial across 500 probed ids | `permissions.test.ts` |
+| Injected `permissions` field discarded | `permissions.test.ts` |
+| Unknown role fails closed | `permissions.test.ts` |
+
+---
+
+## Open — known gaps
+
+Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
+
+### High
+
+1. **Refresh token is not in an httpOnly cookie.** It lives in `sessionStorage`
+   and travels as a JSON body field, so any XSS on the origin can read it.
+   `sessionStorage` dies with the tab, which beats `localStorage`, but this is
+   the single biggest weakness in the system today. *Next milestone.*
+2. **No CSRF protection.** Not currently exploitable — the API is pure Bearer
+   auth with no cookie session — but it becomes mandatory the moment cookies are
+   introduced, and must land in the same change.
+3. **No CI.** Nothing stops a regression reaching `main`. Lint, typecheck, tests,
+   and a migration check all pass locally and are not enforced anywhere.
+4. **No automated API integration tests.** The two script suites cover the
+   critical journeys but need a running server and a seeded database, and cannot
+   gate a merge.
+
+### Medium
+
+5. **No dependency, secret, or container scanning.** No SAST, no DAST.
+6. **Admin MFA is modelled, not enforced.** `Identity` carries `mfaSecret` and
+   `mfaEnrolledAt`, and seeded staff are pre-enrolled, but no TOTP verification
+   flow exists. Step-up currently reuses the OTP challenge.
+7. **Vendor bank details are not encrypted at rest.** The column
+   (`bankAccountCipher`) exists and is unused; the seed stores only a last-4.
+8. **No malware scanning on uploads.** The `StoragePort` has no scanning hook.
+9. **PII retention is documented but not enforced.** No scheduled job prunes
+   rider location history or expired sessions, though `pruneExpiredSessions()`
+   exists and is uncalled.
+10. **No account-deletion flow.** `deletionRequestedAt` is modelled only.
+
+### Lower
+
+11. **In-memory queue loses jobs on restart.** Correctly rejected in production
+    by config, but it means dispatch has no durability story yet.
+12. **No SSRF allowlist.** No user-controlled outbound URLs exist today, so
+    there is nothing to exploit — but the guard should exist before the first
+    provider callback URL does.
+13. **No backup or restore procedure**, because there is no deployment.
+14. **No incident-response runbook.**
+
+---
+
+## Deliberate non-goals at this stage
+
+- **No live payment integration.** Adapters are mocks by design until the
+  authentication work below them is production-grade. Wiring a real gateway to a
+  system whose refresh tokens sit in `sessionStorage` would be the wrong order.
+- **No production deployment.** Nothing here has been hardened for a public
+  network.
+- **No real personal data, ever, in development.** Every seeded account is
+  fictional and phone numbers use a reserved-style `+234 700` block that cannot
+  ring a real handset.

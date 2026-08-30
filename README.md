@@ -7,12 +7,16 @@ customers, riders, vendors, operations, support, and finance.
 Original product and implementation. Not derived from any existing platform's
 code, assets, or copy.
 
-> **Status: working, incomplete.** You can browse, order, pay (through a mock
-> adapter), and watch a vendor accept it — end to end, in a browser. Dispatch
-> does not yet reach a rider, no external integration has been tested against a
-> live service, and there is no CI. `docs/PROGRESS.md` is the honest account of
-> what works, what is stubbed, and what has not been started — read it before
-> assuming any capability exists.
+> **Status: `v0.1.0-mvp` — a working local MVP.**
+>
+> A complete order runs end to end: browse → customise → sign in → pay (mock
+> adapter) → vendor accepts → dispatch offers a rider → PIN handover → delivered
+> → rider paid → ledger balanced.
+>
+> **No integration has been tested against a live service**, there is no CI, and
+> nothing has been deployed. [`HANDOFF.md`](HANDOFF.md) and
+> [`docs/PROGRESS.md`](docs/PROGRESS.md) are the honest account of what works and
+> what does not — read one of them before assuming any capability exists.
 
 ---
 
@@ -31,35 +35,39 @@ production path to PostgreSQL + PostGIS looks like.
 npm run setup
 ```
 
-That installs, creates the database, and seeds a fictional Lagos. Then:
+Installs, creates the database, and seeds a fictional Lagos. Then:
 
 ```bash
 npm run dev
 ```
 
-The web app is on http://127.0.0.1:3000 and the API on http://127.0.0.1:4000.
-Sign-in details for every seeded role are in `docs/PROGRESS.md`.
+Web on http://127.0.0.1:3000, API on http://127.0.0.1:4000. Sign-in details for
+every seeded role are in [`HANDOFF.md`](HANDOFF.md#seed-accounts) — all accounts
+are fictional.
 
 ## Repository layout
 
 ```
 dash-app/
 ├── apps/
-│   ├── api/             # Fastify API — auth, ordering, dispatch, finance
+│   ├── api/             # Fastify API — 51 endpoints, auth, dispatch worker
 │   └── web/             # Next.js — customer, vendor, rider, ops surfaces
 ├── packages/
-│   ├── db/              # Prisma schema, seed, ledger posting
+│   ├── db/              # Prisma schema (46 models), seed, ledger posting
 │   └── domain/          # Pure business core — no I/O, no framework, no clock
 │       └── src/
 │           ├── money/         Branded integer kobo, exact percentage math
 │           ├── geo/           Distance, serviceability, GPS validation
+│           ├── crypto/        scrypt hashing, CSPRNG codes and tokens
 │           ├── permissions/   Roles, permissions, step-up, object-level scope
 │           ├── orders/        Order state machine and cancellation policy
 │           ├── pricing/       Explained quotes, surge, discounts, settlement
+│           ├── pay/           Rider pay: distance, waiting, vehicle, surge share
 │           ├── dispatch/      Rider scoring and offer rounds
 │           ├── ledger/        Double-entry, append-only money ledger
 │           └── ports/         Adapter interfaces for every external service
-└── docs/                # Decisions, progress, and the honest limitations list
+├── scripts/             # dev runner, smoke test, dispatch check
+└── docs/                # Decisions and the running progress log
 ```
 
 ## The rules this codebase is built on
@@ -73,7 +81,7 @@ that is expensive to recover from once real money and real riders are involved.
 | **No mutable balance columns** | Balances are derived by summing an append-only double-entry ledger. A transaction that does not sum to zero is rejected before it is written, so a bug cannot create or destroy money. |
 | **Every client is untrusted** | Role, price, fee, discount, order state, vendor id, rider id, coordinates, and balance are all derived server-side. A request body claiming `role: super_admin` changes nothing. |
 | **Permission ≠ ownership** | "May you accept vendor orders?" and "is this order yours?" are separate checks, and both must pass. A cross-tenant probe returns *Not found*, never *Forbidden* — a 403 confirms the record exists. |
-| **Pricing and dispatch are deterministic and explained** | Every quote and every assignment records the rule version and each factor that contributed, so it can be reconstructed and defended months later. |
+| **Pricing, dispatch, and pay are deterministic and explained** | Every quote, assignment, and payment records the rule version and each factor that contributed, so it can be reconstructed and defended months later. |
 | **No AI/ML claims without a trained model** | These are rules engines. They record the inputs and outcomes a model would need, and say so plainly. |
 | **An adapter is not an integration** | Payments, maps, SMS, and storage are interfaces with offline implementations. Nothing is described as working until it has been run against a real sandbox. |
 
@@ -85,9 +93,9 @@ branded `Kobo` type:
 ```ts
 import { naira, percentOf, formatNaira } from '@dash/domain/money';
 
-const basket = naira(5000);              // 500000 kobo
+const basket = naira(5000);                 // 500000 kobo
 const commission = percentOf(basket, 1800); // 18%, exact integer arithmetic
-formatNaira(commission);                 // "₦900.00"
+formatNaira(commission);                    // "₦900.00"
 ```
 
 Commission rates are basis points (`1800` = 18%), not floats, because they are
@@ -97,31 +105,37 @@ cannot drift.
 ## Testing
 
 ```bash
-npm test                 # 249 unit tests
+npm test                          # 268 unit tests
 npx vitest run --coverage packages/domain
-node scripts/smoke.mjs   # 48 end-to-end checks against a running API
+
+npm run dev:api                   # then, in a second terminal:
+node scripts/smoke.mjs            # 48 checks — journey + authorization probes
+node scripts/dispatch-check.mjs   # 20 checks — dispatch through PIN delivery
 ```
 
-~97% statement coverage on the domain core, with thresholds enforced in
+~94% statement coverage on the domain core, with thresholds enforced in
 `vitest.config.ts` so a regression fails rather than quietly eroding.
 
 The suite is deliberately adversarial in the places that matter — cross-tenant
-access sweeps, self-promotion attempts, GPS spoofing, discount stacking, promo
-codes gamed to dodge fees, and money-conservation checks across randomised
-orders.
+access sweeps, self-promotion attempts, GPS spoofing, price tampering, discount
+stacking, promo codes gamed to dodge fees, replayed webhooks, and
+money-conservation checks across randomised orders.
 
-`scripts/smoke.mjs` needs a running API and a seeded database. It places a real
-order and probes the authorization boundaries, including price tampering,
-cross-tenant reads, step-up enforcement, and unsigned webhooks.
+The two script suites need a running API and a seeded database. They are not
+automated tests and are not yet wired into CI.
 
 ## Documentation
 
 | File | Contents |
 |---|---|
-| [`docs/PROGRESS.md`](docs/PROGRESS.md) | What works, what is stubbed, what is not started, bugs found |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Every significant architecture choice, its cost, and how to reverse it |
+| [`HANDOFF.md`](HANDOFF.md) | **Start here.** Commands, seed accounts, mocks, limitations |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | How it fits together and why |
+| [`SECURITY.md`](SECURITY.md) | Threat model, implemented controls, open gaps |
+| [`ROADMAP.md`](ROADMAP.md) | What is next, in order, and what is deliberately not |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Every architecture choice, its cost, its reversal path |
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | What works, what is stubbed, ten bugs found and fixed |
 
 ## Licence and legal
 
-Nigeria data-protection and consumer-law obligations have not been reviewed by
-qualified counsel. No document in this repository is legal advice.
+Nigerian data-protection (NDPA 2023) and consumer-law obligations have not been
+reviewed by qualified counsel. No document in this repository is legal advice.
