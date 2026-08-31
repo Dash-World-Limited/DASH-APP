@@ -10,22 +10,32 @@ Everything needed to pick this up cold. Read this first, then
 
 | | |
 |---|---|
+| **Latest tag** | `v0.2.0-auth` |
+| **Commit** | `ad2e81bdde5504cbf688e11a34ffe5390cceeeda` (short: `ad2e81b`) |
+| **Date** | 2026-08-31 |
+| **Branch** | `main` |
+| **Scope** | CI and production-grade authentication on top of the MVP. Still no live integration, never deployed. |
+
+| Previous tag | |
+|---|---|
 | **Tag** | `v0.1.0-mvp` |
 | **Commit** | `6d536234828ac4f362764a79f8a6488ca305fa3d` (short: `6d53623`) |
 | **Date** | 2026-08-30 |
-| **Branch** | `main` |
-| **Scope** | Local MVP. Complete order lifecycle, no external integration, never deployed. |
+| **Scope** | Local MVP. Complete order lifecycle, no external integration. |
 
 > The hash is recorded here by the commit *after* the tag — a commit cannot
 > contain its own hash. The tag points at `6d53623`; this line just saves you
 > the lookup.
 
 ```bash
-git show v0.1.0-mvp --stat | head -30   # what the milestone contains
-# v0.1.0-mvp is an ANNOTATED tag, so bare rev-parse returns the tag OBJECT
-# hash, not the commit. The ^{commit} suffix dereferences it.
-git rev-parse v0.1.0-mvp^{commit}       # 6d53623… — the commit
-git rev-parse v0.1.0-mvp                # 9ee2c26… — the tag object, not what you want
+git tag -l -n1                           # both milestones
+git show v0.2.0-auth --stat | head -30   # what the latest one contains
+
+# These are ANNOTATED tags, so a bare rev-parse returns the tag OBJECT hash,
+# not the commit. The ^{commit} suffix dereferences it.
+git rev-parse v0.2.0-auth^{commit}       # ad2e81b… — the commit
+git rev-parse v0.1.0-mvp^{commit}        # 6d53623… — the commit
+git rev-parse v0.2.0-auth                # the tag object, not what you want
 ```
 
 ---
