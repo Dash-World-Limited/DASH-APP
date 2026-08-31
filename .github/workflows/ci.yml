@@ -48,8 +48,12 @@ jobs:
       - name: Install
         run: npm ci
 
-      # Prisma's postinstall (which downloads the query engine) is blocked by
-      # npm's allow-scripts gate, so the client is generated explicitly.
+      # Generated explicitly rather than relying on Prisma's postinstall.
+      #
+      # npm 11 gates install scripts behind an `allowScripts` allowlist in
+      # package.json, keyed by exact version. Node 22 ships npm 10, which has no
+      # such gate — so this works either way, and does not silently break the
+      # day a lockfile bump makes those pinned version keys stale.
       - name: Generate Prisma client
         run: npm run db:generate
 

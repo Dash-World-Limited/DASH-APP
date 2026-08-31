@@ -69,12 +69,18 @@ npm run db:push
 npm run db:seed
 ```
 
-If `npm install` warns about unapproved install scripts, approve the three that
-are needed — Prisma downloads its query engine in a postinstall step:
+If `npm install` warns about unapproved install scripts, approve the ones that
+are needed — Prisma downloads its query engine in a postinstall step, and
+esbuild (via Vitest) needs one too:
 
 ```bash
 npm approve-scripts prisma @prisma/client @prisma/engines esbuild
 ```
+
+This gate is an **npm 11** feature. The `allowScripts` block in `package.json`
+pins exact versions, so a dependency bump can make those keys stale and the
+approval has to be repeated. On npm 10 (which Node 22 ships, and which CI uses)
+there is no gate and this step is unnecessary.
 
 ### Environment
 
