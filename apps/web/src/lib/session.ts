@@ -3,31 +3,42 @@
 /**
  * Client-side session handling.
  *
- * The access token is held in memory and the refresh token in `sessionStorage`.
+ * The access token is held in a module variable — memory only. It is never
+ * written to `localStorage`, `sessionStorage`, or a cookie, so it dies with the
+ * page and cannot be read back by a later script.
  *
- * Neither goes in `localStorage`. `localStorage` persists indefinitely and is
- * readable by any script on the origin, so a single XSS gives an attacker a
- * token that outlives the browser session. `sessionStorage` at least dies with
- * the tab. The genuinely correct answer is an httpOnly cookie set by the API,
- * which is recorded as the production fix in docs/PROGRESS.md — it needs CSRF
- * protection and a same-site deployment, neither of which exists yet, and
- * pretending otherwise would be worse than being explicit about the trade.
+ * The refresh token is not held here at all. It lives in a `HttpOnly` cookie
+ * that this code cannot read even if it wanted to, and the browser attaches it
+ * automatically to `/v1/auth/*`. That is the entire point: an XSS on this origin
+ * can steal the 15-minute access token, but not the 30-day refresh token.
+ *
+ * The cost of cookies is CSRF, so every state-changing request echoes the CSRF
+ * token from its (readable) cookie into a header. See apps/api/src/auth/cookies.ts.
  */
 
 import { useEffect, useState } from 'react';
-import { apiFetch, ApiRequestError, type Me, type Session } from './api';
-
-const REFRESH_KEY = 'dash.refresh';
+import { apiFetch, ApiRequestError, CSRF_COOKIE, type Me, type Session } from './api';
 
 let accessToken: string | null = null;
 let expiresAt = 0;
 let refreshInFlight: Promise<string | null> | null = null;
 
+/**
+ * Whether this browser has ever been signed in during this page's life.
+ *
+ * The refresh cookie is HttpOnly, so there is no way to ask "am I signed in?"
+ * without calling the server. This flag lets the app avoid a pointless refresh
+ * on a cold load for a visitor who has never signed in, while still attempting
+ * one for a returning user — the CSRF cookie, which IS readable, is the tell.
+ */
+function hasRefreshCookie(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.cookie.split('; ').some((entry) => entry.startsWith(`${CSRF_COOKIE}=`));
+}
+
 const listeners = new Set<() => void>();
 
 function notify(): void {
-  // Any session change invalidates who we think is signed in, so the cached
-  // identity is dropped before listeners re-read it.
   invalidateMe();
   for (const listener of listeners) listener();
 }
@@ -37,57 +48,127 @@ export function subscribeToSession(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-function readRefreshToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return window.sessionStorage.getItem(REFRESH_KEY);
-  } catch {
-    // Private browsing or blocked storage. Treat as signed out rather than
-    // crashing the app.
-    return null;
-  }
-}
-
-function writeRefreshToken(token: string | null): void {
-  if (typeof window === 'undefined') return;
-  try {
-    if (token === null) window.sessionStorage.removeItem(REFRESH_KEY);
-    else window.sessionStorage.setItem(REFRESH_KEY, token);
-  } catch {
-    // Ignore — the in-memory access token still works for this page view.
-  }
-}
-
-export function storeSession(session: Session): void {
+function storeAccess(session: Session): void {
   accessToken = session.accessToken;
   // Refresh 30s early so a request never races the expiry.
   expiresAt = Date.now() + (session.expiresIn - 30) * 1000;
-  writeRefreshToken(session.refreshToken);
   notify();
 }
 
 export function clearSession(): void {
   accessToken = null;
   expiresAt = 0;
-  writeRefreshToken(null);
   notify();
 }
 
+/**
+ * True when a session plausibly exists.
+ *
+ * "Plausibly" is the honest word: the only local evidence is the CSRF cookie,
+ * and the server is the authority. A stale cookie produces one failed refresh
+ * and then a clean signed-out state.
+ */
 export function hasSession(): boolean {
-  return accessToken !== null || readRefreshToken() !== null;
+  return accessToken !== null || hasRefreshCookie();
+}
+
+/**
+ * Return a usable access token, refreshing if needed.
+ *
+ * Concurrent callers share one refresh. Without the `refreshInFlight` guard,
+ * five parallel requests on a stale token would each rotate the refresh token,
+ * and four of them would then be presenting an already-rotated one — which the
+ * API correctly treats as theft and answers by revoking the whole session
+ * family. The guard is not an optimisation; it prevents the client from
+ * repeatedly logging itself out.
+ */
+export async function getAccessToken(): Promise<string | null> {
+  if (accessToken && Date.now() < expiresAt) return accessToken;
+  if (!hasRefreshCookie()) return null;
+
+  refreshInFlight ??= (async () => {
+    try {
+      // No body. The refresh token rides in the HttpOnly cookie, and the CSRF
+      // header is attached by `apiFetch`.
+      const session = await apiFetch<Session>('/v1/auth/refresh', { method: 'POST' });
+      storeAccess(session);
+      return session.accessToken;
+    } catch {
+      clearSession();
+      return null;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
+}
+
+/** Authenticated fetch: attaches a fresh token, retries once on a 401. */
+export async function authedFetch<T>(
+  path: string,
+  options: Parameters<typeof apiFetch>[1] = {},
+): Promise<T> {
+  const token = await getAccessToken();
+  if (!token) throw new ApiRequestError(401, 'unauthorized', 'Sign in to continue.');
+
+  try {
+    return await apiFetch<T>(path, { ...options, token });
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.isAuthFailure) {
+      // The token may have been revoked server-side. One retry with a fresh one.
+      accessToken = null;
+      const retryToken = await getAccessToken();
+      if (retryToken) return apiFetch<T>(path, { ...options, token: retryToken });
+      clearSession();
+    }
+    throw error;
+  }
+}
+
+/**
+ * The signed-in actor, cached and deduplicated.
+ *
+ * Several independent components want to know who is signed in — the header,
+ * the permission hook, any page that gates on a role. Without this, each fires
+ * its own `/v1/auth/me` and a single page load makes four identical requests.
+ */
+let meCache: { value: Me | null; at: number } | null = null;
+let meInFlight: Promise<Me | null> | null = null;
+
+const ME_CACHE_MS = 30_000;
+
+export async function loadMe(): Promise<Me | null> {
+  if (meCache && Date.now() - meCache.at < ME_CACHE_MS) return meCache.value;
+  if (meInFlight) return meInFlight;
+
+  meInFlight = (async () => {
+    try {
+      const me = await authedFetch<Me>('/v1/auth/me');
+      meCache = { value: me, at: Date.now() };
+      return me;
+    } catch {
+      meCache = { value: null, at: Date.now() };
+      return null;
+    } finally {
+      meInFlight = null;
+    }
+  })();
+
+  return meInFlight;
+}
+
+function invalidateMe(): void {
+  meCache = null;
 }
 
 /**
  * Whether a session exists, safe to call during render.
  *
- * `hasSession()` reads `sessionStorage`, which does not exist on the server, so
- * calling it directly in a component body makes the server render "signed out"
- * and the client render "signed in" — a hydration mismatch that React reports
- * as an error and recovers from by throwing away the server HTML.
- *
- * This returns `false` on the server and on the first client render, then
- * updates in an effect. The brief "signed out" flash is the honest cost of not
- * knowing the answer until the browser has run.
+ * Reading `document.cookie` during render would make the server render
+ * "signed out" and the client render "signed in" — a hydration mismatch React
+ * reports as an error and recovers from by discarding the server HTML. This
+ * returns false until an effect has run.
  */
 export function useHasSession(): boolean {
   const [value, setValue] = useState(false);
@@ -132,108 +213,19 @@ export function usePermissions(): { permissions: Set<string>; loaded: boolean } 
   return { permissions, loaded };
 }
 
-/**
- * Return a usable access token, refreshing if needed.
- *
- * Concurrent callers share one refresh: without the `refreshInFlight` guard,
- * five parallel requests on a stale token would each rotate the refresh token,
- * and four of them would then be presenting an already-rotated token — which
- * the API correctly treats as theft and responds to by killing the session.
- */
-export async function getAccessToken(): Promise<string | null> {
-  if (accessToken && Date.now() < expiresAt) return accessToken;
-
-  const refreshToken = readRefreshToken();
-  if (!refreshToken) return null;
-
-  refreshInFlight ??= (async () => {
-    try {
-      const session = await apiFetch<Session>('/v1/auth/refresh', {
-        method: 'POST',
-        body: { refreshToken },
-      });
-      storeSession(session);
-      return session.accessToken;
-    } catch {
-      clearSession();
-      return null;
-    } finally {
-      refreshInFlight = null;
-    }
-  })();
-
-  return refreshInFlight;
-}
-
-/** Authenticated fetch: attaches a fresh token, retries once on a 401. */
-export async function authedFetch<T>(
-  path: string,
-  options: Parameters<typeof apiFetch>[1] = {},
-): Promise<T> {
-  const token = await getAccessToken();
-  if (!token) throw new ApiRequestError(401, 'unauthorized', 'Sign in to continue.');
-
-  try {
-    return await apiFetch<T>(path, { ...options, token });
-  } catch (error) {
-    if (error instanceof ApiRequestError && error.isAuthFailure) {
-      // The token may have been revoked server-side. One retry with a fresh one.
-      accessToken = null;
-      const retryToken = await getAccessToken();
-      if (retryToken) return apiFetch<T>(path, { ...options, token: retryToken });
-      clearSession();
-    }
-    throw error;
-  }
-}
-
-/**
- * The signed-in actor, cached and deduplicated.
- *
- * Several independent components want to know who is signed in — the header,
- * the permission hook, any page that gates on a role. Without this, each one
- * fires its own `/v1/auth/me`, and a single page load was making four identical
- * requests. They are cheap individually and pointless in aggregate.
- *
- * Concurrent callers share one in-flight request; subsequent callers get a
- * short-lived cache. The cache is cleared on any session change, so a sign-out
- * or a role change is never served stale.
- */
-let meCache: { value: Me | null; at: number } | null = null;
-let meInFlight: Promise<Me | null> | null = null;
-
-const ME_CACHE_MS = 30_000;
-
-export async function loadMe(): Promise<Me | null> {
-  if (meCache && Date.now() - meCache.at < ME_CACHE_MS) return meCache.value;
-  if (meInFlight) return meInFlight;
-
-  meInFlight = (async () => {
-    try {
-      const me = await authedFetch<Me>('/v1/auth/me');
-      meCache = { value: me, at: Date.now() };
-      return me;
-    } catch {
-      meCache = { value: null, at: Date.now() };
-      return null;
-    } finally {
-      meInFlight = null;
-    }
-  })();
-
-  return meInFlight;
-}
-
-function invalidateMe(): void {
-  meCache = null;
-}
+// ---------------------------------------------------------------------------
+// Sign in / out
+//
+// None of these receive a refresh token. The API sets it as a cookie and the
+// browser stores it; this code never sees the value.
+// ---------------------------------------------------------------------------
 
 export async function signInWithPassword(email: string, password: string): Promise<Session> {
   const session = await apiFetch<Session>('/v1/auth/login', {
     method: 'POST',
     body: { email, password },
   });
-  storeSession(session);
+  storeAccess(session);
   return session;
 }
 
@@ -248,15 +240,18 @@ export async function verifyOtp(phone: string, code: string): Promise<Session> {
     method: 'POST',
     body: { phone, code },
   });
-  storeSession(session);
+  storeAccess(session);
   return session;
 }
 
 export async function signOut(): Promise<void> {
   try {
+    // The server clears both cookies; this cannot be done from script, because
+    // the refresh cookie is HttpOnly.
     await authedFetch('/v1/auth/logout', { method: 'POST' });
   } catch {
-    // Even if the call fails, drop the local session — the user asked to leave.
+    // Even if the call fails, drop the in-memory token — the user asked to
+    // leave, and the cookie will expire on its own.
   } finally {
     clearSession();
   }

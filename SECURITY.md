@@ -50,10 +50,19 @@ The web app is a convenience layer over an API that must be safe on its own.
 - **OTP** — CSPRNG-generated via `randomInt`, hashed with the same scrypt
   construction, single-use, 5-minute expiry, 5-attempt limit. Requesting a new
   code invalidates any outstanding one.
-- **Tokens** — access tokens are JWTs (HS256, 15 min). Refresh tokens are opaque
-  256-bit random values stored only as a SHA-256 digest. Plain SHA-256 rather
-  than scrypt is deliberate: a refresh token already has full entropy, so there
-  is no dictionary to attack and a slow KDF would add latency for nothing.
+- **Tokens** — access tokens are JWTs (HS256, 15 min), returned in the response
+  body and held in memory by the client only. Refresh tokens are opaque 256-bit
+  random values stored only as a SHA-256 digest. Plain SHA-256 rather than
+  scrypt is deliberate: a refresh token already has full entropy, so there is no
+  dictionary to attack and a slow KDF would add latency for nothing.
+- **The refresh token lives in a `HttpOnly`, `Secure`, `SameSite=Lax` cookie**
+  scoped to `/v1/auth`, so script cannot read it and the browser never attaches
+  a 30-day credential to an order read or a file upload. It is never returned in
+  a response body — asserted by a test that greps the raw body for it.
+- **CSRF** — double-submit. A separate non-HttpOnly cookie is echoed back in an
+  `X-CSRF-Token` header, compared in constant time, and reissued on every
+  rotation. Enforced only on state-changing requests that actually carry the
+  refresh cookie; a pure Bearer request has no ambient credential to ride on.
 - **Separate secrets and audiences** for access and refresh tokens. If one
   secret signed both, a refresh token would verify as an access token — a full
   bypass. `config.ts` refuses to start if the two secrets are equal.
@@ -213,6 +222,27 @@ Controls actually exercised by an automated check, not merely written:
 | Cross-tenant scope denial across 500 probed ids | `permissions.test.ts` |
 | Injected `permissions` field discarded | `permissions.test.ts` |
 | Unknown role fails closed | `permissions.test.ts` |
+| Refresh token never appears in a response body | `auth.test.ts` |
+| Refresh cookie is HttpOnly, SameSite, path-scoped | `auth.test.ts` |
+| A refresh token in the request body is ignored | `auth.test.ts` |
+| Reuse detection revokes the whole session family | `auth.test.ts` |
+| An attacker who redeems the stolen token first is also cut off | `auth.test.ts` |
+| Reuse clears the cookies rather than looping on a dead token | `auth.test.ts` |
+| CSRF rejected: missing header, mismatched token, missing cookie | `auth.test.ts` |
+| A simulated cross-site forgery is blocked and does not lock the victim out | `auth.test.ts` |
+| CSRF token rotates on every refresh | `auth.test.ts` |
+| Logout kills the session server-side, not just the client | `auth.test.ts` |
+| Access token invalidated immediately on logout, not at expiry | `auth.test.ts` |
+| Concurrent sessions stay independent; reuse on one does not revoke another | `auth.test.ts` |
+| One user cannot revoke another user's session | `auth.test.ts` |
+| A refresh token is not accepted as an access token | `auth.test.ts` |
+| Production refuses every mock adapter | `config.test.ts` |
+| Production refuses `DEV_EXPOSE_OTP` | `config.test.ts` |
+| Production refuses placeholder and low-entropy secrets | `config.test.ts` |
+| Production refuses identical access/refresh secrets | `config.test.ts` |
+| Production refuses disabled rate limiting | `config.test.ts` |
+| Config errors never echo a secret value | `config.test.ts` |
+| Login and OTP rate limits actually fire | `ratelimit.test.ts` |
 
 ---
 
@@ -222,42 +252,32 @@ Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
 
 ### High
 
-1. **Refresh token is not in an httpOnly cookie.** It lives in `sessionStorage`
-   and travels as a JSON body field, so any XSS on the origin can read it.
-   `sessionStorage` dies with the tab, which beats `localStorage`, but this is
-   the single biggest weakness in the system today. *Next milestone.*
-2. **No CSRF protection.** Not currently exploitable — the API is pure Bearer
-   auth with no cookie session — but it becomes mandatory the moment cookies are
-   introduced, and must land in the same change.
-3. **No CI.** Nothing stops a regression reaching `main`. Lint, typecheck, tests,
-   and a migration check all pass locally and are not enforced anywhere.
-4. **No automated API integration tests.** The two script suites cover the
-   critical journeys but need a running server and a seeded database, and cannot
-   gate a merge.
+1. **Admin MFA is modelled, not enforced.** `Identity` carries `mfaSecret` and
+   `mfaEnrolledAt`, and seeded staff are pre-enrolled, but no TOTP verification
+   flow exists. Step-up currently reuses the OTP challenge, which means a staff
+   account is protected by a password and a phone rather than a second factor.
 
 ### Medium
 
-5. **No dependency, secret, or container scanning.** No SAST, no DAST.
-6. **Admin MFA is modelled, not enforced.** `Identity` carries `mfaSecret` and
-   `mfaEnrolledAt`, and seeded staff are pre-enrolled, but no TOTP verification
-   flow exists. Step-up currently reuses the OTP challenge.
-7. **Vendor bank details are not encrypted at rest.** The column
+2. **No container or infrastructure scanning, no SAST, no DAST.** Dependency
+   and secret scanning run in CI; the rest do not exist.
+3. **Vendor bank details are not encrypted at rest.** The column
    (`bankAccountCipher`) exists and is unused; the seed stores only a last-4.
-8. **No malware scanning on uploads.** The `StoragePort` has no scanning hook.
-9. **PII retention is documented but not enforced.** No scheduled job prunes
+4. **No malware scanning on uploads.** The `StoragePort` has no scanning hook.
+5. **PII retention is documented but not enforced.** No scheduled job prunes
    rider location history or expired sessions, though `pruneExpiredSessions()`
    exists and is uncalled.
-10. **No account-deletion flow.** `deletionRequestedAt` is modelled only.
+6. **No account-deletion flow.** `deletionRequestedAt` is modelled only.
 
 ### Lower
 
-11. **In-memory queue loses jobs on restart.** Correctly rejected in production
+7. **In-memory queue loses jobs on restart.** Correctly rejected in production
     by config, but it means dispatch has no durability story yet.
-12. **No SSRF allowlist.** No user-controlled outbound URLs exist today, so
+8. **No SSRF allowlist.** No user-controlled outbound URLs exist today, so
     there is nothing to exploit — but the guard should exist before the first
     provider callback URL does.
-13. **No backup or restore procedure**, because there is no deployment.
-14. **No incident-response runbook.**
+9. **No backup or restore procedure**, because there is no deployment.
+10. **No incident-response runbook.**
 
 ---
 

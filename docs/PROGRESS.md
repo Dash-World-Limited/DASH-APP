@@ -3,7 +3,7 @@
 Updated at the end of every milestone. If you are picking this up cold, read
 this file first, then `docs/DECISIONS.md`.
 
-**Last updated:** 2026-08-30 · tag `v0.1.0-mvp` (local MVP complete)
+**Last updated:** 2026-08-31 · Phase 1 (CI + production auth) on `main`, past tag `v0.1.0-mvp`
 
 ---
 
@@ -163,6 +163,27 @@ address is revealed only after acceptance → progress through pickup → a wron
 PIN is refused → the right PIN completes it → the rider is paid → the ledger
 still balances.
 
+### Phase 1 — CI and production-grade authentication (post-tag)
+- **Refresh tokens moved into a `HttpOnly`, `Secure`, `SameSite=Lax` cookie**
+  scoped to `/v1/auth`. Never returned in a response body — a test greps the raw
+  body to prove it. Script cannot read it, so an XSS now yields at most a
+  15-minute access token instead of a 30-day session.
+- **CSRF protection** — double-submit token in a readable cookie, echoed in an
+  `X-CSRF-Token` header, compared in constant time, reissued on every rotation.
+  Enforced only on state-changing requests that carry the refresh cookie.
+- **Access token is memory-only** in the web client. `sessionStorage` is now
+  empty — verified in a real browser.
+- **72 API integration tests** using Fastify's `inject()` against a real
+  per-suite SQLite database: login, OTP, refresh, rotation, reuse, logout,
+  CSRF, multiple sessions, rate limiting, and every production boot guard.
+- **Production boot guards extended** to refuse every mock adapter (payments,
+  maps, SMS, email, push, storage, queue), `DEV_EXPOSE_OTP`, placeholder or
+  low-entropy secrets, identical access/refresh secrets, disabled rate limiting,
+  and a plain-HTTP public URL. All 29 guards have tests.
+- **GitHub Actions CI**: lint, typecheck across four workspaces, 340 tests,
+  coverage thresholds, Prisma schema validation, fresh-database boot + seed +
+  ledger verification, production web build, gitleaks secret scan, `npm audit`.
+
 ---
 
 ## Milestone summary — `v0.1.0-mvp`
@@ -171,10 +192,11 @@ still balances.
 |---|---|
 | Tag | `v0.1.0-mvp` |
 | Commit | `6d536234828ac4f362764a79f8a6488ca305fa3d` (`git rev-parse v0.1.0-mvp^{commit}`) |
-| Unit tests | **268** across 8 files, all passing |
+| Tests at the tag | **268** unit across 8 files |
+| Tests on `main` now | **340** across 11 files (268 domain + 72 API integration) |
 | Smoke checks | **48**, all passing (`scripts/smoke.mjs`) |
 | Dispatch checks | **20**, all passing (`scripts/dispatch-check.mjs`) |
-| Domain coverage | **93.98%** statements · **94.77%** branches · **94.25%** functions |
+| Domain coverage | **93.98%** statements · **94.97%** branches · **94.25%** functions |
 | Lint | clean |
 | Typecheck | clean across all four workspaces |
 | Web build | succeeds — 11 routes, ~113 kB first load |
@@ -282,6 +304,25 @@ Recorded because each one would have been expensive to find in production.
     configuration fix. Now summarised by reason in one log line, which is how
     the zone misconfiguration above was diagnosed in seconds.
 
+11. **Refresh-token reuse detection was unreachable dead code.** Rotation marks
+    the old session both `rotatedAt` and `revokedAt` (reason `rotated`). The
+    generic `revokedAt` check sat *above* the reuse check, so it always won: a
+    replayed token was reported as "revoked" and the session family was never
+    torn down.
+
+    Not cosmetic. If an attacker steals a refresh token and redeems it **before**
+    the victim, the attacker gets a live session and the victim's legitimate
+    refresh is the one that looks like a replay. Without family revocation the
+    attacker simply keeps the account. Found by the integration test asserting
+    that the victim's *rotated* token also dies; fixed by checking `rotatedAt`
+    first. Both orderings are now pinned by tests.
+
+12. **`LOG_LEVEL=silent` was rejected by config validation.** A real Pino level
+    and the right one for tests, but absent from the enum, so the test harness
+    could not start. Added — and it now doubles as the signal that mutes the
+    console SMS/email/push adapters, so a passing suite no longer buries its
+    output under a wall of fake OTP messages.
+
 ---
 
 ## Deliberate policy decisions worth reviewing
@@ -328,13 +369,13 @@ wrong for DASH APP, it is a small change now and a migration later.
   so it cannot be mistaken for a working integration. Nothing here should be
   described as "Paystack integration works" until it is run against real sandbox
   keys.
-- **The refresh token lives in `sessionStorage`, not an httpOnly cookie.** It
-  dies with the tab, which is better than `localStorage`, but it is still
-  readable by any script on the origin. This is the single biggest weakness in
-  the system and is the next milestone. See `SECURITY.md` and `ROADMAP.md`.
-- **No CSRF protection.** Not exploitable today — the API is pure Bearer auth
-  with no cookie session — but it becomes mandatory the moment cookies land, and
-  must ship in the same change.
+- **Admin MFA is modelled, not enforced.** `mfaSecret` and `mfaEnrolledAt` exist
+  and seeded staff are pre-enrolled, but there is no TOTP verification flow.
+  Step-up reuses the OTP challenge, so a staff account is protected by a
+  password and a phone rather than a true second factor.
+- **API integration tests cover authentication only.** Ordering, dispatch,
+  vendor, and finance routes still rely on the two script suites, which need a
+  running server and are not part of the CI gate.
 - **Dispatch runs in-process on an in-memory queue.** Jobs are lost on restart,
   which is why `QUEUE_PROVIDER=memory` is rejected in production. Redis + BullMQ
   is the production target and the worker code is unchanged by that switch.
@@ -354,6 +395,5 @@ wrong for DASH APP, it is a small change now and a migration later.
 - **`scripts/smoke.mjs` is not an automated integration suite.** It needs a
   running server and a seeded database, and it is not wired into CI. Proper API
   tests against a test-scoped database are outstanding.
-- **No CI pipeline exists yet.**
 - Nigeria data-protection and consumer obligations have **not** been reviewed by
   counsel. No legal template in this repo is legal advice.

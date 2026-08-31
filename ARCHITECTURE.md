@@ -5,8 +5,10 @@ including what each one costs and how to reverse it — see
 [`docs/DECISIONS.md`](docs/DECISIONS.md). For what is actually built versus
 stubbed, see [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
-**Status at `v0.1.0-mvp`:** local MVP. Runs end to end on one machine with no
-external service. No integration has been tested against a live provider.
+**Status:** local MVP, tagged `v0.1.0-mvp`. Runs end to end on one machine with
+no external service. No integration has been tested against a live provider.
+Phase 1 (CI and cookie-based authentication) has landed on `main` since the tag
+and is described below.
 
 ---
 
@@ -164,21 +166,40 @@ after the 15-minute access-token TTL.
 
 ## Authentication
 
-**At `v0.1.0-mvp` this is the weakest part of the system, and knowingly so.**
+```
+sign in --> access token   JWT, HS256, 15 min, response body, MEMORY ONLY
+        --> refresh token  opaque 256-bit, HttpOnly Secure SameSite=Lax cookie
+                           scoped to /v1/auth, NEVER in a response body
+        --> csrf token     readable cookie + response body, echoed in a header
 
-Today: access token in memory, refresh token in `sessionStorage`, sent as a JSON
-body field. `sessionStorage` dies with the tab, which beats `localStorage`, but
-it is still readable by any script on the origin.
+every request  -> Bearer access token -> verify JWT -> REBUILD actor from the DB
+every refresh  -> cookie only -> rotate -> new refresh cookie + new csrf token
+reuse detected -> revoke the entire session family, clear both cookies
+```
 
-Refresh-token rotation with reuse detection is already implemented in
-`apps/api/src/auth/sessions.ts`: every refresh mints a new token and retires the
-old one, and presenting a retired token revokes the entire session family
-forward and backward. Losing a session is far cheaper than leaving a stolen one
-live.
+Three properties do the work:
 
-The production form — httpOnly `Secure` `SameSite` cookies plus CSRF protection
-— is the next milestone. See [`ROADMAP.md`](ROADMAP.md) and
-[`SECURITY.md`](SECURITY.md).
+**The refresh token is unreachable from script.** An XSS on the origin can steal
+a 15-minute access token; it cannot steal the 30-day session. Scoping the cookie
+to `/v1/auth` means the browser never attaches that credential to an order read
+or a file upload either.
+
+**Rotation makes theft detectable.** Every refresh mints a new token and retires
+the old one. Presenting a retired token can only mean a copy exists, so the
+whole session family is revoked — forward and backward through
+`previousSessionId`. Losing a session is far cheaper than leaving a stolen one
+live. This matters most when the attacker redeems *first*: without family
+revocation they would simply keep the account, while the victim's legitimate
+refresh is the one that looks like a replay.
+
+**CSRF is the price of cookies, and is paid.** A double-submit token in a
+readable cookie is echoed in `X-CSRF-Token` and compared in constant time,
+enforced on state-changing requests that carry the refresh cookie. A pure Bearer
+request has no ambient credential to ride on, so it is exempt.
+
+`authenticate()` rebuilds the actor from the database on every request rather
+than trusting the token’s claims, so a revoked session or a removed role takes
+effect immediately instead of after the access-token TTL.
 
 ---
 
@@ -294,6 +315,7 @@ them would let a surge discount quietly cut a rider's earnings.
 | Layer | Tool | Count | Needs |
 |---|---|---|---|
 | Domain units | Vitest | 268 | nothing |
+| API integration | Vitest + `inject()` | 72 | nothing (temporary SQLite) |
 | Full journey + authz probes | `scripts/smoke.mjs` | 48 | running API, seeded DB |
 | Dispatch loop | `scripts/dispatch-check.mjs` | 20 | running API, seeded DB |
 
@@ -305,16 +327,19 @@ self-promotion attempts, GPS spoofing, price tampering, discount stacking, promo
 codes gamed to dodge fees, replayed webhooks, and money-conservation checks
 across randomised orders.
 
-**Gap:** the two script suites are not automated tests. They need a running
-server and a seeded database, and are not wired into CI. Real API integration
-tests against a test-scoped database are the next testing milestone.
+API integration tests build a real Fastify instance and drive it with
+`inject()` against a per-suite temporary SQLite file — no socket, no ports, no
+sleeping. Every plugin, hook, and serializer runs as it does in production.
+
+**Gap:** integration coverage is authentication-only. Ordering, dispatch,
+vendor, and finance routes still rely on the two script suites, which need a
+running server and are not part of the CI gate.
 
 ---
 
 ## What this architecture does not yet do
 
 - No websockets. Tracking, the vendor queue, and the ops board all poll.
-- No CI.
 - No horizontal scale story. The in-memory queue is per-process, so a second API
   instance would run its own dispatch worker and double-offer. Redis + BullMQ is
   the answer and the worker code is unchanged by it.

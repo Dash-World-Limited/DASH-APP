@@ -282,12 +282,22 @@ export class LocalGeoAdapter implements GeoPort {
 // Messaging — console
 // ---------------------------------------------------------------------------
 
+/**
+ * `quiet` suppresses the console output.
+ *
+ * Printing the OTP is the entire point of these adapters in development, and
+ * pure noise in a test run — a passing suite should not bury its own output
+ * under a wall of fake SMS. The message is still "delivered"; only the printing
+ * is skipped, so behaviour under test is unchanged.
+ */
 export class ConsoleSmsAdapter implements SmsPort {
   readonly providerName = 'console';
   readonly isLive = false;
 
+  constructor(private readonly quiet = false) {}
+
   async send(input: { to: string; body: string; reference: string }): Promise<DeliveryReceipt> {
-    console.warn(`\n  [SMS → ${input.to}] ${input.body}\n`);
+    if (!this.quiet) console.warn(`\n  [SMS → ${input.to}] ${input.body}\n`);
     return { accepted: true, providerMessageId: `console_${randomUUID()}` };
   }
 }
@@ -296,8 +306,10 @@ export class ConsoleEmailAdapter implements EmailPort {
   readonly providerName = 'console';
   readonly isLive = false;
 
+  constructor(private readonly quiet = false) {}
+
   async send(input: { to: string; subject: string; text: string }): Promise<DeliveryReceipt> {
-    console.warn(`\n  [EMAIL → ${input.to}] ${input.subject}\n  ${input.text}\n`);
+    if (!this.quiet) console.warn(`\n  [EMAIL → ${input.to}] ${input.subject}\n  ${input.text}\n`);
     return { accepted: true, providerMessageId: `console_${randomUUID()}` };
   }
 }
@@ -306,12 +318,16 @@ export class ConsolePushAdapter implements PushPort {
   readonly providerName = 'console';
   readonly isLive = false;
 
+  constructor(private readonly quiet = false) {}
+
   async send(input: {
     deviceTokens: readonly string[];
     title: string;
     body: string;
   }): Promise<DeliveryReceipt> {
-    console.warn(`\n  [PUSH ×${input.deviceTokens.length}] ${input.title} — ${input.body}\n`);
+    if (!this.quiet) {
+      console.warn(`\n  [PUSH ×${input.deviceTokens.length}] ${input.title} — ${input.body}\n`);
+    }
     return { accepted: true, providerMessageId: `console_${randomUUID()}` };
   }
 }

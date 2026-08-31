@@ -4,13 +4,25 @@
  * Customers and riders sign in with a one-time code sent to their phone.
  * Staff and vendor users sign in with a password.
  *
- * Two behaviours worth reading carefully:
+ * Token model:
+ *   access   — JWT, 15 minutes, returned in the body, held in memory by the
+ *              client and never persisted anywhere.
+ *   refresh  — opaque 256-bit value in a HttpOnly, Secure, SameSite cookie
+ *              scoped to /v1/auth. Never returned in a response body, never
+ *              readable by script. Rotated on every use, with reuse detection.
+ *   csrf     — a separate non-HttpOnly cookie echoed back in a header on every
+ *              cookie-authenticated state change. See ../auth/cookies.ts.
+ *
+ * Behaviours worth reading carefully:
  *
  *   1. `POST /otp/request` always returns the same success response, whether or
  *      not the number belongs to an account. Otherwise the endpoint is a free
  *      user-enumeration oracle for anyone with a phone-number list.
  *   2. Password sign-in runs a hash comparison even when no account exists, so
  *      the response time does not reveal which emails are registered.
+ *   3. `POST /refresh` reads the cookie, never the body. A refresh token in a
+ *      body would mean script could read it, which is the thing this design
+ *      exists to prevent.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -25,15 +37,21 @@ import {
 import { writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { actorOf, authenticate, requireAuth } from '../http/context.js';
-import { issueAccessToken, issueRefreshToken, verifyRefreshToken } from '../auth/tokens.js';
+import { issueAccessToken } from '../auth/tokens.js';
 import {
   createSession,
   loadActor,
+  SessionError,
   markSteppedUp,
   revokeAllSessions,
   revokeSession,
   rotateSession,
 } from '../auth/sessions.js';
+import {
+  clearAuthCookies,
+  issueAuthCookies,
+  readRefreshCookie,
+} from '../auth/cookies.js';
 
 /** E.164: a leading +, then 8–15 digits with no leading zero on the country code. */
 const phoneSchema = z
@@ -57,10 +75,6 @@ const passwordLoginSchema = z.object({
   password: z.string().min(1, 'Enter your password'),
 });
 
-const refreshSchema = z.object({
-  refreshToken: z.string().min(10),
-});
-
 /** A throwaway hash, compared against when no account exists, to equalise timing. */
 let decoyHash: string | null = null;
 async function getDecoyHash(): Promise<string> {
@@ -71,10 +85,18 @@ async function getDecoyHash(): Promise<string> {
 export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, config, sms } = app.services;
 
-  async function issueTokensFor(
+  /**
+   * Mint an access token for a session.
+   *
+   * Only the access token is produced here. The refresh token is the opaque
+   * value `createSession`/`rotateSession` returns, and it goes straight into a
+   * cookie — it is never assembled into a response body, so there is no path by
+   * which it can be returned to script.
+   */
+  async function issueAccessFor(
     identityId: string,
     sessionId: string,
-  ): Promise<{ accessToken: string; refreshToken: string; expiresIn: number } | null> {
+  ): Promise<{ accessToken: string; expiresIn: number } | null> {
     const actor = await loadActor(prisma, identityId, sessionId);
     if (!actor) return null;
 
@@ -94,13 +116,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       config.ACCESS_TOKEN_TTL_SECONDS,
     );
 
-    const refreshToken = await issueRefreshToken(
-      { sub: actor.identityId, sid: sessionId },
-      config.JWT_REFRESH_SECRET,
-      config.REFRESH_TOKEN_TTL_SECONDS,
-    );
-
-    return { accessToken, refreshToken, expiresIn: config.ACCESS_TOKEN_TTL_SECONDS };
+    return { accessToken, expiresIn: config.ACCESS_TOKEN_TTL_SECONDS };
   }
 
   // -------------------------------------------------------------------------
@@ -187,7 +203,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/v1/auth/otp/verify',
     { config: { rateLimit: { max: 10, timeWindow: '10 minutes' } } },
-    async (request) => {
+    async (request, reply) => {
       const body = otpVerifySchema.parse(request.body);
 
       const challenge = await prisma.otpChallenge.findFirst({
@@ -246,8 +262,10 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         { ipAddress: request.ip, userAgent: request.headers['user-agent'] ?? null },
       );
 
-      const tokens = await issueTokensFor(challenge.identityId, session.sessionId);
+      const tokens = await issueAccessFor(challenge.identityId, session.sessionId);
       if (!tokens) throw ApiError.unauthorized('This account is not available.');
+
+      const { csrfToken } = issueAuthCookies(reply, config, session.refreshToken);
 
       await writeAudit(prisma, {
         identityId: challenge.identityId,
@@ -259,7 +277,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         requestId: request.id,
       });
 
-      return { ...tokens, refreshToken: session.refreshToken };
+      return { ...tokens, csrfToken };
     },
   );
 
@@ -269,7 +287,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/v1/auth/login',
     { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
-    async (request) => {
+    async (request, reply) => {
       const body = passwordLoginSchema.parse(request.body);
 
       const identity = await prisma.identity.findUnique({
@@ -297,8 +315,10 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         { ipAddress: request.ip, userAgent: request.headers['user-agent'] ?? null },
       );
 
-      const tokens = await issueTokensFor(identity.id, session.sessionId);
+      const tokens = await issueAccessFor(identity.id, session.sessionId);
       if (!tokens) throw ApiError.unauthorized('This account is not available.');
+
+      const { csrfToken } = issueAuthCookies(reply, config, session.refreshToken);
 
       await writeAudit(prisma, {
         identityId: identity.id,
@@ -310,7 +330,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         requestId: request.id,
       });
 
-      return { ...tokens, refreshToken: session.refreshToken };
+      return { ...tokens, csrfToken };
     },
   );
 
@@ -320,37 +340,63 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/v1/auth/refresh',
     { config: { rateLimit: { max: 60, timeWindow: '15 minutes' } } },
-    async (request) => {
-      const body = refreshSchema.parse(request.body);
+    async (request, reply) => {
+      // Read from the cookie only. Accepting a body field as a fallback would
+      // reopen exactly the hole the cookie closes, and would let an attacker who
+      // phished a token replay it without ever touching the browser.
+      const presented = readRefreshCookie(request);
+      if (!presented) {
+        // No cookie at all: clear anything stale and make the client sign in.
+        clearAuthCookies(reply, config);
+        throw ApiError.unauthorized('Your session has expired. Please sign in again.');
+      }
 
-      // The opaque token is what the session table stores; the JWT wrapper is
-      // verified first so a malformed value never reaches a database lookup.
-      await verifyRefreshToken(body.refreshToken, config.JWT_REFRESH_SECRET).catch(() => {
-        // A raw opaque token (not a JWT) is also accepted — createSession issues
-        // one of each and clients may hold either.
-        return null;
-      });
+      let rotated;
+      try {
+        rotated = await rotateSession(prisma, presented, config.REFRESH_TOKEN_TTL_SECONDS, {
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'] ?? null,
+        });
+      } catch (error) {
+        // Any failure — unknown, expired, revoked, or REUSED — ends with the
+        // cookies cleared. On reuse, rotateSession has already revoked the whole
+        // session family; leaving the cookie in place would just produce a retry
+        // loop against a dead session.
+        clearAuthCookies(reply, config);
+        if (error instanceof SessionError && error.reason === 'reused') {
+          request.log.warn(
+            { ip: request.ip, userAgent: request.headers['user-agent'] },
+            'refresh token reuse detected — session family revoked',
+          );
+        }
+        throw error;
+      }
 
-      const rotated = await rotateSession(
-        prisma,
-        body.refreshToken,
-        config.REFRESH_TOKEN_TTL_SECONDS,
-        { ipAddress: request.ip, userAgent: request.headers['user-agent'] ?? null },
-      );
+      const tokens = await issueAccessFor(rotated.identityId, rotated.sessionId);
+      if (!tokens) {
+        clearAuthCookies(reply, config);
+        throw ApiError.unauthorized('This account is not available.');
+      }
 
-      const tokens = await issueTokensFor(rotated.identityId, rotated.sessionId);
-      if (!tokens) throw ApiError.unauthorized('This account is not available.');
+      // Rotation means a NEW refresh token every time, so the cookie is reset
+      // on every call. A CSRF token is reissued alongside it.
+      const { csrfToken } = issueAuthCookies(reply, config, rotated.refreshToken);
 
-      return { ...tokens, refreshToken: rotated.refreshToken };
+      return { ...tokens, csrfToken };
     },
   );
 
   // -------------------------------------------------------------------------
   // POST /v1/auth/logout
   // -------------------------------------------------------------------------
-  app.post('/v1/auth/logout', { preHandler: requireAuth }, async (request) => {
+  app.post('/v1/auth/logout', { preHandler: requireAuth }, async (request, reply) => {
     const actor = actorOf(request);
     await revokeSession(prisma, actor.sessionId, 'user_logout');
+
+    // Clearing the cookies matters as much as revoking the session: a browser
+    // that keeps sending a dead refresh cookie gets a 401 loop on every page
+    // load, and the user cannot tell that from a broken app.
+    clearAuthCookies(reply, config);
     await writeAudit(prisma, {
       identityId: actor.identityId,
       action: 'auth.logout',
@@ -365,9 +411,10 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   // POST /v1/auth/logout-everywhere
   // -------------------------------------------------------------------------
-  app.post('/v1/auth/logout-everywhere', { preHandler: requireAuth }, async (request) => {
+  app.post('/v1/auth/logout-everywhere', { preHandler: requireAuth }, async (request, reply) => {
     const actor = actorOf(request);
     const count = await revokeAllSessions(prisma, actor.identityId, 'user_logout_all');
+    clearAuthCookies(reply, config);
     await writeAudit(prisma, {
       identityId: actor.identityId,
       action: 'auth.logout_all',

@@ -94,21 +94,37 @@ export async function rotateSession(
   if (!existing) {
     throw new SessionError('not_found', 'Session not found');
   }
+
+  // --- Reuse detection ------------------------------------------------------
+  // This MUST be checked before `revokedAt`.
+  //
+  // Rotation marks the old session both `rotatedAt` and `revokedAt` (reason
+  // `rotated`). When this check sat below the generic revoked check, the
+  // revoked branch always won and the reuse branch was unreachable dead code —
+  // so a replayed token was dismissed as "revoked" and the session family was
+  // never torn down.
+  //
+  // That is not a cosmetic ordering bug. If an attacker steals a refresh token
+  // and uses it BEFORE the victim, the attacker gets a fresh live session, and
+  // the victim's subsequent (legitimate) refresh looks like the replay. Without
+  // family revocation the attacker simply keeps the account. Detecting reuse
+  // and killing every session in the lineage is the whole defence.
+  //
+  // A token presented after rotation can only be a copy, so both the thief and
+  // the legitimate holder are cut off and the user signs in again. Losing a
+  // session is far cheaper than leaving a stolen one live.
+  if (existing.rotatedAt) {
+    await revokeSessionFamily(prisma, existing.id, 'refresh_token_reuse_detected');
+    throw new SessionError('reused', 'Session token was reused');
+  }
+
+  // Revoked for any other reason — logout, an admin action, or a family
+  // revocation triggered by a sibling session's reuse.
   if (existing.revokedAt) {
     throw new SessionError('revoked', 'Session has been revoked');
   }
   if (existing.expiresAt.getTime() < Date.now()) {
     throw new SessionError('expired', 'Session has expired');
-  }
-
-  // --- Reuse detection ------------------------------------------------------
-  // This token was already rotated. Only a copy of it could be presented now,
-  // so both the legitimate holder and the attacker are cut off and the user is
-  // forced to sign in again. Losing a session is far cheaper than leaving a
-  // stolen one live.
-  if (existing.rotatedAt) {
-    await revokeSessionFamily(prisma, existing.id, 'refresh_token_reuse_detected');
-    throw new SessionError('reused', 'Session token was reused');
   }
 
   const rotated = await prisma.$transaction(async (tx) => {

@@ -13,8 +13,9 @@ code, assets, or copy.
 > adapter) → vendor accepts → dispatch offers a rider → PIN handover → delivered
 > → rider paid → ledger balanced.
 >
-> **No integration has been tested against a live service**, there is no CI, and
-> nothing has been deployed. [`HANDOFF.md`](HANDOFF.md) and
+> **No integration has been tested against a live service** and nothing has been
+> deployed. CI, cookie-based authentication, and CSRF protection have landed
+> since the tag. [`HANDOFF.md`](HANDOFF.md) and
 > [`docs/PROGRESS.md`](docs/PROGRESS.md) are the honest account of what works and
 > what does not — read one of them before assuming any capability exists.
 
@@ -105,7 +106,7 @@ cannot drift.
 ## Testing
 
 ```bash
-npm test                          # 268 unit tests
+npm test                          # 340 tests (268 domain + 72 API)
 npx vitest run --coverage packages/domain
 
 npm run dev:api                   # then, in a second terminal:
@@ -114,15 +115,17 @@ node scripts/dispatch-check.mjs   # 20 checks — dispatch through PIN delivery
 ```
 
 ~94% statement coverage on the domain core, with thresholds enforced in
-`vitest.config.ts` so a regression fails rather than quietly eroding.
+`vitest.config.ts` so a regression fails rather than quietly eroding. The API
+integration tests need no running server — they drive a real Fastify instance
+with `inject()` against a temporary SQLite file.
 
 The suite is deliberately adversarial in the places that matter — cross-tenant
 access sweeps, self-promotion attempts, GPS spoofing, price tampering, discount
 stacking, promo codes gamed to dodge fees, replayed webhooks, and
 money-conservation checks across randomised orders.
 
-The two script suites need a running API and a seeded database. They are not
-automated tests and are not yet wired into CI.
+The two script suites need a running API and a seeded database, and are not part
+of the CI gate. Everything `npm test` runs is.
 
 ## Documentation
 
@@ -133,7 +136,7 @@ automated tests and are not yet wired into CI.
 | [`SECURITY.md`](SECURITY.md) | Threat model, implemented controls, open gaps |
 | [`ROADMAP.md`](ROADMAP.md) | What is next, in order, and what is deliberately not |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Every architecture choice, its cost, its reversal path |
-| [`docs/PROGRESS.md`](docs/PROGRESS.md) | What works, what is stubbed, ten bugs found and fixed |
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | What works, what is stubbed, twelve bugs found and fixed |
 
 ## Licence and legal
 

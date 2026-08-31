@@ -1,0 +1,168 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A new push to the same branch cancels the previous run. Reviewing a stale
+# result is worse than having no result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # CI never touches a real service. These are the same offline adapters the
+  # test harness uses, and `config.ts` refuses them in production — so a job
+  # that somehow ran with NODE_ENV=production would fail loudly rather than
+  # quietly pointing at something real.
+  NODE_ENV: test
+  DATABASE_URL: file:./ci.db
+  # Fictional, high-entropy, and distinct. Committed deliberately: they unlock
+  # nothing, and a shared CI secret store for values this disposable is
+  # ceremony. `config.ts` rejects both a placeholder and a low-entropy secret,
+  # so these have to be real-looking to pass at all.
+  JWT_ACCESS_SECRET: gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-ci-access-KnMqPrSt
+  JWT_REFRESH_SECRET: Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-ci-refresh-LmNoPqRs
+
+jobs:
+  verify:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` installs from the lockfile exactly. If package.json and the
+      # lockfile disagree it fails, which is the behaviour we want in CI.
+      - name: Install
+        run: npm ci
+
+      # Prisma's postinstall (which downloads the query engine) is blocked by
+      # npm's allow-scripts gate, so the client is generated explicitly.
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Validate the Prisma schema
+        run: npx prisma validate --schema packages/db/prisma/schema.prisma
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: |
+          npx tsc --noEmit -p packages/domain/tsconfig.json
+          npx tsc --noEmit -p packages/db/tsconfig.json
+          npx tsc --noEmit -p apps/api/tsconfig.json
+          npx tsc --noEmit -p apps/web/tsconfig.json
+
+      - name: Test
+        run: npm test
+
+      - name: Coverage thresholds
+        run: npx vitest run --coverage packages/domain
+
+  fresh-boot:
+    name: Fresh database boot and seed
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      # Proves a clone can go from nothing to a working database. This is the
+      # step that catches a schema change nobody applied, or a seed that depends
+      # on data a previous run left behind.
+      - name: Create the database from scratch
+        run: npm run db:push
+
+      - name: Seed
+        run: npm run db:seed
+
+      # The seed asserts every ledger transaction balances before it reports
+      # success, so a green seed is also a money-integrity check.
+      - name: Confirm the seed produced a balanced ledger
+        run: node scripts/ci-verify-seed.mjs
+
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      # Next's build runs its own typecheck and lint pass over the app, so this
+      # catches things the workspace typecheck does not.
+      - name: Build the web app
+        run: npm run build --workspace @dash/web
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to scan commits, not just the tree.
+          fetch-depth: 0
+
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # High and critical fail the build. Moderate and below are reported but
+      # do not block, because a transitive moderate in a dev-only tool should
+      # not stop a security fix from shipping.
+      - name: Audit
+        run: npm audit --audit-level=high

@@ -213,3 +213,73 @@ the order.
   can be trained later from real data instead of guessed at now.
 - Cost: rules will be less accurate than a tuned model would eventually be. That
   is the correct trade at launch, when there is no data to train on.
+
+---
+
+## ADR-0008 — Refresh tokens in HttpOnly cookies, with double-submit CSRF
+
+**Status:** Accepted · Phase 1 (post `v0.1.0-mvp`)
+
+**Context.** Until this change the refresh token was returned in the sign-in
+response body and stored in `sessionStorage`. That is readable by any script on
+the origin, so a single XSS yielded a 30-day session rather than a 15-minute
+one. `sessionStorage` at least dies with the tab, which is why it was chosen
+over `localStorage`, but it was recorded from the outset as the largest
+weakness in the system.
+
+**Decision.**
+
+- The refresh token moves into a `HttpOnly`, `Secure`, `SameSite=Lax` cookie
+  scoped to `/v1/auth`, and is **never** returned in a response body.
+- The access token stays in the body and is held in memory only — 15 minutes,
+  never persisted.
+- CSRF is defended by double-submit: a separate non-HttpOnly cookie is echoed
+  back in an `X-CSRF-Token` header, compared in constant time, and reissued on
+  every rotation.
+
+**Why these specific attributes.**
+
+*`HttpOnly`* is the entire point — script cannot read the value.
+
+*Path-scoped to `/v1/auth`* so the browser never attaches a 30-day credential to
+an order read, a catalogue browse, or a file upload. It narrows the blast radius
+of every other endpoint.
+
+*`Secure` in production only.* Browsers refuse to store a `Secure` cookie over
+plain HTTP on anything but localhost, and the development stack is HTTP.
+`assertSecureCookieConfig()` fails the boot if this ever inverts in production,
+and `config.ts` rejects a plain-HTTP `PUBLIC_WEB_URL` there.
+
+*`SameSite=Lax`, not `Strict`.* The web app and API run on different ports in
+development. Ports do not affect same-site classification, so `Lax` is enough
+for the cross-port XHR while still blocking the cross-site top-level POST. The
+CSRF token is the real defence; SameSite is depth.
+
+*Double-submit rather than a server-side synchroniser token.* It needs no
+server-side state, which suits an API that is otherwise stateless between
+requests. It is safe because the attacker can cause the cookie to be **sent**
+but cannot **read** it to forge the matching header.
+
+**Consequences.**
+
+- An XSS now yields at most a 15-minute access token.
+- Cookies must be sent cross-origin, so every client request needs
+  `credentials: 'include'`, and CORS needs `credentials: true` with a strict
+  origin allowlist and `X-CSRF-Token` in `allowedHeaders`. A reflected origin
+  alongside credentials would be a serious hole; the allowlist is what makes it
+  safe.
+- Non-browser clients (a future native app, a test harness) must handle cookies
+  or use the CSRF token returned in the body.
+- Cost: more moving parts, and a class of bug — a cookie not cleared on logout,
+  attributes that do not match on clear — that is invisible until someone looks.
+  Hence the 37 integration tests that assert on the actual `Set-Cookie`
+  attributes rather than on the code's intent.
+
+**What this change uncovered.** Refresh-token reuse detection had been written
+at `v0.1.0-mvp` but was unreachable: rotation marks the old session both
+`rotatedAt` and `revokedAt`, and the generic revoked check sat above the reuse
+check, so it always won. A replayed token reported "revoked" and the session
+family was never torn down. See bug 11 in `docs/PROGRESS.md`.
+
+**Reversal.** Not intended. Returning to a body-carried refresh token would
+reintroduce the vulnerability this exists to close.

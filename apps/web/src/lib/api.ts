@@ -12,6 +12,25 @@
 export const API_BASE =
   process.env['NEXT_PUBLIC_API_URL'] ?? 'http://127.0.0.1:4000';
 
+/**
+ * The CSRF cookie name, mirrored from the API.
+ *
+ * Readable by script by design — the double-submit scheme needs the client to
+ * echo it back in a header. It authorises nothing on its own; it only proves
+ * the request came from script on our own origin, which is exactly what a
+ * cross-site attacker cannot do.
+ */
+export const CSRF_COOKIE = 'dash_csrf';
+export const CSRF_HEADER = 'X-CSRF-Token';
+
+function readCsrfToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  const entry = document.cookie
+    .split('; ')
+    .find((candidate) => candidate.startsWith(`${CSRF_COOKIE}=`));
+  return entry ? decodeURIComponent(entry.slice(CSRF_COOKIE.length + 1)) : null;
+}
+
 export interface ApiErrorBody {
   error: {
     code: string;
@@ -52,15 +71,29 @@ export interface RequestOptions {
 }
 
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const method = options.method ?? 'GET';
+
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (options.token) headers['Authorization'] = `Bearer ${options.token}`;
   if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
 
+  // Echo the CSRF token on anything that can change state. The API only demands
+  // it when the request actually carries the refresh cookie, but sending it
+  // unconditionally is simpler and costs nothing.
+  if (method !== 'GET') {
+    const csrfToken = readCsrfToken();
+    if (csrfToken) headers[CSRF_HEADER] = csrfToken;
+  }
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
-      method: options.method ?? 'GET',
+      method,
       headers,
+      // Required for the browser to send and store the auth cookies at all: the
+      // web app and the API are different origins during development, and
+      // cross-origin fetch omits cookies unless asked.
+      credentials: 'include',
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
       ...(options.signal ? { signal: options.signal } : {}),
     });
@@ -233,10 +266,17 @@ export interface OrderSummary {
   items: { nameSnapshot: string; quantity: number }[];
 }
 
+/**
+ * What a successful sign-in returns.
+ *
+ * Note what is absent: there is no `refreshToken`. It is set as a HttpOnly
+ * cookie the browser stores and this code can never read. If a refresh token
+ * ever appears in this type again, the cookie has become decoration.
+ */
 export interface Session {
   accessToken: string;
-  refreshToken: string;
   expiresIn: number;
+  csrfToken: string;
 }
 
 export interface Me {

@@ -1,0 +1,265 @@
+/**
+ * Production boot guards.
+ *
+ * Every assertion here is a configuration that would be an incident if it
+ * reached production. The point of the guards is that the process refuses to
+ * start; the point of these tests is that the guards actually fire.
+ *
+ * A guard nobody tests is a guard that quietly stops working the day someone
+ * reorders a `superRefine` block.
+ */
+
+import { beforeEach, describe, expect, it } from 'vitest';
+import { loadConfig, resetConfigCache } from '../config.js';
+import { assertSecureCookieConfig } from '../auth/cookies.js';
+
+beforeEach(() => {
+  resetConfigCache();
+});
+
+/** A production environment that is otherwise entirely valid. */
+function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
+    NODE_ENV: 'production',
+    DATABASE_URL: 'postgresql://dash_runtime:pw@db.internal:5432/dash?schema=public',
+    JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+    JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+    DEV_EXPOSE_OTP: 'false',
+    PUBLIC_WEB_URL: 'https://dashapp.ng',
+    PAYMENT_PROVIDER: 'paystack',
+    PAYSTACK_SECRET_KEY: 'sk_live_not_a_real_key',
+    PAYSTACK_WEBHOOK_SECRET: 'whsec_not_a_real_secret',
+    MAPS_PROVIDER: 'google',
+    GOOGLE_MAPS_API_KEY: 'not-a-real-key',
+    SMS_PROVIDER: 'termii',
+    EMAIL_PROVIDER: 'smtp',
+    PUSH_PROVIDER: 'fcm',
+    STORAGE_PROVIDER: 's3',
+    QUEUE_PROVIDER: 'redis',
+    REDIS_URL: 'redis://cache.internal:6379',
+    ...overrides,
+  };
+}
+
+function expectRefusal(overrides: Record<string, string>, expectedFragment: string): void {
+  resetConfigCache();
+  let message = '';
+  try {
+    loadConfig(productionEnv(overrides));
+    throw new Error('Expected the configuration to be refused, but it loaded.');
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  expect(message).toContain(expectedFragment);
+}
+
+describe('a fully valid production configuration', () => {
+  it('loads', () => {
+    const config = loadConfig(productionEnv());
+    expect(config.NODE_ENV).toBe('production');
+    expect(config.PAYMENT_PROVIDER).toBe('paystack');
+  });
+
+  it('produces secure cookie settings', () => {
+    const config = loadConfig(productionEnv());
+    expect(() => assertSecureCookieConfig(config)).not.toThrow();
+  });
+});
+
+describe('mock adapters are refused in production', () => {
+  // Each of these reports isLive: false. Running one in production means the
+  // platform silently does nothing where it claims to act.
+  it('refuses the mock payment provider', () => {
+    expectRefusal({ PAYMENT_PROVIDER: 'mock' }, 'PAYMENT_PROVIDER');
+  });
+
+  it('refuses the local geo adapter', () => {
+    expectRefusal({ MAPS_PROVIDER: 'local' }, 'MAPS_PROVIDER');
+  });
+
+  it('refuses the console SMS adapter', () => {
+    // The one that matters most: with console SMS, no customer ever receives a
+    // login code, and the platform is unusable in a way that looks like a bug.
+    expectRefusal({ SMS_PROVIDER: 'console' }, 'SMS_PROVIDER');
+  });
+
+  it('refuses the console email adapter', () => {
+    expectRefusal({ EMAIL_PROVIDER: 'console' }, 'EMAIL_PROVIDER');
+  });
+
+  it('refuses the console push adapter', () => {
+    expectRefusal({ PUSH_PROVIDER: 'console' }, 'PUSH_PROVIDER');
+  });
+
+  it('refuses local disk storage', () => {
+    expectRefusal({ STORAGE_PROVIDER: 'local' }, 'STORAGE_PROVIDER');
+  });
+
+  it('refuses the in-memory queue', () => {
+    expectRefusal({ QUEUE_PROVIDER: 'memory' }, 'QUEUE_PROVIDER');
+  });
+
+  it('refuses SQLite', () => {
+    expectRefusal({ DATABASE_URL: 'file:./dev.db' }, 'DATABASE_URL');
+  });
+});
+
+describe('DEV_EXPOSE_OTP is refused in production', () => {
+  it('refuses when true', () => {
+    expectRefusal({ DEV_EXPOSE_OTP: 'true' }, 'DEV_EXPOSE_OTP');
+  });
+
+  it('refuses when set to 1', () => {
+    expectRefusal({ DEV_EXPOSE_OTP: '1' }, 'DEV_EXPOSE_OTP');
+  });
+
+  it('allows it outside production', () => {
+    resetConfigCache();
+    const config = loadConfig({
+      ...productionEnv({ DEV_EXPOSE_OTP: 'true' }),
+      NODE_ENV: 'development',
+      DATABASE_URL: 'file:./dev.db',
+    });
+    expect(config.DEV_EXPOSE_OTP).toBe(true);
+  });
+});
+
+describe('development secrets are refused in production', () => {
+  it('refuses the .env.example placeholder', () => {
+    expectRefusal(
+      { JWT_ACCESS_SECRET: 'replace-me-with-48-random-bytes-access-padding-x' },
+      'JWT_ACCESS_SECRET',
+    );
+  });
+
+  it('refuses a secret containing "changeme"', () => {
+    expectRefusal(
+      { JWT_REFRESH_SECRET: 'changeme-abcdefghijklmnopqrstuvwxyz0123456789' },
+      'JWT_REFRESH_SECRET',
+    );
+  });
+
+  it('refuses a secret containing "password"', () => {
+    expectRefusal(
+      { JWT_ACCESS_SECRET: 'password-abcdefghijklmnopqrstuvwxyz0123456789xy' },
+      'JWT_ACCESS_SECRET',
+    );
+  });
+
+  it('refuses a long but low-entropy secret', () => {
+    // 48 characters and worthless. A length check alone waves this through,
+    // which is exactly why the guard counts distinct characters.
+    expectRefusal({ JWT_ACCESS_SECRET: 'a'.repeat(48) }, 'distinct characters');
+  });
+
+  it('refuses a repeating pattern that passes a length check', () => {
+    expectRefusal({ JWT_REFRESH_SECRET: 'abcabcabc'.repeat(6) }, 'distinct characters');
+  });
+
+  it('refuses identical access and refresh secrets', () => {
+    // If one secret signed both classes, a refresh token would verify as an
+    // access token — a full authentication bypass.
+    const shared = 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-shared-KnMqPrSt';
+    expectRefusal(
+      { JWT_ACCESS_SECRET: shared, JWT_REFRESH_SECRET: shared },
+      'JWT_REFRESH_SECRET',
+    );
+  });
+
+  it('refuses identical secrets even outside production', () => {
+    // This one is not production-gated: a shared secret is a bypass everywhere,
+    // and finding it in development is how you avoid shipping it.
+    resetConfigCache();
+    const shared = 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-shared-KnMqPrSt';
+    expect(() =>
+      loadConfig({
+        NODE_ENV: 'development',
+        DATABASE_URL: 'file:./dev.db',
+        JWT_ACCESS_SECRET: shared,
+        JWT_REFRESH_SECRET: shared,
+      }),
+    ).toThrow(/JWT_REFRESH_SECRET/);
+  });
+
+  it('accepts a genuinely random secret', () => {
+    resetConfigCache();
+    const config = loadConfig(
+      productionEnv({
+        JWT_ACCESS_SECRET: 'k9Xm2Qp7Rt4Vw8Zb1Nc5Hj3Lf6Yg0Ds-aVbNmQwErTyUi',
+        JWT_REFRESH_SECRET: 'Pq3Wz8Rx1Ty6Ui4Op9As2Df7Gh5Jk0Lm-zXcVbNmQwErT',
+      }),
+    );
+    expect(config.JWT_ACCESS_SECRET).not.toBe(config.JWT_REFRESH_SECRET);
+  });
+});
+
+describe('required provider credentials', () => {
+  it('refuses Paystack without a secret key', () => {
+    expectRefusal({ PAYSTACK_SECRET_KEY: '' }, 'PAYSTACK_SECRET_KEY');
+  });
+
+  it('refuses Paystack without a webhook secret', () => {
+    // Unsigned webhooks cannot be trusted, and a webhook endpoint that trusts
+    // an unsigned body is a way to mark any order paid.
+    expectRefusal({ PAYSTACK_WEBHOOK_SECRET: '' }, 'PAYSTACK_WEBHOOK_SECRET');
+  });
+
+  it('refuses Redis without a URL', () => {
+    expectRefusal({ REDIS_URL: '' }, 'REDIS_URL');
+  });
+
+  it('refuses Google maps without an API key', () => {
+    expectRefusal({ GOOGLE_MAPS_API_KEY: '' }, 'GOOGLE_MAPS_API_KEY');
+  });
+
+  it('refuses Mapbox without a token', () => {
+    expectRefusal({ MAPS_PROVIDER: 'mapbox', MAPBOX_ACCESS_TOKEN: '' }, 'MAPBOX_ACCESS_TOKEN');
+  });
+});
+
+describe('transport', () => {
+  it('refuses a plain-HTTP public URL in production', () => {
+    // The refresh cookie is issued Secure, so a browser will not store it over
+    // http://. Catching it here turns "login silently does nothing" into a
+    // startup error that names the cause.
+    expectRefusal({ PUBLIC_WEB_URL: 'http://dashapp.ng' }, 'PUBLIC_WEB_URL');
+  });
+});
+
+describe('reporting', () => {
+  it('names every problem at once, not just the first', () => {
+    resetConfigCache();
+    let message = '';
+    try {
+      loadConfig(
+        productionEnv({
+          DEV_EXPOSE_OTP: 'true',
+          PAYMENT_PROVIDER: 'mock',
+          QUEUE_PROVIDER: 'memory',
+        }),
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    // Fixing one misconfiguration only to discover the next on the following
+    // boot is a miserable loop. Report them together.
+    expect(message).toContain('DEV_EXPOSE_OTP');
+    expect(message).toContain('PAYMENT_PROVIDER');
+    expect(message).toContain('QUEUE_PROVIDER');
+  });
+
+  it('never echoes a secret value into the error message', () => {
+    resetConfigCache();
+    const secret = 'a'.repeat(48);
+    let message = '';
+    try {
+      loadConfig(productionEnv({ JWT_ACCESS_SECRET: secret }));
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain('JWT_ACCESS_SECRET');
+    expect(message).not.toContain(secret);
+  });
+});

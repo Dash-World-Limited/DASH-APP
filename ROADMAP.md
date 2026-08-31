@@ -3,18 +3,22 @@
 Where DASH APP is and what comes next, in the order it should happen.
 
 Current tag: **`v0.1.0-mvp`** — local MVP, complete order lifecycle, no external
-integration.
+integration. Phase 1 (CI and production-grade authentication) has landed on
+`main` since that tag.
 
 The ordering is not arbitrary. Each phase removes a blocker for the next, and
 the two hard gates below exist because getting them wrong is expensive to undo.
 
 > **Gate 1 — no live payment integration until authentication is
-> production-grade.** Wiring a real gateway to a system whose refresh tokens sit
-> in `sessionStorage` is the wrong order.
+> production-grade.** *Cleared in Phase 1.* Refresh tokens are now HttpOnly
+> cookies with CSRF protection and tested reuse detection. Payments remain
+> gated on the rest of Phase 4's prerequisites: sandbox credentials, and a
+> signature, idempotency, and failure-path test for each provider.
 >
 > **Gate 2 — no production deployment until CI, secret management, backups, and
-> an incident runbook exist.** A deployment without those is not a deployment,
-> it is an outage waiting for a date.
+> an incident runbook exist.** *Still closed.* CI now exists; secret management,
+> backups, and the runbook do not. A deployment without those is not a
+> deployment, it is an outage waiting for a date.
 
 ---
 
@@ -37,46 +41,40 @@ along the way, documented in [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 ---
 
-## Next — Phase 1: CI and production-grade authentication
+## Done — Phase 1: CI and production-grade authentication
 
-**In progress.** The single most important change before anything else, because
-every later phase inherits its security posture.
+Shipped. The refresh token no longer touches script, CSRF protection is in
+place, and a merge is now gated on lint, typecheck, 340 tests, a fresh-database
+boot, a production build, a secret scan, and a dependency audit.
 
-### Authentication
-- Short-lived access token, in memory only, never persisted.
-- Refresh token in a `Secure` `HttpOnly` `SameSite` cookie, scoped to the
-  refresh path.
-- CSRF protection — double-submit token, verified on every state-changing
-  request that carries a cookie.
-- Refresh-token reuse detection and family revocation (already implemented;
-  needs cookie-path coverage and tests).
-- Tests for login, refresh, logout, replay, CSRF, and concurrent sessions.
+**Delivered:**
+- Refresh token in a `HttpOnly`, `Secure`, `SameSite=Lax` cookie scoped to
+  `/v1/auth`; never returned in a response body.
+- Access token 15 minutes, in memory only.
+- Double-submit CSRF, constant-time compared, rotated on every refresh.
+- Reuse detection fixed (it was unreachable dead code) and covered by tests
+  including the attacker-redeems-first ordering.
+- 72 API integration tests: login, refresh, logout, replay, CSRF, multiple
+  sessions, rate limiting, and every production boot guard.
+- GitHub Actions: lint, typecheck, tests, coverage, schema validation, fresh
+  boot + seed + ledger verification, production build, gitleaks, `npm audit`.
 
-### CI
-- GitHub Actions: format, lint, typecheck, unit tests, coverage thresholds,
-  Prisma schema validation, fresh-database boot, web production build.
-- Branch protection on `main`.
-
-### Production boot safety
-- Extend the existing guards so a production process cannot start with mock
-  adapters, `DEV_EXPOSE_OTP`, or placeholder secrets — and add tests that prove
-  each guard fires.
-
-**Exit criteria:** a merge to `main` is blocked unless everything above passes,
-and `NODE_ENV=production` with any development setting refuses to boot.
+**Still open from this phase:** branch protection on `main` must be enabled in
+the repository settings — it cannot be configured from the codebase.
 
 ---
 
 ## Phase 2 — Test depth and observability
 
-- API integration tests against a test-scoped database, replacing the two
-  script suites as the merge gate (the scripts stay as smoke checks).
+- Extend API integration coverage beyond auth: ordering, dispatch, vendor, and
+  finance routes. Auth is covered; the rest still rely on the script suites.
 - Adversarial suite as automated tests: IDOR sweeps, privilege escalation, mass
   assignment, rate-limit bypass, race conditions, webhook replay.
 - Playwright journeys for the customer, vendor, and ops surfaces.
 - Structured request/response metrics, health checks, an error-tracking adapter.
 - Accessibility checks in CI (axe), responsive viewport checks.
-- Dependency, secret, and container scanning.
+- Container and infrastructure scanning; SAST and DAST. (Dependency and secret
+  scanning already run in CI.)
 
 ---
 

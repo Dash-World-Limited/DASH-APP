@@ -59,7 +59,18 @@ const schema = z
     QUEUE_PROVIDER: z.enum(['memory', 'redis']).default('memory'),
     REDIS_URL: z.string().optional(),
 
-    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    // `silent` is a real Pino level and the right one for tests — a passing
+    // suite should not print a wall of request logs.
+    LOG_LEVEL: z
+      .enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'])
+      .default('info'),
+
+    // Rate limiting is on everywhere by default. A test suite that signs in
+    // twenty times legitimately trips the login limiter, so the harness turns
+    // it off explicitly — and `superRefine` below refuses to let production do
+    // the same. Turning it off is a decision someone has to make in writing,
+    // not a silent side effect of NODE_ENV.
+    RATE_LIMIT_ENABLED: booleanish.default('true'),
   })
   .superRefine((env, ctx) => {
     const fail = (path: string, message: string): void => {
@@ -73,46 +84,127 @@ const schema = z
       fail('JWT_REFRESH_SECRET', 'JWT_REFRESH_SECRET must differ from JWT_ACCESS_SECRET');
     }
 
+    // A weak secret in a non-production environment is fine — the whole point of
+    // the placeholder values is that development needs no ceremony.
     if (env.NODE_ENV !== 'production') return;
 
     // --- Production-only guards ---------------------------------------------
     // Each of these is a configuration that would be a serious incident in
-    // production, so the process refuses to start rather than warning.
+    // production. The process refuses to start rather than warning, because a
+    // warning in a startup log is a warning nobody reads.
 
     if (env.DEV_EXPOSE_OTP) {
-      fail('DEV_EXPOSE_OTP', 'DEV_EXPOSE_OTP must be false in production — it leaks login codes');
+      fail('DEV_EXPOSE_OTP', 'DEV_EXPOSE_OTP must be false in production — it returns login codes in the API response');
+    }
+
+    if (!env.RATE_LIMIT_ENABLED) {
+      fail('RATE_LIMIT_ENABLED', 'Rate limiting cannot be disabled in production — it is the only defence against credential stuffing and OTP brute force');
     }
 
     for (const key of ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'] as const) {
-      if (env[key].startsWith('replace-me')) {
-        fail(key, `${key} still holds the .env.example placeholder`);
-      }
+      const weakness = describeSecretWeakness(env[key]);
+      if (weakness) fail(key, `${key} ${weakness}`);
     }
 
     if (env.DATABASE_URL.startsWith('file:')) {
       fail('DATABASE_URL', 'SQLite is development-only; production requires PostgreSQL (ADR-0003)');
     }
 
+    // --- Mock adapters -------------------------------------------------------
+    // Every one of these reports `isLive: false`. Running any of them in
+    // production means the platform silently does nothing where it claims to
+    // charge a card, send a code, or store a document.
     if (env.PAYMENT_PROVIDER === 'mock') {
-      fail('PAYMENT_PROVIDER', 'The mock payment provider must never run in production');
+      fail('PAYMENT_PROVIDER', 'The mock payment provider must never run in production — it settles nothing');
     }
+    if (env.MAPS_PROVIDER === 'local') {
+      fail('MAPS_PROVIDER', 'The local geo adapter cannot geocode an address; production needs a real provider');
+    }
+    if (env.SMS_PROVIDER === 'console') {
+      fail('SMS_PROVIDER', 'The console SMS adapter only logs — no customer would ever receive a login code');
+    }
+    if (env.EMAIL_PROVIDER === 'console') {
+      fail('EMAIL_PROVIDER', 'The console email adapter only logs — nothing is delivered');
+    }
+    if (env.PUSH_PROVIDER === 'console') {
+      fail('PUSH_PROVIDER', 'The console push adapter only logs — no device is notified');
+    }
+    if (env.STORAGE_PROVIDER === 'local') {
+      fail('STORAGE_PROVIDER', 'Local disk storage is development-only and is lost on redeploy');
+    }
+    if (env.QUEUE_PROVIDER === 'memory') {
+      fail('QUEUE_PROVIDER', 'The in-memory queue loses jobs on restart and cannot be shared across instances');
+    }
+
+    // --- Credentials required by the chosen providers ------------------------
     if (env.PAYMENT_PROVIDER === 'paystack') {
       if (!env.PAYSTACK_SECRET_KEY) fail('PAYSTACK_SECRET_KEY', 'Required when using Paystack');
       if (!env.PAYSTACK_WEBHOOK_SECRET) {
         fail('PAYSTACK_WEBHOOK_SECRET', 'Required — unsigned webhooks cannot be trusted');
       }
     }
-
-    if (env.STORAGE_PROVIDER === 'local') {
-      fail('STORAGE_PROVIDER', 'Local disk storage is development-only');
-    }
-    if (env.QUEUE_PROVIDER === 'memory') {
-      fail('QUEUE_PROVIDER', 'The in-memory queue loses jobs on restart; production requires Redis');
-    }
     if (env.QUEUE_PROVIDER === 'redis' && !env.REDIS_URL) {
       fail('REDIS_URL', 'Required when QUEUE_PROVIDER is redis');
     }
+    if (env.MAPS_PROVIDER === 'google' && !env.GOOGLE_MAPS_API_KEY) {
+      fail('GOOGLE_MAPS_API_KEY', 'Required when MAPS_PROVIDER is google');
+    }
+    if (env.MAPS_PROVIDER === 'mapbox' && !env.MAPBOX_ACCESS_TOKEN) {
+      fail('MAPBOX_ACCESS_TOKEN', 'Required when MAPS_PROVIDER is mapbox');
+    }
+
+    // --- Transport -----------------------------------------------------------
+    // The refresh cookie is issued with `Secure`, so a browser will refuse to
+    // store it over plain HTTP. Catching that here turns a baffling "login does
+    // nothing" bug into a startup error naming the cause.
+    if (env.PUBLIC_WEB_URL.startsWith('http://')) {
+      fail('PUBLIC_WEB_URL', 'Production must be HTTPS — Secure cookies are not stored over http://');
+    }
   });
+
+/**
+ * Reject a secret that is a placeholder, a recognisable development string, or
+ * too low-entropy to be worth having.
+ *
+ * The length floor alone is not enough: `aaaaaaaa…` is 48 characters and
+ * worthless. Counting distinct characters catches the padded-placeholder case
+ * that a length check waves through.
+ *
+ * Returns a human-readable description of the problem, or null when the secret
+ * looks acceptable.
+ */
+function describeSecretWeakness(secret: string): string | null {
+  const lower = secret.toLowerCase();
+
+  const bannedFragments = [
+    'replace-me',
+    'replace_me',
+    'changeme',
+    'change-me',
+    'placeholder',
+    'example',
+    'dev-secret',
+    'devsecret',
+    'test-secret',
+    'testsecret',
+    'notasecret',
+    'password',
+    'insecure',
+    'dashdev',
+  ];
+  for (const fragment of bannedFragments) {
+    if (lower.includes(fragment)) {
+      return `contains the development placeholder "${fragment}"`;
+    }
+  }
+
+  const distinct = new Set(secret).size;
+  if (distinct < 16) {
+    return `has only ${distinct} distinct characters — it is not random enough to be a secret`;
+  }
+
+  return null;
+}
 
 export type Config = z.infer<typeof schema>;
 

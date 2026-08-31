@@ -119,13 +119,22 @@ Get-NetTCPConnection -LocalPort 4000 -State Listen | Select-Object -ExpandProper
 
 ## Test totals at this tag
 
+At the `v0.1.0-mvp` tag: 268 unit tests.
+
+On `main` today, after Phase 1:
+
 | Suite | Count | Result | Needs |
 |---|---|---|---|
-| Unit (`npm test`) | 268 across 8 files | all passing | nothing |
+| `npm test` | **340** across 11 files | all passing | nothing |
+| - domain units | 268 | | |
+| - API integration | 72 | | |
 | Smoke (`scripts/smoke.mjs`) | 48 checks | all passing | running API + seed |
 | Dispatch (`scripts/dispatch-check.mjs`) | 20 checks | all passing | running API + seed |
 
-**Domain coverage:** 93.98% statements · 94.77% branches · 94.25% functions.
+The API integration tests need no running server: they build a real Fastify
+instance and drive it with `inject()` against a temporary SQLite file.
+
+**Domain coverage:** 93.98% statements · 94.97% branches · 94.25% functions.
 Thresholds enforced in `vitest.config.ts` at 80/75/80/80.
 
 Lint clean. Typecheck clean across all four workspaces. Web production build
@@ -231,6 +240,20 @@ Full reasoning, costs, and reversal paths in
 | 0006 | Integer kobo, append-only double-entry ledger | Float money and mutable balances are the hardest defects to recover from | No — foundational |
 | 0007 | Deterministic, explainable pricing/dispatch/pay | No trained model exists; records the features one would need | n/a |
 
+### Authentication, as of Phase 1
+
+- Access token: JWT, 15 minutes, in the response body, held in **memory only**
+  by the client.
+- Refresh token: opaque 256-bit value in a `HttpOnly`, `Secure`, `SameSite=Lax`
+  cookie scoped to `/v1/auth`. **Never** in a response body.
+- CSRF: double-submit token in a readable cookie, echoed in `X-CSRF-Token`,
+  reissued on every rotation.
+- Rotation on every refresh, with reuse detection that revokes the entire
+  session family, forward and backward through `previousSessionId`.
+
+If you find yourself adding `refreshToken` to a response type, stop: the cookie
+has just become decoration.
+
 ### Rules a contributor must not break
 
 1. **Money is integer kobo.** No floats, no `Decimal`, no currency math in the
@@ -253,12 +276,14 @@ Full list in [`docs/PROGRESS.md`](docs/PROGRESS.md#known-limitations-honest-list
 The ones that will bite first:
 
 ### Blocking production
-- **Refresh token is in `sessionStorage`, not an httpOnly cookie.** Readable by
-  any script on the origin. The biggest weakness in the system. *Next milestone.*
-- **No CSRF protection.** Not exploitable today (pure Bearer auth, no cookie
-  session) but mandatory the moment cookies land.
-- **No CI.** Nothing prevents a regression reaching `main`.
-- **No automated API integration tests.** The script suites cannot gate a merge.
+- **Admin MFA is modelled, not enforced.** No TOTP flow exists; step-up reuses
+  the OTP challenge, so a staff account is protected by a password and a phone
+  rather than a true second factor.
+- **API integration tests cover authentication only.** Ordering, dispatch,
+  vendor, and finance still depend on the script suites, which are not part of
+  the CI gate.
+- **Branch protection is not enabled** on `main`. CI runs, but nothing yet
+  *requires* it to pass - that is a repository setting, not a code change.
 
 ### Operational
 - **In-memory queue loses jobs on restart.** A second API instance would run its
