@@ -12,7 +12,12 @@ import { verifyOtp } from '@dash/domain/crypto';
 import { assertTransition, type OrderStatus } from '@dash/domain/orders';
 import { writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
-import { actorOf, requirePermission, requireScope } from '../http/context.js';
+import {
+  actorOf,
+  requirePermission,
+  requireScope,
+  transitionActorFor,
+} from '../http/context.js';
 
 export async function registerVendorRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, queue } = app.services;
@@ -117,7 +122,8 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
         .parse(request.body ?? {});
 
       const { actor, order } = await loadScopedOrder(request, request.params.id);
-      assertTransition(order.status as OrderStatus, 'accepted', 'vendor');
+      const actingAs = transitionActorFor(actor);
+      assertTransition(order.status as OrderStatus, 'accepted', actingAs);
 
       const readyAt = new Date(Date.now() + body.prepMinutes * 60_000);
 
@@ -131,7 +137,7 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
             create: {
               fromStatus: order.status,
               toStatus: 'accepted',
-              actorType: 'vendor',
+              actorType: actingAs,
               actorId: actor.identityId,
             },
           },
@@ -149,7 +155,7 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
 
       await writeAudit(prisma, {
         identityId: actor.identityId,
-        action: 'vendor.order.accepted',
+        action: actingAs === 'vendor' ? 'vendor.order.accepted' : 'ops.order.accepted',
         resourceType: 'order',
         resourceId: order.id,
         after: { prepMinutes: body.prepMinutes },
@@ -183,7 +189,8 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
         .parse(request.body);
 
       const { actor, order } = await loadScopedOrder(request, request.params.id);
-      assertTransition(order.status as OrderStatus, 'rejected', 'vendor');
+      const actingAs = transitionActorFor(actor);
+      assertTransition(order.status as OrderStatus, 'rejected', actingAs);
 
       await prisma.order.update({
         where: { id: order.id },
@@ -196,7 +203,7 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
             create: {
               fromStatus: order.status,
               toStatus: 'rejected',
-              actorType: 'vendor',
+              actorType: actingAs,
               actorId: actor.identityId,
               reasonCode: body.reasonCode,
               reason: body.note ?? null,
@@ -215,7 +222,7 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
 
       await writeAudit(prisma, {
         identityId: actor.identityId,
-        action: 'vendor.order.rejected',
+        action: actingAs === 'vendor' ? 'vendor.order.rejected' : 'ops.order.rejected',
         resourceType: 'order',
         resourceId: order.id,
         after: { reasonCode: body.reasonCode },
@@ -236,7 +243,8 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       const body = z.object({ to: z.enum(['preparing', 'ready']) }).parse(request.body);
       const { actor, order } = await loadScopedOrder(request, request.params.id);
 
-      assertTransition(order.status as OrderStatus, body.to, 'vendor');
+      const actingAs = transitionActorFor(actor);
+      assertTransition(order.status as OrderStatus, body.to, actingAs);
 
       await prisma.order.update({
         where: { id: order.id },
@@ -247,7 +255,7 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
             create: {
               fromStatus: order.status,
               toStatus: body.to,
-              actorType: 'vendor',
+              actorType: actingAs,
               actorId: actor.identityId,
             },
           },

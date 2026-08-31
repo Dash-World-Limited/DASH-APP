@@ -70,11 +70,26 @@ jobs:
           npx tsc --noEmit -p apps/api/tsconfig.json
           npx tsc --noEmit -p apps/web/tsconfig.json
 
+      # `npm test` now includes the business API integration suites — orders,
+      # vendor, dispatch/rider, finance/ledger, and staff authorization. They
+      # need no running server: each builds a real Fastify instance and drives
+      # it with inject() against a temporary SQLite file.
       - name: Test
         run: npm test
 
       - name: Coverage thresholds
         run: npx vitest run --coverage packages/domain
+
+      # Named explicitly so a failure in the money or authorization suites is
+      # obvious in the job list rather than buried in a single "Test" step.
+      - name: Business-critical suites
+        run: >
+          npx vitest run
+          apps/api/src/__tests__/orders.test.ts
+          apps/api/src/__tests__/vendor.test.ts
+          apps/api/src/__tests__/dispatch.test.ts
+          apps/api/src/__tests__/finance.test.ts
+          apps/api/src/__tests__/staff.test.ts
 
   fresh-boot:
     name: Fresh database boot and seed

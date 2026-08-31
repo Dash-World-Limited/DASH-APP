@@ -6,6 +6,7 @@
  * authentication (enforced inside `assertPermission`).
  */
 
+import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { kobo } from '@dash/domain/money';
@@ -347,9 +348,24 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!supportCase?.customerId) throw ApiError.notFound();
 
+      // The idempotency key must be derived from the request, never from the
+      // clock. `Date.now()` made every call unique, so the ledger's replay
+      // protection could never fire and a double-clicked button credited the
+      // customer twice — real money, silently doubled.
+      //
+      // Keyed on the case, the amount, and the reason: issuing the same
+      // compensation for the same case twice is a duplicate. A genuinely
+      // separate goodwill payment on the same case will differ in at least one
+      // of those, and if it does not, it is indistinguishable from a double
+      // click and should be refused.
+      const compensationKey = createHash('sha256')
+        .update(`${supportCase.id}|${body.amount}|${body.reason}`)
+        .digest('hex')
+        .slice(0, 32);
+
       const draft = buildWalletCredit({
         customerId: supportCase.customerId,
-        idempotencyKey: `compensation_${supportCase.id}_${Date.now()}`,
+        idempotencyKey: `compensation_${compensationKey}`,
         actorId: actor.identityId,
         occurredAt: new Date(),
         amount: kobo(body.amount),
@@ -359,16 +375,21 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
       const posted = await postLedgerTransaction(prisma, draft);
 
-      await prisma.supportAction.create({
-        data: {
-          caseId: supportCase.id,
-          actorId: actor.identityId,
-          kind: 'compensation',
-          body: body.reason,
-          amount: body.amount,
-          ledgerTransactionId: posted.id,
-        },
-      });
+      // A replayed credit posts no money, so it must not leave a second action
+      // on the case either — otherwise the case history shows two payments the
+      // customer never received.
+      if (!posted.replayed) {
+        await prisma.supportAction.create({
+          data: {
+            caseId: supportCase.id,
+            actorId: actor.identityId,
+            kind: 'compensation',
+            body: body.reason,
+            amount: body.amount,
+            ledgerTransactionId: posted.id,
+          },
+        });
+      }
 
       await writeAudit(prisma, {
         identityId: actor.identityId,
@@ -380,7 +401,12 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         requestId: request.id,
       });
 
-      return { credited: true, amount: body.amount, ledgerTransactionId: posted.id };
+      return {
+        credited: true,
+        amount: body.amount,
+        ledgerTransactionId: posted.id,
+        replayed: posted.replayed,
+      };
     },
   );
 
@@ -417,16 +443,43 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       const captured = order.payments.find((payment) => payment.status === 'captured');
       if (!captured) throw ApiError.conflict('This order has no captured payment to refund.');
 
-      // A refund can never exceed what was actually taken. Without this, a typo
-      // in an admin form becomes free money.
-      if (body.amount > captured.amount) {
-        throw ApiError.unprocessable('A refund cannot exceed the amount that was charged.');
+      // --- The cumulative cap --------------------------------------------------
+      // Checking this refund against the captured amount on its own is not
+      // enough, and the gap is not theoretical: several refunds each under the
+      // ceiling can exceed it together. Two ways that happened here —
+      //
+      //   * two calls for the same amount with different `destination` values
+      //     (one to the card, one to the wallet), and
+      //   * two calls for different amounts,
+      //
+      // both of which produced distinct idempotency keys and therefore posted
+      // twice. A full refund could be taken twice over.
+      //
+      // The fix is to bound the TOTAL. Everything already refunded against this
+      // payment is counted, whatever route it took out.
+      const previousRefunds = await prisma.refund.aggregate({
+        where: { paymentId: captured.id, status: { not: 'failed' } },
+        _sum: { amount: true },
+      });
+      const alreadyRefunded = previousRefunds._sum.amount ?? 0;
+      const remaining = captured.amount - alreadyRefunded;
+
+      if (body.amount > remaining) {
+        throw ApiError.unprocessable(
+          remaining <= 0
+            ? 'This payment has already been fully refunded.'
+            : `Only ₦${(remaining / 100).toFixed(2)} of this payment remains refundable.`,
+          { capturedAmount: captured.amount, alreadyRefunded, remaining },
+        );
       }
 
       const amount = kobo(body.amount);
       const draft = buildRefund({
         orderId: order.id,
-        idempotencyKey: `refund_${order.id}_${body.amount}_${body.destination}`,
+        // The destination is deliberately NOT part of the key. Refunding the
+        // same amount to a different destination is the same refund taking a
+        // different route out, not a second entitlement.
+        idempotencyKey: `refund_${order.id}_${body.amount}`,
         actorId: actor.identityId,
         occurredAt: new Date(),
         customerId: order.customerId,
@@ -439,18 +492,24 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
       const posted = await postLedgerTransaction(prisma, draft);
 
-      await prisma.refund.create({
-        data: {
-          paymentId: captured.id,
-          amount: body.amount,
-          reason: body.reason,
-          status: 'pending',
-          idempotencyKey: draft.idempotencyKey,
-          requestedBy: actor.identityId,
-          approvedBy: actor.identityId,
-          approvedAt: new Date(),
-        },
-      });
+      // A replayed posting must not create a second Refund row. `idempotencyKey`
+      // is unique on the table, so a bare `create` would throw and return a 500
+      // after the ledger had already been (correctly) deduplicated — leaving the
+      // caller unable to tell a duplicate from a failure.
+      if (!posted.replayed) {
+        await prisma.refund.create({
+          data: {
+            paymentId: captured.id,
+            amount: body.amount,
+            reason: body.reason,
+            status: 'pending',
+            idempotencyKey: draft.idempotencyKey,
+            requestedBy: actor.identityId,
+            approvedBy: actor.identityId,
+            approvedAt: new Date(),
+          },
+        });
+      }
 
       await writeAudit(prisma, {
         identityId: actor.identityId,

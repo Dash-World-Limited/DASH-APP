@@ -243,6 +243,23 @@ Controls actually exercised by an automated check, not merely written:
 | Production refuses disabled rate limiting | `config.test.ts` |
 | Config errors never echo a secret value | `config.test.ts` |
 | Login and OTP rate limits actually fire | `ratelimit.test.ts` |
+| Cross-customer order read and cancel return 404 | `orders.test.ts` |
+| A client-supplied price is ignored at quote and checkout | `orders.test.ts` |
+| A customer cannot price a delivery to another customer's address | `orders.test.ts` |
+| Cross-vendor accept/reject/progress/pickup return 404 | `vendor.test.ts` |
+| A vendor never sees the customer's phone number or full address | `vendor.test.ts` |
+| A suspended vendor disappears from ordering | `vendor.test.ts` |
+| Cross-rider offer response and delivery access return 404 | `dispatch.test.ts` |
+| The exact drop-off address is withheld until an offer is accepted | `dispatch.test.ts` |
+| Two riders accepting the same offer yields exactly one winner | `dispatch.test.ts` |
+| A wrong delivery PIN cannot complete a delivery | `dispatch.test.ts` |
+| Cross-city reassign and surge return 404 | `staff.test.ts` |
+| Every ledger transaction sums to zero after every money operation | `finance.test.ts` |
+| A refund cannot exceed the captured amount cumulatively | `finance.test.ts` |
+| A duplicate refund or compensation posts no second effect | `finance.test.ts` |
+| No endpoint edits or deletes a ledger entry | `finance.test.ts` |
+| An invalid checkout leaves no partial financial state | `finance.test.ts` |
+| An admin acting on a vendor order is recorded as ops, not the vendor | `staff.test.ts` |
 
 ---
 
@@ -261,6 +278,10 @@ Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
 
 2. **No container or infrastructure scanning, no SAST, no DAST.** Dependency
    and secret scanning run in CI; the rest do not exist.
+2b. **The public catalogue and webhook replay paths are script-only.**
+   `/v1/vendors`, `/v1/search`, and the webhook amount-mismatch and replay
+   branches are covered by `scripts/smoke.mjs`, which needs a running server and
+   is not part of the CI gate.
 3. **Vendor bank details are not encrypted at rest.** The column
    (`bankAccountCipher`) exists and is unused; the seed stores only a last-4.
 4. **No malware scanning on uploads.** The `StoragePort` has no scanning hook.

@@ -106,7 +106,7 @@ cannot drift.
 ## Testing
 
 ```bash
-npm test                          # 340 tests (268 domain + 72 API)
+npm test                          # 502 tests (299 domain + 203 API)
 npx vitest run --coverage packages/domain
 
 npm run dev:api                   # then, in a second terminal:
@@ -136,7 +136,8 @@ of the CI gate. Everything `npm test` runs is.
 | [`SECURITY.md`](SECURITY.md) | Threat model, implemented controls, open gaps |
 | [`ROADMAP.md`](ROADMAP.md) | What is next, in order, and what is deliberately not |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Every architecture choice, its cost, its reversal path |
-| [`docs/PROGRESS.md`](docs/PROGRESS.md) | What works, what is stubbed, twelve bugs found and fixed |
+| [`docs/API_MATRIX.md`](docs/API_MATRIX.md) | Every business endpoint: permission, ownership rule, transition, coverage |
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | What works, what is stubbed, seventeen bugs found and fixed |
 
 ## Licence and legal
 

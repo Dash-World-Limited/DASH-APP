@@ -69,7 +69,30 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
 
       await prisma.rider.update({
         where: { id: riderId },
-        data: { availability: body.availability },
+        data: {
+          availability: body.availability,
+          // Going offline clears the location baseline.
+          //
+          // Two reasons, and both matter.
+          //
+          // Correctness: the plausibility check divides distance by elapsed
+          // time. A rider who ends a shift, travels home, and comes back on has
+          // their first ping compared against a position they left hours or
+          // kilometres ago — and it is rejected as a teleport. A rejected ping
+          // does not update the baseline, so the rider stays stale, and
+          // dispatch excludes riders with stale locations. They sit online,
+          // available, and invisible until enough wall-clock time passes for
+          // the implied speed to fall below the threshold. For a 20km commute
+          // that is over ten minutes of lost earnings at the start of a shift.
+          //
+          // Privacy: we state that location is collected only while a rider is
+          // online. Keeping their last position after they go offline, and then
+          // using it to judge movement we deliberately did not observe, is
+          // inconsistent with that promise.
+          ...(body.availability === 'offline'
+            ? { lastLatitude: null, lastLongitude: null, locationReportedAt: null }
+            : {}),
+        },
       });
 
       return { availability: body.availability };

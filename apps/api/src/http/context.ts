@@ -10,6 +10,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   assertPermission,
   assertScope,
+  VENDOR_SCOPED_ROLES,
   type Actor,
   type Permission,
 } from '@dash/domain/permissions';
@@ -133,6 +134,32 @@ export function requireScope(
 export function actorOf(request: FastifyRequest): Actor {
   if (!request.actor) throw ApiError.unauthorized();
   return request.actor;
+}
+
+/**
+ * Which kind of party this caller is, for the order state machine and the
+ * status-event record.
+ *
+ * This exists because the vendor routes used to hardcode `actorType: 'vendor'`.
+ * A super admin holds every permission and is bound to no vendor, so the scope
+ * check does not stop them from accepting or rejecting on a vendor's behalf —
+ * which is the intended operational escape hatch. But the event was then
+ * written as though the vendor had done it, and the audit entry said
+ * `vendor.order.accepted`.
+ *
+ * That makes the record wrong at exactly the moment it matters: a vendor
+ * disputing "we never rejected that order" would be contradicted by a log
+ * entry naming them. The escape hatch is meant to be wide and never silent;
+ * attributing it to someone else is worse than silent.
+ *
+ * Vendor-bound roles are recorded as `vendor`. Everyone else exercising a
+ * vendor permission is recorded as `ops`, which is what they are.
+ */
+export function transitionActorFor(actor: Actor): 'customer' | 'vendor' | 'rider' | 'ops' {
+  if (actor.roles.some((role) => VENDOR_SCOPED_ROLES.has(role))) return 'vendor';
+  if (actor.riderId && actor.roles.includes('rider')) return 'rider';
+  if (actor.customerId && actor.roles.includes('customer')) return 'customer';
+  return 'ops';
 }
 
 /**

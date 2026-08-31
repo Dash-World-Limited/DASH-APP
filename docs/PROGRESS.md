@@ -3,7 +3,7 @@
 Updated at the end of every milestone. If you are picking this up cold, read
 this file first, then `docs/DECISIONS.md`.
 
-**Last updated:** 2026-08-31 · Phase 1 (CI + production auth) on `main`, past tag `v0.1.0-mvp`
+**Last updated:** 2026-08-31 · business API integration coverage on `main`, past tag `v0.2.0-auth`
 
 ---
 
@@ -162,6 +162,25 @@ customer orders → vendor accepts → dispatch offers → rider accepts → the
 address is revealed only after acceptance → progress through pickup → a wrong
 PIN is refused → the right PIN completes it → the rider is paid → the ledger
 still balances.
+
+### Business API integration coverage (post `v0.2.0-auth`, untagged)
+- **159 new API integration tests** across orders, vendor workflow,
+  dispatch/rider, finance/ledger, and staff authorization - the same
+  `inject()` + temporary-SQLite approach the auth suite uses, so none needs a
+  running server.
+- **A BOLA/IDOR audit** run from every role against every endpoint taking a
+  resource id. Cross-customer, cross-vendor, cross-rider, and cross-city
+  substitutions all return `404 Not found.`
+- **Race coverage**: two riders accepting the same offer resolves to exactly one
+  winner, repeated five times. The atomic `updateMany` guard on `riderId: null`
+  is what makes that hold.
+- **Financial invariants asserted, not status codes**: every ledger transaction
+  sums to zero after every money-moving operation; duplicated operations cannot
+  duplicate financial effects; failed operations leave no partial posting.
+- **`docs/API_MATRIX.md`** records every business endpoint with its permission,
+  ownership rule, state transition, and coverage status.
+- Five bugs found and fixed - see 13-17 below. Three moved money or falsified
+  the audit record.
 
 ### Phase 1 — CI and production-grade authentication (post-tag)
 - **Refresh tokens moved into a `HttpOnly`, `Secure`, `SameSite=Lax` cookie**
@@ -322,6 +341,63 @@ Recorded because each one would have been expensive to find in production.
     could not start. Added — and it now doubles as the signal that mutes the
     console SMS/email/push adapters, so a passing suite no longer buries its
     output under a wall of fake OTP messages.
+
+13. **The cancellation policy and the state machine disagreed for five
+    statuses.** `evaluateCustomerCancellation()` reported `allowed: true` for
+    `accepted`, `preparing`, `ready`, `rider_assigned`, and `rider_arrived` -
+    the API returns that as `cancellation.allowed`, and the web app renders its
+    "Cancel this order" button from it. The transition table did not list
+    `customer` on `cancelled` for any of those states, so every one of those
+    cancellations failed with a 409.
+
+    A customer whose food had not left the kitchen was shown a cancel button
+    that could never work, and the 30% fee the policy describes could never be
+    charged. Fixed by adding `customer` to those five transitions, and pinned by
+    a test asserting the two sources agree for **every** status.
+
+14. **A rider who travelled while offline could not report their location.**
+    The plausibility check divides distance by elapsed time. Going offline did
+    not clear the last known position, so a rider who ended a shift, went home,
+    and came back on had their first ping compared against a position
+    kilometres away and rejected as a teleport. A rejected ping does not update
+    the baseline, and dispatch excludes riders whose location is stale - so the
+    rider sat online, available, and invisible to dispatch until enough
+    wall-clock time passed for the implied speed to fall below the threshold.
+    For a 20km commute that is over ten minutes of lost earnings at the start
+    of a shift.
+
+    It was also inconsistent with the stated privacy posture: we say location is
+    collected only while a rider is online, then used movement we deliberately
+    did not observe to judge them. Going offline now clears the baseline.
+
+15. **A full refund could be taken twice by changing only the destination.**
+    The refund idempotency key included `destination`, so refunding the whole
+    order to the payment method and then again to the wallet produced two
+    distinct keys and two ledger postings. The per-call ceiling
+    (`amount > captured.amount`) passed both times because each call was
+    individually within it. Different *amounts* broke it the same way.
+
+    Real money: an order could be refunded to twice its value. Fixed by bounding
+    the **cumulative** total refunded against the payment, and by dropping
+    `destination` from the key - the same amount to a different destination is
+    the same refund taking a different route out, not a second entitlement.
+
+16. **Support compensation could be issued twice by double-clicking.** The
+    idempotency key was `compensation_<caseId>_<Date.now()>`, so every call was
+    unique and the ledger's replay protection could never fire. Two clicks
+    credited the customer twice. The key is now a hash of the case, amount, and
+    reason, and a replayed posting no longer writes a second `SupportAction`
+    row either - the case history was showing payments the customer never
+    received.
+
+17. **An admin acting on a vendor's order was recorded as the vendor.** A super
+    admin holds every permission and is bound to no vendor, so vendor scoping
+    does not apply to them - that is the intended operational escape hatch. But
+    the status event and audit entry hardcoded `vendor`, making the intervention
+    indistinguishable from the vendor's own action. That is precisely the record
+    a vendor would later dispute ("we never rejected that order"). The acting
+    party is now derived from the caller's roles and recorded truthfully as
+    `ops`.
 
 ---
 

@@ -97,6 +97,13 @@ interface TransitionRule {
  * `ops` appears on nearly every rule because operations must be able to unstick
  * a real order at 9pm on a Friday. Every ops transition is audit-logged with a
  * mandatory reason code — the escape hatch is wide, but never silent.
+ *
+ * `customer` appears on `cancelled` for every state where
+ * `evaluateCustomerCancellation()` reports `allowed: true`, and nowhere else.
+ * These two must agree: the policy is what the API tells the customer and what
+ * the web app renders its cancel button from, and this table is what actually
+ * happens. When they disagreed, the button was always there and always failed.
+ * `orders.test.ts` asserts the equivalence across every status.
  */
 const TRANSITIONS: Readonly<Record<OrderStatus, readonly TransitionRule[]>> = {
   draft: [
@@ -125,30 +132,34 @@ const TRANSITIONS: Readonly<Record<OrderStatus, readonly TransitionRule[]>> = {
     { to: 'preparing', actors: ['vendor', 'ops'] },
     // Dispatch can find a rider while the kitchen is still cooking.
     { to: 'rider_assigned', actors: ['ops', 'system'] },
-    { to: 'cancelled', actors: ['ops', 'system'] },
+    { to: 'cancelled', actors: ['customer', 'ops', 'system'] },
     { to: 'rejected', actors: ['vendor', 'ops'] },
   ],
   preparing: [
     { to: 'ready', actors: ['vendor', 'ops'] },
     { to: 'rider_assigned', actors: ['ops', 'system'] },
-    { to: 'cancelled', actors: ['ops'] },
+    // The customer may still cancel here, paying the fee that
+    // `evaluateCustomerCancellation` charges to cover the vendor.
+    { to: 'cancelled', actors: ['customer', 'ops'] },
   ],
   ready: [
     { to: 'rider_assigned', actors: ['ops', 'system'] },
     { to: 'rider_arrived', actors: ['rider', 'ops', 'system'] },
     { to: 'picked_up', actors: ['rider', 'ops'] }, // customer-pickup orders
-    { to: 'cancelled', actors: ['ops'] },
+    { to: 'cancelled', actors: ['customer', 'ops'] },
   ],
   rider_assigned: [
     { to: 'rider_arrived', actors: ['rider', 'ops', 'system'] },
     // Reassignment drops back to `ready` and re-enters dispatch.
     { to: 'ready', actors: ['ops', 'system'] },
-    { to: 'cancelled', actors: ['ops'] },
+    { to: 'cancelled', actors: ['customer', 'ops'] },
   ],
   rider_arrived: [
     { to: 'picked_up', actors: ['rider', 'ops'] },
     { to: 'ready', actors: ['ops', 'system'] },
-    { to: 'cancelled', actors: ['ops'] },
+    // The last point a customer may cancel. From `picked_up` onward the rider
+    // is carrying the food and the policy refuses.
+    { to: 'cancelled', actors: ['customer', 'ops'] },
   ],
   picked_up: [
     { to: 'en_route', actors: ['rider', 'ops', 'system'] },

@@ -231,3 +231,50 @@ describe('customer cancellation policy', () => {
     expect(outcome.feeBasisPoints).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+describe('the cancellation policy and the state machine must agree', () => {
+  /**
+   * Two sources of truth describe the same thing, and nothing kept them in
+   * sync.
+   *
+   * `evaluateCustomerCancellation()` decides what the customer is *told* — the
+   * API returns it as `cancellation.allowed`, and the web app renders a "Cancel
+   * this order" button from it. `canTransition(..., 'customer')` decides what
+   * the customer can actually *do*.
+   *
+   * When they disagreed, the app showed a cancel button that always failed with
+   * a 409. This test is the reason they cannot drift apart again.
+   */
+  it('allows a customer transition exactly when the policy says cancellation is allowed', () => {
+    const mismatches: string[] = [];
+
+    for (const status of ORDER_STATUSES) {
+      const policyAllows = evaluateCustomerCancellation(status).allowed;
+      const machineAllows = canTransition(status, 'cancelled', 'customer');
+
+      if (policyAllows !== machineAllows) {
+        mismatches.push(
+          `${status}: policy says ${policyAllows}, state machine says ${machineAllows}`,
+        );
+      }
+    }
+
+    expect(mismatches, `\n  ${mismatches.join('\n  ')}\n`).toEqual([]);
+  });
+
+  it('lets the customer cancel while the vendor is still preparing', () => {
+    // The specific case that surfaced the mismatch. The policy charges 30% to
+    // cover the vendor's ingredients and labour, which only makes sense if the
+    // cancellation can actually happen.
+    expect(canTransition('preparing', 'cancelled', 'customer')).toBe(true);
+    expect(evaluateCustomerCancellation('preparing').feeBasisPoints).toBe(3000);
+  });
+
+  it('refuses customer cancellation once the rider is carrying the food', () => {
+    for (const status of ['picked_up', 'en_route', 'arrived'] as const) {
+      expect(canTransition(status, 'cancelled', 'customer'), status).toBe(false);
+      expect(evaluateCustomerCancellation(status).allowed, status).toBe(false);
+    }
+  });
+});
