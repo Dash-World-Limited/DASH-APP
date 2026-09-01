@@ -10,6 +10,8 @@ import {
   haversineMetres,
   isPointInBoundingBox,
   isPointInPolygon,
+  pointToWkt,
+  polygonToWkt,
   isValidLatLng,
   parsePolygon,
   type LatLng,
@@ -295,5 +297,115 @@ describe('coarsen', () => {
   it('keeps the point within ~11m of the original at 4dp', () => {
     const exact = { latitude: 6.428123456, longitude: 3.421987654 };
     expect(haversineMetres(exact, coarsen(exact, 4))).toBeLessThan(11);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WKT — the serialisation PostGIS reads.
+//
+// This is the only place coordinates cross from this codebase into a spatial
+// database, so the ordering assertions here are load-bearing: a swap would put
+// Lagos in the Indian Ocean, and because 6.5/3.4 both look like plausible
+// coordinates it would not be obvious from the numbers.
+// ---------------------------------------------------------------------------
+
+describe('polygonToWkt', () => {
+  const square = {
+    outer: [
+      [3.3, 6.4],
+      [3.6, 6.4],
+      [3.6, 6.7],
+      [3.3, 6.7],
+    ],
+  } as const;
+
+  it('writes longitude first, latitude second', () => {
+    // Deliberately asymmetric: 3.3 and 6.4 cannot be confused for each other,
+    // so a swapped pair changes the string.
+    expect(polygonToWkt({ outer: [[3.3, 6.4], [3.6, 6.4], [3.6, 6.7]] })).toBe(
+      'POLYGON((3.3 6.4, 3.6 6.4, 3.6 6.7, 3.3 6.4))',
+    );
+  });
+
+  it('closes an open ring by repeating the first position', () => {
+    const wkt = polygonToWkt(square);
+    expect(wkt.startsWith('POLYGON((3.3 6.4,')).toBe(true);
+    expect(wkt.endsWith('3.3 6.4))')).toBe(true);
+  });
+
+  it('leaves an already-closed ring alone', () => {
+    const closed = {
+      outer: [
+        [3.3, 6.4],
+        [3.6, 6.4],
+        [3.6, 6.7],
+        [3.3, 6.4],
+      ],
+    } as const;
+    expect(polygonToWkt(closed)).toBe('POLYGON((3.3 6.4, 3.6 6.4, 3.6 6.7, 3.3 6.4))');
+  });
+
+  it('emits holes as additional rings', () => {
+    const withHole = {
+      outer: square.outer,
+      holes: [
+        [
+          [3.4, 6.5],
+          [3.5, 6.5],
+          [3.5, 6.6],
+        ],
+      ],
+    } as const;
+    const wkt = polygonToWkt(withHole);
+    expect(wkt.match(/\(\(/g)).toHaveLength(1);
+    expect(wkt).toContain('),(');
+    expect(wkt).toContain('3.4 6.5');
+  });
+
+  it('refuses a ring with fewer than three positions', () => {
+    expect(() => polygonToWkt({ outer: [[3.3, 6.4], [3.6, 6.4]] })).toThrow(GeoError);
+  });
+
+  it('refuses a non-finite coordinate rather than writing NaN into SQL', () => {
+    expect(() =>
+      polygonToWkt({ outer: [[Number.NaN, 6.4], [3.6, 6.4], [3.6, 6.7]] }),
+    ).toThrow(GeoError);
+    expect(() =>
+      polygonToWkt({ outer: [[3.3, 6.4], [Number.POSITIVE_INFINITY, 6.4], [3.6, 6.7]] }),
+    ).toThrow(GeoError);
+  });
+
+  it('produces nothing that could terminate a SQL string literal', () => {
+    // The value is bound as a parameter regardless, but a serialiser that can
+    // only emit digits and punctuation removes the question entirely.
+    const wkt = polygonToWkt(square);
+    expect(wkt).toMatch(/^[-A-Z0-9 ().,]+$/);
+    expect(wkt).not.toContain("'");
+    expect(wkt).not.toContain(';');
+  });
+
+  it('round-trips agreement with the in-process containment test', () => {
+    // The PostGIS adapter and the local adapter must answer the same question.
+    // This asserts the WKT describes the same ring isPointInPolygon tests.
+    const inside = { latitude: 6.5, longitude: 3.4 };
+    const outside = { latitude: 6.9, longitude: 3.4 };
+    expect(isPointInPolygon(inside, square)).toBe(true);
+    expect(isPointInPolygon(outside, square)).toBe(false);
+
+    const wkt = polygonToWkt(square);
+    for (const [lng, lat] of square.outer) {
+      expect(wkt).toContain(`${lng} ${lat}`);
+    }
+  });
+});
+
+describe('pointToWkt', () => {
+  it('writes longitude first', () => {
+    expect(pointToWkt({ latitude: 6.4281, longitude: 3.4219 })).toBe('POINT(3.4219 6.4281)');
+  });
+
+  it('rejects an out-of-range coordinate', () => {
+    expect(() => pointToWkt({ latitude: 91, longitude: 3.4 })).toThrow(GeoError);
+    expect(() => pointToWkt({ latitude: 6.4, longitude: 181 })).toThrow(GeoError);
   });
 });

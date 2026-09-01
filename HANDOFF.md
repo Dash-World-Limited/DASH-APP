@@ -36,6 +36,8 @@ practised, and external verification — none of which has happened.
 | F | `d25eb22` | Security scanning in CI and operational runbooks |
 | G | `8839312` | Observability seams without a vendor |
 | E | `32180ce` → `71b2fc5` | Account deletion and personal-data export — **merged on `main`** (four commits: initial, then three rounds of review corrections) |
+| I | `0f0c533` | Checkpoint reconciliation — dependency-audit analysis, smoke repair, status corrections |
+| II | *(branch `claude/milestone-ii-postgres-redis`)* | PostgreSQL/PostGIS + Redis production path — **implemented, real-infrastructure verification PENDING** |
 
 **Milestone E is merged on `main` and remains untagged.** It is implemented and
 **locally verified only**: the full suite, typecheck, lint, build, coverage,
@@ -161,11 +163,11 @@ Everything below was run on this machine at this commit.
 
 | Check | Result |
 |---|---|
-| `npm test` | **887 passing**, 28 files, 0 failing |
+| `npm test` | **938 passing**, 31 files, 0 failing |
 | `npm run typecheck` | 4 projects clean |
 | `npm run lint` | clean |
 | `npm run build` | web app builds, 11 routes |
-| Domain coverage | **97.1%** statements · 94.4% branches · 96.24% functions (`src/account` at 100/100/100) |
+| Domain coverage | **97.13%** statements · 94.53% branches · 96.37% functions (`src/account` 100%, `src/geo` 99.02%) |
 | `node scripts/smoke.mjs` | 52/52 |
 | `node scripts/dispatch-check.mjs` | 21/21 |
 | `npm run maintenance:retention -- --dry-run` | runs, reports, writes nothing |
@@ -187,6 +189,27 @@ Everything below was run on this machine at this commit.
 > risk and not a granted exception. Nothing has been suppressed, downgraded,
 > ignored, or force-upgraded to turn the gate green. Full per-advisory analysis
 > and the remediation options are in [`SECURITY.md`](SECURITY.md).
+
+### PENDING — not run, not passed
+
+Milestone II added a PostgreSQL/PostGIS and Redis production path. The machine
+it was built on has **no PostgreSQL, no PostGIS, no Redis, and no Docker**, so
+the following have never been executed. They are written, committed, and
+expected to be run before any of this is trusted. **Do not read the green table
+above as covering them.**
+
+| Check | Status | Command |
+|---|---|---|
+| PostgreSQL fresh migration + status + drift | **PENDING** | `PG_CHECK_URL=... npm run check:postgres` |
+| PostGIS installed and agreeing with the in-process test | **PENDING** | same script |
+| Redis healthy-path queue round trip, dedupe, delay, retry | **PENDING** | `REDIS_CHECK_URL=... npm run check:redis` |
+| Rate-limit counters shared across two instances | **PENDING** | same script |
+
+What *is* covered on this machine: the Redis **unavailable** path (fail-closed
+rate limiting, readiness, enqueue failure) in `redis.test.ts`, the PostGIS
+adapter's query construction and WKT in `postgis.test.ts` and `geo.test.ts`, and
+the two-schema drift guard in `schema-sync.test.ts`. Those are real tests
+against real code; they are not a substitute for the four rows above.
 
 Coverage thresholds are enforced in `vitest.config.ts` at 80/75/80/80.
 

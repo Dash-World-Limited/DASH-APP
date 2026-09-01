@@ -283,3 +283,147 @@ family was never torn down. See bug 11 in `docs/PROGRESS.md`.
 
 **Reversal.** Not intended. Returning to a body-carried refresh token would
 reintroduce the vulnerability this exists to close.
+
+---
+
+## ADR-0008 — Two Prisma schemas, not one dynamic datasource
+
+**Status:** Accepted · Milestone II
+
+**Context.** ADR-0003 chose SQLite for development and PostgreSQL + PostGIS for
+production. Milestone II had to make the production half real without making
+local development need Docker, a database server, or any setup the previous
+milestones did not.
+
+Prisma does not permit this in one file. Three independent constraints:
+
+- `provider` may not be `env()` — Prisma rejects it with P1012.
+- `migration_lock.toml` pins the provider, and migrations refuse to run against
+  a datasource that disagrees with it.
+- The SQLite migration history is SQLite DDL. The committed migrations contain
+  139 `DATETIME` columns and 50 inline `TEXT NOT NULL PRIMARY KEY` declarations;
+  PostgreSQL needs `TIMESTAMP(3)`, `DOUBLE PRECISION`, and separate
+  `ADD CONSTRAINT … PRIMARY KEY`. The same history cannot replay on both.
+
+**Decision.** Keep two schemas and two migration histories.
+`packages/db/prisma/schema.prisma` is authored;
+`packages/db/prisma/postgres/schema.prisma` is **generated** from it by
+`packages/db/src/postgres-schema.ts`, which applies one declared substitution —
+the provider line — and nothing else.
+
+The obvious hazard is that the two drift. Three things stop that:
+
+1. The PostgreSQL schema is generated, never edited. `npm run db:pg:sync`
+   writes it; `--check` verifies it.
+2. `schema-sync.test.ts` asserts regeneration reproduces the checked-in file
+   byte-for-byte, **and** — computed independently of the transform, so a bug in
+   the transform cannot mask a real divergence — that the model surface of both
+   files is character-identical.
+3. Every intentional dialect difference is an entry in `DIALECT_SUBSTITUTIONS`
+   with a written reason. There is one. The schema carries no `@db.*` native
+   type annotations, so Prisma maps every field itself and the models are
+   genuinely the same document in both dialects.
+
+**Alternatives rejected.** Moving development to PostgreSQL would have meant the
+887-test suite could not run without a database server — it builds a per-worker
+SQLite template file — and would have added exactly the local-development
+friction ADR-0003 exists to avoid. A runtime-switched datasource is not
+available to us at any price: Prisma forbids it.
+
+**Reversible?** Yes, in one direction cheaply: dropping SQLite later means
+deleting the authored schema and promoting the generated one. Going the other
+way after production data exists would not be.
+
+---
+
+## ADR-0009 — PostGIS as a query capability, not a column type
+
+**Status:** Accepted · Milestone II
+
+**Context.** `GeoPort.zonesContaining` has always carried the note that "the
+local implementation tests polygons in process; the PostGIS one uses
+`ST_Contains`". Milestone II is where that becomes true. The question was
+whether PostGIS geometry should become part of the data model.
+
+**Decision.** It should not. Geometry is built per query from the `polygon` text
+the schema already stores, using `ST_GeomFromText` over WKT that
+`polygonToWkt()` produces in pure, tested domain code. No column, no
+`Unsupported()` type, no `geometry` in either schema.
+
+Three reasons:
+
+- The domain models did not have to be redesigned, which was an explicit stop
+  condition for this milestone.
+- The two schemas stay byte-identical apart from the provider, so the drift
+  guard in ADR-0008 stays strong. A PostGIS-only column would have been the
+  first entry in a divergence list that tends to grow.
+- Prisma's drift check keeps its meaning. A geometry column outside the model
+  would show as drift on every run, and the usual fix — teaching the check to
+  ignore it — is how a drift check stops catching anything.
+
+**What PostGIS is actually buying.** Not speed, at this size. Correctness: the
+containment test becomes PostgreSQL's own topological predicate rather than a
+hand-written ray cast, which is what gets edges, shared vertices, and holes
+right. And the bounding-box pre-filter now runs in the database against indexed
+columns instead of loading every zone in a city into the API process.
+
+**Known cost.** There is no GiST index, because there is no indexed column to
+build one on. The indexed bounding-box pre-filter is what keeps the exact test
+running over a handful of candidate rows. At a scale where one city holds
+thousands of overlapping zones, the answer is a materialised geometry column
+with a GiST index — which would mean revisiting this ADR and accepting a
+declared divergence between the schemas. That is a deliberate trade recorded
+here, not an oversight.
+
+---
+
+## ADR-0010 — What Redis is trusted with, and how it fails
+
+**Status:** Accepted · Milestone II
+
+**Context.** Redis was needed for two things the in-process implementations
+cannot do across more than one instance: a rate limit that is actually one
+budget, and a queue whose jobs survive a restart. The risk with a cache in the
+request path is that it quietly becomes a single point of failure, or quietly
+becomes the system of record.
+
+**Decision.** Redis holds counters and job payloads. Nothing else.
+
+Sessions, OTP challenges, MFA challenges, idempotency keys, the ledger, and
+every account-lifecycle record stay PostgreSQL rows. `redis.test.ts` asserts
+this by name: a responsibility whose name contains `session`, `otp`, `ledger`,
+`idempotency`, `order`, or `payment` fails the suite. No cache was added,
+because nothing needed one and a cache is an invalidation bug looking for a
+reason to exist.
+
+Each responsibility is classified in `REDIS_RESPONSIBILITIES`, and the register
+is asserted rather than documentary:
+
+| Responsibility | Mode | Correctness-critical | On outage |
+|---|---|---|---|
+| Rate limiting | **fail-closed** | Yes | Requests are rejected |
+| Queue | **retryable** | No | `enqueue` throws; the durable row is untouched |
+
+**Rate limiting fails closed, deliberately.** `@fastify/rate-limit` defaults to
+`skipOnError: true` — fail *open*. `config.ts` already refuses to start
+production with rate limiting disabled, on the grounds that it is the only
+defence against credential stuffing and OTP brute force. A Redis outage that
+silently fell back to no limiting would be that same disabled state, reached by
+accident and visible to nobody. The server registers `skipOnError: false`.
+
+**The consequence, accepted.** A Redis outage takes the API out of service
+rather than degrading it. That is the intended trade for a security control, and
+it is why `/health` and `/health/ready` are exempt from rate limiting: an
+instance must still be able to answer "am I healthy?" during the outage, and a
+load balancer needs 503 (take me out) rather than 429 (slow down). Both routes
+are cheap — liveness touches nothing, readiness runs one `SELECT 1` and one
+`PING` — so there is nothing to amplify.
+
+**Queue failures surface.** An enqueue that cannot reach Redis throws rather
+than returning a fabricated job id. A caller that believes work was queued when
+it was not is how an export sits `pending` for ever with nobody aware.
+
+**Not a hidden single point of failure.** Where Redis sits in the request path
+is written down above, asserted in tests, and visible in readiness — which
+reports the dependency by role (`queue`) rather than by technology, preserving
+the `/health/ready` non-disclosure contract from Milestone G.

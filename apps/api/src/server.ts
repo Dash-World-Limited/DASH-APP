@@ -22,6 +22,9 @@ import {
   MemoryQueueAdapter,
   MockPaymentAdapter,
 } from './adapters/index.js';
+import { PostgisGeoAdapter } from './adapters/postgis.js';
+import { RedisQueueAdapter } from './adapters/redis-queue.js';
+import { createQueueRedis, createRateLimitRedis, pingRedis } from './redis/client.js';
 import { buildKeyring, isEncryptionConfigured, loadConfig, type Config } from './config.js';
 import { registerContext, type Services } from './http/context.js';
 import {
@@ -61,14 +64,24 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     keyring: overrides.keyring ?? (isEncryptionConfigured(config) ? buildKeyring(config) : null),
     prisma,
     payments: overrides.payments ?? new MockPaymentAdapter(),
-    geo: overrides.geo ?? new LocalGeoAdapter(prisma),
+    // PostGIS answers zone containment; everything else geo still comes from
+    // the maps provider, which the PostGIS adapter wraps rather than replaces.
+    geo:
+      overrides.geo ??
+      (config.GEO_ZONES_PROVIDER === 'postgis'
+        ? new PostgisGeoAdapter(prisma, new LocalGeoAdapter(prisma))
+        : new LocalGeoAdapter(prisma)),
     sms: overrides.sms ?? new ConsoleSmsAdapter(quiet),
     email: overrides.email ?? new ConsoleEmailAdapter(quiet),
     push: overrides.push ?? new ConsolePushAdapter(quiet),
     storage: overrides.storage ?? new LocalStorageAdapter(config.STORAGE_LOCAL_DIR),
     exportArchive:
       overrides.exportArchive ?? new LocalExportArchiveAdapter(config.STORAGE_LOCAL_DIR),
-    queue: overrides.queue ?? new MemoryQueueAdapter(),
+    queue:
+      overrides.queue ??
+      (config.QUEUE_PROVIDER === 'redis' && config.REDIS_URL
+        ? new RedisQueueAdapter(createQueueRedis(config.REDIS_URL))
+        : new MemoryQueueAdapter()),
     // Stacks are withheld in production: a stack can carry interpolated values
     // from the frame that threw, and those are exactly what must not travel to
     // a third party.
@@ -166,10 +179,21 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   });
 
   // --- Rate limiting ---------------------------------------------------------
+  // Counters live in Redis when configured, so a limit is shared across
+  // instances instead of being multiplied by the instance count. `skipOnError`
+  // is the security-critical option here: its default is `true`, which fails
+  // *open* and would silently remove the only defence against credential
+  // stuffing and OTP brute force during a Redis outage. See redis/client.ts.
+  const rateLimitRedis =
+    config.RATE_LIMIT_REDIS && config.REDIS_URL
+      ? createRateLimitRedis(config.REDIS_URL)
+      : null;
+
   await app.register(rateLimit, {
     global: true,
     max: 300,
     timeWindow: '1 minute',
+    ...(rateLimitRedis ? { redis: rateLimitRedis, skipOnError: false } : {}),
     // Registered unconditionally so the plugin, its hooks, and the route-level
     // `config.rateLimit` declarations are exercised identically everywhere.
     // When disabled, every request is allow-listed rather than the plugin being
@@ -181,6 +205,12 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     keyGenerator: (request) => request.actor?.identityId ?? request.ip,
     addHeadersOnExceeding: { 'x-ratelimit-remaining': true },
   });
+
+  if (rateLimitRedis) {
+    app.addHook('onClose', async () => {
+      await rateLimitRedis.quit().catch(() => rateLimitRedis.disconnect());
+    });
+  }
 
   registerContext(app, services);
   registerErrorHandler(app);
@@ -206,7 +236,14 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   // purpose: if liveness failed when the database was briefly unreachable, an
   // orchestrator would restart every instance during a blip and turn a
   // recoverable incident into an outage.
-  app.get('/health', async () => ({ status: 'ok' }));
+  //
+  // Exempt from rate limiting. With the Redis-backed limiter failing closed
+  // (see below), a Redis outage would otherwise make an instance unable to
+  // answer "am I healthy?" at the exact moment an orchestrator most needs to
+  // know — and readiness would return 429 instead of 503, which a load
+  // balancer reads as "throttled", not "take me out of rotation". This route
+  // touches no dependency at all, so there is nothing to amplify.
+  app.get('/health', { config: { rateLimit: false } }, async () => ({ status: 'ok' }));
 
   // --- Readiness -------------------------------------------------------------
   // "Should this instance receive traffic?" This one does check dependencies:
@@ -218,10 +255,27 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   // which hosts they live on, what version is deployed, or why a check failed.
   // A payment provider name is a small thing to leak, but it is free
   // reconnaissance and there is no reason to give it away.
-  app.get('/health/ready', async (request, reply) => {
+  // Exempt from rate limiting for the same reason as `/health`, and at a
+  // similar cost: one `SELECT 1` plus, when configured, one Redis `PING`.
+  // Volumetric protection for these belongs at the load balancer, which is
+  // also the thing polling them.
+  app.get('/health/ready', { config: { rateLimit: false } }, async (request, reply) => {
     const checks = [
       await checkDependency('database', () => request.services.prisma.$queryRaw`SELECT 1`),
     ];
+
+    // Named for its role, not its technology, exactly as `database` is. The
+    // response must not disclose that the queue is Redis any more than it
+    // discloses that the database is PostgreSQL — an unauthenticated endpoint
+    // naming its infrastructure is free reconnaissance.
+    if (rateLimitRedis) {
+      checks.push(
+        await checkDependency('queue', async () => {
+          if (!(await pingRedis(rateLimitRedis))) throw new Error('unavailable');
+          return true;
+        }),
+      );
+    }
 
     const ready = checks.every((check) => check.status === 'ok');
 

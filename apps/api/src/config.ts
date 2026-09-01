@@ -67,6 +67,19 @@ const schema = z
     QUEUE_PROVIDER: z.enum(['memory', 'redis']).default('memory'),
     REDIS_URL: z.string().optional(),
 
+    // Which implementation answers `GeoPort.zonesContaining`. `postgis` pushes
+    // the point-in-polygon test into the database as `ST_Contains`; `local`
+    // tests rings in process. Kept separate from MAPS_PROVIDER because PostGIS
+    // answers containment but cannot route or geocode — the PostGIS adapter
+    // delegates those to the maps provider unchanged.
+    GEO_ZONES_PROVIDER: z.enum(['local', 'postgis']).default('local'),
+
+    // Backs rate limiting with Redis so a limit is shared across instances
+    // rather than counted per process. Off by default; production requires it
+    // (see below) because per-process counters multiply the real limit by the
+    // instance count.
+    RATE_LIMIT_REDIS: booleanish.default('false'),
+
     // `silent` is a real Pino level and the right one for tests — a passing
     // suite should not print a wall of request logs.
     LOG_LEVEL: z
@@ -195,7 +208,21 @@ const schema = z
 
     // Account-deletion and export windows, against the domain policy's bounds.
     try {
-      assertCoolingOffDays(env.ACCOUNT_DELETION_COOLING_OFF_DAYS);
+      // --- Redis and PostGIS coherence (every environment) --------------------
+    // A misconfiguration that only surfaces in production is a misconfiguration
+    // staging never rehearsed, so these run everywhere rather than inside the
+    // production block below.
+    if (env.RATE_LIMIT_REDIS && !env.REDIS_URL) {
+      fail('REDIS_URL', 'Required when RATE_LIMIT_REDIS is true — the limiter has nowhere to keep its counters');
+    }
+    if (env.GEO_ZONES_PROVIDER === 'postgis' && env.DATABASE_URL.startsWith('file:')) {
+      fail(
+        'GEO_ZONES_PROVIDER',
+        'PostGIS zone containment needs a PostgreSQL database; DATABASE_URL points at SQLite',
+      );
+    }
+
+    assertCoolingOffDays(env.ACCOUNT_DELETION_COOLING_OFF_DAYS);
     } catch (error) {
       fail(
         'ACCOUNT_DELETION_COOLING_OFF_DAYS',
@@ -270,6 +297,18 @@ const schema = z
     }
     if (env.QUEUE_PROVIDER === 'memory') {
       fail('QUEUE_PROVIDER', 'The in-memory queue loses jobs on restart and cannot be shared across instances');
+    }
+    if (env.GEO_ZONES_PROVIDER === 'local') {
+      fail(
+        'GEO_ZONES_PROVIDER',
+        'The local adapter loads every zone in a city and tests rings in process; production runs the containment test in PostGIS',
+      );
+    }
+    if (!env.RATE_LIMIT_REDIS) {
+      fail(
+        'RATE_LIMIT_REDIS',
+        'Per-process rate-limit counters multiply the real limit by the number of instances; production must share them through Redis',
+      );
     }
 
     // --- Credentials required by the chosen providers ------------------------

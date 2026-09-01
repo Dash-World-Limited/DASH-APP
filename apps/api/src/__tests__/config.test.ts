@@ -37,6 +37,8 @@ function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEn
     STORAGE_PROVIDER: 's3',
     QUEUE_PROVIDER: 'redis',
     REDIS_URL: 'redis://cache.internal:6379',
+    RATE_LIMIT_REDIS: 'true',
+    GEO_ZONES_PROVIDER: 'postgis',
     // Obviously fake, generated for this file, and only ever used against
     // an in-memory config object. Never decrypts anything real.
     ENCRYPTION_KEY: 'YpTt1KNH1JtX0eaiUaPNFWHApAQl8BggrrhxcNgy604=',
@@ -122,6 +124,10 @@ describe('DEV_EXPOSE_OTP is refused in production', () => {
       ...productionEnv({ DEV_EXPOSE_OTP: 'true' }),
       NODE_ENV: 'development',
       DATABASE_URL: 'file:./dev.db',
+      // SQLite cannot answer an ST_Contains, so the zone adapter comes back
+      // with it. The guard that enforces this pairing runs in every
+      // environment, which is why it applies here.
+      GEO_ZONES_PROVIDER: 'local',
     });
     expect(config.DEV_EXPOSE_OTP).toBe(true);
   });
@@ -379,5 +385,90 @@ describe('MFA and encryption configuration', () => {
     // A rotation half-applied. The active entry wins rather than there being
     // two candidates for one id.
     expect(buildKeyring(config).retired).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Milestone II: the PostgreSQL and Redis production path.
+//
+// Each of these is a way to reach production with the new infrastructure only
+// half-wired — the failure mode being that everything appears to work while a
+// security control is quietly absent or a query is silently slower.
+// ---------------------------------------------------------------------------
+
+describe('the PostgreSQL and Redis production path', () => {
+  it('refuses per-process rate-limit counters in production', () => {
+    // Without Redis, each instance keeps its own counters, so the real limit is
+    // the configured one multiplied by the instance count. Ten pods means ten
+    // times the login attempts before anyone is throttled.
+    expectRefusal({ RATE_LIMIT_REDIS: 'false' }, 'RATE_LIMIT_REDIS');
+  });
+
+  it('refuses the in-process zone adapter in production', () => {
+    expectRefusal({ GEO_ZONES_PROVIDER: 'local' }, 'GEO_ZONES_PROVIDER');
+  });
+
+  it('refuses Redis-backed rate limiting with nowhere to keep the counters', () => {
+    expectRefusal({ REDIS_URL: '' }, 'REDIS_URL');
+  });
+
+  it('refuses PostGIS against a SQLite database', () => {
+    // The guard runs in every environment, not just production — a
+    // misconfiguration that only surfaces in production is one staging never
+    // rehearsed.
+    resetConfigCache();
+    let message = '';
+    try {
+      loadConfig({
+        NODE_ENV: 'development',
+        DATABASE_URL: 'file:./dev.db',
+        JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+        JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+        ENCRYPTION_KEY: 'YpTt1KNH1JtX0eaiUaPNFWHApAQl8BggrrhxcNgy604=',
+        GEO_ZONES_PROVIDER: 'postgis',
+      });
+      throw new Error('Expected the configuration to be refused, but it loaded.');
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('GEO_ZONES_PROVIDER');
+  });
+
+  it('accepts the local zone adapter against SQLite in development', () => {
+    resetConfigCache();
+    const config = loadConfig({
+      NODE_ENV: 'development',
+      DATABASE_URL: 'file:./dev.db',
+      JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+      JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+      ENCRYPTION_KEY: 'YpTt1KNH1JtX0eaiUaPNFWHApAQl8BggrrhxcNgy604=',
+    });
+    // The development default is unchanged by this milestone: SQLite, the
+    // in-process zone adapter, the in-memory queue, and local rate limiting.
+    expect(config.GEO_ZONES_PROVIDER).toBe('local');
+    expect(config.QUEUE_PROVIDER).toBe('memory');
+    expect(config.RATE_LIMIT_REDIS).toBe(false);
+  });
+
+  it('still refuses SQLite in production', () => {
+    expectRefusal({ DATABASE_URL: 'file:./dev.db' }, 'DATABASE_URL');
+  });
+
+  it('never echoes a Redis URL or a database password in a refusal', () => {
+    resetConfigCache();
+    let message = '';
+    try {
+      loadConfig(
+        productionEnv({
+          RATE_LIMIT_REDIS: 'false',
+          REDIS_URL: 'redis://:sup3rs3cret@cache.internal:6379',
+          DATABASE_URL: 'postgresql://dash:hunter2@db.internal:5432/dash',
+        }),
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).not.toContain('sup3rs3cret');
+    expect(message).not.toContain('hunter2');
   });
 });

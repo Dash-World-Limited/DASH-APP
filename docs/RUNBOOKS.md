@@ -279,3 +279,104 @@ routing decision is not also a policy decision.
 Undecided and blocking: who is on call, what the escalation path is, and what
 the acknowledgement target is per severity. An alert with no owner is a log
 line.
+
+
+---
+
+## PostgreSQL, PostGIS, and Redis — bringing the production path up
+
+**Status: implemented, not yet verified against real services.** Nothing below
+has been run against a real PostgreSQL or Redis, because the machine this was
+built on has neither. The two verification scripts exist and are expected to be
+run before any of this is trusted.
+
+### 1. PostgreSQL
+
+```bash
+createdb dash
+psql -d dash -c 'CREATE EXTENSION IF NOT EXISTS postgis;'
+
+# The PostgreSQL schema is generated from the SQLite one. Check it is current:
+npm run db:pg:sync -- --check
+
+# Generate the client for PostgreSQL, then migrate.
+DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/dash?schema=public' npm run db:pg:generate
+DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/dash?schema=public' npm run db:pg:migrate
+DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/dash?schema=public' npm run db:pg:migrate:status
+```
+
+`db:pg:generate` matters and is easy to forget. The Prisma client embeds its
+datasource provider at generation time, so a client generated from the SQLite
+schema will not talk to PostgreSQL — the switch is a build step, not a runtime
+one. A production image must run `db:pg:generate`, not `db:generate`.
+
+### 2. Verify it
+
+```bash
+PG_CHECK_URL='postgresql://USER:PASSWORD@HOST:5432/dash_verify' npm run check:postgres
+REDIS_CHECK_URL='redis://HOST:6379' npm run check:redis
+```
+
+Point `check:postgres` at a **throwaway database**. It migrates from zero and
+writes a temporary city and zone, then deletes them.
+
+`check:postgres` proves the migration history applies to an empty database,
+that `migrate status` is clean and drift is zero, that PostGIS answers, and —
+the part that matters — that PostGIS and the in-process adapter give the same
+containment answer for a point on an edge, a point in a hole, and a point just
+outside a vertex.
+
+`check:redis` proves a job round-trips, that an idempotency key runs a job
+exactly once, that a delayed job waits, that a failing job stops at its attempt
+limit, and that two API instances sharing one Redis enforce **one** rate-limit
+budget between them.
+
+### 3. Runtime configuration
+
+```
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/dash?schema=public
+REDIS_URL=redis://:PASSWORD@HOST:6379
+QUEUE_PROVIDER=redis
+RATE_LIMIT_REDIS=true
+GEO_ZONES_PROVIDER=postgis
+```
+
+`config.ts` refuses to start production without all of these. The two that are
+easy to leave wrong and would not be noticed:
+
+- `RATE_LIMIT_REDIS=false` gives every instance its own counters, so the real
+  limit is the configured one multiplied by the instance count.
+- `GEO_ZONES_PROVIDER=local` loads every zone in a city into the API process on
+  each containment query.
+
+### 4. When Redis goes down
+
+**The API stops serving, deliberately.** Rate limiting is registered with
+`skipOnError: false`, so a Redis outage rejects requests rather than silently
+removing the only defence against credential stuffing and OTP brute force. See
+ADR-0010.
+
+What to expect, and what to check:
+
+| Symptom | Meaning |
+|---|---|
+| `/health` still returns 200 | Correct. Liveness is exempt from rate limiting; the process is fine. |
+| `/health/ready` returns 503 with `queue` not `ok` | Correct. The load balancer should take this instance out of rotation. |
+| Requests return 429/500 | Correct — fail-closed. Not a bug to work around. |
+| Jobs stop draining | Expected. Enqueue throws; nothing is silently dropped. |
+
+Do **not** "fix" an outage by setting `RATE_LIMIT_REDIS=false`. That converts a
+visible outage into an invisible removal of a security control, which is the
+exact failure this design exists to prevent. Restore Redis instead.
+
+Durable state is unaffected by a Redis outage: sessions, OTP challenges,
+idempotency keys, orders, payments, and the ledger are all PostgreSQL rows.
+
+### 5. Known limitation — the pending-export gap
+
+If an enqueue fails after its row is committed, a `DataExportRequest` stays
+`pending` with no job to build it. `findStaleExportBuilds` only sweeps rows in
+`building`, so nothing currently retries a `pending` one. This predates
+Milestone II — the same gap exists with the in-memory queue if the process dies
+between the two — but a Redis outage makes it easier to hit. Worth a sweep for
+`pending` rows older than the build claim window.

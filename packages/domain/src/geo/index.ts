@@ -330,3 +330,65 @@ export function coarsen(point: LatLng, decimals = 4): LatLng {
     longitude: Math.round(point.longitude * factor) / factor,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Well-Known Text
+//
+// The serialisation PostGIS reads. It lives here, in pure code, rather than
+// being assembled inside a SQL string in the adapter: building geometry by
+// concatenating SQL is how coordinate-order bugs and injection holes both get
+// in, and a pure function can be tested exhaustively without a database —
+// which matters because this machine has no PostgreSQL to test against.
+// ---------------------------------------------------------------------------
+
+/** A ring, closed if it was not already. WKT requires first and last to match. */
+function closedRing(ring: Ring): readonly Position[] {
+  if (ring.length < 3) {
+    throw new GeoError('A polygon ring needs at least 3 positions');
+  }
+  const first = ring[0]!;
+  const last = ring[ring.length - 1]!;
+  return first[0] === last[0] && first[1] === last[1] ? ring : [...ring, first];
+}
+
+/**
+ * Format one coordinate for WKT.
+ *
+ * Rejects anything non-finite rather than emitting `NaN` or `Infinity`, which
+ * PostGIS would either reject with an opaque error or silently coerce.
+ */
+function wktNumber(value: number): string {
+  if (!Number.isFinite(value)) {
+    throw new GeoError(`Coordinate ${String(value)} is not a finite number`);
+  }
+  return String(value);
+}
+
+function ringToWkt(ring: Ring): string {
+  const positions = closedRing(ring)
+    .map(([longitude, latitude]) => `${wktNumber(longitude)} ${wktNumber(latitude)}`)
+    .join(', ');
+  return `(${positions})`;
+}
+
+/**
+ * A polygon as WKT, in `POLYGON((outer),(hole),(hole))` form.
+ *
+ * Positions stay in [longitude, latitude] order, which is both GeoJSON order
+ * and WKT order — no swap happens here, and a test asserts that a deliberately
+ * asymmetric polygon survives with longitude first.
+ *
+ * The output contains only digits, `.`, `-`, `,`, spaces, and parentheses, so
+ * it cannot terminate a SQL string literal. It is nonetheless passed to
+ * PostGIS as a bound parameter, never interpolated.
+ */
+export function polygonToWkt(polygon: Polygon): string {
+  const rings = [polygon.outer, ...(polygon.holes ?? [])];
+  return `POLYGON(${rings.map(ringToWkt).join(',')})`;
+}
+
+/** A point as WKT: `POINT(longitude latitude)`. */
+export function pointToWkt(point: LatLng): string {
+  assertValidLatLng(point);
+  return `POINT(${wktNumber(point.longitude)} ${wktNumber(point.latitude)})`;
+}

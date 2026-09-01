@@ -1,0 +1,116 @@
+/**
+ * The SQLite → PostgreSQL schema transform.
+ *
+ * Prisma allows exactly one `provider` per datasource, and forbids `env()` in
+ * that argument (P1012). One schema therefore cannot serve both the SQLite
+ * development database and the PostgreSQL production one, so this repository
+ * checks in two — and this module is the only thing allowed to produce the
+ * second from the first.
+ *
+ * The point is that the two can never silently diverge. `schema.prisma` is
+ * authored by hand; `postgres/schema.prisma` is *generated* by
+ * `toPostgresSchema()` and verified byte-for-byte by `schema-sync.test.ts`. A
+ * model added to one and forgotten in the other fails the test rather than
+ * shipping.
+ *
+ * Every intentional dialect difference is a declared entry in
+ * `DIALECT_SUBSTITUTIONS` with a written reason. Adding one is a visible,
+ * reviewable change; there is deliberately no escape hatch that lets a
+ * difference exist without being declared here.
+ */
+
+/** A single intentional difference between the two schemas. */
+export interface DialectSubstitution {
+  /** Exact text in the SQLite schema. Must appear exactly once. */
+  readonly from: string;
+  /** What it becomes in the PostgreSQL schema. */
+  readonly to: string;
+  /** Why this difference is necessary. Shown in the failure message. */
+  readonly why: string;
+}
+
+/**
+ * The complete list of intentional differences.
+ *
+ * It is one entry long, and that is the useful fact: the models, fields,
+ * relations, indexes, and constraints are character-identical across both
+ * dialects. `schema.prisma` carries no `@db.*` native type annotations, so
+ * Prisma maps every field itself — `DateTime` becomes SQLite `DATETIME` or
+ * PostgreSQL `TIMESTAMP(3)`, `Float` becomes `REAL` or `DOUBLE PRECISION` —
+ * without either schema having to say so.
+ */
+export const DIALECT_SUBSTITUTIONS: readonly DialectSubstitution[] = [
+  {
+    from: 'provider = "sqlite"',
+    to: 'provider = "postgresql"',
+    why: 'The datasource provider is the one thing Prisma will not take from the environment (P1012), so it has to be baked into a separate file.',
+  },
+];
+
+/** Prepended to the generated file so nobody edits it by hand. */
+export const GENERATED_HEADER = `// GENERATED FILE — DO NOT EDIT.
+//
+// Produced from packages/db/prisma/schema.prisma by
+// packages/db/src/postgres-schema.ts. Regenerate with:
+//
+//   npm run db:pg:sync
+//
+// Verified byte-for-byte by packages/db/src/schema-sync.test.ts, so editing
+// this file by hand fails the test suite rather than drifting silently. Change
+// schema.prisma instead; if the change is genuinely dialect-specific, declare
+// it in DIALECT_SUBSTITUTIONS with a reason.
+`;
+
+export class SchemaSyncError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SchemaSyncError';
+  }
+}
+
+/**
+ * Transform the authored SQLite schema into the PostgreSQL one.
+ *
+ * Every substitution must match exactly once. Zero matches means the anchor has
+ * moved and the transform is silently doing nothing; more than one means the
+ * anchor is ambiguous and the result depends on ordering. Both are refused
+ * rather than guessed at.
+ */
+export function toPostgresSchema(sqliteSchema: string): string {
+  let out = sqliteSchema;
+
+  for (const substitution of DIALECT_SUBSTITUTIONS) {
+    const occurrences = out.split(substitution.from).length - 1;
+    if (occurrences !== 1) {
+      throw new SchemaSyncError(
+        `The dialect substitution ${JSON.stringify(substitution.from)} matched ${occurrences} times in schema.prisma; it must match exactly once. ` +
+          `Either the schema moved and the substitution needs updating, or the anchor is ambiguous. Reason for this substitution: ${substitution.why}`,
+      );
+    }
+    out = out.replace(substitution.from, substitution.to);
+  }
+
+  return `${GENERATED_HEADER}\n${out}`;
+}
+
+/**
+ * Everything in a schema that is *not* a datasource or generator block.
+ *
+ * This is the half that must be identical across dialects. Comparing it
+ * independently of `toPostgresSchema` means a bug in the transform cannot hide
+ * a real divergence: the transform could be wrong and this check would still
+ * catch a model that exists in one file and not the other.
+ */
+export function modelSurface(schema: string): string {
+  const withoutBlocks = schema.replace(
+    /^(datasource|generator)\s+\w+\s*\{[^}]*\}/gm,
+    '',
+  );
+  // Drop comment-only lines and blank lines so a reworded comment is not
+  // reported as a schema difference.
+  return withoutBlocks
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0 && !line.trimStart().startsWith('//'))
+    .join('\n');
+}
