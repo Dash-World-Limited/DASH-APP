@@ -366,6 +366,35 @@ Controls actually exercised by an automated check, not merely written:
 
 Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
 
+### High
+
+1. **`npm audit` fails, and CI's dependency job is red.** Not introduced by this
+   work — every advisory is in a pre-existing transitive dependency, and
+   advisories publish against unchanged trees.
+
+   | Package | Sev | Reached via | Where it runs |
+   |---|---|---|---|
+   | `deepmerge-ts` | High | `prisma` → `@prisma/config` | Prisma CLI, at `db:generate` / `db:push` |
+   | `postcss` | High | `next` (pins 8.4.31 internally) | Next build |
+   | `vite` | High | `vitest` | Test runner |
+   | `@vitest/mocker` | Critical | `vitest` | **Only when the Vitest UI server is listening** — this repository never starts it |
+
+   **None is reachable in the deployed runtime path.** The API ships
+   `@prisma/client`, not the `prisma` CLI; PostCSS runs at build time, not per
+   request; Vite and Vitest are test-only.
+
+   Remediation was attempted and reverted: npm `overrides` for `postcss` and
+   `deepmerge-ts` register but do not displace Next's internally pinned copy,
+   and `npm audit fix --force` means major upgrades of Next and Vitest that
+   need their own verification pass.
+
+   **The gate has deliberately not been weakened to make it pass.** Per the
+   original build specification, a release may proceed on unresolved high
+   findings only with a *documented, time-bounded exception* — this is the
+   documentation for one, and granting it is an owner decision, not an
+   engineering one. The alternatives are: wait for upstream patch releases, or
+   schedule the major upgrades with a full re-verification.
+
 ### Medium
 
 1. **No DAST, and no container or infrastructure scanning.** CodeQL (SAST),

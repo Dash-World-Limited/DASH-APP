@@ -160,6 +160,20 @@ Everything below was run on this machine at this commit.
 | `node scripts/smoke.mjs` | 49/49 |
 | `node scripts/dispatch-check.mjs` | 21/21 |
 | `npm run maintenance:retention -- --dry-run` | runs, reports, writes nothing |
+| `npm audit --audit-level=high` | **FAILS — exit 1**, see below |
+| `git diff --check` | clean |
+| `git status --short` | clean |
+
+> **`npm audit` fails and CI's dependency job is red.** Four high/critical
+> advisories, all in pre-existing transitive dependencies — the Prisma CLI,
+> Next's internally pinned PostCSS, and Vite/Vitest. **None is reachable in the
+> deployed runtime path**, and the Vitest one requires a UI server this
+> repository never starts. Targeted `overrides` were attempted and reverted
+> because they do not displace Next's pinned copy; `--force` means major
+> upgrades needing their own verification. The gate was deliberately **not**
+> weakened to make it pass. Full analysis and the remediation options are in
+> [`SECURITY.md`](../SECURITY.md); accepting a time-bounded exception is an
+> owner decision.
 
 Coverage thresholds are enforced in `vitest.config.ts` at 80/75/80/80.
 
