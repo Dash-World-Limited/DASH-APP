@@ -384,8 +384,25 @@ export async function buildDataExport(
   }
 
   if ((request.buildAttempts ?? 0) >= EXPORT_BUILD_MAX_ATTEMPTS) {
+    // Fail only the exact state we read a moment ago.
+    //
+    // Between that read and this write another worker may have reclaimed the
+    // stale claim and started a real build. Failing "any pending or building
+    // row" would destroy that live work and orphan its blob, so a `pending`
+    // row must still be pending and a stale `building` row must still carry
+    // the very claim we observed.
+    const guard =
+      request.status === 'pending'
+        ? { id: request.id, status: 'pending' }
+        : {
+            id: request.id,
+            status: 'building',
+            buildClaimId: request.buildClaimId,
+            buildClaimUntil: request.buildClaimUntil,
+          };
+
     const failed = await prisma.dataExportRequest.updateMany({
-      where: { id: request.id, status: { in: ['pending', 'building'] } },
+      where: guard,
       data: {
         status: 'failed',
         failedAt: now,
@@ -394,7 +411,14 @@ export async function buildDataExport(
         buildClaimUntil: null,
       },
     });
+
     if (failed.count > 0) {
+      // We own the outcome, so any blob the abandoned attempt left behind is
+      // ours to drop — and only now, after winning, so a reclaiming worker's
+      // archive is never deleted.
+      if (request.storageKey) {
+        await releaseArchive(prisma, archive, request.id, request.storageKey);
+      }
       await writeAudit(prisma, {
         identityId: request.identityId,
         action: 'account.export.failed',
@@ -402,8 +426,14 @@ export async function buildDataExport(
         resourceId: request.id,
       });
     }
+
     const after = await prisma.dataExportRequest.findUniqueOrThrow({ where: { id: request.id } });
-    return { view: toView(after, now), status: after.status as ExportStatus, skipped: true };
+    return {
+      view: toView(after, now),
+      status: after.status as ExportStatus,
+      // A lost race wrote nothing; say so rather than claim the outcome.
+      skipped: failed.count === 0,
+    };
   }
 
   // --- Claim -------------------------------------------------------------
@@ -516,6 +546,37 @@ export async function buildDataExport(
 const DOWNLOAD_LEASE_MS = EXPORT_DOWNLOAD_LEASE_SECONDS * 1000;
 
 /**
+ * Delete an archive and clear the row's reference to it — **in that order, and
+ * only on success**.
+ *
+ * The ordering is the point. Clearing `storageKey` after a delete that failed
+ * loses the only reference to the blob, and no sweep can ever find it again.
+ * Keeping the key on failure turns the row into a tracked orphan that
+ * `findOrphanedExportArchives` picks up and retries.
+ *
+ * The clear is guarded on the exact key we deleted, so it can never null a key
+ * some other worker has since written.
+ */
+async function releaseArchive(
+  prisma: PrismaClient,
+  archive: ExportArchivePort,
+  requestId: string,
+  storageKey: string,
+): Promise<boolean> {
+  const deleted = await archive
+    .delete(storageKey)
+    .then(() => true)
+    .catch(() => false);
+  if (deleted) {
+    await prisma.dataExportRequest.updateMany({
+      where: { id: requestId, storageKey },
+      data: { storageKey: null },
+    });
+  }
+  return deleted;
+}
+
+/**
  * Consume a download.
  *
  * Two-phase, so a transient storage outage cannot burn the one permitted
@@ -563,14 +624,19 @@ export async function consumeDataExportDownload(
     request.expiresAt.getTime() <= now.getTime()
   ) {
     if (request.status === 'ready') {
-      // Expired on the way in. Delete the archive here rather than leave an
-      // orphan the maintenance sweep will never revisit — it only looks for
-      // rows still `ready`.
-      if (request.storageKey) await archive.delete(request.storageKey).catch(() => undefined);
-      await prisma.dataExportRequest.updateMany({
+      // Expired on the way in. Make the state transition *first*: once the row
+      // is `expired` no download can lease it, so the blob is ours to remove
+      // and we cannot delete it from under an in-flight reader.
+      const expired = await prisma.dataExportRequest.updateMany({
         where: { id: request.id, status: 'ready' },
-        data: { status: 'expired', storageKey: null },
+        data: { status: 'expired' },
       });
+      // Only the caller that actually performed the transition owns the blob.
+      // If the delete fails, `storageKey` stays put and the orphan sweep
+      // retries it — losing the reference here would strand the bytes forever.
+      if (expired.count > 0 && request.storageKey) {
+        await releaseArchive(prisma, archive, request.id, request.storageKey);
+      }
     }
     throw new DataExportError('expired', 'This export link is no longer valid.');
   }
@@ -678,17 +744,28 @@ export async function findExpiredExports(
   });
 }
 
-/** Mark one expired export and delete its archive. Idempotent. */
+/**
+ * Mark one expired export and delete its archive. Idempotent.
+ *
+ * Transition first, then delete: an `expired` row can no longer be leased for
+ * download, so the blob is unambiguously ours to remove. A delete that fails
+ * leaves `storageKey` in place, and the row becomes a tracked orphan for
+ * `findOrphanedExportArchives` — the expiry itself still stands.
+ */
 export async function expireDataExport(
   prisma: PrismaClient,
   archive: ExportArchivePort,
   row: { id: string; storageKey: string | null },
 ): Promise<void> {
-  if (row.storageKey) await archive.delete(row.storageKey).catch(() => undefined);
-  await prisma.dataExportRequest.updateMany({
+  const expired = await prisma.dataExportRequest.updateMany({
     where: { id: row.id, status: 'ready' },
-    data: { status: 'expired', storageKey: null },
+    data: { status: 'expired' },
   });
+  // Lost the race to another sweep or to a download that just committed. The
+  // winner owns the blob; leave it alone.
+  if (expired.count === 0) return;
+
+  if (row.storageKey) await releaseArchive(prisma, archive, row.id, row.storageKey);
 }
 
 /** `building` rows whose claim has gone stale — an abandoned build. */
@@ -696,57 +773,69 @@ export async function findStaleExportBuilds(
   prisma: PrismaClient,
   now: Date = new Date(),
   limit = 500,
-): Promise<{ id: string; identityId: string; storageKey: string | null }[]> {
+): Promise<
+  { id: string; identityId: string; storageKey: string | null; buildClaimId: string | null }[]
+> {
   return prisma.dataExportRequest.findMany({
     where: { status: 'building', buildClaimUntil: { lte: now } },
-    select: { id: true, identityId: true, storageKey: true },
+    select: { id: true, identityId: true, storageKey: true, buildClaimId: true },
     take: limit,
   });
 }
 
 /**
- * Fail one abandoned build and drop any half-written blob. Idempotent, and
- * guarded so it never touches a row a worker has since reclaimed.
+ * Fail one abandoned build and drop any half-written blob.
+ *
+ * Idempotent, and pinned to the exact stale claim that was observed, so a row
+ * another worker has since reclaimed is left alone. As everywhere else: win the
+ * transition first, then delete, and keep `storageKey` if the delete fails so
+ * the orphan sweep can retry.
  */
 export async function failStaleExportBuild(
   prisma: PrismaClient,
   archive: ExportArchivePort,
-  row: { id: string; identityId: string; storageKey: string | null },
+  row: { id: string; identityId: string; storageKey: string | null; buildClaimId?: string | null },
   now: Date = new Date(),
 ): Promise<boolean> {
-  if (row.storageKey) await archive.delete(row.storageKey).catch(() => undefined);
   const failed = await prisma.dataExportRequest.updateMany({
-    where: { id: row.id, status: 'building', buildClaimUntil: { lte: now } },
+    where: {
+      id: row.id,
+      status: 'building',
+      buildClaimUntil: { lte: now },
+      ...(row.buildClaimId === undefined ? {} : { buildClaimId: row.buildClaimId }),
+    },
     data: {
       status: 'failed',
       failedAt: now,
       failureReason: 'the build was abandoned before it completed',
-      storageKey: null,
       buildClaimId: null,
       buildClaimUntil: null,
     },
   });
-  if (failed.count > 0) {
-    await writeAudit(prisma, {
-      identityId: row.identityId,
-      action: 'account.export.failed',
-      resourceType: 'data_export',
-      resourceId: row.id,
-    });
-  }
-  return failed.count > 0;
+  if (failed.count === 0) return false;
+
+  if (row.storageKey) await releaseArchive(prisma, archive, row.id, row.storageKey);
+
+  await writeAudit(prisma, {
+    identityId: row.identityId,
+    action: 'account.export.failed',
+    resourceType: 'data_export',
+    resourceId: row.id,
+  });
+  return true;
 }
 
 /**
- * `delivered` rows that still carry a `storageKey` — a download whose archive
- * delete failed. The bytes are already spent; this just retries the delete.
+ * Terminal rows that still carry a `storageKey` — an archive whose delete
+ * failed at download, expiry, or build-failure time. The row is finished with;
+ * this is purely the retry of the delete that did not stick.
  */
 export async function findOrphanedExportArchives(
   prisma: PrismaClient,
   limit = 500,
 ): Promise<{ id: string; storageKey: string | null }[]> {
   return prisma.dataExportRequest.findMany({
-    where: { status: { in: ['delivered', 'expired'] }, storageKey: { not: null } },
+    where: { status: { in: ['delivered', 'expired', 'failed'] }, storageKey: { not: null } },
     select: { id: true, storageKey: true },
     take: limit,
   });
@@ -759,15 +848,5 @@ export async function cleanOrphanedExportArchive(
   row: { id: string; storageKey: string | null },
 ): Promise<boolean> {
   if (!row.storageKey) return false;
-  const deleted = await archive
-    .delete(row.storageKey)
-    .then(() => true)
-    .catch(() => false);
-  if (deleted) {
-    await prisma.dataExportRequest.updateMany({
-      where: { id: row.id, storageKey: row.storageKey },
-      data: { storageKey: null },
-    });
-  }
-  return deleted;
+  return releaseArchive(prisma, archive, row.id, row.storageKey);
 }

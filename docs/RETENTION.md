@@ -108,9 +108,16 @@ says so in its own manifest.
 The download reads the archive **before** it marks the row delivered, under a
 short exclusive lease, so a transient object-storage outage returns a retryable
 `503` and never consumes the one permitted download. The bytes are deleted the
-instant a download completes; a delete that fails leaves the row as the record
-that cleanup is still owed, and the maintenance orphan sweep retries it. An
-archive left unread past its window is deleted by the expiry sweep.
+instant a download completes, and an archive left unread past its window is
+deleted by the expiry sweep.
+
+Every path that removes an archive follows the same order — **make the state
+transition first, then delete, and clear `storageKey` only once the delete is
+confirmed**. A delete that fails therefore leaves the row terminal (delivered,
+expired, or failed) but still holding its key, which is exactly what the
+maintenance orphan sweep looks for. Clearing the key on a failed delete would
+discard the only reference to the bytes and strand them in object storage
+forever.
 
 ### Audit
 

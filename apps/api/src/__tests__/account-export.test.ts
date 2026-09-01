@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashPassword, generateReference } from '@dash/domain/crypto';
 import { EXPORT_BUILD_MAX_ATTEMPTS } from '@dash/domain/account';
+import type { PrismaClient } from '@dash/db';
 import type { ExportArchivePort, QueuePort, QueueJob } from '@dash/domain/ports';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, idempotencyKey, WORLD_PASSWORD, type Actor, type World } from './world.js';
@@ -203,6 +204,44 @@ function wrapArchive(overrides: Partial<ExportArchivePort> = {}): ExportArchiveP
     read: overrides.read ?? base.read.bind(base),
     delete: overrides.delete ?? base.delete.bind(base),
   };
+}
+
+/**
+ * A Prisma client that runs `hook` once, immediately after the first
+ * `dataExportRequest.findUnique` returns.
+ *
+ * That read is the one a build worker does before it decides what to do, so
+ * this reproduces the read-then-someone-else-moves-the-row interleaving
+ * deterministically instead of hoping two real workers collide.
+ */
+function prismaHookedAfterFirstExportRead(hook: () => Promise<void>): PrismaClient {
+  const real = prisma();
+  let fired = false;
+
+  const bind = (target: object, prop: string | symbol): unknown => {
+    const value = Reflect.get(target, prop) as unknown;
+    return typeof value === 'function' ? value.bind(target) : value;
+  };
+
+  const model = new Proxy(real.dataExportRequest, {
+    get(target, prop) {
+      if (prop !== 'findUnique') return bind(target, prop);
+      return async (args: unknown) => {
+        const row = await (bind(target, 'findUnique') as (a: unknown) => Promise<unknown>)(args);
+        if (!fired) {
+          fired = true;
+          await hook();
+        }
+        return row;
+      };
+    },
+  });
+
+  return new Proxy(real, {
+    get(target, prop) {
+      return prop === 'dataExportRequest' ? model : bind(target, prop);
+    },
+  }) as PrismaClient;
 }
 
 /** Create a pending row and build it. Returns the ready row id and its archive key. */
@@ -553,6 +592,67 @@ describe('build', () => {
     const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
     expect(row.status).toBe('failed');
   });
+
+  it('a max-attempt failure cannot clobber a claim another worker took after the read', async () => {
+    const who = await makeThrowawayCustomer('build-max-attempts-race');
+    const { jobRequestId } = await requestDataExport(prisma(), { identityId: who.identityId });
+    const id = jobRequestId!;
+
+    // An abandoned build, already at the attempt ceiling, with a half-written
+    // blob still on disk.
+    const staleKey = `staleblob${randomUUID().replace(/-/g, '')}`.slice(0, 40);
+    await archive().write({
+      key: staleKey,
+      body: Buffer.from('{"half":"written"}'),
+      contentType: 'application/json',
+    });
+    const staleClaimId = `stale_${randomUUID()}`;
+    const staleClaimUntil = new Date(Date.now() - 60_000);
+    await prisma().dataExportRequest.update({
+      where: { id },
+      data: {
+        status: 'building',
+        buildClaimId: staleClaimId,
+        buildClaimUntil: staleClaimUntil,
+        buildAttempts: EXPORT_BUILD_MAX_ATTEMPTS,
+        storageKey: staleKey,
+      },
+    });
+
+    // Worker B reclaims the stale row in the window between worker A's read
+    // and worker A's max-attempt write — the exact interleaving that let the
+    // old unguarded update fail somebody else's live build.
+    const freshClaimId = `fresh_${randomUUID()}`;
+    const reclaimed = prismaHookedAfterFirstExportRead(async () => {
+      await prisma().dataExportRequest.update({
+        where: { id },
+        data: {
+          status: 'building',
+          buildClaimId: freshClaimId,
+          buildClaimUntil: new Date(Date.now() + 300_000),
+          buildAttempts: EXPORT_BUILD_MAX_ATTEMPTS + 1,
+        },
+      });
+    });
+
+    const result = await buildDataExport(reclaimed, archive(), {
+      requestId: id,
+      ttlHours: ttlHours(),
+    });
+
+    // Worker A lost: it wrote nothing and says so.
+    expect(result.skipped).toBe(true);
+    expect(result.status).toBe('building');
+
+    // Worker B's claim is intact and its build is still live.
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe('building');
+    expect(row.buildClaimId).toBe(freshClaimId);
+    expect(row.failedAt).toBeNull();
+
+    // And worker A did not delete the blob the row still references.
+    await expect(archive().read(staleKey)).resolves.toBeInstanceOf(Buffer);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -717,6 +817,46 @@ describe('GET /v1/account/export/:id/download', () => {
     await expect(archive().read(storageKey)).rejects.toBeTruthy();
   });
 
+  it('a delete failure while expiring a link keeps the reference for the sweep to retry', async () => {
+    const who = await makeThrowawayCustomer('dl-expired-delete-fail');
+    const { id, storageKey } = await makeReadyExport(who);
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    const token = signDownloadToken(downloadSecret(), id, row.expiresAt!);
+    const wellPast = new Date(row.expiresAt!.getTime() + HOUR_MS);
+
+    const noDelete = wrapArchive({
+      delete: async () => {
+        throw new Error('storage delete failed');
+      },
+    });
+
+    await expect(
+      consumeDataExportDownload(prisma(), noDelete, {
+        requestId: id,
+        identityId: who.identityId,
+        token,
+        downloadSecret: downloadSecret(),
+        now: wellPast,
+      }),
+    ).rejects.toMatchObject({ reason: 'expired' });
+
+    // The expiry stands — that is the security-relevant outcome — but the blob
+    // reference survives, or nothing could ever find the bytes again.
+    const afterFailure = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(afterFailure.status).toBe('expired');
+    expect(afterFailure.storageKey).toBe(storageKey);
+    await expect(archive().read(storageKey)).resolves.toBeInstanceOf(Buffer);
+
+    // The orphan sweep finds the expired row and finishes the job.
+    const report = await runAccountMaintenance(prisma(), archive(), { now: new Date() });
+    expect(report.exports.orphansCleaned).toBeGreaterThanOrEqual(1);
+
+    const cleaned = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(cleaned.status).toBe('expired');
+    expect(cleaned.storageKey).toBeNull();
+    await expect(archive().read(storageKey)).rejects.toBeTruthy();
+  });
+
   it('a storage read failure leaves the export retryable — no delivery, no lease left behind', async () => {
     const who = await makeThrowawayCustomer('dl-read-fail');
     const { id, storageKey } = await makeReadyExport(who);
@@ -842,6 +982,40 @@ describe('maintenance sweep of stale exports', () => {
     const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
     expect(row.status).toBe('expired');
     expect(row.storageKey).toBeNull();
+    await expect(archive().read(storageKey)).rejects.toBeTruthy();
+  });
+
+  it('a delete failure during the expiry sweep still expires the row and keeps the blob findable', async () => {
+    const who = await makeThrowawayCustomer('sweep-delete-fail');
+    const { id, storageKey } = await makeReadyExport(who);
+    await prisma().dataExportRequest.update({
+      where: { id },
+      data: { expiresAt: new Date(Date.now() - HOUR_MS) },
+    });
+
+    const noDelete = wrapArchive({
+      delete: async () => {
+        throw new Error('storage delete failed');
+      },
+    });
+
+    const first = await runAccountMaintenance(prisma(), noDelete, { now: new Date() });
+    expect(first.exports.expired).toBeGreaterThanOrEqual(1);
+    // A delete that will not stick is not a job failure — it is deferred work.
+    expect(first.exports.failed).toBe(0);
+
+    const afterFailure = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(afterFailure.status).toBe('expired');
+    expect(afterFailure.storageKey).toBe(storageKey);
+    await expect(archive().read(storageKey)).resolves.toBeInstanceOf(Buffer);
+
+    // A later run, with storage healthy again, finishes the cleanup.
+    const second = await runAccountMaintenance(prisma(), archive(), { now: new Date() });
+    expect(second.exports.orphansCleaned).toBeGreaterThanOrEqual(1);
+
+    const cleaned = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(cleaned.status).toBe('expired');
+    expect(cleaned.storageKey).toBeNull();
     await expect(archive().read(storageKey)).rejects.toBeTruthy();
   });
 });

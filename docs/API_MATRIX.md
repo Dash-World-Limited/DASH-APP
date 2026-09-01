@@ -263,7 +263,7 @@ settlement path only.
 | Payment webhooks | 24 |
 | Retention job | 31 |
 | Account deletion (self-service, staff, finalisation, holds, maintenance) | 42 |
-| Personal-data export (request, atomic build, download lease, sweeps) | 28 |
+| Personal-data export (request, atomic build, download lease, sweeps) | 31 |
 | Observability and health | 22 |
 | Config guards | 40 |
 | Rate limiting | 4 |

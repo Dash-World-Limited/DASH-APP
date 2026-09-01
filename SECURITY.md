@@ -287,13 +287,19 @@ HMAC-shaped digest over key and expiry.
   cannot both win (guarded `downloadCount: 0` commit), and a transient
   object-storage read failure returns a retryable `503` leaving the row
   untouched, so an outage never burns the one download. A bad token and a wrong
-  id return the same 404. The archive bytes are deleted after a successful
-  download; a delete that fails is retried by the maintenance orphan sweep.
+  id return the same 404.
+- **No archive can be stranded.** Every path that removes one — download,
+  expiry, build failure — transitions the row first, then deletes, and clears
+  `storageKey` only once the delete is confirmed. A failed delete keeps the key,
+  so the row is a tracked orphan the maintenance sweep retries; nulling it would
+  discard the only reference to the bytes.
 - **The export build is claimed atomically.** Exactly one worker moves a request
   to `building` under its own claim id before it reads any subject data or writes
-  a blob; a losing worker does nothing. Failure transitions only the claimed
-  state, a blob written before a later DB failure is deleted, and a claim that
-  goes stale is reclaimed or failed by maintenance.
+  a blob; a losing worker does nothing. Every subsequent write — promotion,
+  failure, and the max-attempts give-up — is pinned to the exact claim the worker
+  observed, so a row another worker has since reclaimed is never overwritten and
+  its blob never deleted. A blob written before a later DB failure is dropped,
+  and a claim that goes stale is reclaimed or failed by maintenance.
 - **The archive is scoped to the subject.** Every relation is filtered by the
   requester's own ids; it never contains another user's data, internal risk
   scoring, or staff records, and its manifest says so.
@@ -369,6 +375,8 @@ Controls actually exercised by an automated check, not merely written:
 | An expired export link is refused and its archive is deleted | `account-export.test.ts` |
 | A storage read failure returns a retryable 503 and does not consume the download | `account-export.test.ts` |
 | A failed archive delete is retried by the maintenance orphan sweep | `account-export.test.ts` |
+| A failed delete while expiring a link, or during the expiry sweep, keeps the blob reference and a later sweep cleans it | `account-export.test.ts` |
+| A max-attempt give-up cannot fail a build another worker reclaimed after the read | `account-export.test.ts` |
 | Concurrent export builds: exactly one worker claims, writes a blob, and wins | `account-export.test.ts` |
 | A DB failure after a build write cleans up the blob; a stale claim is reclaimed or failed | `account-export.test.ts` |
 | A build failure marks the request failed without wedging the queue | `account-export.test.ts` |

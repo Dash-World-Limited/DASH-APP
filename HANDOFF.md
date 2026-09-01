@@ -113,7 +113,7 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).t
 | `npm run dev` | API on `:4000` and web on `:3000`, prefixed output, Ctrl-C stops both |
 | `npm run dev:api` | API only |
 | `npm run dev:web` | Web only |
-| `npm test` | 882 tests — domain units and API integration suites |
+| `npm test` | 885 tests — domain units and API integration suites |
 | `npm run lint` | ESLint across all workspaces |
 | `npm run typecheck` | `tsc --build` across project references |
 | `npm run db:seed` | Wipe and reseed (safe to re-run; refuses in production) |
@@ -123,7 +123,7 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).t
 ### Verification
 
 ```bash
-npm test                          # 882 tests, no server needed
+npm test                          # 885 tests, no server needed
 npm run typecheck                 # all four workspaces
 npm run lint
 npx vitest run --coverage packages/domain
@@ -155,7 +155,7 @@ Everything below was run on this machine at this commit.
 
 | Check | Result |
 |---|---|
-| `npm test` | **882 passing**, 28 files, 0 failing |
+| `npm test` | **885 passing**, 28 files, 0 failing |
 | `npm run typecheck` | 4 projects clean |
 | `npm run lint` | clean |
 | `npm run build` | web app builds, 11 routes |
@@ -189,7 +189,7 @@ instance and drives it with `inject()` against a temporary SQLite file.
 | `payout` | 24 |
 | `webhooks` | 24 |
 | `observability` | 22 |
-| `account-export` | 28 |
+| `account-export` | 31 |
 | `ratelimit` | 4 |
 
 The remainder are domain unit tests in `packages/domain` — including
@@ -383,7 +383,7 @@ production blockers a Codex review of that commit found. What is in place:
   database + a drift check reproduce `schema.prisma` exactly. `db push` is still
   the local/test path.
 - Adversarial coverage: `account-deletion.test.ts` (42), `account-export.test.ts`
-  (28), `packages/domain/src/account/account.test.ts` (43) — IDOR, replay,
+  (31), `packages/domain/src/account/account.test.ts` (43) — IDOR, replay,
   repeated requests, cancellation racing finalisation, concurrent finalisation,
   holds appearing mid-window, single-use / expired / storage-failure / concurrent
   downloads, concurrent and lost-claim builds, stale-claim recovery, and proof
