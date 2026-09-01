@@ -30,6 +30,8 @@ export class DataExportError extends Error {
       | 'not_ready'
       | 'expired'
       | 'already_downloaded'
+      | 'in_progress'
+      | 'storage_unavailable'
       | 'bad_token'
       | 'build_failed',
     message: string,

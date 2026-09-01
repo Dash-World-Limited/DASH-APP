@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashPassword, generateReference } from '@dash/domain/crypto';
+import { EXPORT_BUILD_MAX_ATTEMPTS } from '@dash/domain/account';
 import type { ExportArchivePort, QueuePort, QueueJob } from '@dash/domain/ports';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, idempotencyKey, WORLD_PASSWORD, type Actor, type World } from './world.js';
@@ -21,6 +22,7 @@ import {
   requestDataExport,
   signDownloadToken,
 } from '../account/export.js';
+import { runAccountMaintenance } from '../jobs/account-maintenance.js';
 
 /** Records enqueues and never runs them, so the build step is driven explicitly. */
 class RecordingQueue implements QueuePort {
@@ -189,6 +191,18 @@ async function seedOrder(customerId: string, code: string): Promise<void> {
       },
     },
   });
+}
+
+/** Wrap the real archive, substituting behaviour for one method at a time. */
+function wrapArchive(overrides: Partial<ExportArchivePort> = {}): ExportArchivePort {
+  const base = archive();
+  return {
+    providerName: base.providerName,
+    isLive: base.isLive,
+    write: overrides.write ?? base.write.bind(base),
+    read: overrides.read ?? base.read.bind(base),
+    delete: overrides.delete ?? base.delete.bind(base),
+  };
 }
 
 /** Create a pending row and build it. Returns the ready row id and its archive key. */
@@ -391,6 +405,154 @@ describe('build', () => {
       where: { action: 'account.export.failed', resourceId: id },
     });
   });
+
+  it('concurrent builds: exactly one worker claims, writes, and wins', async () => {
+    const who = await makeThrowawayCustomer('build-race');
+    const { jobRequestId } = await requestDataExport(prisma(), { identityId: who.identityId });
+    const id = jobRequestId!;
+
+    let writeCount = 0;
+    const counting = wrapArchive({
+      write: async (input) => {
+        writeCount += 1;
+        return archive().write(input);
+      },
+    });
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 4 }, () =>
+        buildDataExport(prisma(), counting, { requestId: id, ttlHours: ttlHours() }),
+      ),
+    );
+    const fulfilled = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    expect(fulfilled).toHaveLength(4);
+
+    // Exactly one worker actually built it; the rest lost the claim and wrote
+    // nothing — `skipped` on all of them, and only one archive write happened.
+    const winners = fulfilled.filter((r) => r.status === 'ready' && !r.skipped);
+    expect(winners).toHaveLength(1);
+    expect(fulfilled.filter((r) => r.skipped)).toHaveLength(3);
+    expect(writeCount).toBe(1);
+
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe('ready');
+  });
+
+  it('a database failure after a successful write cleans up the blob it wrote', async () => {
+    const who = await makeThrowawayCustomer('build-db-fail');
+    const { jobRequestId } = await requestDataExport(prisma(), { identityId: who.identityId });
+    const id = jobRequestId!;
+
+    let stolenKey: string | null = null;
+    const sabotaged = wrapArchive({
+      write: async (input) => {
+        const result = await archive().write(input);
+        stolenKey = input.key;
+        // Simulate the claim being stolen the instant after the blob is
+        // written — e.g. the promotion update lost a race or the database
+        // blipped. The commit that follows must find its claim gone.
+        await prisma().dataExportRequest.updateMany({
+          where: { id },
+          data: {
+            buildClaimId: `stolen_${randomUUID()}`,
+            buildClaimUntil: new Date(Date.now() + 60_000),
+          },
+        });
+        return result;
+      },
+    });
+
+    const result = await buildDataExport(prisma(), sabotaged, { requestId: id, ttlHours: ttlHours() });
+    expect(result.skipped).toBe(true);
+
+    expect(stolenKey).not.toBeNull();
+    // The blob this worker wrote does not orphan.
+    await expect(archive().read(stolenKey!)).rejects.toBeTruthy();
+  });
+
+  it('a stale build claim is reclaimed and completed by a later call', async () => {
+    const who = await makeThrowawayCustomer('build-stale-reclaim');
+    const { jobRequestId } = await requestDataExport(prisma(), { identityId: who.identityId });
+    const id = jobRequestId!;
+
+    // Simulate an abandoned worker: claimed, never finished, claim now stale.
+    await prisma().dataExportRequest.update({
+      where: { id },
+      data: {
+        status: 'building',
+        buildClaimId: `dead_${randomUUID()}`,
+        buildClaimUntil: new Date(Date.now() - 1000),
+        buildAttempts: 1,
+      },
+    });
+
+    const result = await buildDataExport(prisma(), archive(), { requestId: id, ttlHours: ttlHours() });
+    expect(result.status).toBe('ready');
+    expect(result.skipped).toBeFalsy();
+
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe('ready');
+    expect(row.buildAttempts).toBe(2);
+  });
+
+  it('a stale build claim abandoned past recovery is failed by maintenance and its blob dropped', async () => {
+    const who = await makeThrowawayCustomer('build-stale-mnt');
+    const staleKey = `stale_${randomUUID().replace(/-/g, '')}`;
+    await archive().write({
+      key: staleKey,
+      body: Buffer.from('{"orphan":true}'),
+      contentType: 'application/json',
+    });
+
+    const row = await prisma().dataExportRequest.create({
+      data: {
+        identityId: who.identityId,
+        status: 'building',
+        buildClaimId: `abandoned_${randomUUID()}`,
+        buildClaimUntil: new Date(Date.now() - 60_000),
+        buildAttempts: 1,
+        storageKey: staleKey,
+      },
+    });
+
+    const report = await runAccountMaintenance(prisma(), archive(), { now: new Date() });
+    expect(report.exports.staleBuildsFailed).toBeGreaterThanOrEqual(1);
+
+    const after = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id: row.id } });
+    expect(after.status).toBe('failed');
+    expect(after.storageKey).toBeNull();
+    expect(after.buildClaimId).toBeNull();
+    await expect(archive().read(staleKey)).rejects.toBeTruthy();
+
+    await prisma().auditLog.findFirstOrThrow({
+      where: { action: 'account.export.failed', resourceId: row.id },
+    });
+  });
+
+  it('fails a request that has exceeded the maximum build attempts, without writing again', async () => {
+    const who = await makeThrowawayCustomer('build-max-attempts');
+    const { jobRequestId } = await requestDataExport(prisma(), { identityId: who.identityId });
+    const id = jobRequestId!;
+    await prisma().dataExportRequest.update({
+      where: { id },
+      data: { buildAttempts: EXPORT_BUILD_MAX_ATTEMPTS },
+    });
+
+    let wrote = false;
+    const spied = wrapArchive({
+      write: async (input) => {
+        wrote = true;
+        return archive().write(input);
+      },
+    });
+
+    const result = await buildDataExport(prisma(), spied, { requestId: id, ttlHours: ttlHours() });
+    expect(result.status).toBe('failed');
+    expect(wrote).toBe(false);
+
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe('failed');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -552,6 +714,110 @@ describe('GET /v1/account/export/:id/download', () => {
     const after = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
     expect(after.status).toBe('expired');
     expect(after.storageKey).toBeNull();
+    await expect(archive().read(storageKey)).rejects.toBeTruthy();
+  });
+
+  it('a storage read failure leaves the export retryable — no delivery, no lease left behind', async () => {
+    const who = await makeThrowawayCustomer('dl-read-fail');
+    const { id, storageKey } = await makeReadyExport(who);
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    const token = signDownloadToken(downloadSecret(), id, row.expiresAt!);
+
+    const flaky = wrapArchive({
+      read: async () => {
+        throw new Error('temporary storage outage');
+      },
+    });
+
+    await expect(
+      consumeDataExportDownload(prisma(), flaky, {
+        requestId: id,
+        identityId: who.identityId,
+        token,
+        downloadSecret: downloadSecret(),
+      }),
+    ).rejects.toMatchObject({ reason: 'storage_unavailable' });
+
+    const afterFailure = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(afterFailure.status).toBe('ready');
+    expect(afterFailure.downloadCount).toBe(0);
+    expect(afterFailure.downloadLeaseId).toBeNull();
+    expect(afterFailure.storageKey).toBe(storageKey);
+
+    // Retry against real storage succeeds — the failure did not burn the
+    // single permitted download.
+    const result = await consumeDataExportDownload(prisma(), archive(), {
+      requestId: id,
+      identityId: who.identityId,
+      token,
+      downloadSecret: downloadSecret(),
+    });
+    expect(result.body.length).toBeGreaterThan(0);
+
+    const afterRetry = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(afterRetry.status).toBe('delivered');
+    expect(afterRetry.downloadCount).toBe(1);
+  });
+
+  it('concurrent reads: exactly one delivers even when the loser reads first', async () => {
+    const who = await makeThrowawayCustomer('dl-concurrent-reads');
+    const { id } = await makeReadyExport(who);
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    const token = signDownloadToken(downloadSecret(), id, row.expiresAt!);
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 3 }, () =>
+        consumeDataExportDownload(prisma(), archive(), {
+          requestId: id,
+          identityId: who.identityId,
+          token,
+          downloadSecret: downloadSecret(),
+        }),
+      ),
+    );
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(2);
+
+    const after = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(after.status).toBe('delivered');
+    expect(after.downloadCount).toBe(1);
+  });
+
+  it('a delete failure after a successful download is retried by the maintenance sweep', async () => {
+    const who = await makeThrowawayCustomer('dl-cleanup-fail');
+    const { id, storageKey } = await makeReadyExport(who);
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    const token = signDownloadToken(downloadSecret(), id, row.expiresAt!);
+
+    const noDelete = wrapArchive({
+      delete: async () => {
+        throw new Error('storage delete failed');
+      },
+    });
+
+    const result = await consumeDataExportDownload(prisma(), noDelete, {
+      requestId: id,
+      identityId: who.identityId,
+      token,
+      downloadSecret: downloadSecret(),
+    });
+    expect(result.body.length).toBeGreaterThan(0);
+
+    const afterDownload = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(afterDownload.status).toBe('delivered');
+    // The delete failed, so the key is deliberately left in place — the row is
+    // the record that cleanup is still owed.
+    expect(afterDownload.storageKey).toBe(storageKey);
+    await expect(archive().read(storageKey)).resolves.toBeInstanceOf(Buffer);
+
+    const report = await runAccountMaintenance(prisma(), archive(), { now: new Date() });
+    expect(report.exports.orphansCleaned).toBeGreaterThanOrEqual(1);
+
+    const cleaned = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(cleaned.storageKey).toBeNull();
     await expect(archive().read(storageKey)).rejects.toBeTruthy();
   });
 });

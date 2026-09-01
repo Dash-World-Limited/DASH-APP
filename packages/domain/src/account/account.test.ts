@@ -7,12 +7,17 @@ import {
   assertDeletionTransition,
   assertExportTransition,
   assertExportTtlHours,
+  canOwnerCancelDeletion,
   canTransitionDeletion,
   canTransitionExport,
   DATA_CLASS_RULES,
   dataClassRule,
   DELETION_COOLING_OFF_DAYS,
   DELETION_COOLING_OFF_MAX_DAYS,
+  DELETION_PENDING_STATUSES,
+  EXPORT_BUILD_CLAIM_SECONDS,
+  EXPORT_BUILD_MAX_ATTEMPTS,
+  EXPORT_DOWNLOAD_LEASE_SECONDS,
   evaluateLegalHold,
   EXPORT_DOWNLOAD_TTL_HOURS,
   EXPORT_SECTIONS,
@@ -67,21 +72,53 @@ describe('timings', () => {
 });
 
 describe('deletion state machine', () => {
-  it('allows scheduled → cancelled and scheduled → completed', () => {
+  it('allows scheduled → held / cancelled / completed', () => {
+    expect(canTransitionDeletion('scheduled', 'held')).toBe(true);
     expect(canTransitionDeletion('scheduled', 'cancelled')).toBe(true);
     expect(canTransitionDeletion('scheduled', 'completed')).toBe(true);
   });
 
+  it('lets a held request resume, finalise, or be cancelled — but never expire', () => {
+    expect(canTransitionDeletion('held', 'scheduled')).toBe(true);
+    expect(canTransitionDeletion('held', 'completed')).toBe(true);
+    expect(canTransitionDeletion('held', 'cancelled')).toBe(true);
+    expect(canTransitionDeletion('held', 'held')).toBe(false);
+  });
+
   it('makes cancelled and completed terminal', () => {
-    for (const to of ['scheduled', 'cancelled', 'completed'] as const) {
+    for (const to of ['scheduled', 'held', 'cancelled', 'completed'] as const) {
       expect(canTransitionDeletion('cancelled', to)).toBe(false);
       expect(canTransitionDeletion('completed', to)).toBe(false);
     }
   });
 
-  it('never reopens or re-schedules', () => {
+  it('never reopens or re-schedules a finished deletion', () => {
     expect(canTransitionDeletion('scheduled', 'scheduled')).toBe(false);
     expect(() => assertDeletionTransition('completed', 'scheduled')).toThrow(AccountPolicyError);
+  });
+
+  it('names both non-terminal statuses a maintenance run acts on', () => {
+    expect([...DELETION_PENDING_STATUSES].sort()).toEqual(['held', 'scheduled']);
+  });
+
+  it('is due for finalisation once a held request has passed its window', () => {
+    const held = { status: 'held' as const, scheduledPurgeAt: new Date('2026-06-15T00:00:00Z') };
+    expect(isDueForFinalisation(held, new Date('2026-06-14T23:59:59Z'))).toBe(false);
+    expect(isDueForFinalisation(held, new Date('2026-06-15T00:00:01Z'))).toBe(true);
+  });
+
+  it('lets the owner cancel a held request at any time, and a scheduled one only in-window', () => {
+    const at = new Date('2026-06-20T00:00:00Z');
+    const purgeAt = new Date('2026-06-15T00:00:00Z');
+    expect(canOwnerCancelDeletion({ status: 'held', scheduledPurgeAt: purgeAt }, at)).toBe(true);
+    expect(canOwnerCancelDeletion({ status: 'scheduled', scheduledPurgeAt: purgeAt }, at)).toBe(false);
+    expect(
+      canOwnerCancelDeletion(
+        { status: 'scheduled', scheduledPurgeAt: purgeAt },
+        new Date('2026-06-10T00:00:00Z'),
+      ),
+    ).toBe(true);
+    expect(canOwnerCancelDeletion({ status: 'completed', scheduledPurgeAt: purgeAt }, at)).toBe(false);
   });
 
   it('is due only once the window has passed', () => {
@@ -258,9 +295,20 @@ describe('export manifest', () => {
 });
 
 describe('export state machine', () => {
-  it('allows pending → ready → delivered', () => {
-    expect(canTransitionExport('pending', 'ready')).toBe(true);
+  it('builds through a claim: pending → building → ready → delivered', () => {
+    expect(canTransitionExport('pending', 'building')).toBe(true);
+    expect(canTransitionExport('building', 'ready')).toBe(true);
     expect(canTransitionExport('ready', 'delivered')).toBe(true);
+  });
+
+  it('will not skip the build claim', () => {
+    expect(canTransitionExport('pending', 'ready')).toBe(false);
+    expect(() => assertExportTransition('pending', 'ready')).toThrow(AccountPolicyError);
+  });
+
+  it('lets a building request fail, or fall back to pending when its claim goes stale', () => {
+    expect(canTransitionExport('building', 'failed')).toBe(true);
+    expect(canTransitionExport('building', 'pending')).toBe(true);
   });
 
   it('allows pending → failed and ready → expired', () => {
@@ -270,7 +318,7 @@ describe('export state machine', () => {
 
   it('makes delivered, expired, and failed terminal', () => {
     for (const from of ['delivered', 'expired', 'failed'] as const) {
-      for (const to of ['pending', 'ready', 'delivered', 'expired', 'failed'] as const) {
+      for (const to of ['pending', 'building', 'ready', 'delivered', 'expired', 'failed'] as const) {
         expect(canTransitionExport(from, to)).toBe(false);
       }
     }
@@ -278,6 +326,12 @@ describe('export state machine', () => {
 
   it('will not skip straight from pending to delivered', () => {
     expect(() => assertExportTransition('pending', 'delivered')).toThrow(AccountPolicyError);
+  });
+
+  it('exposes sane operational bounds for the build claim and download lease', () => {
+    expect(EXPORT_BUILD_CLAIM_SECONDS).toBeGreaterThan(EXPORT_DOWNLOAD_LEASE_SECONDS);
+    expect(EXPORT_DOWNLOAD_LEASE_SECONDS).toBeGreaterThanOrEqual(30);
+    expect(EXPORT_BUILD_MAX_ATTEMPTS).toBeGreaterThanOrEqual(3);
   });
 
   it('is downloadable only while ready, unused, and inside its TTL', () => {

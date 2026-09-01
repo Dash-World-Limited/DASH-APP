@@ -113,7 +113,7 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).t
 | `npm run dev` | API on `:4000` and web on `:3000`, prefixed output, Ctrl-C stops both |
 | `npm run dev:api` | API only |
 | `npm run dev:web` | Web only |
-| `npm test` | 769 tests — domain units and API integration suites |
+| `npm test` | 882 tests — domain units and API integration suites |
 | `npm run lint` | ESLint across all workspaces |
 | `npm run typecheck` | `tsc --build` across project references |
 | `npm run db:seed` | Wipe and reseed (safe to re-run; refuses in production) |
@@ -123,7 +123,7 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).t
 ### Verification
 
 ```bash
-npm test                          # 769 tests, no server needed
+npm test                          # 882 tests, no server needed
 npm run typecheck                 # all four workspaces
 npm run lint
 npx vitest run --coverage packages/domain
@@ -155,15 +155,16 @@ Everything below was run on this machine at this commit.
 
 | Check | Result |
 |---|---|
-| `npm test` | **859 passing**, 28 files, 0 failing |
+| `npm test` | **882 passing**, 28 files, 0 failing |
 | `npm run typecheck` | 4 projects clean |
 | `npm run lint` | clean |
 | `npm run build` | web app builds, 11 routes |
-| Domain coverage | **97.09%** statements · 94.37% branches · 96.21% functions (`src/account` at 100/100/100) |
+| Domain coverage | **97.1%** statements · 94.4% branches · 96.24% functions (`src/account` at 100/100/100) |
 | `node scripts/smoke.mjs` | 49/49 |
 | `node scripts/dispatch-check.mjs` | 21/21 |
 | `npm run maintenance:retention -- --dry-run` | runs, reports, writes nothing |
 | `npm run maintenance:accounts -- --dry-run` | runs, reports, writes nothing |
+| `npm run db:migrate` on a fresh DB + drift check | applies `0_init` + `milestone_e`, `migrate status` clean, no drift vs schema |
 
 Coverage thresholds are enforced in `vitest.config.ts` at 80/75/80/80.
 
@@ -178,7 +179,7 @@ instance and drives it with `inject()` against a temporary SQLite file.
 | `auth` | 41 |
 | `config` | 40 |
 | `dispatch` | 40 |
-| `account-deletion` | 34 |
+| `account-deletion` | 42 |
 | `orders` | 31 |
 | `retention` | 31 |
 | `vendor` | 31 |
@@ -188,11 +189,11 @@ instance and drives it with `inject()` against a temporary SQLite file.
 | `payout` | 24 |
 | `webhooks` | 24 |
 | `observability` | 22 |
-| `account-export` | 20 |
+| `account-export` | 28 |
 | `ratelimit` | 4 |
 
 The remainder are domain unit tests in `packages/domain` — including
-`account` (36), the pure deletion/export policy.
+`account` (43), the pure deletion/export policy.
 
 `scripts/smoke.mjs` and `scripts/dispatch-check.mjs` still need a running server
 and a full seed. They are **supplementary** now — no behaviour depends on them
@@ -347,16 +348,19 @@ has just become decoration.
 ### Requested and built, not yet merged
 
 **Milestone E — account deletion and data export.** Implemented on
-`claude/dash-app-v1`. What is in place:
+`claude/dash-app-v1`; a first commit (`32180ce`) plus a second that corrects four
+production blockers a Codex review of that commit found. What is in place:
 
-- A `scheduled` → `cancelled` / `completed` deletion state machine
+- A `scheduled → held | cancelled | completed` deletion state machine
   (`AccountDeletionRequest`, one row per identity), a fresh step-up on the
   request, a cooling-off window (`ACCOUNT_DELETION_COOLING_OFF_DAYS`, default
   14), and a cancellation path that needs no step-up.
 - A staff on-behalf-of path (`admin:account:delete`, step-up, mandatory reason,
   `onBehalfOf` audit) kept separate from the self-service one.
-- Legal holds — active order, unresolved refund/dispute, open safety/fraud
-  case, negative wallet balance — that defer acceptance and name the blocker.
+- **Legal holds checked twice** — at request time *and again at finalisation*.
+  An active order, unresolved refund/dispute, open safety/fraud case, or negative
+  wallet balance acquired during the cooling-off window parks the request in
+  `held`; the maintenance run retries it and it resumes once the matter clears.
 - Finalisation: every session deleted, credentials and drafts deleted,
   everything the ledger references **anonymised in place**. Orders, payments,
   refunds, settlements, and every ledger entry keep their ids and amounts. The
@@ -365,17 +369,25 @@ has just become decoration.
 - Idempotent, single-transaction finalisation (`anonymisedAt` marker, a claimed
   request row, set-to-constant writes) — safe to run repeatedly and
   concurrently.
-- Export behind a fresh step-up, built off the request path by a queue worker
-  through `ExportArchivePort` (local dir in tests, object storage in
-  production), delivered by a **stateless signed single-use** download
-  capability with an expiry (`DATA_EXPORT_TTL_HOURS`, default 24).
-- `npm run maintenance:accounts` finalises due deletions and expires stale
-  export archives. Still **nothing schedules it** — see below.
-- Adversarial coverage: `account-deletion.test.ts` (34), `account-export.test.ts`
-  (20), `packages/domain/src/account/account.test.ts` (36) — IDOR on the
-  id-addressed routes, replay, repeated requests, cancellation racing
-  finalisation, concurrent finalisation, single-use and expired downloads, and
-  proof the financial rows survive.
+- Export behind a fresh step-up. The **build is claimed atomically**
+  (`pending → building` under one worker's claim id) before any subject data is
+  read or blob written; the **download reads the archive before committing
+  `delivered`**, under a short lease, so a storage read failure is a retryable
+  `503` that does not consume the one download. Delivered by a **stateless signed
+  single-use** capability with an expiry (`DATA_EXPORT_TTL_HOURS`, default 24).
+- `npm run maintenance:accounts` finalises due deletions, retries held ones,
+  expires stale archives, fails abandoned builds, and cleans orphaned blobs.
+  Still **nothing schedules it** — see below.
+- **Checked-in Prisma migrations** (`packages/db/prisma/migrations/`): a
+  `0_init` baseline + a `milestone_e` migration. `npm run db:migrate` on a fresh
+  database + a drift check reproduce `schema.prisma` exactly. `db push` is still
+  the local/test path.
+- Adversarial coverage: `account-deletion.test.ts` (42), `account-export.test.ts`
+  (28), `packages/domain/src/account/account.test.ts` (43) — IDOR, replay,
+  repeated requests, cancellation racing finalisation, concurrent finalisation,
+  holds appearing mid-window, single-use / expired / storage-failure / concurrent
+  downloads, concurrent and lost-claim builds, stale-claim recovery, and proof
+  the financial rows survive.
 
 Not done for this milestone: merge to `master`, review against `master`, a tag,
 and a production `ExportArchivePort` adapter — only the local one exists.

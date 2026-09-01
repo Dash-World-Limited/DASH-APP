@@ -61,11 +61,15 @@ account" cannot mean "delete rows the ledger sums over".
 
 | Flow | States | Notes |
 |---|---|---|
-| Deletion | `scheduled → cancelled \| completed` | One `AccountDeletionRequest` per identity. A fresh step-up opens one; a **cooling-off window** (`ACCOUNT_DELETION_COOLING_OFF_DAYS`, default 14, allowed 1–90) precedes finalisation; cancellation is allowed any time before the window closes and needs no step-up. |
-| Export | `pending → ready → delivered \| expired`, or `pending → failed` | One outstanding request at a time. The archive is built off the request path by a queue worker. The download link is a stateless signed HMAC capability valid for `DATA_EXPORT_TTL_HOURS` (default 24, allowed 1–168) and is **single-use**. |
+| Deletion | `scheduled → held \| cancelled \| completed`; `held → scheduled \| cancelled \| completed` | One `AccountDeletionRequest` per identity. A fresh step-up opens one; a **cooling-off window** (`ACCOUNT_DELETION_COOLING_OFF_DAYS`, default 14, allowed 1–90) precedes finalisation; cancellation is allowed any time before the window closes — or while `held` — and needs no step-up. |
+| Export | `pending → building → ready → delivered \| expired`; `building → failed \| pending` | One outstanding request at a time. Exactly one worker claims a build (`building`) before it reads any subject data or writes a blob. The download link is a stateless signed HMAC capability valid for `DATA_EXPORT_TTL_HOURS` (default 24, allowed 1–168) and is **single-use**. |
 
 ### What finalisation does
 
+- **Re-checks legal holds** (below) at the last moment. A request blocked by a
+  hold acquired during the cooling-off period parks in `held` — nothing is
+  anonymised or completed — and is retried on every maintenance run, resuming
+  automatically once the hold clears.
 - **Deletes** credentials and drafts: sessions, devices, OTP/MFA challenges, MFA
   recovery codes, carts.
 - **Anonymises in place** everything an order or the ledger references — the
@@ -85,11 +89,13 @@ account" cannot mean "delete rows the ledger sums over".
 
 ### Legal holds
 
-`requestAccountDeletion` refuses to open a request while any of these is true,
-naming which one so the person can act on it: an **active order**, an
-**unresolved refund or dispute**, an **open safety or fraud case**, or a
-**negative wallet balance**. The hold blocks acceptance, not the right — once the
-matter clears, the request goes through.
+A deletion is blocked while any of these is true, and the person is told which:
+an **active order**, an **unresolved refund or dispute**, an **open safety or
+fraud case**, or a **negative wallet balance**. The hold blocks acceptance, not
+the right. It is checked **twice**: when the request is opened
+(`requestAccountDeletion` refuses it), and again at finalisation — a customer can
+place an order or run their wallet negative during the two-week window, and a
+request that sailed through at open time must not anonymise anyway.
 
 ### The archive
 
@@ -97,8 +103,14 @@ Written through `ExportArchivePort` — a local directory in tests, object stora
 in production. It contains only data the person supplied or generated: profile,
 addresses, orders, reviews, subscriptions, legal acceptances, support cases. It
 never contains another user's data, internal risk scoring, or staff records, and
-says so in its own manifest. The bytes are deleted the instant the single
-download completes, or by the maintenance sweep when the window passes unread.
+says so in its own manifest.
+
+The download reads the archive **before** it marks the row delivered, under a
+short exclusive lease, so a transient object-storage outage returns a retryable
+`503` and never consumes the one permitted download. The bytes are deleted the
+instant a download completes; a delete that fails leaves the row as the record
+that cleanup is still owed, and the maintenance orphan sweep retries it. An
+archive left unread past its window is deleted by the expiry sweep.
 
 ### Audit
 

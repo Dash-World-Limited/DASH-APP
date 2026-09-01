@@ -260,6 +260,147 @@ async function seedFinancialHistory(who: Throwaway): Promise<{
   };
 }
 
+type HoldKind = 'open_order' | 'payment_dispute' | 'dispute_or_safety_case' | 'outstanding_balance';
+
+/** Create one legal-hold condition for a throwaway customer. Returns how to clear it. */
+async function createHoldCondition(
+  kind: HoldKind,
+  who: Throwaway,
+): Promise<{ clear: () => Promise<void> }> {
+  switch (kind) {
+    case 'open_order': {
+      const order = await prisma().order.create({
+        data: {
+          code: `DASH-${randomUUID().slice(0, 8).toUpperCase()}`,
+          customerId: who.customerId,
+          vendorId: world.vendorA.vendorId,
+          branchId: world.vendorA.branchId,
+          status: 'preparing',
+          itemsSubtotal: 100_000,
+          total: 120_000,
+          quoteBreakdown: '[]',
+          pricingRuleVersion: 'test.1',
+        },
+      });
+      return {
+        clear: async () => {
+          await prisma().order.update({
+            where: { id: order.id },
+            data: { status: 'delivered', deliveredAt: new Date() },
+          });
+        },
+      };
+    }
+    case 'payment_dispute': {
+      const order = await prisma().order.create({
+        data: {
+          code: `DASH-${randomUUID().slice(0, 8).toUpperCase()}`,
+          customerId: who.customerId,
+          vendorId: world.vendorA.vendorId,
+          branchId: world.vendorA.branchId,
+          status: 'delivered',
+          itemsSubtotal: 100_000,
+          total: 120_000,
+          quoteBreakdown: '[]',
+          pricingRuleVersion: 'test.1',
+        },
+      });
+      const payment = await prisma().payment.create({
+        data: {
+          orderId: order.id,
+          provider: 'mock',
+          providerReference: `pay_${randomUUID().slice(0, 12)}`,
+          amount: 120_000,
+          method: 'card',
+          status: 'captured',
+          idempotencyKey: `pi_${randomUUID().slice(0, 12)}`,
+        },
+      });
+      const refund = await prisma().refund.create({
+        data: {
+          paymentId: payment.id,
+          amount: 120_000,
+          reason: 'complaint',
+          status: 'disputed',
+          idempotencyKey: `rf_${randomUUID().slice(0, 12)}`,
+          requestedBy: who.identityId,
+        },
+      });
+      return {
+        clear: async () => {
+          await prisma().refund.update({
+            where: { id: refund.id },
+            data: { status: 'approved', approvedAt: new Date() },
+          });
+        },
+      };
+    }
+    case 'dispute_or_safety_case': {
+      const supportCase = await prisma().supportCase.create({
+        data: {
+          code: `SC-${randomUUID().slice(0, 8).toUpperCase()}`,
+          customerId: who.customerId,
+          subject: 'safety concern',
+          category: 'safety',
+          status: 'open',
+        },
+      });
+      return {
+        clear: async () => {
+          await prisma().supportCase.update({
+            where: { id: supportCase.id },
+            data: { status: 'resolved', resolvedAt: new Date() },
+          });
+        },
+      };
+    }
+    case 'outstanding_balance': {
+      await prisma().ledgerTransaction.create({
+        data: {
+          kind: 'adjustment',
+          idempotencyKey: `ltx_${randomUUID().slice(0, 12)}`,
+          referenceType: 'manual',
+          referenceId: who.customerId,
+          actorId: 'system',
+          occurredAt: new Date(),
+          entries: {
+            create: [
+              { accountKind: 'customer_wallet', ownerId: who.customerId, amount: 50_000, memo: 'debt' },
+              { accountKind: 'platform_cash', ownerId: null, amount: -50_000, memo: 'debt' },
+            ],
+          },
+        },
+      });
+      return {
+        clear: async () => {
+          // An offsetting transaction — the ledger is append-only.
+          await prisma().ledgerTransaction.create({
+            data: {
+              kind: 'adjustment',
+              idempotencyKey: `ltx_${randomUUID().slice(0, 12)}`,
+              referenceType: 'manual',
+              referenceId: who.customerId,
+              actorId: 'system',
+              occurredAt: new Date(),
+              entries: {
+                create: [
+                  {
+                    accountKind: 'customer_wallet',
+                    ownerId: who.customerId,
+                    amount: -50_000,
+                    memo: 'settled',
+                  },
+                  { accountKind: 'platform_cash', ownerId: null, amount: 50_000, memo: 'settled' },
+                ],
+              },
+            },
+          });
+        },
+      };
+    }
+  }
+}
+
 const postDeletion = (actor: Actor, opts: { key?: string; reason?: string } = {}) =>
   context.app.inject({
     method: 'POST',
@@ -578,6 +719,203 @@ describe('legal holds block acceptance', () => {
     } finally {
       await prisma().order.delete({ where: { id: order.id } });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('legal holds re-checked at finalisation', () => {
+  const cases: { kind: HoldKind; label: string }[] = [
+    { kind: 'open_order', label: 'an order placed during the cooling-off window' },
+    { kind: 'payment_dispute', label: 'a refund dispute opened during the cooling-off window' },
+    { kind: 'dispute_or_safety_case', label: 'a safety case opened during the cooling-off window' },
+    { kind: 'outstanding_balance', label: 'a wallet run negative during the cooling-off window' },
+  ];
+
+  for (const { kind, label } of cases) {
+    it(`parks finalisation in "held" when ${label} appears after scheduling`, async () => {
+      const who = await makeThrowawayCustomer(`resurface-${kind}`);
+      // Clean at request time, so the request itself succeeds.
+      await requestAccountDeletion(prisma(), {
+        identityId: who.identityId,
+        customerId: who.customerId,
+        requestedBy: who.identityId,
+        coolingOffDays: DELETION_COOLING_OFF_DAYS,
+      });
+
+      // The hold appears only now — after scheduling, before the window closes.
+      await createHoldCondition(kind, who);
+
+      const dueNow = new Date(Date.now() + (DELETION_COOLING_OFF_DAYS + 1) * DAY_MS);
+      const result = await finaliseAccountDeletion(prisma(), {
+        identityId: who.identityId,
+        idempotencyKey: `fin_${randomUUID()}`,
+        now: dueNow,
+      });
+
+      expect(result.alreadyDone).toBe(false);
+      expect(result.held).toBe(true);
+      expect(result.heldReason).toBe(kind);
+
+      // Nothing was anonymised or completed.
+      const identity = await prisma().identity.findUniqueOrThrow({ where: { id: who.identityId } });
+      expect(identity.anonymisedAt).toBeNull();
+      expect(identity.email).toBe(who.email);
+      expect(identity.passwordHash).not.toBeNull();
+
+      const request = await prisma().accountDeletionRequest.findUniqueOrThrow({
+        where: { identityId: who.identityId },
+      });
+      expect(request.status).toBe('held');
+      expect(request.heldReason).toBe(kind);
+      expect(request.completedAt).toBeNull();
+
+      const audit = await prisma().auditLog.findFirstOrThrow({
+        where: { action: 'account.deletion.held', resourceId: who.identityId },
+      });
+      const after = JSON.parse(audit.after!) as { hold: string };
+      expect(after.hold).toBe(kind);
+      // Non-sensitive: the hold code only, nothing that names the person or the
+      // matter in detail.
+      expect(audit.after).not.toContain(who.email.split('@')[0]);
+    });
+  }
+
+  it('resumes and finalises automatically once the hold clears, and audits the resume', async () => {
+    const who = await makeThrowawayCustomer('resume');
+    await requestAccountDeletion(prisma(), {
+      identityId: who.identityId,
+      customerId: who.customerId,
+      requestedBy: who.identityId,
+      coolingOffDays: DELETION_COOLING_OFF_DAYS,
+    });
+    const { clear } = await createHoldCondition('open_order', who);
+    const dueNow = new Date(Date.now() + (DELETION_COOLING_OFF_DAYS + 1) * DAY_MS);
+
+    const held = await finaliseAccountDeletion(prisma(), {
+      identityId: who.identityId,
+      idempotencyKey: `fin_${randomUUID()}`,
+      now: dueNow,
+    });
+    expect(held.held).toBe(true);
+
+    await clear();
+
+    const resumed = await finaliseAccountDeletion(prisma(), {
+      identityId: who.identityId,
+      idempotencyKey: `fin_${randomUUID()}`,
+      now: dueNow,
+    });
+    expect(resumed.alreadyDone).toBe(false);
+    expect(resumed.held).toBeFalsy();
+
+    const identity = await prisma().identity.findUniqueOrThrow({ where: { id: who.identityId } });
+    expect(identity.anonymisedAt).not.toBeNull();
+
+    const request = await prisma().accountDeletionRequest.findUniqueOrThrow({
+      where: { identityId: who.identityId },
+    });
+    expect(request.status).toBe('completed');
+
+    await prisma().auditLog.findFirstOrThrow({
+      where: { action: 'account.deletion.resumed', resourceId: who.identityId },
+    });
+    await prisma().auditLog.findFirstOrThrow({
+      where: { action: 'account.deletion.completed', resourceId: who.identityId },
+    });
+  });
+
+  it('writes one held audit while the same hold persists across repeated runs', async () => {
+    const who = await makeThrowawayCustomer('held-quiet-retry');
+    await requestAccountDeletion(prisma(), {
+      identityId: who.identityId,
+      customerId: who.customerId,
+      requestedBy: who.identityId,
+      coolingOffDays: DELETION_COOLING_OFF_DAYS,
+    });
+    await createHoldCondition('open_order', who);
+    const dueNow = new Date(Date.now() + (DELETION_COOLING_OFF_DAYS + 1) * DAY_MS);
+
+    await finaliseAccountDeletion(prisma(), {
+      identityId: who.identityId,
+      idempotencyKey: `fin_${randomUUID()}`,
+      now: dueNow,
+    });
+    await finaliseAccountDeletion(prisma(), {
+      identityId: who.identityId,
+      idempotencyKey: `fin_${randomUUID()}`,
+      now: dueNow,
+    });
+
+    expect(
+      await prisma().auditLog.count({
+        where: { action: 'account.deletion.held', resourceId: who.identityId },
+      }),
+    ).toBe(1);
+  });
+
+  it('a held request is still cancellable by its owner', async () => {
+    const who = await makeThrowawayCustomer('held-cancel');
+    await requestAccountDeletion(prisma(), {
+      identityId: who.identityId,
+      customerId: who.customerId,
+      requestedBy: who.identityId,
+      coolingOffDays: DELETION_COOLING_OFF_DAYS,
+    });
+    await createHoldCondition('open_order', who);
+    const dueNow = new Date(Date.now() + (DELETION_COOLING_OFF_DAYS + 1) * DAY_MS);
+    await finaliseAccountDeletion(prisma(), {
+      identityId: who.identityId,
+      idempotencyKey: `fin_${randomUUID()}`,
+      now: dueNow,
+    });
+
+    const view = await cancelAccountDeletion(prisma(), {
+      identityId: who.identityId,
+      cancelledBy: who.identityId,
+      now: dueNow,
+    });
+    expect(view.status).toBe('cancelled');
+
+    const identity = await prisma().identity.findUniqueOrThrow({ where: { id: who.identityId } });
+    expect(identity.anonymisedAt).toBeNull();
+  });
+
+  it('the maintenance run counts held separately and resumes it once clear', async () => {
+    const who = await makeThrowawayCustomer('mnt-held');
+    const now = new Date();
+    await prisma().accountDeletionRequest.create({
+      data: {
+        identityId: who.identityId,
+        status: 'scheduled',
+        requestedAt: new Date(now.getTime() - 20 * DAY_MS),
+        scheduledPurgeAt: new Date(now.getTime() - DAY_MS),
+        requestedBy: who.identityId,
+      },
+    });
+    const { clear } = await createHoldCondition('open_order', who);
+
+    const first = await runAccountMaintenance(prisma(), context.app.services.exportArchive, { now });
+    expect(first.deletions.held).toBeGreaterThanOrEqual(1);
+    expect(first.deletions.finalised).toBe(0);
+
+    let identity = await prisma().identity.findUniqueOrThrow({ where: { id: who.identityId } });
+    expect(identity.anonymisedAt).toBeNull();
+    let request = await prisma().accountDeletionRequest.findUniqueOrThrow({
+      where: { identityId: who.identityId },
+    });
+    expect(request.status).toBe('held');
+
+    await clear();
+
+    const second = await runAccountMaintenance(prisma(), context.app.services.exportArchive, { now });
+    expect(second.deletions.finalised).toBeGreaterThanOrEqual(1);
+
+    identity = await prisma().identity.findUniqueOrThrow({ where: { id: who.identityId } });
+    expect(identity.anonymisedAt).not.toBeNull();
+    request = await prisma().accountDeletionRequest.findUniqueOrThrow({
+      where: { identityId: who.identityId },
+    });
+    expect(request.status).toBe('completed');
   });
 });
 

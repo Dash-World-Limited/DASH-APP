@@ -196,11 +196,11 @@ during audit; nothing else was found unguarded.
 |---|---|---|---|---|---|
 | `/v1/account/deletion` | POST | `account:delete:own` **+ step-up + `Idempotency-Key`** | acts only on `actor.identityId` | `→ scheduled` (cooling-off window) | ✅ |
 | `/v1/account/deletion` | GET | session | own request only | — | ✅ |
-| `/v1/account/deletion` | DELETE | session | own request only; **no step-up** — de-escalating | `scheduled → cancelled` | ✅ |
+| `/v1/account/deletion` | DELETE | session | own request only; **no step-up** — de-escalating | `scheduled` or `held` `→ cancelled` | ✅ |
 | `/v1/account/export` | POST | `account:export:own` **+ step-up + `Idempotency-Key`** | acts only on `actor.identityId` | `→ pending`, queues a build | ✅ |
 | `/v1/account/export` | GET | session | own requests only; **never carries a token** | — | ✅ |
 | `/v1/account/export/:id` | GET | session | own request only, else 404 | hands back a signed download token while `ready` and unread | ✅ |
-| `/v1/account/export/:id/download` | GET | session **+ signed token** in `?token=` | own request only, else 404 | `ready → delivered` (single-use; archive deleted immediately) | ✅ |
+| `/v1/account/export/:id/download` | GET | session **+ signed token** in `?token=` | own request only, else 404 | `ready → delivered` — single-use, archive read before commit under a lease; a storage read failure is a retryable `503` | ✅ |
 
 Notes:
 - The write paths sit behind step-up because `account:delete:own` and
@@ -210,10 +210,18 @@ Notes:
   clears profile fields and deletes credentials and drafts; orders, payments,
   refunds, settlements, and every ledger entry survive with their ids and
   amounts intact. The policy is `packages/domain/src/account`, tested there.
+- **Legal holds are re-checked at finalisation**, not only at request time — a
+  hold acquired during the cooling-off window parks the request in `held` and it
+  resumes on a later maintenance run once the matter clears.
 - The download authorisation is a **stateless signed HMAC capability** carrying
-  the request id and an expiry — nothing stored. Single-use is enforced by a
-  guarded `downloadCount: 0` update, so two near-simultaneous downloads cannot
-  both win. A bad token and a wrong id return the same 404.
+  the request id and an expiry — nothing stored. The archive is read before the
+  row is committed to `delivered`, under a short exclusive lease: a guarded
+  `downloadCount: 0` commit means two near-simultaneous downloads cannot both
+  win, and a failed storage read releases the lease untouched (retryable `503`).
+  A bad token and a wrong id return the same 404.
+- The **export build is claimed atomically** (`pending → building` under one
+  worker's claim id) before any subject data is read or blob written; abandoned
+  claims are reclaimed or failed by `npm run maintenance:accounts`.
 - A finalised account's live sessions are gone, so its access tokens stop
   working immediately (`loadActor` returns nothing).
 - Cooling-off window and download TTL: `ACCOUNT_DELETION_COOLING_OFF_DAYS`
@@ -254,8 +262,8 @@ settlement path only.
 | Public catalogue and search | 30 |
 | Payment webhooks | 24 |
 | Retention job | 31 |
-| Account deletion (self-service, staff, finalisation, maintenance) | 34 |
-| Personal-data export (request, build, download, sweep) | 20 |
+| Account deletion (self-service, staff, finalisation, holds, maintenance) | 42 |
+| Personal-data export (request, atomic build, download lease, sweeps) | 28 |
 | Observability and health | 22 |
 | Config guards | 40 |
 | Rate limiting | 4 |

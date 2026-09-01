@@ -260,28 +260,40 @@ HMAC-shaped digest over key and expiry.
 ### Account deletion and data export
 
 - **Deletion is a scheduled state machine, not an instant drop.**
-  `scheduled → cancelled | completed`, one request per identity, behind a fresh
-  step-up. A cooling-off window (default 14 days) precedes finalisation, and the
-  owner — or staff, on their behalf — can cancel any time before it closes.
+  `scheduled → held | cancelled | completed`, one request per identity, behind a
+  fresh step-up. A cooling-off window (default 14 days) precedes finalisation,
+  and the owner — or staff, on their behalf — can cancel any time before it
+  closes, or while it is `held`.
 - **A deletion cannot erase what the ledger sums over.** Finalisation deletes
   credentials and drafts and **anonymises everything else in place**: orders,
   payments, refunds, settlements, and every ledger entry survive with their ids
   and amounts unchanged; only fields that name a person clear. The delete /
   anonymise / retain rule for all 24 model classes lives in
   `packages/domain/src/account`, at 100% test coverage.
-- **Legal holds block acceptance.** An active order, an unresolved refund or
+- **Legal holds are checked twice.** An active order, an unresolved refund or
   dispute, an open safety/fraud case, or a negative wallet balance defers the
-  request — named, so the person can act on it — rather than deleting anyway.
+  request — named, so the person can act on it. Checked when the request is
+  opened *and again at finalisation*, because a customer can acquire any of them
+  during the two-week window; a hold found at the last moment parks the request
+  in `held` and it resumes automatically once the matter clears.
 - **Finalisation is idempotent and single-transaction.** An `anonymisedAt`
   marker, a claimed request row, and set-to-constant writes mean a concurrent or
   repeated run is a no-op and writes no second audit entry. Every session is
   gone afterwards, so the account's tokens stop working immediately.
 - **The export download is a stateless signed capability.** An HMAC over the
   request id and an expiry (default 24 h), issued only to the authenticated
-  owner and **single-use** — enforced by a guarded `downloadCount: 0` update, so
-  two near-simultaneous downloads cannot both win. A bad token and a wrong id
-  return the same 404. The archive bytes are deleted the instant the download
-  completes, or by the maintenance sweep when the window lapses.
+  owner and **single-use**. The archive is read *before* the row is marked
+  delivered, under a short exclusive lease: two near-simultaneous downloads
+  cannot both win (guarded `downloadCount: 0` commit), and a transient
+  object-storage read failure returns a retryable `503` leaving the row
+  untouched, so an outage never burns the one download. A bad token and a wrong
+  id return the same 404. The archive bytes are deleted after a successful
+  download; a delete that fails is retried by the maintenance orphan sweep.
+- **The export build is claimed atomically.** Exactly one worker moves a request
+  to `building` under its own claim id before it reads any subject data or writes
+  a blob; a losing worker does nothing. Failure transitions only the claimed
+  state, a blob written before a later DB failure is deleted, and a claim that
+  goes stale is reclaimed or failed by maintenance.
 - **The archive is scoped to the subject.** Every relation is filtered by the
   requester's own ids; it never contains another user's data, internal risk
   scoring, or staff records, and its manifest says so.
@@ -344,6 +356,7 @@ Controls actually exercised by an automated check, not merely written:
 | Retention output and audit entries contain counts, never rows | `retention.test.ts` |
 | Account deletion needs a fresh step-up; cancellation does not | `account-deletion.test.ts` |
 | A legal hold (open order, dispute, safety case, debt) defers deletion | `account-deletion.test.ts` |
+| A hold acquired *during* the cooling-off window still blocks finalisation, then resumes when it clears | `account-deletion.test.ts` |
 | Finalisation anonymises the identity but leaves orders, payments, and every ledger entry intact | `account-deletion.test.ts` |
 | Repeated and concurrent finalisation anonymise once and write one audit entry | `account-deletion.test.ts` |
 | A cancellation racing finalisation is resolved deterministically, both ways | `account-deletion.test.ts` |
@@ -354,6 +367,10 @@ Controls actually exercised by an automated check, not merely written:
 | The export download is single-use; a second attempt and a concurrent one are refused | `account-export.test.ts` |
 | A wrong-owner, garbage, or wrong-request download token returns 404 and consumes nothing | `account-export.test.ts` |
 | An expired export link is refused and its archive is deleted | `account-export.test.ts` |
+| A storage read failure returns a retryable 503 and does not consume the download | `account-export.test.ts` |
+| A failed archive delete is retried by the maintenance orphan sweep | `account-export.test.ts` |
+| Concurrent export builds: exactly one worker claims, writes a blob, and wins | `account-export.test.ts` |
+| A DB failure after a build write cleans up the blob; a stale claim is reclaimed or failed | `account-export.test.ts` |
 | A build failure marks the request failed without wedging the queue | `account-export.test.ts` |
 | Readiness discloses dependency status but no provider, host, or secret | `observability.test.ts` |
 | Liveness stays up when the database is unreachable | `observability.test.ts` |

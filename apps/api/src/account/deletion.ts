@@ -21,11 +21,13 @@ import {
   anonymisedIdentity,
   assertCoolingOffDays,
   assertDeletionTransition,
+  canOwnerCancelDeletion,
+  DELETION_PENDING_STATUSES,
   evaluateLegalHold,
-  isCancellable,
   isDueForFinalisation,
   purgeAfter,
   type DeletionStatus,
+  type LegalHold,
   type LegalHoldSignals,
 } from '@dash/domain/account';
 import { ACTIVE_STATUSES } from '@dash/domain/orders';
@@ -141,7 +143,7 @@ function toView(
     scheduledPurgeAt: row.scheduledPurgeAt,
     cancelledAt: row.cancelledAt,
     completedAt: row.completedAt,
-    cancellable: isCancellable({ status, scheduledPurgeAt: row.scheduledPurgeAt }, now),
+    cancellable: canOwnerCancelDeletion({ status, scheduledPurgeAt: row.scheduledPurgeAt }, now),
   };
 }
 
@@ -164,7 +166,9 @@ export async function requestAccountDeletion(
     where: { identityId: input.identityId },
   });
 
-  if (existing?.status === 'scheduled') {
+  if (existing?.status === 'scheduled' || existing?.status === 'held') {
+    // A deletion is already in flight (a `held` one is parked on a legal hold
+    // but still headed for finalisation). Return it rather than restart the clock.
     return toView(existing, now);
   }
   if (existing?.status === 'completed') {
@@ -270,7 +274,12 @@ export async function cancelAccountDeletion(
   if (!existing) {
     throw new AccountDeletionError('not_found', 'There is no deletion request to cancel.');
   }
-  if (!isCancellable({ status: existing.status as DeletionStatus, scheduledPurgeAt: existing.scheduledPurgeAt }, now)) {
+  if (
+    !canOwnerCancelDeletion(
+      { status: existing.status as DeletionStatus, scheduledPurgeAt: existing.scheduledPurgeAt },
+      now,
+    )
+  ) {
     throw new AccountDeletionError(
       'not_cancellable',
       'This deletion request can no longer be cancelled.',
@@ -282,8 +291,9 @@ export async function cancelAccountDeletion(
   const row = await prisma.$transaction(async (tx) => {
     // Guarded update: if a finalisation just claimed it, `count` is 0 and we
     // lost the race — report it as no longer cancellable rather than pretend.
+    // Both `scheduled` and `held` are cancellable by the owner.
     const updated = await tx.accountDeletionRequest.updateMany({
-      where: { id: existing.id, status: 'scheduled' },
+      where: { id: existing.id, status: { in: [...DELETION_PENDING_STATUSES] } },
       data: { status: 'cancelled', cancelledAt: now },
     });
     if (updated.count === 0) {
@@ -320,12 +330,25 @@ export async function cancelAccountDeletion(
 export interface FinalisationResult {
   readonly identityId: string;
   readonly alreadyDone: boolean;
+  /**
+   * The due request was blocked by a legal hold acquired during the cooling-off
+   * period. It has been parked in `held`; a later run retries it.
+   */
+  readonly held?: boolean;
+  /** The hold code, when `held`. Non-sensitive. */
+  readonly heldReason?: string;
   /** Row counts by class, for the job report. Never row contents. */
   readonly counts: Record<string, number>;
 }
 
 /**
  * Anonymise an account whose cooling-off window has passed.
+ *
+ * Legal holds are **re-checked here**, not only at request time: a customer can
+ * open a new order, trigger a dispute, or run their wallet negative during the
+ * cooling-off period. If a hold is found now, the request is parked in `held`
+ * (nothing is anonymised, nothing is completed) and every later maintenance run
+ * re-evaluates it — it resumes automatically once the matter clears.
  *
  * Idempotent three ways:
  *   - `Identity.anonymisedAt` — a second run over a done account returns early.
@@ -362,26 +385,72 @@ export async function finaliseAccountDeletion(
   const request = await prisma.accountDeletionRequest.findUnique({
     where: { identityId: input.identityId },
   });
-  if (!request || request.status !== 'scheduled') {
+  if (!request || (request.status !== 'scheduled' && request.status !== 'held')) {
     // Cancelled, already completed, or never existed. Nothing to do.
     return { identityId: input.identityId, alreadyDone: true, counts: {} };
   }
-  if (!isDueForFinalisation({ status: 'scheduled', scheduledPurgeAt: request.scheduledPurgeAt }, now)) {
+  const fromStatus = request.status as DeletionStatus;
+  if (!isDueForFinalisation({ status: fromStatus, scheduledPurgeAt: request.scheduledPurgeAt }, now)) {
     throw new AccountDeletionError(
       'not_due',
       'This deletion request has not yet reached the end of its cooling-off window.',
     );
   }
 
-  assertDeletionTransition('scheduled', 'completed');
-
   const customerId = identity.customer?.id ?? null;
+
+  // Re-check legal holds at the last moment. A hold acquired since the request
+  // was made parks it in `held` rather than letting it through.
+  const hold: LegalHold | null = customerId
+    ? evaluateLegalHold(await gatherLegalHoldSignals(prisma, customerId))
+    : null;
+  if (hold) {
+    const parked = await prisma.accountDeletionRequest.updateMany({
+      where: {
+        id: request.id,
+        status: { in: [...DELETION_PENDING_STATUSES] },
+        idempotencyKey: null,
+      },
+      data: { status: 'held', heldReason: hold.code, heldAt: now },
+    });
+    if (parked.count === 0) {
+      // Cancelled or completed under us. Nothing to do.
+      return { identityId: input.identityId, alreadyDone: true, counts: {} };
+    }
+    // One audit entry when the hold first appears or its reason changes — not
+    // one on every quiet retry.
+    if (request.status !== 'held' || request.heldReason !== hold.code) {
+      await writeAudit(prisma, {
+        identityId: null,
+        action: 'account.deletion.held',
+        resourceType: 'identity',
+        resourceId: input.identityId,
+        after: { hold: hold.code },
+        requestId: null,
+      });
+    }
+    return {
+      identityId: input.identityId,
+      alreadyDone: false,
+      held: true,
+      heldReason: hold.code,
+      counts: {},
+    };
+  }
+
+  assertDeletionTransition(fromStatus, 'completed');
+
   const counts: Record<string, number> = {};
 
   const didFinalise = await prisma.$transaction(async (tx) => {
-    // Claim the request. If another finaliser beat us, `count` is 0 — bail.
+    // Claim the request. A `held` one that has just cleared its hold is claimed
+    // the same way. If another finaliser beat us, `count` is 0 — bail.
     const claimed = await tx.accountDeletionRequest.updateMany({
-      where: { id: request.id, status: 'scheduled', idempotencyKey: null },
+      where: {
+        id: request.id,
+        status: { in: [...DELETION_PENDING_STATUSES] },
+        idempotencyKey: null,
+      },
       data: { status: 'completed', completedAt: now, idempotencyKey: input.idempotencyKey },
     });
     if (claimed.count === 0) {
@@ -470,6 +539,17 @@ export async function finaliseAccountDeletion(
     return { identityId: input.identityId, alreadyDone: true, counts: {} };
   }
 
+  if (fromStatus === 'held') {
+    // It had been parked on a legal hold that has since cleared.
+    await writeAudit(prisma, {
+      identityId: null,
+      action: 'account.deletion.resumed',
+      resourceType: 'identity',
+      resourceId: input.identityId,
+      requestId: null,
+    });
+  }
+
   await writeAudit(prisma, {
     identityId: null,
     action: 'account.deletion.completed',
@@ -484,14 +564,14 @@ export async function finaliseAccountDeletion(
   return { identityId: input.identityId, alreadyDone: false, counts };
 }
 
-/** Identities whose cooling-off window has passed and are ready to finalise. */
+/** Identities whose cooling-off window has passed and still need action. */
 export async function findDueDeletions(
   prisma: PrismaClient,
   now: Date = new Date(),
   limit = 500,
 ): Promise<string[]> {
   const rows = await prisma.accountDeletionRequest.findMany({
-    where: { status: 'scheduled', scheduledPurgeAt: { lte: now } },
+    where: { status: { in: [...DELETION_PENDING_STATUSES] }, scheduledPurgeAt: { lte: now } },
     select: { identityId: true },
     take: limit,
   });

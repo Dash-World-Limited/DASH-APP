@@ -268,8 +268,15 @@ function translate(error: unknown): {
     if (error.reason === 'already_downloaded') {
       return { statusCode: 409, code: 'already_downloaded', message: error.message };
     }
+    if (error.reason === 'in_progress') {
+      return { statusCode: 409, code: 'download_in_progress', message: error.message };
+    }
     if (error.reason === 'not_ready') {
       return { statusCode: 409, code: 'export_not_ready', message: error.message };
+    }
+    if (error.reason === 'storage_unavailable') {
+      // Retryable and not the caller's fault — the row is untouched.
+      return { statusCode: 503, code: 'storage_unavailable', message: error.message };
     }
     // build_failed is our fault.
     return {

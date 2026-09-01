@@ -51,6 +51,27 @@ export const EXPORT_DOWNLOAD_TTL_MIN_HOURS = 1;
 /** Bytes of entropy in a download authorisation token. 256 bits. */
 export const EXPORT_TOKEN_BYTES = 32;
 
+/**
+ * How long a download may hold its exclusive lease on the archive.
+ *
+ * Long enough to stream the file out of object storage on a slow link, short
+ * enough that a crashed download frees the row quickly. A read that outlives
+ * the lease loses the right to deliver — another request may take over — so a
+ * partial read can never both fail here and succeed there.
+ */
+export const EXPORT_DOWNLOAD_LEASE_SECONDS = 120;
+
+/**
+ * How long one worker may hold its claim on a `pending` export build.
+ *
+ * Covers the subject-data gather plus the archive write. A claim older than
+ * this is treated as abandoned and may be reclaimed or failed by maintenance.
+ */
+export const EXPORT_BUILD_CLAIM_SECONDS = 300;
+
+/** After this many build attempts a request is failed rather than retried. */
+export const EXPORT_BUILD_MAX_ATTEMPTS = 5;
+
 export class AccountPolicyError extends Error {
   constructor(
     readonly reason:
@@ -108,18 +129,27 @@ export function exportExpiresAt(readyAt: Date, ttlHours = EXPORT_DOWNLOAD_TTL_HO
 // Deletion state machine
 // ---------------------------------------------------------------------------
 
-export type DeletionStatus = 'scheduled' | 'cancelled' | 'completed';
+export type DeletionStatus = 'scheduled' | 'held' | 'cancelled' | 'completed';
 
 /**
- * The only legal moves. A request is created `scheduled`; from there it either
- * gets cancelled inside the window or completed after it. `completed` and
- * `cancelled` are terminal — nothing reopens a deletion.
+ * The legal moves.
+ *
+ * A request is created `scheduled`. After the window it is finalised
+ * (`completed`) — **unless** a legal hold acquired during the cooling-off
+ * period is found at that moment, in which case it parks in `held`. A `held`
+ * request is re-evaluated on every maintenance run: when the hold clears it
+ * finalises; the owner (or staff) may also cancel it. `completed` and
+ * `cancelled` are terminal.
  */
 const DELETION_TRANSITIONS: Readonly<Record<DeletionStatus, readonly DeletionStatus[]>> = {
-  scheduled: ['cancelled', 'completed'],
+  scheduled: ['held', 'cancelled', 'completed'],
+  held: ['scheduled', 'cancelled', 'completed'],
   cancelled: [],
   completed: [],
 };
+
+/** Non-terminal statuses a maintenance run still has to act on. */
+export const DELETION_PENDING_STATUSES: readonly DeletionStatus[] = ['scheduled', 'held'];
 
 export function canTransitionDeletion(from: DeletionStatus, to: DeletionStatus): boolean {
   return DELETION_TRANSITIONS[from].includes(to);
@@ -134,20 +164,39 @@ export function assertDeletionTransition(from: DeletionStatus, to: DeletionStatu
   }
 }
 
-/** True once a scheduled request has passed its window and may be finalised. */
+/**
+ * True once a request has passed its window and is eligible for finalisation.
+ * Both `scheduled` and `held` qualify — a held request is retried every run.
+ */
 export function isDueForFinalisation(
   request: { status: DeletionStatus; scheduledPurgeAt: Date },
   now: Date,
 ): boolean {
-  return request.status === 'scheduled' && request.scheduledPurgeAt.getTime() <= now.getTime();
+  return (
+    (request.status === 'scheduled' || request.status === 'held') &&
+    request.scheduledPurgeAt.getTime() <= now.getTime()
+  );
 }
 
-/** True while a scheduled request can still be cancelled by its owner. */
+/** True while a scheduled request can still be cancelled by its owner in-window. */
 export function isCancellable(
   request: { status: DeletionStatus; scheduledPurgeAt: Date },
   now: Date,
 ): boolean {
   return request.status === 'scheduled' && request.scheduledPurgeAt.getTime() > now.getTime();
+}
+
+/**
+ * True when the owner may still call off the deletion.
+ *
+ * That is any time inside the window, and — because a `held` request has passed
+ * its window but is not going through — any time it is parked in `held`.
+ */
+export function canOwnerCancelDeletion(
+  request: { status: DeletionStatus; scheduledPurgeAt: Date },
+  now: Date,
+): boolean {
+  return request.status === 'held' || isCancellable(request, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -481,10 +530,24 @@ export function exportManifest(subjectId: string, generatedAt: Date): ExportMani
   };
 }
 
-export type ExportStatus = 'pending' | 'ready' | 'delivered' | 'expired' | 'failed';
+export type ExportStatus =
+  | 'pending'
+  | 'building'
+  | 'ready'
+  | 'delivered'
+  | 'expired'
+  | 'failed';
 
+/**
+ * `pending` → a worker claims it (`building`) before it reads any subject data
+ * or writes a byte → `ready` on success, `failed` on error. A `building` claim
+ * that goes stale falls back to `pending` for another worker. `ready` is
+ * downloaded once (`delivered`) or lapses (`expired`). `delivered`, `expired`,
+ * and `failed` are terminal.
+ */
 const EXPORT_TRANSITIONS: Readonly<Record<ExportStatus, readonly ExportStatus[]>> = {
-  pending: ['ready', 'failed'],
+  pending: ['building', 'failed'],
+  building: ['ready', 'failed', 'pending'],
   ready: ['delivered', 'expired'],
   delivered: [],
   expired: [],

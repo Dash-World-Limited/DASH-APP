@@ -118,7 +118,7 @@ model AccountDeletionRequest {
   id         String @id @default(cuid())
   identityId String
 
-  status String @default("scheduled") // scheduled | cancelled | completed
+  status String @default("scheduled") // scheduled | held | cancelled | completed
 
   // The cooling-off window.
   requestedAt      DateTime @default(now())
@@ -126,6 +126,13 @@ model AccountDeletionRequest {
 
   cancelledAt DateTime?
   completedAt DateTime?
+
+  // Set when finalisation, re-checking legal holds at the last moment, finds a
+  // hold acquired during the cooling-off period. The request parks in `held`
+  // and every later maintenance run re-evaluates it. `heldReason` is a
+  // non-sensitive hold code (open_order, payment_dispute, …).
+  heldReason String?
+  heldAt     DateTime?
 
   // Optional free text from the person. Bounded and never echoed into logs.
   reason String?
@@ -164,7 +171,7 @@ model DataExportRequest {
   id         String @id @default(cuid())
   identityId String
 
-  status String @default("pending") // pending | ready | delivered | expired | failed
+  status String @default("pending") // pending | building | ready | delivered | expired | failed
 
   requestedAt DateTime @default(now())
   readyAt     DateTime?
@@ -179,6 +186,14 @@ model DataExportRequest {
   sizeBytes  Int?
   format     String @default("json")
 
+  // Atomic build claim. Exactly one worker moves a `pending` row to `building`
+  // with its own `buildClaimId` before it reads any subject data or writes a
+  // blob; the losing worker does nothing. A claim older than `buildClaimUntil`
+  // is abandoned and may be reclaimed or failed. `buildAttempts` caps retries.
+  buildClaimId    String?
+  buildClaimUntil DateTime?
+  buildAttempts   Int      @default(0)
+
   // The download authorisation is a signed, expiring capability token — see
   // apps/api/src/account/export.ts. Nothing about it is stored: it carries the
   // request id and an expiry and is verified by HMAC. Single use is enforced
@@ -187,6 +202,14 @@ model DataExportRequest {
   // 0 until the one permitted download happens, then 1. A guarded update makes
   // two concurrent downloads impossible.
   downloadCount Int @default(0)
+
+  // A short exclusive lease held only while a download is streaming the archive
+  // out of storage. It is taken before `archive.read` and released — leaving
+  // the row `ready` and unused — if the read fails, so a transient storage
+  // outage never consumes the one permitted download. The expiry lets a
+  // crashed download be taken over.
+  downloadLeaseId    String?
+  downloadLeaseUntil DateTime?
 
   requestedByIp String?
 
@@ -197,6 +220,7 @@ model DataExportRequest {
 
   @@index([identityId, status])
   @@index([status, expiresAt])
+  @@index([status, buildClaimUntil])
 }
 
 model IdentityRole {

@@ -26,10 +26,13 @@
  * boundary is stated inside the archive's manifest.
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { generateToken } from '@dash/domain/crypto';
 import {
   assertExportTransition,
+  EXPORT_BUILD_CLAIM_SECONDS,
+  EXPORT_BUILD_MAX_ATTEMPTS,
+  EXPORT_DOWNLOAD_LEASE_SECONDS,
   exportExpiresAt,
   exportManifest,
   isDownloadable,
@@ -155,7 +158,7 @@ export async function requestDataExport(
   const now = input.now ?? new Date();
 
   const outstanding = await prisma.dataExportRequest.findFirst({
-    where: { identityId: input.identityId, status: { in: ['pending', 'ready'] } },
+    where: { identityId: input.identityId, status: { in: ['pending', 'building', 'ready'] } },
     orderBy: { createdAt: 'desc' },
   });
   if (outstanding) {
@@ -341,14 +344,24 @@ async function gatherSubjectData(
 export interface BuildResult {
   readonly view: ExportRequestView;
   readonly status: ExportStatus;
+  /** True when this call did not own the build — it lost or never held the claim. */
+  readonly skipped?: boolean;
 }
+
+const BUILD_CLAIM_MS = EXPORT_BUILD_CLAIM_SECONDS * 1000;
 
 /**
  * Build the archive for a pending request.
  *
- * Idempotent: a request already past `pending` is returned untouched. A failure
- * marks the request `failed` with a bounded reason and does not throw — the job
- * records the outcome and moves on to the next.
+ * **Atomic claim before any work.** Exactly one worker moves the row from
+ * `pending` (or a stale `building`) to `building` under its own `buildClaimId`;
+ * a worker that loses that race returns immediately without reading subject
+ * data or writing a byte. Every later write — success or failure — is guarded
+ * on that same `buildClaimId`, so a worker can only ever transition the state
+ * it holds. A blob written before a subsequent database failure is deleted.
+ *
+ * Never throws for an expected condition: it records the outcome on the row and
+ * returns, so one bad export cannot wedge the queue.
  */
 export async function buildDataExport(
   prisma: PrismaClient,
@@ -356,33 +369,103 @@ export async function buildDataExport(
   input: { requestId: string; ttlHours: number; now?: Date },
 ): Promise<BuildResult> {
   const now = input.now ?? new Date();
+  const claimId = randomUUID();
 
   const request = await prisma.dataExportRequest.findUnique({ where: { id: input.requestId } });
   if (!request) throw new DataExportError('not_found', 'Export request not found.');
-  if (request.status !== 'pending') {
-    return { view: toView(request, now), status: request.status as ExportStatus };
+
+  // Only `pending`, or a `building` row whose claim has gone stale, is buildable.
+  const claimStale =
+    request.status === 'building' &&
+    request.buildClaimUntil !== null &&
+    request.buildClaimUntil.getTime() <= now.getTime();
+  if (request.status !== 'pending' && !claimStale) {
+    return { view: toView(request, now), status: request.status as ExportStatus, skipped: true };
   }
 
+  if ((request.buildAttempts ?? 0) >= EXPORT_BUILD_MAX_ATTEMPTS) {
+    const failed = await prisma.dataExportRequest.updateMany({
+      where: { id: request.id, status: { in: ['pending', 'building'] } },
+      data: {
+        status: 'failed',
+        failedAt: now,
+        failureReason: 'exceeded the maximum number of build attempts',
+        buildClaimId: null,
+        buildClaimUntil: null,
+      },
+    });
+    if (failed.count > 0) {
+      await writeAudit(prisma, {
+        identityId: request.identityId,
+        action: 'account.export.failed',
+        resourceType: 'data_export',
+        resourceId: request.id,
+      });
+    }
+    const after = await prisma.dataExportRequest.findUniqueOrThrow({ where: { id: request.id } });
+    return { view: toView(after, now), status: after.status as ExportStatus, skipped: true };
+  }
+
+  // --- Claim -------------------------------------------------------------
+  // A fresh `pending` row is a real state transition; reclaiming a stale
+  // `building` claim is not — the row never leaves `building` — so only the
+  // former is checked against the state machine.
+  if (request.status === 'pending') {
+    assertExportTransition('pending', 'building');
+  }
+  const claimed = await prisma.dataExportRequest.updateMany({
+    where: {
+      id: request.id,
+      OR: [
+        { status: 'pending' },
+        { status: 'building', buildClaimUntil: { lte: now } },
+      ],
+    },
+    data: {
+      status: 'building',
+      buildClaimId: claimId,
+      buildClaimUntil: new Date(now.getTime() + BUILD_CLAIM_MS),
+      buildAttempts: { increment: 1 },
+    },
+  });
+  if (claimed.count === 0) {
+    // Another worker holds the claim, or the row moved on. Do nothing.
+    const after = await prisma.dataExportRequest.findUniqueOrThrow({ where: { id: request.id } });
+    return { view: toView(after, now), status: after.status as ExportStatus, skipped: true };
+  }
+
+  // --- Work under the claim -------------------------------------------
+  let writtenKey: string | null = null;
   try {
     const document = await gatherSubjectData(prisma, request.identityId, now);
     const body = Buffer.from(JSON.stringify(document, null, 2), 'utf8');
 
     const key = generateToken(24).replace(/[^A-Za-z0-9_-]/g, '');
     const stored = await archive.write({ key, body, contentType: ARCHIVE_CONTENT_TYPE });
+    writtenKey = key;
 
-    assertExportTransition('pending', 'ready');
-
-    const updated = await prisma.dataExportRequest.update({
-      where: { id: request.id, status: 'pending' } as { id: string },
+    assertExportTransition('building', 'ready');
+    const promoted = await prisma.dataExportRequest.updateMany({
+      where: { id: request.id, status: 'building', buildClaimId: claimId },
       data: {
         status: 'ready',
         readyAt: now,
         expiresAt: exportExpiresAt(now, input.ttlHours),
         storageKey: key,
         sizeBytes: stored.sizeBytes,
+        buildClaimId: null,
+        buildClaimUntil: null,
       },
     });
+    if (promoted.count === 0) {
+      // Our claim was stolen (it had gone stale and another worker reclaimed).
+      // The winning worker owns the row now; discard the blob we just wrote.
+      await archive.delete(key).catch(() => undefined);
+      const after = await prisma.dataExportRequest.findUniqueOrThrow({ where: { id: request.id } });
+      return { view: toView(after, now), status: after.status as ExportStatus, skipped: true };
+    }
 
+    const updated = await prisma.dataExportRequest.findUniqueOrThrow({ where: { id: request.id } });
     await writeAudit(prisma, {
       identityId: request.identityId,
       action: 'account.export.ready',
@@ -393,21 +476,36 @@ export async function buildDataExport(
 
     return { view: toView(updated, now), status: 'ready' };
   } catch (error) {
-    const failed = await prisma.dataExportRequest.update({
-      where: { id: request.id },
+    // Clean up any blob written before the failure.
+    if (writtenKey) await archive.delete(writtenKey).catch(() => undefined);
+
+    // Fail only the state this worker claimed. If the claim was stolen in the
+    // meantime, `count` is 0 and the reclaiming worker owns the outcome.
+    const failed = await prisma.dataExportRequest.updateMany({
+      where: { id: request.id, status: 'building', buildClaimId: claimId },
       data: {
         status: 'failed',
         failedAt: now,
         failureReason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+        storageKey: null,
+        buildClaimId: null,
+        buildClaimUntil: null,
       },
     });
-    await writeAudit(prisma, {
-      identityId: request.identityId,
-      action: 'account.export.failed',
-      resourceType: 'data_export',
-      resourceId: request.id,
-    });
-    return { view: toView(failed, now), status: 'failed' };
+    const after = await prisma.dataExportRequest.findUniqueOrThrow({ where: { id: request.id } });
+    if (failed.count > 0) {
+      await writeAudit(prisma, {
+        identityId: request.identityId,
+        action: 'account.export.failed',
+        resourceType: 'data_export',
+        resourceId: request.id,
+      });
+    }
+    return {
+      view: toView(after, now),
+      status: after.status as ExportStatus,
+      skipped: failed.count === 0,
+    };
   }
 }
 
@@ -415,12 +513,26 @@ export async function buildDataExport(
 // Download
 // ---------------------------------------------------------------------------
 
+const DOWNLOAD_LEASE_MS = EXPORT_DOWNLOAD_LEASE_SECONDS * 1000;
+
 /**
  * Consume a download.
  *
- * Single-use, enforced by a guarded `updateMany` on `downloadCount: 0` so two
- * near-simultaneous requests cannot both win. The archive is deleted and its
- * key nulled immediately after — the bytes exist for exactly one download.
+ * Two-phase, so a transient storage outage cannot burn the one permitted
+ * download:
+ *
+ *   1. **Lease.** A guarded `updateMany` takes an exclusive, expiring lease on a
+ *      `ready`, unused row. Two concurrent requests cannot both take it; a
+ *      crashed download's lease expires and another request may take over.
+ *   2. **Read, then commit.** The archive is read *before* the row is marked
+ *      delivered. A failed read releases the lease — the row stays `ready` and
+ *      `downloadCount: 0`, fully retryable. Only a successful read commits
+ *      `delivered` / `downloadCount: 1`, and only under the same lease id, so a
+ *      request whose lease expired mid-read cannot deliver a second copy.
+ *
+ * The archive is deleted after a successful commit. A delete failure leaves
+ * `storageKey` set and `status: delivered`; the maintenance orphan sweep
+ * retries it.
  */
 export async function consumeDataExportDownload(
   prisma: PrismaClient,
@@ -436,6 +548,7 @@ export async function consumeDataExportDownload(
   },
 ): Promise<{ body: Buffer; filename: string }> {
   const now = input.now ?? new Date();
+  const leaseId = randomUUID();
 
   const request = await prisma.dataExportRequest.findUnique({ where: { id: input.requestId } });
   if (!request || request.identityId !== input.identityId) {
@@ -466,22 +579,78 @@ export async function consumeDataExportDownload(
     throw new DataExportError('not_found', 'Not found.');
   }
 
-  const claimed = await prisma.dataExportRequest.updateMany({
-    where: { id: request.id, status: 'ready', downloadCount: 0 },
-    data: { status: 'delivered', deliveredAt: now, downloadCount: 1 },
+  // --- Phase 1: take the lease ---------------------------------------
+  const leased = await prisma.dataExportRequest.updateMany({
+    where: {
+      id: request.id,
+      status: 'ready',
+      downloadCount: 0,
+      OR: [{ downloadLeaseUntil: null }, { downloadLeaseUntil: { lte: now } }],
+    },
+    data: { downloadLeaseId: leaseId, downloadLeaseUntil: new Date(now.getTime() + DOWNLOAD_LEASE_MS) },
   });
-  if (claimed.count === 0) {
+  if (leased.count === 0) {
+    // Another request holds a live lease, or the row was consumed/expired.
+    const after = await prisma.dataExportRequest.findUnique({ where: { id: request.id } });
+    if (after && (after.status === 'delivered' || after.downloadCount > 0)) {
+      throw new DataExportError('already_downloaded', 'This export has already been downloaded.');
+    }
+    throw new DataExportError('in_progress', 'This export is already being downloaded.');
+  }
+
+  const key = request.storageKey;
+  if (!key) {
+    // Nothing to serve. Release the lease and treat as expired.
+    await prisma.dataExportRequest.updateMany({
+      where: { id: request.id, downloadLeaseId: leaseId },
+      data: { downloadLeaseId: null, downloadLeaseUntil: null },
+    });
+    throw new DataExportError('expired', 'This export link is no longer valid.');
+  }
+
+  // --- Phase 2: read the archive, then commit -----------------------
+  let body: Buffer;
+  try {
+    body = await archive.read(key);
+  } catch {
+    // Release the lease. The row is untouched — `ready`, unused — so the owner
+    // can simply try again once storage recovers.
+    await prisma.dataExportRequest.updateMany({
+      where: { id: request.id, downloadLeaseId: leaseId },
+      data: { downloadLeaseId: null, downloadLeaseUntil: null },
+    });
+    throw new DataExportError('storage_unavailable', 'The export could not be retrieved. Please try again shortly.');
+  }
+
+  assertExportTransition('ready', 'delivered');
+  const committed = await prisma.dataExportRequest.updateMany({
+    where: { id: request.id, status: 'ready', downloadCount: 0, downloadLeaseId: leaseId },
+    data: {
+      status: 'delivered',
+      deliveredAt: now,
+      downloadCount: 1,
+      downloadLeaseId: null,
+      downloadLeaseUntil: null,
+    },
+  });
+  if (committed.count === 0) {
+    // Our lease expired mid-read and another request took over and delivered.
+    // We must not hand out a second copy.
     throw new DataExportError('already_downloaded', 'This export has already been downloaded.');
   }
 
-  const key = request.storageKey!;
-  const body = await archive.read(key);
-
-  await archive.delete(key).catch(() => undefined);
-  await prisma.dataExportRequest.update({
-    where: { id: request.id },
-    data: { storageKey: null },
-  });
+  // Delete the archive. If this fails the row stays `delivered` with
+  // `storageKey` set; the maintenance orphan sweep retries the delete.
+  const deleted = await archive
+    .delete(key)
+    .then(() => true)
+    .catch(() => false);
+  if (deleted) {
+    await prisma.dataExportRequest.update({
+      where: { id: request.id },
+      data: { storageKey: null },
+    });
+  }
 
   await writeAudit(prisma, {
     identityId: input.identityId,
@@ -520,4 +689,85 @@ export async function expireDataExport(
     where: { id: row.id, status: 'ready' },
     data: { status: 'expired', storageKey: null },
   });
+}
+
+/** `building` rows whose claim has gone stale — an abandoned build. */
+export async function findStaleExportBuilds(
+  prisma: PrismaClient,
+  now: Date = new Date(),
+  limit = 500,
+): Promise<{ id: string; identityId: string; storageKey: string | null }[]> {
+  return prisma.dataExportRequest.findMany({
+    where: { status: 'building', buildClaimUntil: { lte: now } },
+    select: { id: true, identityId: true, storageKey: true },
+    take: limit,
+  });
+}
+
+/**
+ * Fail one abandoned build and drop any half-written blob. Idempotent, and
+ * guarded so it never touches a row a worker has since reclaimed.
+ */
+export async function failStaleExportBuild(
+  prisma: PrismaClient,
+  archive: ExportArchivePort,
+  row: { id: string; identityId: string; storageKey: string | null },
+  now: Date = new Date(),
+): Promise<boolean> {
+  if (row.storageKey) await archive.delete(row.storageKey).catch(() => undefined);
+  const failed = await prisma.dataExportRequest.updateMany({
+    where: { id: row.id, status: 'building', buildClaimUntil: { lte: now } },
+    data: {
+      status: 'failed',
+      failedAt: now,
+      failureReason: 'the build was abandoned before it completed',
+      storageKey: null,
+      buildClaimId: null,
+      buildClaimUntil: null,
+    },
+  });
+  if (failed.count > 0) {
+    await writeAudit(prisma, {
+      identityId: row.identityId,
+      action: 'account.export.failed',
+      resourceType: 'data_export',
+      resourceId: row.id,
+    });
+  }
+  return failed.count > 0;
+}
+
+/**
+ * `delivered` rows that still carry a `storageKey` — a download whose archive
+ * delete failed. The bytes are already spent; this just retries the delete.
+ */
+export async function findOrphanedExportArchives(
+  prisma: PrismaClient,
+  limit = 500,
+): Promise<{ id: string; storageKey: string | null }[]> {
+  return prisma.dataExportRequest.findMany({
+    where: { status: { in: ['delivered', 'expired'] }, storageKey: { not: null } },
+    select: { id: true, storageKey: true },
+    take: limit,
+  });
+}
+
+/** Retry a failed archive delete. Nulls `storageKey` only once the blob is gone. */
+export async function cleanOrphanedExportArchive(
+  prisma: PrismaClient,
+  archive: ExportArchivePort,
+  row: { id: string; storageKey: string | null },
+): Promise<boolean> {
+  if (!row.storageKey) return false;
+  const deleted = await archive
+    .delete(row.storageKey)
+    .then(() => true)
+    .catch(() => false);
+  if (deleted) {
+    await prisma.dataExportRequest.updateMany({
+      where: { id: row.id, storageKey: row.storageKey },
+      data: { storageKey: null },
+    });
+  }
+  return deleted;
 }
