@@ -118,23 +118,38 @@ Notes:
 
 | Endpoint | Method | Permission | Scope | Cov |
 |---|---|---|---|---|
-| `/v1/cities` | GET | none | live cities only | ⚠️ |
-| `/v1/serviceability` | GET | none | — | ⚠️ |
-| `/v1/vendors` | GET | none | approved vendors only | ⚠️ |
-| `/v1/vendors/:slug` | GET | none | approved vendors only; never returns bank details or commission | ⚠️ |
-| `/v1/search` | GET | none | approved vendors only | ❌ |
+| `/v1/cities` | GET | none | live cities only | ✅ |
+| `/v1/serviceability` | GET | none | — | ✅ |
+| `/v1/vendors` | GET | none | approved vendors only | ✅ |
+| `/v1/vendors/:slug` | GET | none | approved vendors only; never returns bank details or commission | ✅ |
+| `/v1/search` | GET | none | approved vendors only | ✅ |
 
-Covered by `scripts/smoke.mjs`. These are read-only, expose no per-user data,
-and a suspended vendor disappears from them — asserted in `vendor.test.ts`.
+Covered by `catalog.test.ts` (30 tests) in the standard `npm test` run — no
+running server required. Asserts that only live cities and approved vendors
+appear, that commission and banking fields never leak, that an unapproved
+vendor returns 404 rather than 403, that archived items are hidden while
+unavailable ones stay visible and flagged, and that limits, cursors, and
+search bounds are enforced rather than silently ignored.
 
 ## Webhooks
 
 | Endpoint | Method | Auth | Cov |
 |---|---|---|---|
-| `/v1/webhooks/payments` | POST | provider signature; CSRF-exempt; replay-protected on `(provider, eventId)` | ⚠️ |
+| `/v1/webhooks/payments` | POST | provider signature; CSRF-exempt; replay-protected on `(provider, eventId)` | ✅ |
 
-Signature rejection is asserted in `scripts/smoke.mjs`. Replay and
-amount-mismatch paths are not yet automated.
+Covered by `webhooks.test.ts` (24 tests): missing, wrong, and post-signing
+tampered signatures; duplicate and concurrent delivery of one event id;
+provider-vs-record amount mismatch; unknown reference; malformed and empty
+bodies; and that no rejection leaves partial order, payment, or ledger state.
+
+Two properties worth naming because they are easy to get backwards:
+
+* **The body's `amount` is not consulted.** The route re-asks the provider and
+  compares that to the payment record, so a tampered body amount is irrelevant
+  rather than merely rejected.
+* **Webhook idempotency and financial idempotency are separate.** A new event
+  id for an already-placed order is accepted as a new event and still moves no
+  money, because the order state — not the event id — guards the ledger.
 
 ---
 
@@ -147,10 +162,16 @@ amount-mismatch paths are not yet automated.
 | Dispatch and rider | 40 |
 | Finance and ledger | 28 |
 | Staff / ops / admin | 29 |
-| Authentication | 39 |
-| Config guards | 29 |
+| Authentication | 41 |
+| Administrator MFA | 51 |
+| Public catalogue and search | 30 |
+| Payment webhooks | 24 |
+| Config guards | 40 |
 | Rate limiting | 4 |
 
-Still script-only (`scripts/smoke.mjs`, `scripts/dispatch-check.mjs`):
-the public catalogue and search endpoints, and the webhook replay /
-amount-mismatch paths.
+Every business and public endpoint above now has automated integration
+coverage that runs in `npm test` and in CI without a manually started server.
+
+`scripts/smoke.mjs` (49 checks) and `scripts/dispatch-check.mjs` (21 checks)
+remain as supplementary end-to-end checks against a real listening server and
+a full seed. They are no longer the only coverage for anything.

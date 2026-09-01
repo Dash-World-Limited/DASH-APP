@@ -236,8 +236,16 @@ export class LocalGeoAdapter implements GeoPort {
   }
 
   async zonesContaining(point: LatLng, cityId: string): Promise<readonly string[]> {
+    // Deliberately NOT filtered by `isActive`. This answers the geometric
+    // question the port describes — which zones contain this point — and
+    // leaves policy to the caller.
+    //
+    // Filtering here made `/v1/serviceability`'s `zone_paused` branch
+    // unreachable: a zone paused for an hour looked identical to one that
+    // never existed, so a customer in a flooded area was told DASH APP does
+    // not deliver to them at all rather than to try again shortly.
     const zones = await this.prisma.zone.findMany({
-      where: { cityId, isActive: true },
+      where: { cityId },
       select: {
         id: true,
         polygon: true,
