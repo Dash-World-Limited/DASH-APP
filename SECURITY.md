@@ -308,6 +308,9 @@ Controls actually exercised by an automated check, not merely written:
 | A newly privileged account is challenged at its next sign-in | `mfa.test.ts` |
 | Ciphertext will not move between vendors, fields, or keys | `envelope.test.ts` |
 | Bank details are never stored, logged, or returned in clear | `payout.test.ts` |
+| The retention job never touches ledger, audit, order, or webhook records | `retention.test.ts` |
+| Old rider locations are coarsened, converge, and survive concurrent runs | `retention.test.ts` |
+| Retention output and audit entries contain counts, never rows | `retention.test.ts` |
 | Redirecting settlements needs owner role plus a fresh step-up | `payout.test.ts` |
 | A tampered or wrong-key payout record fails rather than decrypting | `payout.test.ts` |
 | A record under a retired key still opens and is flagged for rotation | `payout.test.ts` |

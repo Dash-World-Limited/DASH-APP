@@ -11,6 +11,7 @@
 
 import { z } from 'zod';
 import { parseKey, type EncryptionKey, type Keyring } from '@dash/domain/envelope';
+import { assertRetentionDays } from '@dash/domain/retention';
 
 const booleanish = z
   .enum(['true', 'false', '1', '0'])
@@ -97,6 +98,20 @@ const schema = z
     // turn it off is a local environment with no key configured, and production
     // refuses that below.
     MFA_ENABLED: booleanish.default('true'),
+
+    // --- Retention overrides ----------------------------------------------
+    // One variable per tunable period. Unset means the policy default in
+    // @dash/domain/retention applies. Each is validated against that policy's
+    // ceiling below, so a value that would be refused in production is refused
+    // in staging too. Shortening a period is always fine — less data held is
+    // never a compliance risk — but lengthening one past its ceiling needs a
+    // documented decision, not an environment variable.
+    RETENTION_SESSIONS_DAYS: z.coerce.number().int().positive().optional(),
+    RETENTION_RIDER_LOCATION_DAYS: z.coerce.number().int().positive().optional(),
+    // Governs both OTP and MFA challenges — the same class of spent, short-lived
+    // credential — so the two cannot drift apart.
+    RETENTION_OTP_DAYS: z.coerce.number().int().positive().optional(),
+    RETENTION_IDEMPOTENCY_DAYS: z.coerce.number().int().positive().optional(),
   })
   .superRefine((env, ctx) => {
     const fail = (path: string, message: string): void => {
@@ -141,6 +156,24 @@ const schema = z
         'ENCRYPTION_KEY',
         'MFA_ENABLED is true but no ENCRYPTION_KEY is set — the TOTP secret could not be stored safely',
       );
+    }
+
+    // Retention periods are checked against the policy's per-rule ceilings
+    // wherever they are supplied, not only in production: a period refused in
+    // production must be refused in staging too, or staging stops being a
+    // rehearsal.
+    for (const [variable, rule, value] of [
+      ['RETENTION_SESSIONS_DAYS', 'expired_sessions', env.RETENTION_SESSIONS_DAYS],
+      ['RETENTION_RIDER_LOCATION_DAYS', 'rider_location_history', env.RETENTION_RIDER_LOCATION_DAYS],
+      ['RETENTION_OTP_DAYS', 'consumed_otp_challenges', env.RETENTION_OTP_DAYS],
+      ['RETENTION_IDEMPOTENCY_DAYS', 'expired_idempotency_keys', env.RETENTION_IDEMPOTENCY_DAYS],
+    ] as const) {
+      if (value === undefined) continue;
+      try {
+        assertRetentionDays(rule, value);
+      } catch (error) {
+        fail(variable, error instanceof Error ? error.message : 'is not a valid retention period');
+      }
     }
 
     if (env.NODE_ENV !== 'production') return;
@@ -383,4 +416,37 @@ export function buildKeyring(config: Config): Keyring {
 
 export function isEncryptionConfigured(config: Config): boolean {
   return Boolean(config.ENCRYPTION_KEY);
+}
+
+// ---------------------------------------------------------------------------
+// Retention overrides
+// ---------------------------------------------------------------------------
+
+/**
+ * Retention overrides, in the shape the job expects: `{ rule_name: days }`.
+ *
+ * Only the variables actually set appear, so an unset one falls through to the
+ * policy default in `@dash/domain/retention` rather than being silently
+ * overridden. Every value here has already passed `assertRetentionDays` at boot.
+ */
+export function retentionOverrides(config: Config): Record<string, number> {
+  const overrides: Record<string, number> = {};
+
+  if (config.RETENTION_SESSIONS_DAYS !== undefined) {
+    overrides['expired_sessions'] = config.RETENTION_SESSIONS_DAYS;
+  }
+  if (config.RETENTION_RIDER_LOCATION_DAYS !== undefined) {
+    overrides['rider_location_history'] = config.RETENTION_RIDER_LOCATION_DAYS;
+  }
+  if (config.RETENTION_OTP_DAYS !== undefined) {
+    overrides['consumed_otp_challenges'] = config.RETENTION_OTP_DAYS;
+    // MFA challenges are the same class of spent, short-lived credential, so one
+    // variable governs both rather than two that could drift apart.
+    overrides['consumed_mfa_challenges'] = config.RETENTION_OTP_DAYS;
+  }
+  if (config.RETENTION_IDEMPOTENCY_DAYS !== undefined) {
+    overrides['expired_idempotency_keys'] = config.RETENTION_IDEMPOTENCY_DAYS;
+  }
+
+  return overrides;
 }

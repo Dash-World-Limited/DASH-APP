@@ -745,10 +745,18 @@ model RiderLocation {
   recordedAt DateTime
   createdAt  DateTime @default(now())
 
+  // Set once the retention job has coarsened this point. Its presence is what
+  // makes the job converge: an already-anonymised row is skipped rather than
+  // rounded again, so repeated and concurrent runs are no-ops.
+  anonymisedAt DateTime?
+
   rider Rider @relation(fields: [riderId], references: [id], onDelete: Cascade)
 
-  // Location history is pruned on a retention schedule — see docs/SECURITY.md.
+  // Location history is coarsened on a retention schedule — see
+  // docs/RETENTION.md and packages/domain/src/retention.
   @@index([riderId, recordedAt])
+  // Drives the retention sweep: find old points not yet anonymised.
+  @@index([recordedAt, anonymisedAt])
 }
 
 // ===========================================================================

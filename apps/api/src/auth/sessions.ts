@@ -282,14 +282,25 @@ export async function markSteppedUp(prisma: PrismaClient, sessionId: string): Pr
   });
 }
 
-/** Housekeeping: drop sessions that expired long ago. */
+/**
+ * Housekeeping: drop sessions that expired before `before`.
+ *
+ * Called by the retention job (`apps/api/src/jobs/retention.ts`), which is the
+ * only thing that runs it. Kept here rather than inlined in the job so session
+ * lifecycle stays in one file, and so `dryRun` counts through exactly the same
+ * `where` clause the real delete uses — a count that could diverge from the
+ * delete would make the dry run a lie.
+ *
+ * Takes an explicit cutoff rather than a day count so every rule in one job run
+ * shares a single instant.
+ */
 export async function pruneExpiredSessions(
   prisma: PrismaClient,
-  olderThanDays = 60,
+  before: Date,
+  options: { dryRun?: boolean } = {},
 ): Promise<number> {
-  const cutoff = new Date(Date.now() - olderThanDays * 86_400_000);
-  const result = await prisma.session.deleteMany({
-    where: { expiresAt: { lt: cutoff } },
-  });
-  return result.count;
+  const where = { expiresAt: { lt: before } };
+
+  if (options.dryRun) return prisma.session.count({ where });
+  return (await prisma.session.deleteMany({ where })).count;
 }
