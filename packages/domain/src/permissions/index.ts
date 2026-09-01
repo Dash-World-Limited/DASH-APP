@@ -43,6 +43,11 @@ export const PERMISSIONS = [
   'vendor:promotion:write',
   'vendor:report:read',
   'vendor:settlement:read',
+  // Write-only by design. There is no permission to *read* payout details in
+  // clear, because no route needs to: settlement will hand the ciphertext
+  // straight to the payment provider. Masked reads need no permission beyond
+  // the vendor scope.
+  'vendor:payout:write',
   'vendor:staff:manage',
   'vendor:settings:write',
   'vendor:review:respond',
@@ -123,6 +128,9 @@ export const STEP_UP_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>(
   'admin:impersonate',
   'admin:config:write',
   'support:compensation:issue',
+  // Redirecting a vendor's settlements is the highest-value single edit in the
+  // system: it changes where money lands without touching any ledger.
+  'vendor:payout:write',
 ]);
 
 /** A step-up is valid for 15 minutes. After that, re-authenticate. */
@@ -198,6 +206,7 @@ const VENDOR_MANAGER_PERMISSIONS: readonly Permission[] = [
 const VENDOR_OWNER_PERMISSIONS: readonly Permission[] = [
   ...VENDOR_MANAGER_PERMISSIONS,
   'vendor:settlement:read',
+  'vendor:payout:write',
   'vendor:staff:manage',
   'vendor:settings:write',
 ];

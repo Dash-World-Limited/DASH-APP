@@ -12,6 +12,7 @@ import { verifyOtp } from '@dash/domain/crypto';
 import { assertTransition, type OrderStatus } from '@dash/domain/orders';
 import { writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
+import { readMaskedPayoutDetails, setPayoutDetails } from '../vendor/payout.js';
 import {
   actorOf,
   requirePermission,
@@ -370,6 +371,74 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       }
 
       return { id: item.id, isAvailable: body.isAvailable };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /v1/vendor/payout-details — masked, never the account number
+  // -------------------------------------------------------------------------
+  app.get(
+    '/v1/vendor/payout-details',
+    { preHandler: requirePermission('vendor:settlement:read') },
+    async (request) => {
+      const actor = actorOf(request);
+      if (!actor.vendorId) throw ApiError.forbidden('This account is not linked to a vendor.');
+
+      return { payoutDetails: await readMaskedPayoutDetails(prisma, actor.vendorId) };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PUT /v1/vendor/payout-details
+  //
+  // Write-only. There is no route that reads the account number back, because
+  // nothing needs to: settlement will decrypt it server-side and hand it to the
+  // provider. Step-up is enforced by `vendor:payout:write` being in
+  // STEP_UP_PERMISSIONS — redirecting settlements is the highest-value single
+  // edit available to a vendor, and a borrowed session must not be enough.
+  // -------------------------------------------------------------------------
+  app.put(
+    '/v1/vendor/payout-details',
+    {
+      preHandler: requirePermission('vendor:payout:write'),
+      config: { rateLimit: { max: 5, timeWindow: '60 minutes' } },
+    },
+    async (request) => {
+      const body = z
+        .object({
+          bankName: z.string().trim().min(2).max(80),
+          accountNumber: z.string().trim().min(10).max(20),
+          accountName: z.string().trim().min(2).max(120),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+      if (!actor.vendorId) throw ApiError.forbidden('This account is not linked to a vendor.');
+
+      const before = await readMaskedPayoutDetails(prisma, actor.vendorId);
+
+      const result = await setPayoutDetails(prisma, app.services.keyring, {
+        vendorId: actor.vendorId,
+        bankName: body.bankName,
+        accountNumber: body.accountNumber,
+        accountName: body.accountName,
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'vendor.payout_details.changed',
+        resourceType: 'vendor',
+        resourceId: actor.vendorId,
+        // Masked on both sides. The audit log is one of the widest-read tables
+        // in the system; an account number written here has leaked.
+        before: { bankName: before.bankName, masked: before.accountNumberMasked },
+        after: { bankName: result.bankName, masked: result.accountNumberMasked },
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'] ?? null,
+        requestId: request.id,
+      });
+
+      return { payoutDetails: result };
     },
   );
 

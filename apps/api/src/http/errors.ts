@@ -23,6 +23,7 @@ import { TokenError } from '../auth/tokens.js';
 import { SessionError } from '../auth/sessions.js';
 import { MfaError } from '../auth/mfa.js';
 import { EnvelopeError } from '@dash/domain/envelope';
+import { PayoutDetailsError } from '../vendor/payout.js';
 
 export class ApiError extends Error {
   constructor(
@@ -211,6 +212,23 @@ function translate(error: unknown): {
       code: 'mfa_enrolment_state',
       message: error.message,
       internal: `mfa ${error.reason}`,
+    };
+  }
+
+  if (error instanceof PayoutDetailsError) {
+    if (error.reason === 'invalid_account') {
+      return { statusCode: 400, code: 'invalid_account', message: error.message };
+    }
+    if (error.reason === 'not_set') {
+      return { statusCode: 404, code: 'not_found', message: 'Not found.', internal: 'payout not set' };
+    }
+    // Encryption is not configured — our fault, not the caller's, and the
+    // reason is not their business.
+    return {
+      statusCode: 500,
+      code: 'internal_error',
+      message: 'Something went wrong on our side. Please try again.',
+      internal: 'payout encryption not configured',
     };
   }
 

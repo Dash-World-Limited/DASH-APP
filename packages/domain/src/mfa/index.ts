@@ -50,12 +50,41 @@ export function requiresMfa(roles: readonly Role[]): boolean {
 }
 
 /**
+ * Roles allowed to hold a step-up permission without requiring TOTP.
+ *
+ * Step-up and MFA are not the same thing. Step-up means "prove who you are
+ * again, recently"; *how* depends on what the account has. Staff have an
+ * authenticator, so their step-up is TOTP. A vendor owner does not, so theirs
+ * is the one-time code sent to their registered phone — still a second factor
+ * for that action, still bound to something they hold.
+ *
+ * Each exemption needs a reason recorded here, and each is a product decision
+ * rather than a security default:
+ *
+ *   vendor_owner — holds `vendor:payout:write`, which changes where their own
+ *     settlements land. Gated behind phone-OTP step-up. Forcing an
+ *     authenticator app on every small vendor to change a bank account would
+ *     push them off the platform, and the blast radius is their own money, not
+ *     the platform's or another party's. Revisit if vendors ever gain a
+ *     permission that reaches somebody else's funds.
+ */
+export const STEP_UP_WITHOUT_MFA: ReadonlyMap<Role, string> = new Map<Role, string>([
+  [
+    'vendor_owner',
+    'vendor:payout:write is gated behind phone-OTP step-up; the blast radius is only their own settlements',
+  ],
+]);
+
+/**
  * Guard against policy drift.
  *
- * If someone grants a step-up permission to a role that does not require MFA,
- * that role can move money behind a single password. This throws instead, and a
- * test calls it — so the failure surfaces at review time rather than in an
- * incident.
+ * If someone grants a step-up permission to a role that neither requires MFA
+ * nor appears in the exemption list above, that role can reach a money-moving
+ * action behind a single password. This throws instead, and a test calls it —
+ * so the failure surfaces at review time rather than in an incident.
+ *
+ * The exemption list is deliberately a map rather than a set: adding a role
+ * means writing down why, in the same commit that grants the permission.
  */
 export function assertMfaPolicyCoversStepUp(): void {
   const offenders: string[] = [];
@@ -68,13 +97,18 @@ export function assertMfaPolicyCoversStepUp(): void {
       STEP_UP_PERMISSIONS.has(permission),
     );
 
-    if (stepUp.length > 0) {
-      offenders.push(`${role} holds ${stepUp.join(', ')} but does not require MFA`);
-    }
+    if (stepUp.length === 0) continue;
+    if (STEP_UP_WITHOUT_MFA.has(role)) continue;
+
+    offenders.push(
+      `${role} holds ${stepUp.join(', ')} but neither requires MFA nor is listed in STEP_UP_WITHOUT_MFA`,
+    );
   }
 
   if (offenders.length > 0) {
-    throw new Error(`MFA policy does not cover every step-up role:\n  ${offenders.join('\n  ')}`);
+    throw new Error(
+      ['MFA policy does not cover every step-up role:', ...offenders].join('\n  '),
+    );
   }
 }
 

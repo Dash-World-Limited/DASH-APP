@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ROLES, STEP_UP_PERMISSIONS, buildActor } from '../permissions/index.js';
 import {
+  STEP_UP_WITHOUT_MFA,
   MFA_CHALLENGE_TTL_SECONDS,
   MFA_ENROLMENT_TTL_SECONDS,
   MFA_EPOCH_TOLERANCE_SECONDS,
@@ -20,6 +21,27 @@ describe('which roles require MFA', () => {
     // The guard that stops policy drift: if someone grants a money-moving
     // permission to a role that does not require a second factor, this throws.
     expect(() => assertMfaPolicyCoversStepUp()).not.toThrow();
+  });
+
+  it('records a written reason for every step-up role exempted from MFA', () => {
+    // The exemption list is a map, not a set, so granting a step-up permission
+    // to a non-MFA role forces someone to write down why in the same commit.
+    for (const [role, reason] of STEP_UP_WITHOUT_MFA) {
+      expect(ROLES, `${role} is not a real role`).toContain(role);
+      expect(MFA_REQUIRED_ROLES.has(role), `${role} both requires and is exempt`).toBe(false);
+      expect(reason.length, `${role} has no recorded reason`).toBeGreaterThan(40);
+    }
+  });
+
+  it('exempts vendor_owner deliberately, not accidentally', () => {
+    // vendor_owner holds vendor:payout:write. That is gated behind phone-OTP
+    // step-up rather than TOTP: the blast radius is their own settlements, and
+    // requiring an authenticator app to change a bank account would push small
+    // vendors off the platform. A product decision, recorded as one.
+    const actor = buildActor({ identityId: 'i', sessionId: 's', roles: ['vendor_owner'] });
+    expect([...actor.permissions]).toContain('vendor:payout:write');
+    expect(STEP_UP_PERMISSIONS.has('vendor:payout:write')).toBe(true);
+    expect(STEP_UP_WITHOUT_MFA.has('vendor_owner')).toBe(true);
   });
 
   it('is not satisfied by step-up coverage alone', () => {

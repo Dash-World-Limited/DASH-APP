@@ -121,6 +121,39 @@ Production refuses to start with `MFA_ENABLED=false`, and refuses to start with
 MFA enabled but no `ENCRYPTION_KEY` — MFA without a key is not "MFA off", it is
 MFA that fails at enrolment in front of a user.
 
+### Vendor payout details
+
+The account a vendor is paid into redirects every future settlement without
+touching a ledger entry, so nothing looks wrong until a vendor reports a missing
+payment. It is treated accordingly.
+
+- **Write-only.** No route returns the account number in clear, and no
+  permission would allow one. `decryptPayoutDetailsForSettlement()` exists for
+  the payout job Codex will build — it decrypts, hands the value to the
+  provider, and never returns it to a caller.
+- **Encrypted with the same AES-256-GCM envelope as the TOTP secret**, bound to
+  the vendor id as additional authenticated data. A row copied between vendors
+  fails to decrypt rather than silently redirecting someone else's money. The
+  account *name* is encrypted too — it is personal data, and pairing it with a
+  bank is the combination worth protecting.
+- **Masked everywhere else.** Reads return the bank name and last four digits:
+  enough for a vendor to recognise their own account, useless to anyone else.
+  The audit trail records the mask on both sides of a change, never the number.
+- **`vendor:payout:write` is owner-only and step-up gated.** Vendor managers and
+  staff do not hold it, and neither does any ops or finance role — this is the
+  vendor's own banking, not the platform's to edit.
+- **Validated.** Ten-digit NUBAN, checked before storage. An account number with
+  a typo is money sent to a stranger.
+- **Fails closed.** With no encryption key configured, the write is refused
+  rather than falling back to plaintext.
+
+**Step-up here is phone OTP, not TOTP.** `vendor_owner` appears in
+`STEP_UP_WITHOUT_MFA` with a written reason: requiring an authenticator app to
+change a bank account would push small vendors off the platform, and the blast
+radius is only their own settlements. `assertMfaPolicyCoversStepUp()` fails a
+test if any *other* role gains a step-up permission without requiring MFA, so
+this exemption cannot quietly become a pattern.
+
 ### Authorization
 
 - **60 explicit permissions, 12 roles.** Code asks *"may this actor do this
@@ -274,6 +307,10 @@ Controls actually exercised by an automated check, not merely written:
 | Disabling MFA revokes every session and still demands MFA next time | `mfa.test.ts` |
 | A newly privileged account is challenged at its next sign-in | `mfa.test.ts` |
 | Ciphertext will not move between vendors, fields, or keys | `envelope.test.ts` |
+| Bank details are never stored, logged, or returned in clear | `payout.test.ts` |
+| Redirecting settlements needs owner role plus a fresh step-up | `payout.test.ts` |
+| A tampered or wrong-key payout record fails rather than decrypting | `payout.test.ts` |
+| A record under a retired key still opens and is flagged for rotation | `payout.test.ts` |
 | Cross-tenant scope denial across 500 probed ids | `permissions.test.ts` |
 | Injected `permissions` field discarded | `permissions.test.ts` |
 | Unknown role fails closed | `permissions.test.ts` |
@@ -330,14 +367,6 @@ Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
    `/v1/vendors`, `/v1/search`, and the webhook amount-mismatch and replay
    branches are covered by `scripts/smoke.mjs`, which needs a running server and
    is not part of the CI gate.
-3. **Vendor bank details are not encrypted at rest.** The column
-   (`bankAccountCipher`) exists and is unused; the seed stores only a last-4.
-4. **No malware scanning on uploads.** The `StoragePort` has no scanning hook.
-5. **PII retention is documented but not enforced.** No scheduled job prunes
-   rider location history or expired sessions, though `pruneExpiredSessions()`
-   exists and is uncalled.
-6. **No account-deletion flow.** `deletionRequestedAt` is modelled only.
-
 ### Lower
 
 7. **In-memory queue loses jobs on restart.** Correctly rejected in production
