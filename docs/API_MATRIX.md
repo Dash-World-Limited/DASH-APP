@@ -271,6 +271,6 @@ settlement path only.
 Every business and public endpoint above now has automated integration
 coverage that runs in `npm test` and in CI without a manually started server.
 
-`scripts/smoke.mjs` (49 checks) and `scripts/dispatch-check.mjs` (21 checks)
+`scripts/smoke.mjs` (52 checks) and `scripts/dispatch-check.mjs` (21 checks)
 remain as supplementary end-to-end checks against a real listening server and
 a full seed. They are no longer the only coverage for anything.

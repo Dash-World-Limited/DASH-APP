@@ -2,9 +2,11 @@
 
 What DASH APP defends against today, how, and what is still open.
 
-**Scope:** this describes `v0.1.0-mvp`, a local development MVP. It has never
-been deployed, never handled real money, and never held real personal data. Do
-not read any control below as production-hardened until it is listed under
+**Scope:** this describes the `main` line — `v0.1.0-mvp` plus the untagged
+Milestones A–G and E (account deletion and data export, merged and locally
+verified). It has never been deployed, never handled real money, never held real
+personal data, and **no adapter has been run against a real external provider**.
+Do not read any control below as production-hardened until it is listed under
 [Verified](#verified) — most are implemented but only tested locally.
 
 Nigerian data-protection (NDPA 2023) and consumer-law obligations have **not**
@@ -442,6 +444,55 @@ Controls actually exercised by an automated check, not merely written:
 ## Open — known gaps
 
 Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
+
+### High
+
+1. **`npm audit` fails, and CI's dependency job is red.** Not introduced by this
+   work — every advisory is in a pre-existing transitive dependency, and
+   advisories publish against unchanged trees, so a previously green run turns
+   red with no code change.
+
+   As of the last check: **11 vulnerabilities — 2 critical, 5 high, 4
+   moderate.** Four root advisories account for all of them; the rest are
+   packages that merely depend on a vulnerable one.
+
+   | Root advisory | Sev | Reached via | Where it runs | Also flags |
+   |---|---|---|---|---|
+   | `deepmerge-ts` (stack exhaustion on recursive graphs) | High | `prisma` → `@prisma/config` | Prisma CLI, at `db:generate` / `db:push` | `@prisma/config`, `prisma` |
+   | `postcss` (XSS via unescaped `</style>`; arbitrary `.map` read via `sourceMappingURL`, ×3) | High | `next` (pins it internally) | Next build | `next` |
+   | `vite` (path traversal in optimised-deps `.map` handling; `launch-editor` NTLMv2 disclosure on Windows) | High | `vitest` | Test runner | `vite-node` |
+   | `@vitest/mocker` (arbitrary file read/execute) | Critical | `vitest` | **Only when the Vitest UI server is listening** — this repository never starts it | `vitest`, `@vitest/coverage-v8` |
+
+   **None is reachable in the deployed runtime path.** The API ships
+   `@prisma/client`, not the `prisma` CLI; PostCSS runs at build time, not per
+   request; Vite and Vitest are test-only, and the critical one additionally
+   needs a UI server that is never started.
+
+   That is a reachability argument, not a dismissal — it is why these are not
+   treated as an incident, and it is *not* a reason to stop tracking them.
+
+   Remediation was attempted and reverted: npm `overrides` for `postcss` and
+   `deepmerge-ts` register but do not displace Next's internally pinned copy,
+   and `npm audit fix --force` means major upgrades of Next and Vitest that
+   need their own verification pass.
+
+   **The gate has deliberately not been weakened to make it pass.** No
+   suppression, no severity downgrade, no ignore list, no `--omit=dev`, no
+   `continue-on-error`, and no major upgrade forced through purely to turn CI
+   green. The dependency job stays red until the findings are actually resolved.
+
+   **Status: unresolved, pending an owner decision.** These are *not* accepted
+   risks, and no time-bounded exception has been granted — the original build
+   specification allows release on unresolved high findings only with a
+   documented, time-bounded exception, and granting one is an owner decision,
+   not an engineering one. Until that decision is taken, the correct reading of
+   this section is "known, analysed, and still open". The routes forward are:
+
+   - wait for upstream patch releases that do not require a major bump;
+   - schedule the Next and Vitest major upgrades with a full re-verification
+     pass of their own; or
+   - the owner grants an explicit, documented, time-bounded exception, which
+     would be recorded here as such.
 
 ### Medium
 

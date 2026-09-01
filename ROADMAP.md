@@ -2,11 +2,12 @@
 
 Where DASH APP is and what comes next, in the order it should happen.
 
-Latest tag: **`v0.2.0-auth`**. Considerable work has landed on `master` since —
+Latest tag: **`v0.2.0-auth`**. Considerable work has landed on `main` since —
 business API coverage, administrator MFA, encryption at rest, retention,
-security scanning, and observability seams — and is deliberately **untagged**.
-The last requested milestone (account deletion and data export) is now built on
-`claude/dash-app-v1` but not yet merged to `master`; tagging waits for the merge.
+security scanning, observability seams, and account deletion and data export
+(Milestone E) — and is deliberately **untagged**. Milestone E is merged and
+locally verified, but nothing here has been run against a real external
+provider or deployed, so a tag would overstate it.
 
 The ordering is not arbitrary. Each phase removes a blocker for the next, and
 the two hard gates below exist because getting them wrong is expensive to undo.
@@ -110,10 +111,11 @@ Shipped, except where noted.
 - ✅ Runbooks: incident response, secret inventory, backup/restore, environment
   separation, readiness checklist, rollback criteria, alert severities.
 
-## Built, awaiting merge — account deletion and data export
+## Merged, untagged — account deletion and data export
 
-Implemented on `claude/dash-app-v1`: a `scheduled → cancelled | completed`
-deletion state machine behind a fresh step-up, a cooling-off window, a
+Merged on `main` (`32180ce` → `71b2fc5`): a
+`scheduled → held | cancelled | completed` deletion state machine behind a
+fresh step-up, a cooling-off window, a
 cancellation path, a staff on-behalf-of path, legal holds, and an idempotent
 single-transaction finalisation that **anonymises everything the ledger
 references and deletes nothing it sums over**. Data export runs off the request

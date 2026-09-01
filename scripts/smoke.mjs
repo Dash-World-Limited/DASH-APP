@@ -8,6 +8,8 @@
  *   node scripts/smoke.mjs # in another
  */
 
+import { createHash } from 'node:crypto';
+
 const BASE = process.env.API_URL ?? 'http://127.0.0.1:4000';
 
 let passed = 0;
@@ -118,9 +120,39 @@ async function main() {
   const health = await api('/health/ready');
   check('API is ready', health.status === 200, health.body);
   check(
-    'payments are honestly reported as not live',
-    health.body?.adapters?.paymentsLive === false,
-    health.body?.adapters,
+    'readiness names each dependency and its status',
+    health.body?.ready === true &&
+      health.body?.checks?.find((entry) => entry.name === 'database')?.status === 'ok',
+    health.body,
+  );
+
+  // Readiness is unauthenticated, and Milestone G deliberately removed the
+  // `adapters` block it used to carry — which providers are configured is free
+  // reconnaissance for an outsider, and no load balancer needs it to route
+  // traffic. This asserts the disclosure stays gone rather than assuming it.
+  //
+  // That the development payment path is a mock is proved further down, in the
+  // webhook section, from the mock adapter's own signature scheme — an
+  // authenticated-path behaviour rather than an unauthenticated advertisement.
+  const readinessLeaks = [
+    'paystack',
+    'mock',
+    'adapters',
+    'provider',
+    'postgres',
+    'sqlite',
+    'file:',
+    'redis',
+    's3',
+    'termii',
+    'twilio',
+    'secret',
+    'key',
+  ].filter((needle) => JSON.stringify(health.body ?? {}).toLowerCase().includes(needle));
+  check(
+    'readiness discloses no provider, host, or configuration detail',
+    readinessLeaks.length === 0,
+    { leaked: readinessLeaks },
   );
 
   // -------------------------------------------------------------------------
@@ -287,6 +319,8 @@ async function main() {
   });
   check('checkout places the order', checkout.status === 200 && !!checkout.body.order?.id, checkout.body);
   const orderId = checkout.body?.order?.id;
+  const orderCode = checkout.body?.order?.code;
+  const orderTotal = checkout.body?.order?.total;
   const deliveryPin = checkout.body?.deliveryPin;
   check('a delivery PIN is issued to the customer', /^\d{4}$/.test(deliveryPin ?? ''), {
     deliveryPin: deliveryPin ? 'present' : 'missing',
@@ -457,6 +491,44 @@ async function main() {
     'an unsigned webhook is answered 200 and does nothing',
     unsigned.status === 200 && unsigned.body?.processed !== true,
     unsigned.body,
+  );
+
+  // The development payment path is a mock — proved here rather than by asking
+  // an unauthenticated health endpoint which provider is configured.
+  //
+  // The mock adapter's webhook signature is `sha256(rawBody + secret)` with a
+  // fixed development secret. A live provider adapter would reject this
+  // outright, so an accepted-and-processed event is only possible when the mock
+  // is the one wired in. It also exercises the signed path end to end, which
+  // the unsigned probe above cannot.
+  const replayBody = {
+    id: `evt_smoke_${Date.now()}`,
+    type: 'charge.success',
+    reference: orderCode,
+    status: 'captured',
+    amount: orderTotal,
+  };
+  const replayRaw = JSON.stringify(replayBody);
+  const signedReplay = await api('/v1/webhooks/payments', {
+    method: 'POST',
+    headers: {
+      'x-dash-signature': createHash('sha256').update(`${replayRaw}.mock-webhook-secret`).digest('hex'),
+    },
+    body: replayBody,
+  });
+  check(
+    'a correctly signed webhook is accepted — the dev payment path is the mock adapter',
+    signedReplay.status === 200 && signedReplay.body?.processed === true,
+    signedReplay.body,
+  );
+
+  // ...and replaying a capture for an already-paid order moves no money. Order
+  // state, not the event id, is what guards the ledger.
+  const integrityAfter = await api('/v1/finance/ledger/integrity', { token: adminToken });
+  check(
+    'a replayed capture event still leaves the ledger balanced with no drift',
+    integrityAfter.body?.balanced === true && integrityAfter.body?.totalDriftKobo === 0,
+    integrityAfter.body,
   );
 
   summary();

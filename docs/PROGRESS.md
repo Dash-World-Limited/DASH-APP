@@ -3,7 +3,7 @@
 Updated at the end of every milestone. If you are picking this up cold, read
 this file first, then `docs/DECISIONS.md`.
 
-**Last updated:** 2026-09-01 · Milestone E (account deletion and data export) built on branch `claude/dash-app-v1`, unmerged; past tag `v0.2.0-auth`
+**Last updated:** 2026-09-01 · Milestone E (account deletion and data export) merged on `main` (`32180ce` → `71b2fc5`), locally verified, untagged, unverified against real providers; past tag `v0.2.0-auth`
 
 ---
 
@@ -203,7 +203,7 @@ still balances.
   coverage thresholds, Prisma schema validation, fresh-database boot + seed +
   ledger verification, production web build, gitleaks secret scan, `npm audit`.
 
-### Milestone E — account deletion and data export (branch `claude/dash-app-v1`, unmerged)
+### Milestone E — account deletion and data export (merged on `main`, `32180ce` → `71b2fc5`, untagged)
 - **Deletion is a scheduled state machine**, not an instant drop:
   `scheduled → cancelled | completed`, one `AccountDeletionRequest` per identity,
   opened behind a fresh step-up, with a cooling-off window

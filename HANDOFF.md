@@ -19,11 +19,11 @@ practised, and external verification — none of which has happened.
 
 | | |
 |---|---|
-| **Branch** | `master`; Milestone E on `claude/dash-app-v1`, not yet merged |
+| **Branch** | `main` — the source-of-truth line. `master` is kept only as a pre-Milestone-E recovery anchor. |
 | **Latest tag** | `v0.2.0-auth` (`ad2e81b`) — this work is **untagged**, see below |
 | **Date** | 2026-09-01 |
 
-### Milestones on `master` since `v0.2.0-auth`
+### Milestones on `main` since `v0.2.0-auth`
 
 | | Commit | What |
 |---|---|---|
@@ -35,13 +35,19 @@ practised, and external verification — none of which has happened.
 | C | `3d7ac5b` | Privacy retention and session housekeeping |
 | F | `d25eb22` | Security scanning in CI and operational runbooks |
 | G | `8839312` | Observability seams without a vendor |
-| E | *(branch `claude/dash-app-v1`)* | Account deletion and personal-data export — **built, not yet merged to `master`** |
+| E | `32180ce` → `71b2fc5` | Account deletion and personal-data export — **merged on `main`** (four commits: initial, then three rounds of review corrections) |
 
-**No new tag has been created.** Milestone E (account deletion and data export)
-is now implemented on `claude/dash-app-v1` with full authorization boundaries,
-legal holds, idempotent finalisation, a stateless single-use export download,
-and adversarial tests — but it has not been merged, reviewed against `master`,
-or tagged. Tagging waits for the merge.
+**Milestone E is merged on `main` and remains untagged.** It is implemented and
+**locally verified only**: the full suite, typecheck, lint, build, coverage,
+migrations, smoke, and dispatch checks all pass on this machine. It has **not**
+been exercised against any real external provider — payments, storage, mail,
+SMS, and push are all still adapters (see *An adapter is not an integration*
+below), and there is no deployment. No new tag has been created because tagging
+would imply a verified release, which this is not.
+
+`master` is deliberately left at `533f32c`, one commit behind the Milestone E
+line, as a recovery anchor. It is not the working branch and should not be
+built from.
 
 ```bash
 git log --oneline v0.2.0-auth..HEAD    # everything since the last tag
@@ -131,7 +137,7 @@ npx vitest run --coverage packages/domain
 npm run maintenance:retention -- --dry-run   # retention, reports only
 
 npm run dev:api                   # then, in a second terminal:
-node scripts/smoke.mjs            # 49 checks
+node scripts/smoke.mjs            # 52 checks
 node scripts/dispatch-check.mjs   # 21 checks
 ```
 
@@ -160,11 +166,27 @@ Everything below was run on this machine at this commit.
 | `npm run lint` | clean |
 | `npm run build` | web app builds, 11 routes |
 | Domain coverage | **97.1%** statements · 94.4% branches · 96.24% functions (`src/account` at 100/100/100) |
-| `node scripts/smoke.mjs` | 49/49 |
+| `node scripts/smoke.mjs` | 52/52 |
 | `node scripts/dispatch-check.mjs` | 21/21 |
 | `npm run maintenance:retention -- --dry-run` | runs, reports, writes nothing |
 | `npm run maintenance:accounts -- --dry-run` | runs, reports, writes nothing |
 | `npm run db:migrate` on a fresh DB + drift check | applies `0_init` + `milestone_e`, `migrate status` clean, no drift vs schema |
+| `npm audit --audit-level=high` | **FAILS — exit 1**, unresolved. See below. |
+
+> **`npm audit` fails, and CI's dependency job is red — deliberately left that
+> way.** 11 vulnerabilities (2 critical, 5 high, 4 moderate) from four root
+> advisories, all in pre-existing transitive dependencies: the Prisma CLI's
+> `deepmerge-ts`, Next's internally pinned PostCSS, and Vite / `@vitest/mocker`.
+> **None is reachable in the deployed runtime path**, and the critical one
+> requires a Vitest UI server this repository never starts. Targeted
+> `overrides` were attempted and reverted because they do not displace Next's
+> pinned copy; `--force` means major upgrades needing their own verification
+> pass.
+>
+> These are **unresolved findings pending an owner decision** — not an accepted
+> risk and not a granted exception. Nothing has been suppressed, downgraded,
+> ignored, or force-upgraded to turn the gate green. Full per-advisory analysis
+> and the remediation options are in [`SECURITY.md`](SECURITY.md).
 
 Coverage thresholds are enforced in `vitest.config.ts` at 80/75/80/80.
 
@@ -345,10 +367,10 @@ has just become decoration.
 
 ## What is not done
 
-### Requested and built, not yet merged
+### Requested, built, and merged — untagged and provider-unverified
 
-**Milestone E — account deletion and data export.** Implemented on
-`claude/dash-app-v1`; a first commit (`32180ce`) plus a second that corrects four
+**Milestone E — account deletion and data export.** Merged on `main`
+(`32180ce` → `71b2fc5`); a first commit (`32180ce`) plus a second that corrects four
 production blockers a Codex review of that commit found. What is in place:
 
 - A `scheduled → held | cancelled | completed` deletion state machine
