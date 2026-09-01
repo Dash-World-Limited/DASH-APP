@@ -44,6 +44,67 @@ async function api(path, options = {}) {
   return { status: response.status, body: json };
 }
 
+
+/**
+ * Sign in a staff account, completing MFA.
+ *
+ * Staff roles require a second factor, so a password alone returns a challenge
+ * rather than a session. Every seeded staff account shares the fixed
+ * development TOTP secret printed by `npm run db:seed`.
+ */
+const DEV_TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
+
+async function signInStaff(email, password = 'DashDev!2026') {
+  const login = await api('/v1/auth/login', { method: 'POST', body: { email, password } });
+  if (login.status !== 200) return { ok: false, status: login.status, body: login.body };
+
+  // A non-staff account (a vendor owner, say) is signed in already.
+  if (!login.body?.mfaRequired) {
+    return { ok: !!login.body?.accessToken, token: login.body?.accessToken, body: login.body };
+  }
+
+  const { TOTP, NobleCryptoPlugin, ScureBase32Plugin } = await import('otplib');
+  const totp = new TOTP({
+    crypto: new NobleCryptoPlugin(),
+    base32: new ScureBase32Plugin(),
+    algorithm: 'sha1',
+    digits: 6,
+    period: 30,
+  });
+
+  const attempt = async () =>
+    api('/v1/auth/mfa/verify', {
+      method: 'POST',
+      body: {
+        challengeToken: login.body.challengeToken,
+        code: await totp.generate({ secret: DEV_TOTP_SECRET }),
+      },
+    });
+
+  let verified = await attempt();
+
+  // A TOTP step is accepted once. Two staff sign-ins inside the same 30 seconds
+  // means the second must wait for the next step rather than replaying.
+  if (verified.status !== 200) {
+    await new Promise((resolve) => setTimeout(resolve, 31_000));
+    const retry = await api('/v1/auth/login', { method: 'POST', body: { email, password } });
+    verified = await api('/v1/auth/mfa/verify', {
+      method: 'POST',
+      body: {
+        challengeToken: retry.body.challengeToken,
+        code: await totp.generate({ secret: DEV_TOTP_SECRET }),
+      },
+    });
+  }
+
+  return {
+    ok: verified.status === 200 && !!verified.body?.accessToken,
+    token: verified.body?.accessToken,
+    status: verified.status,
+    body: verified.body,
+  };
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function signInByOtp(phone) {
@@ -222,12 +283,11 @@ async function main() {
   const earnings = await api('/v1/rider/earnings', { token: riderToken });
   check('rider has a positive balance owed', (earnings.body?.balanceOwed ?? 0) > 0, earnings.body);
 
-  const finance = await api('/v1/auth/login', {
-    method: 'POST',
-    body: { email: 'finance@dashapp.test', password: 'DashDev!2026' },
-  });
+  const finance = await signInStaff('finance@dashapp.test');
+  check('finance signs in with password + TOTP', finance.ok, finance.body);
+
   const integrity = await api('/v1/finance/ledger/integrity', {
-    token: finance.body.accessToken,
+    token: finance.token,
   });
   check('the ledger still balances after a full delivery', integrity.body?.balanced === true, integrity.body);
   check('no money drift', integrity.body?.totalDriftKobo === 0, integrity.body);

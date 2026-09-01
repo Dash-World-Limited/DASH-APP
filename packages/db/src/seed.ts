@@ -15,6 +15,7 @@ import { naira } from '@dash/domain/money';
 import { boundingBoxOf, parsePolygon } from '@dash/domain/geo';
 import { buildOrderCapture } from '@dash/domain/ledger';
 import { buildQuote, computeSettlement, type PricingRules } from '@dash/domain/pricing';
+import { encrypt, parseKey, type Keyring } from '@dash/domain/envelope';
 
 const prisma = new PrismaClient();
 
@@ -23,6 +24,16 @@ const SEED_NOW = new Date('2026-08-30T12:00:00.000Z');
 
 /** The single password for every seeded staff account. Development only. */
 const DEV_PASSWORD = 'DashDev!2026';
+
+/**
+ * A fixed, obviously-fake TOTP secret shared by every seeded staff account.
+ *
+ * Add it to an authenticator app once and every development staff sign-in
+ * works, across reseeds. This is a development convenience and nothing more:
+ * `main()` refuses to run against NODE_ENV=production, and a real enrolment
+ * generates a fresh random secret per identity.
+ */
+const DEV_TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 
 function minutesFromMidnight(hour: number, minute = 0): number {
   return hour * 60 + minute;
@@ -88,6 +99,20 @@ async function main(): Promise<void> {
   ]);
 
   const passwordHash = await hashPassword(DEV_PASSWORD);
+
+  // Staff roles require a second factor, so the seed needs the same keyring the
+  // API uses. Without a key the accounts are still created — they simply arrive
+  // unenrolled and must enrol on first sign-in, which is the real flow anyway.
+  const encryptionKey = process.env['ENCRYPTION_KEY'];
+  const keyring: Keyring | null = encryptionKey
+    ? {
+        active: {
+          keyId: process.env['ENCRYPTION_KEY_ID'] ?? 'k1',
+          key: parseKey(encryptionKey, 'ENCRYPTION_KEY'),
+        },
+        retired: [],
+      }
+    : null;
 
   // -------------------------------------------------------------------------
   // City and zones
@@ -231,12 +256,32 @@ async function main(): Promise<void> {
         email,
         displayName,
         passwordHash,
-        // Seeded staff are pre-enrolled so the admin console is reachable in
-        // development without a TOTP app. Production enrolment is a real flow.
-        mfaEnrolledAt: SEED_NOW,
         roles: { create: { role, cityId: cityId ?? null } },
       },
+      select: { id: true },
     });
+
+    // Pre-enrol against a fixed, obviously-fake development secret so the admin
+    // console is reachable without walking enrolment on every reseed. Add
+    // DEV_TOTP_SECRET to an authenticator once and every staff account works.
+    //
+    // Done as a second write because the envelope is bound to the identity that
+    // owns it, so the id has to exist first. Production enrolment is the real
+    // flow; nothing here weakens it, and this seed refuses to run against
+    // NODE_ENV=production.
+    if (keyring) {
+      await prisma.identity.update({
+        where: { id: identity.id },
+        data: {
+          mfaSecretCipher: encrypt(DEV_TOTP_SECRET, keyring, {
+            purpose: 'mfa_totp_secret',
+            subjectId: identity.id,
+          }),
+          mfaEnrolledAt: SEED_NOW,
+        },
+      });
+    }
+
     return identity.id;
   }
 
@@ -498,7 +543,8 @@ async function main(): Promise<void> {
         email: `${definition.slug}@dashapp.test`,
         displayName: `${definition.name} Owner`,
         passwordHash,
-        mfaEnrolledAt: SEED_NOW,
+        // Vendor roles do not require a second factor (see MFA_REQUIRED_ROLES),
+        // so there is deliberately no enrolment here.
         roles: { create: { role: 'vendor_owner', vendorId: vendor.id } },
       },
     });
@@ -1060,6 +1106,18 @@ async function main(): Promise<void> {
   console.warn(`  Support        support@dashapp.test    ${DEV_PASSWORD}`);
   console.warn(`  Finance        finance@dashapp.test    ${DEV_PASSWORD}`);
   console.warn(`  Vendor owner   iya-kemi-kitchen@dashapp.test  ${DEV_PASSWORD}`);
+  console.warn('');
+  if (keyring) {
+    console.warn('');
+    console.warn('  Staff accounts require an authenticator code (TOTP). In development');
+    console.warn('  every staff account shares this fixed, fake secret:');
+    console.warn(`      ${DEV_TOTP_SECRET}`);
+    console.warn('  Add it to any authenticator app as "DASH APP (dev)".');
+  } else {
+    console.warn('');
+    console.warn('  No ENCRYPTION_KEY is set, so staff were seeded WITHOUT MFA enrolment.');
+    console.warn('  They will be asked to enrol on first sign-in.');
+  }
   console.warn('');
   console.warn('Customers and riders sign in by OTP. In development the code is');
   console.warn('printed to the API console; production never exposes it.');

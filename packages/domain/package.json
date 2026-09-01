@@ -14,7 +14,9 @@
     "./orders": "./src/orders/index.ts",
     "./ledger": "./src/ledger/index.ts",
     "./permissions": "./src/permissions/index.ts",
-    "./ports": "./src/ports/index.ts"
+    "./ports": "./src/ports/index.ts",
+    "./envelope": "./src/envelope/index.ts",
+    "./mfa": "./src/mfa/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

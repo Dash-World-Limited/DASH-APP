@@ -21,11 +21,12 @@ import {
   MemoryQueueAdapter,
   MockPaymentAdapter,
 } from './adapters/index.js';
-import { loadConfig, type Config } from './config.js';
+import { buildKeyring, isEncryptionConfigured, loadConfig, type Config } from './config.js';
 import { registerContext, type Services } from './http/context.js';
 import { assertCsrf, assertSecureCookieConfig, requiresCsrf } from './auth/cookies.js';
 import { registerErrorHandler } from './http/errors.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { registerMfaRoutes } from './routes/mfa.js';
 import { registerCatalogRoutes } from './routes/catalog.js';
 import { registerOrderRoutes } from './routes/orders.js';
 import { registerVendorRoutes } from './routes/vendor.js';
@@ -47,6 +48,9 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
 
   return {
     config,
+    // Built once at boot so a malformed key fails immediately rather than at
+    // the first enrolment.
+    keyring: overrides.keyring ?? (isEncryptionConfigured(config) ? buildKeyring(config) : null),
     prisma,
     payments: overrides.payments ?? new MockPaymentAdapter(),
     geo: overrides.geo ?? new LocalGeoAdapter(prisma),
@@ -201,6 +205,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
 
   // --- Routes ----------------------------------------------------------------
   await registerAuthRoutes(app);
+  await registerMfaRoutes(app);
   await registerCatalogRoutes(app);
   await registerOrderRoutes(app);
   await registerVendorRoutes(app);

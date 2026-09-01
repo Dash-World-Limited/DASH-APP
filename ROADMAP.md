@@ -64,6 +64,18 @@ the repository settings — it cannot be configured from the codebase.
 
 ---
 
+## Done — Administrator MFA
+
+Shipped. Staff roles complete TOTP before receiving a session; a password alone
+returns a five-minute, single-use challenge and nothing else.
+
+Standards-based TOTP via `otplib`, the secret held as an AES-256-GCM envelope
+bound to its owner, replay blocked by recording the accepted time step, ten
+single-use recovery codes stored as hashes, and disable/regenerate gated behind
+a fresh step-up that revokes every session. 72 new tests.
+
+---
+
 ## Phase 2 — Test depth and observability
 
 - Extend API integration coverage beyond auth: ordering, dispatch, vendor, and
@@ -120,8 +132,6 @@ Features the domain already anticipates but the product does not yet offer:
   Models exist (`VendorDocument`), no flow does.
 - **Rider onboarding** — identity/KYC submission, vehicle papers, training
   checklist, agreement acceptance.
-- **Admin MFA** — TOTP enrolment and verification. `mfaSecret` is modelled and
-  unused; step-up currently reuses the OTP challenge.
 - **Catalogue management UI** — the API supports availability and stock; there is
   no screen for categories, items, modifiers, or bulk actions.
 - **Support workspace** — cases and actions are modelled and seeded; the agent

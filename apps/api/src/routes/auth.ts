@@ -35,12 +35,14 @@ import {
   verifyPassword,
 } from '@dash/domain/crypto';
 import { writeAudit } from '@dash/db';
+import { requiresMfa } from '@dash/domain/mfa';
+import type { Role } from '@dash/domain/permissions';
+import { createChallenge, isMfaActive } from '../auth/mfa.js';
 import { ApiError } from '../http/errors.js';
 import { actorOf, authenticate, requireAuth } from '../http/context.js';
-import { issueAccessToken } from '../auth/tokens.js';
+import { issueAccessFor as issueAccessForShared } from '../auth/issue.js';
 import {
   createSession,
-  loadActor,
   SessionError,
   markSteppedUp,
   revokeAllSessions,
@@ -85,39 +87,9 @@ async function getDecoyHash(): Promise<string> {
 export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, config, sms } = app.services;
 
-  /**
-   * Mint an access token for a session.
-   *
-   * Only the access token is produced here. The refresh token is the opaque
-   * value `createSession`/`rotateSession` returns, and it goes straight into a
-   * cookie — it is never assembled into a response body, so there is no path by
-   * which it can be returned to script.
-   */
-  async function issueAccessFor(
-    identityId: string,
-    sessionId: string,
-  ): Promise<{ accessToken: string; expiresIn: number } | null> {
-    const actor = await loadActor(prisma, identityId, sessionId);
-    if (!actor) return null;
-
-    const accessToken = await issueAccessToken(
-      {
-        sub: actor.identityId,
-        sid: sessionId,
-        roles: actor.roles,
-        ...(actor.vendorId ? { vendorId: actor.vendorId } : {}),
-        ...(actor.branchId ? { branchId: actor.branchId } : {}),
-        ...(actor.riderId ? { riderId: actor.riderId } : {}),
-        ...(actor.customerId ? { customerId: actor.customerId } : {}),
-        ...(actor.cityIds ? { cityIds: actor.cityIds } : {}),
-        ...(actor.steppedUpAt ? { sua: Math.floor(actor.steppedUpAt.getTime() / 1000) } : {}),
-      },
-      config.JWT_ACCESS_SECRET,
-      config.ACCESS_TOKEN_TTL_SECONDS,
-    );
-
-    return { accessToken, expiresIn: config.ACCESS_TOKEN_TTL_SECONDS };
-  }
+  /** Delegates to the shared issuer so both flows mint identical claims. */
+  const issueAccessFor = (identityId: string, sessionId: string) =>
+    issueAccessForShared(prisma, config, identityId, sessionId);
 
   // -------------------------------------------------------------------------
   // POST /v1/auth/otp/request
@@ -292,7 +264,14 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
 
       const identity = await prisma.identity.findUnique({
         where: { email: body.email },
-        select: { id: true, status: true, passwordHash: true },
+        select: {
+          id: true,
+          status: true,
+          passwordHash: true,
+          mfaSecretCipher: true,
+          mfaEnrolledAt: true,
+          roles: { select: { role: true } },
+        },
       });
 
       // Compare against a decoy when the account does not exist, so the response
@@ -306,6 +285,41 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       }
       if (identity.status !== 'active') {
         throw ApiError.unauthorized('Those sign-in details are not correct.');
+      }
+
+      // --- Second factor -------------------------------------------------
+      // A staff password on its own must never produce a session. If this
+      // identity holds a role that requires MFA, the password stage ends here
+      // with a short-lived challenge and nothing else: no access token, no
+      // refresh cookie, no CSRF token.
+      const roles = identity.roles.map((row) => row.role as Role);
+
+      if (config.MFA_ENABLED && requiresMfa(roles)) {
+        const challenge = await createChallenge(prisma, identity.id, 'login', {
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'] ?? null,
+        });
+
+        await writeAudit(prisma, {
+          identityId: identity.id,
+          action: 'auth.login.password_stage_passed',
+          resourceType: 'identity',
+          resourceId: identity.id,
+          after: { stage: isMfaActive(identity) ? 'verify' : 'enrol' },
+          ipAddress: request.ip,
+          userAgent: request.headers['user-agent'] ?? null,
+          requestId: request.id,
+        });
+
+        return {
+          mfaRequired: true,
+          // "verify" means prove possession of an existing authenticator.
+          // "enrol" means set one up now — the account holds a privileged role
+          // but has never completed enrolment, so it cannot be let in either.
+          stage: isMfaActive(identity) ? ('verify' as const) : ('enrol' as const),
+          challengeToken: challenge.challengeToken,
+          expiresAt: challenge.expiresAt,
+        };
       }
 
       const session = await createSession(

@@ -10,7 +10,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { loadConfig, resetConfigCache } from '../config.js';
+import { buildKeyring, loadConfig, parseRetiredKeys, resetConfigCache } from '../config.js';
 import { assertSecureCookieConfig } from '../auth/cookies.js';
 
 beforeEach(() => {
@@ -37,6 +37,9 @@ function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEn
     STORAGE_PROVIDER: 's3',
     QUEUE_PROVIDER: 'redis',
     REDIS_URL: 'redis://cache.internal:6379',
+    // Obviously fake, generated for this file, and only ever used against
+    // an in-memory config object. Never decrypts anything real.
+    ENCRYPTION_KEY: 'YpTt1KNH1JtX0eaiUaPNFWHApAQl8BggrrhxcNgy604=',
     ...overrides,
   };
 }
@@ -261,5 +264,120 @@ describe('reporting', () => {
 
     expect(message).toContain('JWT_ACCESS_SECRET');
     expect(message).not.toContain(secret);
+  });
+});
+
+describe('MFA and encryption configuration', () => {
+  it('refuses production with MFA turned off', () => {
+    // A single leaked staff password would otherwise reach the money.
+    expectRefusal({ MFA_ENABLED: 'false' }, 'MFA_ENABLED');
+  });
+
+  it('refuses production with no encryption key', () => {
+    resetConfigCache();
+    const env = productionEnv();
+    delete env['ENCRYPTION_KEY'];
+
+    let message = '';
+    try {
+      loadConfig(env);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('ENCRYPTION_KEY');
+  });
+
+  it('refuses MFA enabled without a key in ANY environment', () => {
+    // Not merely a production rule: MFA without a key is not "MFA off", it is
+    // MFA that fails at enrolment, in front of a user.
+    resetConfigCache();
+    let message = '';
+    try {
+      loadConfig({
+        NODE_ENV: 'development',
+        DATABASE_URL: 'file:./dev.db',
+        JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+        JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+        MFA_ENABLED: 'true',
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('ENCRYPTION_KEY');
+  });
+
+  it('refuses a key that is not valid base64 of 32 bytes', () => {
+    for (const bad of ['not-base64!!', 'c2hvcnQ=', '']) {
+      resetConfigCache();
+      let message = '';
+      try {
+        loadConfig(productionEnv({ ENCRYPTION_KEY: bad }));
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message, `key ${JSON.stringify(bad)}`).toContain('ENCRYPTION_KEY');
+    }
+  });
+
+  it('refuses an all-zero key', () => {
+    const zeroes = Buffer.alloc(32).toString('base64');
+    expectRefusal({ ENCRYPTION_KEY: zeroes }, 'ENCRYPTION_KEY');
+  });
+
+  it('never echoes the key into the error message', () => {
+    resetConfigCache();
+    // Valid length, but paired with a fault elsewhere so the load fails.
+    const key = Buffer.alloc(32, 7).toString('base64');
+    let message = '';
+    try {
+      loadConfig(productionEnv({ ENCRYPTION_KEY: key, DEV_EXPOSE_OTP: 'true' }));
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('DEV_EXPOSE_OTP');
+    expect(message).not.toContain(key);
+  });
+
+  it('builds a keyring with the active key named', () => {
+    resetConfigCache();
+    const config = loadConfig(productionEnv({ ENCRYPTION_KEY_ID: 'live-1' }));
+    const keyring = buildKeyring(config);
+
+    expect(keyring.active.keyId).toBe('live-1');
+    expect(keyring.active.key).toHaveLength(32);
+    expect(keyring.retired).toHaveLength(0);
+  });
+
+  it('carries retired keys so rotation does not need a migration', () => {
+    const older = Buffer.alloc(32, 3).toString('base64');
+    resetConfigCache();
+    const config = loadConfig(
+      productionEnv({ ENCRYPTION_KEY_ID: 'k2', ENCRYPTION_KEYS_RETIRED: `k1:${older}` }),
+    );
+    const keyring = buildKeyring(config);
+
+    expect(keyring.active.keyId).toBe('k2');
+    expect(keyring.retired.map((entry) => entry.keyId)).toEqual(['k1']);
+  });
+
+  it('rejects a retired key list with a duplicate id', () => {
+    const a = Buffer.alloc(32, 3).toString('base64');
+    const b = Buffer.alloc(32, 4).toString('base64');
+    expect(() => parseRetiredKeys(`k1:${a},k1:${b}`)).toThrow(/more than once/);
+  });
+
+  it('rejects a malformed retired key entry', () => {
+    expectRefusal({ ENCRYPTION_KEYS_RETIRED: 'no-colon-here' }, 'ENCRYPTION_KEYS_RETIRED');
+  });
+
+  it('ignores a retired entry that duplicates the active key id', () => {
+    const older = Buffer.alloc(32, 5).toString('base64');
+    resetConfigCache();
+    const config = loadConfig(
+      productionEnv({ ENCRYPTION_KEY_ID: 'k1', ENCRYPTION_KEYS_RETIRED: `k1:${older}` }),
+    );
+    // A rotation half-applied. The active entry wins rather than there being
+    // two candidates for one id.
+    expect(buildKeyring(config).retired).toHaveLength(0);
   });
 });

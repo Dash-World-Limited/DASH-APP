@@ -24,6 +24,7 @@ import type {
   SmsPort,
   StoragePort,
 } from '@dash/domain/ports';
+import type { Keyring } from '@dash/domain/envelope';
 import type { Config } from '../config.js';
 import { bearerFrom, verifyAccessToken } from '../auth/tokens.js';
 import { loadActor } from '../auth/sessions.js';
@@ -31,6 +32,11 @@ import { ApiError } from './errors.js';
 
 export interface Services {
   config: Config;
+  /**
+   * Keys for encrypted-at-rest fields. Null only in a local configuration with
+   * MFA disabled; `config.ts` refuses that combination in production.
+   */
+  keyring: Keyring | null;
   prisma: PrismaClient;
   payments: PaymentPort;
   geo: GeoPort;

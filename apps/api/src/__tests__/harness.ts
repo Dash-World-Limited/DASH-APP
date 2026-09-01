@@ -18,11 +18,20 @@ import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import type { FastifyInstance } from 'fastify';
 import { hashPassword } from '@dash/domain/crypto';
+import { NobleCryptoPlugin, ScureBase32Plugin, TOTP } from 'otplib';
 import { loadConfig, resetConfigCache, type Config } from '../config.js';
 import { buildServer } from '../server.js';
 import { CSRF_COOKIE, CSRF_HEADER, REFRESH_COOKIE } from '../auth/cookies.js';
 
 /** Fixed, obviously fake, and only ever used against a throwaway database. */
+const totp = new TOTP({
+  crypto: new NobleCryptoPlugin(),
+  base32: new ScureBase32Plugin(),
+  algorithm: 'sha1',
+  digits: 6,
+  period: 30,
+});
+
 export const TEST_PASSWORD = 'HarnessOnly!2026';
 export const TEST_EMAIL = 'harness-staff@dashapp.test';
 export const TEST_PHONE = '+2347000009001';
@@ -66,6 +75,10 @@ function testEnv(databaseUrl: string): NodeJS.ProcessEnv {
     // would, and the login limiter would reject them. Rate limiting has its own
     // dedicated test that turns it back on.
     RATE_LIMIT_ENABLED: 'false',
+    // Throwaway key for the temporary per-worker database. Fictional, and
+    // regenerated in source only if this file is edited.
+    ENCRYPTION_KEY: 'YpTt1KNH1JtX0eaiUaPNFWHApAQl8BggrrhxcNgy604=',
+    ENCRYPTION_KEY_ID: 'test-k1',
   };
 }
 
@@ -237,6 +250,72 @@ export interface SignedInClient {
   csrfToken: string;
 }
 
+/**
+ * TOTP secrets an enrolment handed back, keyed by email.
+ *
+ * Staff sign in more than once in a suite. The first sign-in enrols and learns
+ * the secret; later ones need it again to produce a valid code.
+ */
+const enrolledSecrets = new Map<string, string>();
+
+/** Generate the code an authenticator app would be showing right now. */
+export async function currentTotp(secret: string, offsetSeconds = 0): Promise<string> {
+  return totp.generate({
+    secret,
+    ...(offsetSeconds === 0
+      ? {}
+      : { epoch: Math.floor(Date.now() / 1000) + offsetSeconds }),
+  });
+}
+
+export function knownTotpSecret(email: string): string | undefined {
+  return enrolledSecrets.get(email);
+}
+
+/**
+ * Record a secret obtained by a test that drove enrolment itself.
+ *
+ * Without this a suite would keep two caches: one here and one in the test
+ * file, and a later `signInWithPassword` would fail because the account is
+ * enrolled with a secret the harness never saw.
+ */
+export function rememberTotpSecret(email: string, secret: string): void {
+  enrolledSecrets.set(email, secret);
+}
+
+/** Forget a cached secret, so the next sign-in enrols from scratch. */
+export function forgetTotpSecret(email: string): void {
+  enrolledSecrets.delete(email);
+}
+
+function clientFromAuthResponse(response: {
+  statusCode: number;
+  body: string;
+  json: <T>() => T;
+  headers: Record<string, unknown>;
+}): SignedInClient {
+  const body = response.json<{ accessToken: string; csrfToken: string }>();
+  const refresh = findCookie(
+    response.headers['set-cookie'] as string | string[] | undefined,
+    REFRESH_COOKIE,
+  );
+  if (!refresh) throw new Error(`Sign-in did not set a refresh cookie: ${response.body}`);
+
+  return {
+    accessToken: body.accessToken,
+    refreshToken: refresh.value,
+    csrfToken: body.csrfToken,
+  };
+}
+
+/**
+ * Sign in, completing MFA when the account requires it.
+ *
+ * Staff roles now need a second factor, so this walks the real two-stage flow
+ * rather than working around it: password, then either enrol-and-confirm on
+ * first use or verify with a generated code afterwards. Every staff test
+ * therefore exercises the production path.
+ */
 export async function signInWithPassword(
   context: TestContext,
   email: string = TEST_EMAIL,
@@ -252,15 +331,73 @@ export async function signInWithPassword(
     throw new Error(`Sign-in failed: ${response.statusCode} ${response.body}`);
   }
 
-  const body = response.json<{ accessToken: string; csrfToken: string }>();
-  const refresh = findCookie(response.headers['set-cookie'], REFRESH_COOKIE);
-  if (!refresh) throw new Error('Sign-in did not set a refresh cookie');
+  const first = response.json<{
+    mfaRequired?: boolean;
+    stage?: 'verify' | 'enrol';
+    challengeToken?: string;
+  }>();
 
-  return {
-    accessToken: body.accessToken,
-    refreshToken: refresh.value,
-    csrfToken: body.csrfToken,
-  };
+  if (!first.mfaRequired) return clientFromAuthResponse(response);
+
+  const challengeToken = first.challengeToken!;
+
+  if (first.stage === 'enrol') {
+    const started = await context.app.inject({
+      method: 'POST',
+      url: '/v1/auth/mfa/enrol/start',
+      payload: { challengeToken },
+    });
+    if (started.statusCode !== 200) {
+      throw new Error(`Enrolment start failed: ${started.statusCode} ${started.body}`);
+    }
+    const secret = started.json<{ secret: string }>().secret;
+    enrolledSecrets.set(email, secret);
+
+    const confirmed = await context.app.inject({
+      method: 'POST',
+      url: '/v1/auth/mfa/enrol/confirm',
+      payload: { challengeToken, code: await currentTotp(secret) },
+    });
+    if (confirmed.statusCode !== 200) {
+      throw new Error(`Enrolment confirm failed: ${confirmed.statusCode} ${confirmed.body}`);
+    }
+    return clientFromAuthResponse(confirmed);
+  }
+
+  const secret = enrolledSecrets.get(email);
+  if (!secret) {
+    throw new Error(`No TOTP secret cached for ${email}; enrol before signing in again`);
+  }
+
+  // Simulate the passage of time.
+  //
+  // A TOTP step is only ever accepted once — `mfaLastTimeStep` is what enforces
+  // that — so a second sign-in inside the same 30 seconds is correctly refused.
+  // A real user signing in again would simply be in a later step by then. The
+  // suite cannot wait 30 seconds per sign-in, so it clears the recorded step,
+  // which is exactly the state the row would be in after the window passed.
+  //
+  // Generating a *future* code instead would not work and would be the wrong
+  // shape of fix: verification only tolerates one step either side of now.
+  //
+  // This is a convenience of the harness, not a relaxation of the rule. The
+  // replay protection has its own dedicated tests in mfa.test.ts, which do not
+  // use this helper.
+  await context.prisma.identity.updateMany({
+    where: { email },
+    data: { mfaLastTimeStep: null },
+  });
+
+  const verified = await context.app.inject({
+    method: 'POST',
+    url: '/v1/auth/mfa/verify',
+    payload: { challengeToken, code: await currentTotp(secret) },
+  });
+
+  if (verified.statusCode !== 200) {
+    throw new Error(`MFA verify failed: ${verified.statusCode} ${verified.body}`);
+  }
+  return clientFromAuthResponse(verified);
 }
 
 /**

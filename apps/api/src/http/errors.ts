@@ -21,6 +21,8 @@ import { GeoError } from '@dash/domain/geo';
 import { LedgerError } from '@dash/domain/ledger';
 import { TokenError } from '../auth/tokens.js';
 import { SessionError } from '../auth/sessions.js';
+import { MfaError } from '../auth/mfa.js';
+import { EnvelopeError } from '@dash/domain/envelope';
 
 export class ApiError extends Error {
   constructor(
@@ -156,6 +158,71 @@ function translate(error: unknown): {
       statusCode: 401,
       code: error.reason === 'expired' ? 'token_expired' : 'unauthorized',
       message: error.reason === 'expired' ? 'Your session has expired.' : 'Sign in to continue.',
+    };
+  }
+
+  if (error instanceof MfaError) {
+    // Every wrong-factor outcome collapses to one message. A caller must not be
+    // able to tell a wrong code from a correct-but-already-used one, or from a
+    // code belonging to an account that is not enrolled — each of those would
+    // confirm something useful to someone replaying a captured code.
+    const invalidFactor = new Set(['invalid_code', 'replayed_code', 'not_enrolled']);
+    if (invalidFactor.has(error.reason)) {
+      return {
+        statusCode: 400,
+        code: 'mfa_invalid_code',
+        message: 'That code is not correct.',
+        internal: `mfa ${error.reason}`,
+      };
+    }
+
+    if (error.reason === 'too_many_attempts') {
+      return {
+        statusCode: 429,
+        code: 'mfa_too_many_attempts',
+        message: 'Too many incorrect codes. Start again.',
+        internal: 'mfa attempts exhausted',
+      };
+    }
+
+    if (error.reason === 'challenge_not_found' || error.reason === 'challenge_expired') {
+      return {
+        statusCode: 401,
+        code: 'mfa_challenge_invalid',
+        message: 'That sign-in attempt is no longer valid. Start again.',
+        internal: `mfa ${error.reason}`,
+      };
+    }
+
+    if (error.reason === 'not_configured') {
+      // Genuinely our fault: MFA is on but the keyring is missing.
+      return {
+        statusCode: 500,
+        code: 'internal_error',
+        message: 'Something went wrong on our side. Please try again.',
+        internal: 'mfa keyring not configured',
+      };
+    }
+
+    // Enrolment-state problems: safe to name, because the caller is already
+    // authenticated as the account in question.
+    return {
+      statusCode: 409,
+      code: 'mfa_enrolment_state',
+      message: error.message,
+      internal: `mfa ${error.reason}`,
+    };
+  }
+
+  if (error instanceof EnvelopeError) {
+    // A decryption failure is never the caller's business. Which of wrong key,
+    // wrong context, or tampering occurred is a detail that only helps someone
+    // probing, so the reason goes to the log and the client gets nothing.
+    return {
+      statusCode: 500,
+      code: 'internal_error',
+      message: 'Something went wrong on our side. Please try again.',
+      internal: `envelope ${error.reason}`,
     };
   }
 

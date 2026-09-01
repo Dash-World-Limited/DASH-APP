@@ -74,6 +74,53 @@ The web app is a convenience layer over an API that must be safe on its own.
   database on every request, so a revoked session or a removed role takes effect
   at once rather than after the access token expires.
 
+### Administrator MFA
+
+Staff roles cannot obtain a session with a password alone.
+
+- **TOTP (RFC 6238)** via `otplib` — SHA-1 HMAC, 6 digits, 30-second period, the
+  parameters every authenticator app supports. No cryptography is hand-written:
+  the library provides the algorithm and `node:crypto` provides the primitives.
+- **Two-stage login.** The password stage returns a short-lived, single-use,
+  opaque challenge — no access token, no refresh cookie, no CSRF token. The
+  session is minted only after the second factor. A stolen intermediate token
+  cannot be refreshed, cannot reach a business endpoint, and expires in five
+  minutes.
+- **Which roles.** All seven staff roles: `super_admin`, `platform_admin`,
+  `finance_analyst`, `support_agent`, `city_manager`, `dispatcher`, and
+  `marketing_manager`. `assertMfaPolicyCoversStepUp()` fails a test if a role
+  ever gains a step-up permission without also requiring MFA. Customers, riders,
+  and vendor users are deliberately excluded — their blast radius is their own
+  account, and changing that needs a product decision.
+- **Enrolment proves possession.** The secret lands in `mfaPendingCipher` and
+  only becomes live once a valid code is submitted, so a half-finished enrolment
+  can never authenticate. Starting a new enrolment cannot lock anyone out of a
+  working authenticator either.
+- **The secret is encrypted at rest** with AES-256-GCM, bound to the owning
+  identity as additional authenticated data. A row copied to another identity
+  fails to decrypt rather than silently working. It is returned exactly once, at
+  enrolment, and never appears in any later read, audit entry, or log.
+- **Replay is blocked.** The accepted TOTP time step is recorded, and a code is
+  only valid for a step strictly greater than the last one. The same six digits
+  cannot be used twice even inside the 30 seconds they are displayed for. A
+  replayed code is reported identically to a wrong one.
+- **Recovery codes** — ten per batch, 78 bits each from a rejection-sampled
+  CSPRNG over an alphabet with no confusable glyphs. Shown once, stored as
+  SHA-256 hashes, single-use (enforced by an `updateMany` guarded on
+  `usedAt: null`, so two simultaneous redemptions cannot both win). Regenerating
+  voids every unused code from earlier batches and requires a fresh step-up.
+- **Disabling MFA** requires a fresh step-up, wipes the secret and every
+  recovery code, revokes every session including the caller's, and writes a
+  high-signal audit event. The role still requires MFA afterwards, so the
+  account returns to needing enrolment rather than being let in on a password.
+- **Bounded.** Five attempts per challenge, spent before the code is checked so
+  a dropped connection cannot buy extra tries; a five-minute challenge window;
+  and per-route rate limits on every MFA endpoint.
+
+Production refuses to start with `MFA_ENABLED=false`, and refuses to start with
+MFA enabled but no `ENCRYPTION_KEY` — MFA without a key is not "MFA off", it is
+MFA that fails at enrolment in front of a user.
+
 ### Authorization
 
 - **60 explicit permissions, 12 roles.** Code asks *"may this actor do this
@@ -219,6 +266,14 @@ Controls actually exercised by an automated check, not merely written:
 | Exact address hidden until the offer is accepted | `dispatch-check.mjs` |
 | Wrong delivery PIN cannot complete a delivery | `dispatch-check.mjs` |
 | Ledger balances after a full delivery | both |
+| A staff password alone yields no session, no cookie, no token | `mfa.test.ts`, `smoke.mjs` |
+| An unconfirmed enrolment cannot authenticate | `mfa.test.ts` |
+| A TOTP code cannot be replayed, and reads identically to a wrong one | `mfa.test.ts` |
+| The TOTP secret is encrypted, identity-bound, and absent from every read | `mfa.test.ts` |
+| A recovery code works exactly once; regeneration voids the rest | `mfa.test.ts` |
+| Disabling MFA revokes every session and still demands MFA next time | `mfa.test.ts` |
+| A newly privileged account is challenged at its next sign-in | `mfa.test.ts` |
+| Ciphertext will not move between vendors, fields, or keys | `envelope.test.ts` |
 | Cross-tenant scope denial across 500 probed ids | `permissions.test.ts` |
 | Injected `permissions` field discarded | `permissions.test.ts` |
 | Unknown role fails closed | `permissions.test.ts` |
@@ -267,16 +322,9 @@ Controls actually exercised by an automated check, not merely written:
 
 Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
 
-### High
-
-1. **Admin MFA is modelled, not enforced.** `Identity` carries `mfaSecret` and
-   `mfaEnrolledAt`, and seeded staff are pre-enrolled, but no TOTP verification
-   flow exists. Step-up currently reuses the OTP challenge, which means a staff
-   account is protected by a password and a phone rather than a second factor.
-
 ### Medium
 
-2. **No container or infrastructure scanning, no SAST, no DAST.** Dependency
+1. **No container or infrastructure scanning, no SAST, no DAST.** Dependency
    and secret scanning run in CI; the rest do not exist.
 2b. **The public catalogue and webhook replay paths are script-only.**
    `/v1/vendors`, `/v1/search`, and the webhook amount-mismatch and replay

@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { parseKey, type EncryptionKey, type Keyring } from '@dash/domain/envelope';
 
 const booleanish = z
   .enum(['true', 'false', '1', '0'])
@@ -71,6 +72,31 @@ const schema = z
     // the same. Turning it off is a decision someone has to make in writing,
     // not a silent side effect of NODE_ENV.
     RATE_LIMIT_ENABLED: booleanish.default('true'),
+
+    // --- Encryption at rest --------------------------------------------------
+    // One keyring serves every encrypted field (the TOTP secret today, vendor
+    // bank details next). The fields are separated cryptographically rather
+    // than by holding separate keys: every ciphertext is bound to a purpose and
+    // a subject as additional authenticated data, so a TOTP envelope cannot be
+    // decrypted as a bank account, and one vendor's row cannot be read as
+    // another's. See packages/domain/src/envelope.
+    //
+    // Base64 of exactly 32 bytes. Generate with:
+    //   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+    ENCRYPTION_KEY: z.string().optional(),
+
+    // Names the active key inside every envelope it writes, so a key can be
+    // rotated without rewriting existing rows in a single deploy.
+    ENCRYPTION_KEY_ID: z.string().min(1).max(64).default('k1'),
+
+    // Keys that no longer encrypt new values but must still decrypt old ones.
+    // Format: `id:base64key` entries separated by commas.
+    ENCRYPTION_KEYS_RETIRED: z.string().default(''),
+
+    // Whether staff accounts must carry TOTP. On by default; the only reason to
+    // turn it off is a local environment with no key configured, and production
+    // refuses that below.
+    MFA_ENABLED: booleanish.default('true'),
   })
   .superRefine((env, ctx) => {
     const fail = (path: string, message: string): void => {
@@ -86,6 +112,37 @@ const schema = z
 
     // A weak secret in a non-production environment is fine — the whole point of
     // the placeholder values is that development needs no ceremony.
+    // Key material is validated wherever it is supplied, not only in
+    // production. A malformed key must fail at boot; discovering it at the
+    // first enrolment means discovering it in front of a user.
+    if (env.ENCRYPTION_KEY) {
+      try {
+        parseKey(env.ENCRYPTION_KEY, 'ENCRYPTION_KEY');
+      } catch (error) {
+        fail('ENCRYPTION_KEY', error instanceof Error ? error.message : 'is not valid key material');
+      }
+    }
+
+    if (env.ENCRYPTION_KEYS_RETIRED.trim() !== '') {
+      try {
+        parseRetiredKeys(env.ENCRYPTION_KEYS_RETIRED);
+      } catch (error) {
+        fail(
+          'ENCRYPTION_KEYS_RETIRED',
+          error instanceof Error ? error.message : 'is not valid key material',
+        );
+      }
+    }
+
+    // MFA without a key is not "MFA off", it is MFA that fails at enrolment.
+    // Refuse the combination outright rather than deferring the error.
+    if (env.MFA_ENABLED && !env.ENCRYPTION_KEY) {
+      fail(
+        'ENCRYPTION_KEY',
+        'MFA_ENABLED is true but no ENCRYPTION_KEY is set — the TOTP secret could not be stored safely',
+      );
+    }
+
     if (env.NODE_ENV !== 'production') return;
 
     // --- Production-only guards ---------------------------------------------
@@ -95,6 +152,20 @@ const schema = z
 
     if (env.DEV_EXPOSE_OTP) {
       fail('DEV_EXPOSE_OTP', 'DEV_EXPOSE_OTP must be false in production — it returns login codes in the API response');
+    }
+
+    if (!env.MFA_ENABLED) {
+      fail(
+        'MFA_ENABLED',
+        'Administrator MFA cannot be disabled in production — a single leaked staff password would otherwise reach the money',
+      );
+    }
+
+    if (!env.ENCRYPTION_KEY) {
+      fail(
+        'ENCRYPTION_KEY',
+        'ENCRYPTION_KEY is required in production — without it the TOTP secret would have nowhere safe to live',
+      );
     }
 
     if (!env.RATE_LIMIT_ENABLED) {
@@ -249,4 +320,67 @@ export function describeAdapters(config: Config): string {
     `storage=${config.STORAGE_PROVIDER}`,
     `queue=${config.QUEUE_PROVIDER}`,
   ].join('  ');
+}
+
+// ---------------------------------------------------------------------------
+// Encryption keyring
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse `id:base64key,id2:base64key2` into retired keys.
+ *
+ * Exported for validation at boot. Duplicated ids are rejected: two different
+ * keys claiming the same id makes decryption non-deterministic, which is the
+ * kind of bug that only shows up on the rows you can no longer read.
+ */
+export function parseRetiredKeys(raw: string): EncryptionKey[] {
+  const trimmed = raw.trim();
+  if (trimmed === '') return [];
+
+  const seen = new Set<string>();
+
+  return trimmed.split(',').map((entry, index) => {
+    const separator = entry.indexOf(':');
+    if (separator <= 0) {
+      throw new Error(`retired key ${index + 1} is not in "id:base64key" form`);
+    }
+
+    const keyId = entry.slice(0, separator).trim();
+    const encoded = entry.slice(separator + 1).trim();
+
+    if (seen.has(keyId)) throw new Error(`retired key id "${keyId}" appears more than once`);
+    seen.add(keyId);
+
+    return { keyId, key: parseKey(encoded, `retired key "${keyId}"`) };
+  });
+}
+
+/**
+ * Build the keyring from validated configuration.
+ *
+ * Throws when no key is configured. Callers that can legitimately run without
+ * encryption (a local environment with MFA off) must check `isEncryptionConfigured`
+ * first rather than catching this.
+ */
+export function buildKeyring(config: Config): Keyring {
+  if (!config.ENCRYPTION_KEY) {
+    throw new Error('No ENCRYPTION_KEY is configured, so nothing can be encrypted or decrypted');
+  }
+
+  const active: EncryptionKey = {
+    keyId: config.ENCRYPTION_KEY_ID,
+    key: parseKey(config.ENCRYPTION_KEY, 'ENCRYPTION_KEY'),
+  };
+
+  const retired = parseRetiredKeys(config.ENCRYPTION_KEYS_RETIRED).filter(
+    // A key that is both active and retired is a rotation half-applied. The
+    // active entry wins; keeping both would be harmless but confusing.
+    (entry) => entry.keyId !== active.keyId,
+  );
+
+  return { active, retired };
+}
+
+export function isEncryptionConfigured(config: Config): boolean {
+  return Boolean(config.ENCRYPTION_KEY);
 }

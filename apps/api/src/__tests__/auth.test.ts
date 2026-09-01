@@ -11,6 +11,8 @@ import {
   clientFromRefresh,
   cookieHeader,
   createTestContext,
+  currentTotp,
+  rememberTotpSecret,
   findCookie,
   refresh,
   signInWithPassword,
@@ -33,12 +35,86 @@ afterAll(async () => {
 
 // ---------------------------------------------------------------------------
 describe('login', () => {
-  it('returns an access token and sets the auth cookies', async () => {
-    const response = await context.app.inject({
+  /**
+   * The harness account holds a staff role, so the password stage now ends in
+   * an MFA challenge rather than a session. `completeSignIn` walks the whole
+   * flow and returns the response that actually issued the session, which is
+   * where the cookie and token assertions belong.
+   */
+  async function passwordStage() {
+    return context.app.inject({
       method: 'POST',
       url: '/v1/auth/login',
       payload: { email: TEST_EMAIL, password: TEST_PASSWORD },
     });
+  }
+
+  /**
+   * The whole context shares one database, so the first call enrols and later
+   * ones verify. Branching on the stage the server reports keeps every test in
+   * this block independent of the order they run in.
+   */
+  let enrolledSecret: string | null = null;
+
+  async function completeSignIn() {
+    const first = await passwordStage();
+    const { challengeToken, stage } = first.json<{
+      challengeToken: string;
+      stage: 'enrol' | 'verify';
+    }>();
+
+    if (stage === 'enrol') {
+      const started = await context.app.inject({
+        method: 'POST',
+        url: '/v1/auth/mfa/enrol/start',
+        payload: { challengeToken },
+      });
+      enrolledSecret = started.json<{ secret: string }>().secret;
+      // Share it with the harness so a later signInWithPassword in this file
+      // can verify rather than failing for want of a secret.
+      rememberTotpSecret(TEST_EMAIL, enrolledSecret);
+
+      return context.app.inject({
+        method: 'POST',
+        url: '/v1/auth/mfa/enrol/confirm',
+        payload: { challengeToken, code: await currentTotp(enrolledSecret) },
+      });
+    }
+
+    // Simulate the 30 seconds a real user would have taken; see the note in
+    // harness.ts. The replay rule itself is asserted directly in mfa.test.ts.
+    await context.prisma.identity.updateMany({
+      where: { email: TEST_EMAIL },
+      data: { mfaLastTimeStep: null },
+    });
+
+    return context.app.inject({
+      method: 'POST',
+      url: '/v1/auth/mfa/verify',
+      payload: { challengeToken, code: await currentTotp(enrolledSecret!) },
+    });
+  }
+
+  it('gives a staff password NO session — only an MFA challenge', async () => {
+    // The point of the whole milestone. A leaked staff password must not be
+    // enough on its own, so the password stage returns no access token, no
+    // refresh cookie, and no CSRF token.
+    const response = await passwordStage();
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<Record<string, unknown>>();
+
+    expect(body['mfaRequired']).toBe(true);
+    expect(body['challengeToken']).toBeTruthy();
+    expect(body['accessToken']).toBeUndefined();
+    expect(body['csrfToken']).toBeUndefined();
+
+    expect(findCookie(response.headers['set-cookie'], REFRESH_COOKIE)).toBeUndefined();
+    expect(findCookie(response.headers['set-cookie'], CSRF_COOKIE)).toBeUndefined();
+  });
+
+  it('returns an access token and sets the auth cookies once MFA succeeds', async () => {
+    const response = await completeSignIn();
 
     expect(response.statusCode).toBe(200);
     const body = response.json<{ accessToken: string; expiresIn: number; csrfToken: string }>();
@@ -50,11 +126,7 @@ describe('login', () => {
   it('NEVER returns the refresh token in the response body', async () => {
     // The single most important assertion in this file. If a refresh token can
     // reach script, the HttpOnly cookie is decoration.
-    const response = await context.app.inject({
-      method: 'POST',
-      url: '/v1/auth/login',
-      payload: { email: TEST_EMAIL, password: TEST_PASSWORD },
-    });
+    const response = await completeSignIn();
 
     const refreshCookie = findCookie(response.headers['set-cookie'], REFRESH_COOKIE);
     expect(refreshCookie).toBeDefined();
@@ -64,12 +136,14 @@ describe('login', () => {
     expect(raw).not.toContain('refreshToken');
   });
 
+  it('never returns the refresh token at the password stage either', async () => {
+    const response = await passwordStage();
+    expect(response.body).not.toContain('refreshToken');
+    expect(response.body).not.toContain('dash_rt');
+  });
+
   it('sets the refresh cookie HttpOnly, SameSite, and scoped to the auth path', async () => {
-    const response = await context.app.inject({
-      method: 'POST',
-      url: '/v1/auth/login',
-      payload: { email: TEST_EMAIL, password: TEST_PASSWORD },
-    });
+    const response = await completeSignIn();
 
     const cookie = findCookie(response.headers['set-cookie'], REFRESH_COOKIE)!;
     expect(cookie.httpOnly).toBe(true);
@@ -82,11 +156,7 @@ describe('login', () => {
   });
 
   it('sets the CSRF cookie readable by script, site-wide', async () => {
-    const response = await context.app.inject({
-      method: 'POST',
-      url: '/v1/auth/login',
-      payload: { email: TEST_EMAIL, password: TEST_PASSWORD },
-    });
+    const response = await completeSignIn();
 
     const cookie = findCookie(response.headers['set-cookie'], CSRF_COOKIE)!;
     // Deliberately readable — the client must echo it into a header.

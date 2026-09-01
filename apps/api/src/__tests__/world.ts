@@ -14,8 +14,8 @@
 import type { PrismaClient } from '@prisma/client';
 import { hashPassword, generateReference } from '@dash/domain/crypto';
 import { naira } from '@dash/domain/money';
-import type { TestContext } from './harness.js';
-import { CSRF_COOKIE, REFRESH_COOKIE } from '../auth/cookies.js';
+import { signInWithPassword, type TestContext } from './harness.js';
+import { CSRF_COOKIE } from '../auth/cookies.js';
 
 export const WORLD_PASSWORD = 'WorldFixture!2026';
 
@@ -339,33 +339,21 @@ export interface Actor {
  * a real path and avoids two extra requests per actor per test.
  */
 export async function actAs(context: TestContext, email: string): Promise<Actor> {
-  const response = await context.app.inject({
-    method: 'POST',
-    url: '/v1/auth/login',
-    payload: { email, password: WORLD_PASSWORD },
-  });
-
-  if (response.statusCode !== 200) {
-    throw new Error(`Could not sign in as ${email}: ${response.statusCode} ${response.body}`);
-  }
-
-  const body = response.json<{ accessToken: string; csrfToken: string }>();
-
-  const rawCookies = response.headers['set-cookie'];
-  const cookies = Array.isArray(rawCookies) ? rawCookies : [rawCookies ?? ''];
-  const refreshCookie = cookies.find((cookie) => cookie.startsWith(`${REFRESH_COOKIE}=`));
-  const refreshToken = refreshCookie?.split(';')[0]?.split('=')[1] ?? '';
+  // Delegates to the harness so there is exactly one implementation of the
+  // sign-in flow. Staff roles now require a second factor, and duplicating that
+  // walk here would mean two places to keep correct.
+  const client = await signInWithPassword(context, email, WORLD_PASSWORD);
 
   return {
-    accessToken: body.accessToken,
-    refreshToken,
-    csrfToken: body.csrfToken,
+    accessToken: client.accessToken,
+    refreshToken: client.refreshToken,
+    csrfToken: client.csrfToken,
     headers: {
-      authorization: `Bearer ${body.accessToken}`,
+      authorization: `Bearer ${client.accessToken}`,
       // Sent on every request so a state-changing call is never rejected for a
       // missing CSRF token when what is under test is authorization.
-      'x-csrf-token': body.csrfToken,
-      cookie: `${CSRF_COOKIE}=${body.csrfToken}`,
+      'x-csrf-token': client.csrfToken,
+      cookie: `${CSRF_COOKIE}=${client.csrfToken}`,
     },
   };
 }

@@ -38,9 +38,28 @@ model Identity {
   // Only ever set for staff accounts. Customers and riders use OTP.
   passwordHash String?
 
-  // Staff accounts must carry MFA before they can reach the admin console.
-  mfaSecret     String?
+  // --- Multi-factor authentication ---------------------------------------
+  // Staff accounts must carry TOTP before they can reach the admin console.
+  //
+  // The secret is an AES-256-GCM envelope (see @dash/domain/envelope), bound to
+  // this identity so a row copied to another identity fails to decrypt. It is
+  // never returned by any read path once enrolment is confirmed.
+  mfaSecretCipher String?
+
+  // An enrolment that has been started but not yet proved. Kept separate from
+  // the live secret so a half-finished enrolment can never authenticate, and so
+  // starting a new one cannot lock out a working authenticator.
+  mfaPendingCipher String?
+  mfaPendingAt     DateTime?
+
+  // Set only when possession has been proved. This, not the presence of a
+  // secret, is what makes MFA active.
   mfaEnrolledAt DateTime?
+
+  // Highest TOTP time step already accepted for this identity. A code is only
+  // valid for a step strictly greater than this, so the same six digits cannot
+  // be replayed inside their own validity window.
+  mfaLastTimeStep Int?
 
   displayName String?
   locale      String  @default("en-NG")
@@ -58,6 +77,8 @@ model Identity {
   sessions        Session[]
   devices         Device[]
   otpChallenges   OtpChallenge[]
+  mfaChallenges   MfaChallenge[]
+  mfaRecoveryCodes MfaRecoveryCode[]
   customer        Customer?
   rider           Rider?
   vendorUsers     VendorUser[]
@@ -169,6 +190,69 @@ model OtpChallenge {
 
   @@index([destination, purpose])
   @@index([expiresAt])
+}
+
+/**
+ * A login that has passed the password stage and is waiting on TOTP.
+ *
+ * This is deliberately NOT a Session: no session exists until the second factor
+ * succeeds, so a stolen intermediate token cannot be refreshed, cannot call any
+ * business endpoint, and expires in minutes rather than days.
+ */
+model MfaChallenge {
+  id         String @id @default(cuid())
+  identityId String
+
+  // Only the SHA-256 of the opaque challenge token is stored, for the same
+  // reason refresh tokens are hashed: a database leak must not yield a usable
+  // credential.
+  tokenHash String @unique
+
+  purpose String // login | step_up | disable | recovery_regenerate
+
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+  consumedAt  DateTime?
+
+  ipAddress String?
+  userAgent String?
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  identity Identity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@index([identityId, purpose])
+  @@index([expiresAt])
+}
+
+/**
+ * A single-use backup code for when the authenticator device is lost.
+ *
+ * Stored only as a hash. Because these are high-entropy random values rather
+ * than user-chosen text, SHA-256 is the right construction — there is no
+ * dictionary to attack, so a slow KDF would add cost without adding security.
+ */
+model MfaRecoveryCode {
+  id         String @id @default(cuid())
+  identityId String
+
+  codeHash String @unique
+
+  // Set the moment it is redeemed. Rows are retained rather than deleted so
+  // "which code was used, and when" stays answerable during an investigation.
+  usedAt    DateTime?
+  usedIp    String?
+
+  // Which generation this belongs to. Regenerating issues a new batch and
+  // retires every unused code from earlier ones.
+  batch     Int      @default(1)
+
+  createdAt DateTime @default(now())
+
+  identity Identity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@index([identityId, usedAt])
 }
 
 // ===========================================================================
