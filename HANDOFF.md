@@ -19,7 +19,7 @@ practised, and external verification — none of which has happened.
 
 | | |
 |---|---|
-| **Branch** | `master` |
+| **Branch** | `master`; Milestone E on `claude/dash-app-v1`, not yet merged |
 | **Latest tag** | `v0.2.0-auth` (`ad2e81b`) — this work is **untagged**, see below |
 | **Date** | 2026-09-01 |
 
@@ -35,10 +35,13 @@ practised, and external verification — none of which has happened.
 | C | `3d7ac5b` | Privacy retention and session housekeeping |
 | F | `d25eb22` | Security scanning in CI and operational runbooks |
 | G | `8839312` | Observability seams without a vendor |
+| E | *(branch `claude/dash-app-v1`)* | Account deletion and personal-data export — **built, not yet merged to `master`** |
 
 **No new tag has been created.** Milestone E (account deletion and data export)
-was requested and is not built, so tagging this as the completed set would be a
-false claim. See *What is not done* below.
+is now implemented on `claude/dash-app-v1` with full authorization boundaries,
+legal holds, idempotent finalisation, a stateless single-use export download,
+and adversarial tests — but it has not been merged, reviewed against `master`,
+or tagged. Tagging waits for the merge.
 
 ```bash
 git log --oneline v0.2.0-auth..HEAD    # everything since the last tag
@@ -152,14 +155,15 @@ Everything below was run on this machine at this commit.
 
 | Check | Result |
 |---|---|
-| `npm test` | **769 passing**, 25 files, 0 failing |
+| `npm test` | **859 passing**, 28 files, 0 failing |
 | `npm run typecheck` | 4 projects clean |
 | `npm run lint` | clean |
 | `npm run build` | web app builds, 11 routes |
-| Domain coverage | **94.32%** statements · 94.33% branches · 95.28% functions |
+| Domain coverage | **97.09%** statements · 94.37% branches · 96.21% functions (`src/account` at 100/100/100) |
 | `node scripts/smoke.mjs` | 49/49 |
 | `node scripts/dispatch-check.mjs` | 21/21 |
 | `npm run maintenance:retention -- --dry-run` | runs, reports, writes nothing |
+| `npm run maintenance:accounts -- --dry-run` | runs, reports, writes nothing |
 
 Coverage thresholds are enforced in `vitest.config.ts` at 80/75/80/80.
 
@@ -174,6 +178,7 @@ instance and drives it with `inject()` against a temporary SQLite file.
 | `auth` | 41 |
 | `config` | 40 |
 | `dispatch` | 40 |
+| `account-deletion` | 34 |
 | `orders` | 31 |
 | `retention` | 31 |
 | `vendor` | 31 |
@@ -183,9 +188,11 @@ instance and drives it with `inject()` against a temporary SQLite file.
 | `payout` | 24 |
 | `webhooks` | 24 |
 | `observability` | 22 |
+| `account-export` | 20 |
 | `ratelimit` | 4 |
 
-The remainder are domain unit tests in `packages/domain`.
+The remainder are domain unit tests in `packages/domain` — including
+`account` (36), the pure deletion/export policy.
 
 `scripts/smoke.mjs` and `scripts/dispatch-check.mjs` still need a running server
 and a full seed. They are **supplementary** now — no behaviour depends on them
@@ -337,39 +344,49 @@ has just become decoration.
 
 ## What is not done
 
-### Requested and not built
+### Requested and built, not yet merged
 
-**Milestone E — account deletion and data export.** Not started. This is the
-one requested item that is missing, and it is missing because it was the last
-in the queue rather than because it is blocked.
+**Milestone E — account deletion and data export.** Implemented on
+`claude/dash-app-v1`. What is in place:
 
-What it needs, so it can be picked up cleanly:
+- A `scheduled` → `cancelled` / `completed` deletion state machine
+  (`AccountDeletionRequest`, one row per identity), a fresh step-up on the
+  request, a cooling-off window (`ACCOUNT_DELETION_COOLING_OFF_DAYS`, default
+  14), and a cancellation path that needs no step-up.
+- A staff on-behalf-of path (`admin:account:delete`, step-up, mandatory reason,
+  `onBehalfOf` audit) kept separate from the self-service one.
+- Legal holds — active order, unresolved refund/dispute, open safety/fraud
+  case, negative wallet balance — that defer acceptance and name the blocker.
+- Finalisation: every session deleted, credentials and drafts deleted,
+  everything the ledger references **anonymised in place**. Orders, payments,
+  refunds, settlements, and every ledger entry keep their ids and amounts. The
+  policy for all 24 model classes is `packages/domain/src/account` (100%
+  coverage), complementing `packages/domain/src/retention`.
+- Idempotent, single-transaction finalisation (`anonymisedAt` marker, a claimed
+  request row, set-to-constant writes) — safe to run repeatedly and
+  concurrently.
+- Export behind a fresh step-up, built off the request path by a queue worker
+  through `ExportArchivePort` (local dir in tests, object storage in
+  production), delivered by a **stateless signed single-use** download
+  capability with an expiry (`DATA_EXPORT_TTL_HOURS`, default 24).
+- `npm run maintenance:accounts` finalises due deletions and expires stale
+  export archives. Still **nothing schedules it** — see below.
+- Adversarial coverage: `account-deletion.test.ts` (34), `account-export.test.ts`
+  (20), `packages/domain/src/account/account.test.ts` (36) — IDOR on the
+  id-addressed routes, replay, repeated requests, cancellation racing
+  finalisation, concurrent finalisation, single-use and expired downloads, and
+  proof the financial rows survive.
 
-- A `deletionRequestedAt → scheduled → cancelled | completed` state machine on
-  `Identity` (the column exists and is unused).
-- Fresh step-up before a request is accepted, a cooling-off window, and a
-  cancellation path.
-- Session revocation at finalisation.
-- **Anonymise, never delete, anything the ledger references.** Orders, payments,
-  and settlements must survive with stable non-personal ids; only profile fields
-  clear. `packages/domain/src/retention` already models the delete /
-  anonymise / retain distinction and is the right place for the policy.
-- An export request behind fresh authentication, with an expiring single-use
-  download authorisation and a port abstraction so the archive writer can be
-  local in tests and object storage in production.
-- Adversarial tests: IDOR on both request and download, replay, repeated
-  requests, cancellation racing finalisation, concurrent finalisation, and proof
-  that financial records survive.
-
-Do not ship a partial version of this. A deletion flow that half-works on
-records the ledger depends on is worse than none.
+Not done for this milestone: merge to `master`, review against `master`, a tag,
+and a production `ExportArchivePort` adapter — only the local one exists.
 
 ### Blocking production — infrastructure, all Codex
 
 - No PostgreSQL/PostGIS, no Redis/BullMQ. The in-memory queue is per-process, so
   a second API instance would run its own dispatch worker and double-offer.
 - No secret store, no backups, no restore rehearsal.
-- The retention job is implemented and tested but **nothing schedules it**.
+- The retention **and account-maintenance** jobs are implemented and tested
+  but **nothing schedules them**.
 - Error reporting and metrics are console implementations; nothing is wired to a
   real destination.
 - No branch protection on `master` — a repository setting, not committable.

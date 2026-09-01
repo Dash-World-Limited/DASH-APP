@@ -12,6 +12,12 @@
 import { z } from 'zod';
 import { parseKey, type EncryptionKey, type Keyring } from '@dash/domain/envelope';
 import { assertRetentionDays } from '@dash/domain/retention';
+import {
+  assertCoolingOffDays,
+  assertExportTtlHours,
+  DELETION_COOLING_OFF_DAYS,
+  EXPORT_DOWNLOAD_TTL_HOURS,
+} from '@dash/domain/account';
 
 const booleanish = z
   .enum(['true', 'false', '1', '0'])
@@ -112,6 +118,17 @@ const schema = z
     // credential — so the two cannot drift apart.
     RETENTION_OTP_DAYS: z.coerce.number().int().positive().optional(),
     RETENTION_IDEMPOTENCY_DAYS: z.coerce.number().int().positive().optional(),
+
+    // --- Account deletion and data export -------------------------------
+    // How long a scheduled deletion waits before it is finalised, and how long
+    // a built export archive stays downloadable. Both are validated against the
+    // domain policy's floor and ceiling below.
+    ACCOUNT_DELETION_COOLING_OFF_DAYS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(DELETION_COOLING_OFF_DAYS),
+    DATA_EXPORT_TTL_HOURS: z.coerce.number().int().positive().default(EXPORT_DOWNLOAD_TTL_HOURS),
   })
   .superRefine((env, ctx) => {
     const fail = (path: string, message: string): void => {
@@ -174,6 +191,21 @@ const schema = z
       } catch (error) {
         fail(variable, error instanceof Error ? error.message : 'is not a valid retention period');
       }
+    }
+
+    // Account-deletion and export windows, against the domain policy's bounds.
+    try {
+      assertCoolingOffDays(env.ACCOUNT_DELETION_COOLING_OFF_DAYS);
+    } catch (error) {
+      fail(
+        'ACCOUNT_DELETION_COOLING_OFF_DAYS',
+        error instanceof Error ? error.message : 'is out of range',
+      );
+    }
+    try {
+      assertExportTtlHours(env.DATA_EXPORT_TTL_HOURS);
+    } catch (error) {
+      fail('DATA_EXPORT_TTL_HOURS', error instanceof Error ? error.message : 'is out of range');
     }
 
     if (env.NODE_ENV !== 'production') return;

@@ -24,6 +24,8 @@ import { SessionError } from '../auth/sessions.js';
 import { MfaError } from '../auth/mfa.js';
 import { EnvelopeError } from '@dash/domain/envelope';
 import { PayoutDetailsError } from '../vendor/payout.js';
+import { AccountDeletionError, DataExportError } from '../account/errors.js';
+import { AccountPolicyError } from '@dash/domain/account';
 
 export class ApiError extends Error {
   constructor(
@@ -229,6 +231,63 @@ function translate(error: unknown): {
       code: 'internal_error',
       message: 'Something went wrong on our side. Please try again.',
       internal: 'payout encryption not configured',
+    };
+  }
+
+  if (error instanceof AccountDeletionError) {
+    if (error.reason === 'legal_hold') {
+      // Safe to name: the caller is authenticated as the account in question,
+      // and knowing which matter to clear is the whole point.
+      return {
+        statusCode: 409,
+        code: 'legal_hold',
+        message: error.message,
+        details: error.details,
+      };
+    }
+    if (error.reason === 'not_found') {
+      return { statusCode: 404, code: 'not_found', message: 'Not found.' };
+    }
+    if (error.reason === 'not_cancellable' || error.reason === 'not_due') {
+      return { statusCode: 409, code: error.reason, message: error.message };
+    }
+    if (error.reason === 'already_completed') {
+      return { statusCode: 410, code: 'already_completed', message: error.message };
+    }
+    return { statusCode: 403, code: 'forbidden', message: error.message };
+  }
+
+  if (error instanceof DataExportError) {
+    if (error.reason === 'not_found' || error.reason === 'bad_token') {
+      // A bad token and a wrong id look identical from outside — no oracle.
+      return { statusCode: 404, code: 'not_found', message: 'Not found.', internal: `export ${error.reason}` };
+    }
+    if (error.reason === 'expired') {
+      return { statusCode: 410, code: 'export_expired', message: error.message };
+    }
+    if (error.reason === 'already_downloaded') {
+      return { statusCode: 409, code: 'already_downloaded', message: error.message };
+    }
+    if (error.reason === 'not_ready') {
+      return { statusCode: 409, code: 'export_not_ready', message: error.message };
+    }
+    // build_failed is our fault.
+    return {
+      statusCode: 500,
+      code: 'internal_error',
+      message: 'Something went wrong on our side. Please try again.',
+      internal: 'export build failed',
+    };
+  }
+
+  if (error instanceof AccountPolicyError) {
+    // A malformed transition or an out-of-range window reached a handler. These
+    // are guarded upstream, so this is a bug, not a caller error.
+    return {
+      statusCode: 500,
+      code: 'internal_error',
+      message: 'Something went wrong on our side. Please try again.',
+      internal: `account policy ${error.reason}`,
     };
   }
 

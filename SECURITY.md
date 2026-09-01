@@ -163,9 +163,9 @@ this exemption cannot quietly become a pattern.
 - **Cross-tenant probes return 404, not 403.** A 403 confirms the record exists.
   The scope check throws with the literal message `Not found.`
 - **Step-up authentication** for anything that moves money, changes who can do
-  what, or exports data in bulk. Valid for 15 minutes. A super admin with every
-  permission still cannot approve a refund without it — asserted in
-  `scripts/smoke.mjs`.
+  what, deletes an account, or exports data in bulk. Valid for 15 minutes. A
+  super admin with every permission still cannot approve a refund without it —
+  asserted in `scripts/smoke.mjs`.
 - **Four-eyes** required on settlement approval, payout approval, manual ledger
   adjustments, and role edits.
 - **Client-supplied roles are ignored.** `buildActor()` recomputes permissions
@@ -257,6 +257,37 @@ filename, so a filename cannot traverse a path or collide across tenants. Path
 resolution refuses anything escaping the base directory. Signed URLs carry an
 HMAC-shaped digest over key and expiry.
 
+### Account deletion and data export
+
+- **Deletion is a scheduled state machine, not an instant drop.**
+  `scheduled → cancelled | completed`, one request per identity, behind a fresh
+  step-up. A cooling-off window (default 14 days) precedes finalisation, and the
+  owner — or staff, on their behalf — can cancel any time before it closes.
+- **A deletion cannot erase what the ledger sums over.** Finalisation deletes
+  credentials and drafts and **anonymises everything else in place**: orders,
+  payments, refunds, settlements, and every ledger entry survive with their ids
+  and amounts unchanged; only fields that name a person clear. The delete /
+  anonymise / retain rule for all 24 model classes lives in
+  `packages/domain/src/account`, at 100% test coverage.
+- **Legal holds block acceptance.** An active order, an unresolved refund or
+  dispute, an open safety/fraud case, or a negative wallet balance defers the
+  request — named, so the person can act on it — rather than deleting anyway.
+- **Finalisation is idempotent and single-transaction.** An `anonymisedAt`
+  marker, a claimed request row, and set-to-constant writes mean a concurrent or
+  repeated run is a no-op and writes no second audit entry. Every session is
+  gone afterwards, so the account's tokens stop working immediately.
+- **The export download is a stateless signed capability.** An HMAC over the
+  request id and an expiry (default 24 h), issued only to the authenticated
+  owner and **single-use** — enforced by a guarded `downloadCount: 0` update, so
+  two near-simultaneous downloads cannot both win. A bad token and a wrong id
+  return the same 404. The archive bytes are deleted the instant the download
+  completes, or by the maintenance sweep when the window lapses.
+- **The archive is scoped to the subject.** Every relation is filtered by the
+  requester's own ids; it never contains another user's data, internal risk
+  scoring, or staff records, and its manifest says so.
+- **Audit entries carry counts only** — never an email, a phone number, a
+  coordinate, or the free-text deletion reason.
+
 ### Production boot guards
 
 `apps/api/src/config.ts` refuses to start when `NODE_ENV=production` and any of
@@ -311,6 +342,19 @@ Controls actually exercised by an automated check, not merely written:
 | The retention job never touches ledger, audit, order, or webhook records | `retention.test.ts` |
 | Old rider locations are coarsened, converge, and survive concurrent runs | `retention.test.ts` |
 | Retention output and audit entries contain counts, never rows | `retention.test.ts` |
+| Account deletion needs a fresh step-up; cancellation does not | `account-deletion.test.ts` |
+| A legal hold (open order, dispute, safety case, debt) defers deletion | `account-deletion.test.ts` |
+| Finalisation anonymises the identity but leaves orders, payments, and every ledger entry intact | `account-deletion.test.ts` |
+| Repeated and concurrent finalisation anonymise once and write one audit entry | `account-deletion.test.ts` |
+| A cancellation racing finalisation is resolved deterministically, both ways | `account-deletion.test.ts` |
+| A finalised account's live sessions stop working immediately | `account-deletion.test.ts` |
+| The staff deletion path needs its own permission, a reason, and an on-behalf-of audit entry | `account-deletion.test.ts` |
+| Deletion and export audit entries carry counts only, never PII | `account-deletion.test.ts` |
+| An export archive contains the requester's data and no other customer's | `account-export.test.ts` |
+| The export download is single-use; a second attempt and a concurrent one are refused | `account-export.test.ts` |
+| A wrong-owner, garbage, or wrong-request download token returns 404 and consumes nothing | `account-export.test.ts` |
+| An expired export link is refused and its archive is deleted | `account-export.test.ts` |
+| A build failure marks the request failed without wedging the queue | `account-export.test.ts` |
 | Readiness discloses dependency status but no provider, host, or secret | `observability.test.ts` |
 | Liveness stays up when the database is unreachable | `observability.test.ts` |
 | Credentials, personal data, and coordinates never reach an error tracker | `observability.test.ts` |

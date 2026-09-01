@@ -3,7 +3,7 @@
 Updated at the end of every milestone. If you are picking this up cold, read
 this file first, then `docs/DECISIONS.md`.
 
-**Last updated:** 2026-08-31 · business API integration coverage on `main`, past tag `v0.2.0-auth`
+**Last updated:** 2026-09-01 · Milestone E (account deletion and data export) built on branch `claude/dash-app-v1`, unmerged; past tag `v0.2.0-auth`
 
 ---
 
@@ -202,6 +202,46 @@ still balances.
 - **GitHub Actions CI**: lint, typecheck across four workspaces, 340 tests,
   coverage thresholds, Prisma schema validation, fresh-database boot + seed +
   ledger verification, production web build, gitleaks secret scan, `npm audit`.
+
+### Milestone E — account deletion and data export (branch `claude/dash-app-v1`, unmerged)
+- **Deletion is a scheduled state machine**, not an instant drop:
+  `scheduled → cancelled | completed`, one `AccountDeletionRequest` per identity,
+  opened behind a fresh step-up, with a cooling-off window
+  (`ACCOUNT_DELETION_COOLING_OFF_DAYS`, default 14) and a no-step-up cancellation
+  path. A staff on-behalf-of path (`admin:account:delete`, step-up, mandatory
+  reason, `onBehalfOf` audit) is kept separate.
+- **Legal holds** — an active order, an unresolved refund/dispute, an open
+  safety/fraud case, or a negative wallet balance — defer acceptance and name the
+  blocker rather than deleting anyway.
+- **Anonymise, never delete, what the ledger references.** Finalisation deletes
+  sessions, devices, OTP/MFA challenges, recovery codes, and carts; it
+  anonymises the identity, addresses, order notes, review comments (rating
+  kept), support-action bodies, and customer profile fields **in place**.
+  Orders, payments, refunds, settlements, subscriptions, legal acceptances, and
+  every ledger entry keep their ids and amounts. The delete/anonymise/retain
+  rule for all 24 model classes is `packages/domain/src/account` at 100%
+  coverage.
+- **Idempotent, single-transaction finalisation** — an `Identity.anonymisedAt`
+  marker, a claimed request row, and set-to-constant writes mean a repeated or
+  concurrent run is a no-op and writes no second audit entry. Sessions are gone
+  afterwards, so the account's tokens stop working immediately.
+- **Data export** runs off the request path: a queue worker gathers the
+  subject's own data (filtered by their ids so nothing else is swept in) into
+  one JSON archive stored through the new `ExportArchivePort` (local dir in
+  tests, object storage in production). The download link is a **stateless
+  signed HMAC capability** carrying the request id and an expiry
+  (`DATA_EXPORT_TTL_HOURS`, default 24), issued only to the authenticated owner
+  and **single-use** — enforced by a guarded `downloadCount: 0` update. The
+  bytes are deleted the instant the download completes.
+- **`npm run maintenance:accounts`** (with `--dry-run`) finalises due deletions
+  and expires stale export archives; aggregate counts only, non-zero exit on any
+  failure. Nothing schedules it yet.
+- **90 new tests**: `account-deletion.test.ts` (34), `account-export.test.ts`
+  (20), `packages/domain/src/account/account.test.ts` (36). IDOR on the
+  id-addressed routes, replay, repeated requests, cancellation racing
+  finalisation, concurrent finalisation, single-use and expired downloads, a
+  build failure that does not wedge the queue, and proof the financial rows
+  survive. Suite total **859**, domain coverage **97.09%** (account module 100%).
 
 ---
 

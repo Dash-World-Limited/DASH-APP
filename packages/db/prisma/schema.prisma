@@ -66,9 +66,15 @@ model Identity {
 
   status String @default("active") // active | suspended | deleted
 
-  // Set when the customer requests deletion. The row is retained until the
-  // financial retention window passes, then hard-deleted by a scheduled job.
+  // Denormalised flag mirroring the current AccountDeletionRequest: set while a
+  // deletion is scheduled, cleared on cancellation. A fast "is this account
+  // winding down?" check without a join.
   deletionRequestedAt DateTime?
+
+  // Set once finalisation has anonymised this identity. Its presence makes
+  // finalisation idempotent: a second run over an already-anonymised account
+  // does nothing.
+  anonymisedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -84,8 +90,113 @@ model Identity {
   vendorUsers     VendorUser[]
   auditLogs       AuditLog[]
   legalAcceptances LegalAcceptance[]
+  deletionRequests AccountDeletionRequest[]
+  dataExportRequests DataExportRequest[]
 
   @@index([status])
+  @@index([deletionRequestedAt])
+}
+
+// ===========================================================================
+// Account deletion and data export
+// ===========================================================================
+
+/**
+ * A request to delete an account, and its state over time.
+ *
+ * Deletion is never immediate. A request is created `scheduled` with a
+ * `scheduledPurgeAt` a cooling-off window in the future; the owner can cancel
+ * any time before that instant. A finalisation job then anonymises everything
+ * the ledger references and deletes the rest — see @dash/domain/account.
+ *
+ * At most one non-terminal request per identity, enforced by a partial-unique
+ * shape: `identityId` is unique here and the row is only ever deleted, never
+ * kept in a terminal state alongside a new one. A completed or cancelled
+ * request is retained as the record that it happened.
+ */
+model AccountDeletionRequest {
+  id         String @id @default(cuid())
+  identityId String
+
+  status String @default("scheduled") // scheduled | cancelled | completed
+
+  // The cooling-off window.
+  requestedAt      DateTime @default(now())
+  scheduledPurgeAt DateTime
+
+  cancelledAt DateTime?
+  completedAt DateTime?
+
+  // Optional free text from the person. Bounded and never echoed into logs.
+  reason String?
+
+  // Who asked. `requestedBy` is the acting identity — the account holder for a
+  // self-service request, a staff member for an admin-initiated one, in which
+  // case it differs from `identityId` and the audit entry carries onBehalfOf.
+  requestedBy       String
+  requestedByIp     String?
+  requestedByAgent  String?
+
+  // Set when finalisation runs, so the job is idempotent on it.
+  idempotencyKey String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  identity Identity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  // One live request per identity. A terminal one is deleted before a new one
+  // is accepted, so this never blocks a legitimate re-request.
+  @@unique([identityId])
+  @@index([status, scheduledPurgeAt])
+}
+
+/**
+ * A request for a copy of an account's own personal data.
+ *
+ * Built asynchronously by a job into a single JSON archive held by
+ * `ExportArchivePort`. The archive is downloadable exactly once, through an
+ * authenticated route that checks a single-use token, and only until
+ * `expiresAt`. After delivery or expiry the archive is deleted and the row
+ * kept as the record that an export was made.
+ */
+model DataExportRequest {
+  id         String @id @default(cuid())
+  identityId String
+
+  status String @default("pending") // pending | ready | delivered | expired | failed
+
+  requestedAt DateTime @default(now())
+  readyAt     DateTime?
+  deliveredAt DateTime?
+  expiresAt   DateTime?
+  failedAt    DateTime?
+  failureReason String?
+
+  // Where the built archive lives, via ExportArchivePort. Null until ready,
+  // and nulled again once the archive is deleted after download or expiry.
+  storageKey String?
+  sizeBytes  Int?
+  format     String @default("json")
+
+  // The download authorisation is a signed, expiring capability token — see
+  // apps/api/src/account/export.ts. Nothing about it is stored: it carries the
+  // request id and an expiry and is verified by HMAC. Single use is enforced
+  // here instead.
+  //
+  // 0 until the one permitted download happens, then 1. A guarded update makes
+  // two concurrent downloads impossible.
+  downloadCount Int @default(0)
+
+  requestedByIp String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  identity Identity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@index([identityId, status])
+  @@index([status, expiresAt])
 }
 
 model IdentityRole {

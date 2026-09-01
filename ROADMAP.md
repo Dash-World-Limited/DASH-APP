@@ -4,8 +4,9 @@ Where DASH APP is and what comes next, in the order it should happen.
 
 Latest tag: **`v0.2.0-auth`**. Considerable work has landed on `master` since —
 business API coverage, administrator MFA, encryption at rest, retention,
-security scanning, and observability seams — and is deliberately **untagged**
-because one requested milestone (account deletion and export) is not built.
+security scanning, and observability seams — and is deliberately **untagged**.
+The last requested milestone (account deletion and data export) is now built on
+`claude/dash-app-v1` but not yet merged to `master`; tagging waits for the merge.
 
 The ordering is not arbitrary. Each phase removes a blocker for the next, and
 the two hard gates below exist because getting them wrong is expensive to undo.
@@ -104,13 +105,25 @@ Shipped, except where noted.
   vendor payout details, each bound to its owner.
 - ✅ Retention policy and job — delete, anonymise, or retain, with dry run,
   batching, convergence, and concurrency safety. **Nothing schedules it yet.**
+  The account-maintenance job (Milestone E) shares the same properties and the
+  same gap.
 - ✅ Runbooks: incident response, secret inventory, backup/restore, environment
   separation, readiness checklist, rollback criteria, alert severities.
 
-## Next — account deletion and data export
+## Built, awaiting merge — account deletion and data export
 
-The one requested milestone still outstanding. Specification and the reason it
-must not be shipped partially are in
+Implemented on `claude/dash-app-v1`: a `scheduled → cancelled | completed`
+deletion state machine behind a fresh step-up, a cooling-off window, a
+cancellation path, a staff on-behalf-of path, legal holds, and an idempotent
+single-transaction finalisation that **anonymises everything the ledger
+references and deletes nothing it sums over**. Data export runs off the request
+path through `ExportArchivePort` and is delivered by a stateless signed
+single-use download link. `npm run maintenance:accounts` finalises due deletions
+and expires stale archives. Adversarial coverage is in `account-deletion.test.ts`,
+`account-export.test.ts`, and `packages/domain/src/account/account.test.ts`.
+
+Outstanding: merge and review against `master`, a tag, a scheduler for
+`maintenance:accounts`, and a production `ExportArchivePort` adapter. Details in
 [`HANDOFF.md`](HANDOFF.md#what-is-not-done).
 
 ---
@@ -125,8 +138,8 @@ must not be shipped partially are in
   implementation.
 - Websockets replacing polling on tracking, the vendor queue, and the ops board.
 - Transactional outbox for domain events.
-- Scheduled jobs: session pruning, rider-location retention, nightly ledger
-  reconciliation.
+- Scheduled jobs: session pruning, rider-location retention, account-deletion
+  finalisation and export-archive expiry, nightly ledger reconciliation.
 
 ---
 
@@ -168,7 +181,6 @@ Features the domain already anticipates but the product does not yet offer:
 - Scheduled orders, package delivery, events ticketing — flagged off in
   `FeatureFlag`, not implemented.
 - Ratings and reviews — modelled and seeded, no write path.
-- Account deletion and data export — `deletionRequestedAt` is modelled only.
 
 ---
 

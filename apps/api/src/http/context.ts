@@ -17,6 +17,7 @@ import {
 import type { PrismaClient } from '@dash/db';
 import type {
   EmailPort,
+  ExportArchivePort,
   GeoPort,
   PaymentPort,
   PushPort,
@@ -49,6 +50,8 @@ export interface Services {
   email: EmailPort;
   push: PushPort;
   storage: StoragePort;
+  /** Where built personal-data export archives are held until download. */
+  exportArchive: ExportArchivePort;
   queue: QueuePort;
 }
 

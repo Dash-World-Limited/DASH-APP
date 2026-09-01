@@ -22,6 +22,11 @@ export const PERMISSIONS = [
   'payment:method:manage:own',
   'wallet:read:own',
   'subscription:manage:own',
+  // Acting on one's own account: destroying its personal data, or taking a
+  // copy of it. Both are step-up-gated (below) because both are irreversible
+  // or high-egress, and both belong to the customer alone.
+  'account:delete:own',
+  'account:export:own',
 
   // --- Rider ---------------------------------------------------------------
   'rider:availability:set',
@@ -102,6 +107,10 @@ export const PERMISSIONS = [
   'admin:audit:read',
   'admin:data:export',
   'admin:impersonate',
+  // A staff path to schedule deletion of a user's account. Separate from
+  // `account:delete:own` so it can never be exercised silently: it demands
+  // its own permission, a mandatory reason, and an on-behalf-of audit entry.
+  'admin:account:delete',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -131,6 +140,12 @@ export const STEP_UP_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>(
   // Redirecting a vendor's settlements is the highest-value single edit in the
   // system: it changes where money lands without touching any ledger.
   'vendor:payout:write',
+  // Deleting an account is irreversible after the cooling-off window; exporting
+  // one hands over a person's entire history in a single file. A borrowed
+  // session must not be enough for either.
+  'account:delete:own',
+  'account:export:own',
+  'admin:account:delete',
 ]);
 
 /** A step-up is valid for 15 minutes. After that, re-authenticate. */
@@ -174,6 +189,8 @@ const CUSTOMER_PERMISSIONS: readonly Permission[] = [
   'payment:method:manage:own',
   'wallet:read:own',
   'subscription:manage:own',
+  'account:delete:own',
+  'account:export:own',
 ];
 
 const RIDER_PERMISSIONS: readonly Permission[] = [
@@ -270,6 +287,7 @@ const PLATFORM_ADMIN_PERMISSIONS: readonly Permission[] = [
   'admin:user:read',
   'admin:featureflag:write',
   'admin:audit:read',
+  'admin:account:delete',
 ];
 
 /**

@@ -191,6 +191,37 @@ export interface StoragePort {
 }
 
 // ---------------------------------------------------------------------------
+// Data-export archives
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a built personal-data export is held until the subject downloads it.
+ *
+ * Deliberately separate from `StoragePort`:
+ *
+ *   - `StoragePort` is for user uploads and carries an image/PDF allowlist and
+ *     an 8 MB cap. An export archive is neither an upload nor necessarily small.
+ *   - An export archive is the single most sensitive object the platform ever
+ *     writes — one person's entire history in one file. It deserves its own
+ *     retention and access story, not a shared bucket.
+ *
+ * There is no `signedUrl`. The download goes through an authenticated API route
+ * that checks a single-use token and streams the bytes, so access control stays
+ * on our side rather than resting on a storage provider's URL-expiry semantics.
+ */
+export interface ExportArchivePort {
+  readonly providerName: string;
+  readonly isLive: boolean;
+
+  /** Store an archive under `key`. Returns the byte length actually written. */
+  write(input: { key: string; body: Buffer; contentType: string }): Promise<{ sizeBytes: number }>;
+
+  read(key: string): Promise<Buffer>;
+
+  delete(key: string): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
 // Queue
 // ---------------------------------------------------------------------------
 

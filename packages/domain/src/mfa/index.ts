@@ -67,11 +67,22 @@ export function requiresMfa(roles: readonly Role[]): boolean {
  *     push them off the platform, and the blast radius is their own money, not
  *     the platform's or another party's. Revisit if vendors ever gain a
  *     permission that reaches somebody else's funds.
+ *
+ *   customer — holds `account:delete:own` and `account:export:own`, which act
+ *     only on the customer's own account. Both are gated behind phone-OTP
+ *     step-up. Requiring every customer to set up an authenticator app before
+ *     they can leave the platform or take a copy of their data is neither
+ *     proportionate nor something a person mid-departure will do; the blast
+ *     radius is their own account and nobody else's.
  */
 export const STEP_UP_WITHOUT_MFA: ReadonlyMap<Role, string> = new Map<Role, string>([
   [
     'vendor_owner',
     'vendor:payout:write is gated behind phone-OTP step-up; the blast radius is only their own settlements',
+  ],
+  [
+    'customer',
+    'account:delete:own and account:export:own are gated behind phone-OTP step-up; each acts only on the requesting account and no other',
   ],
 ]);
 

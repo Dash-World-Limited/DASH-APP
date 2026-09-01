@@ -102,6 +102,9 @@ Notes:
 | `/v1/admin/audit` | GET | `admin:audit:read` | — | — | ✅ |
 | `/v1/admin/feature-flags` | GET | `admin:featureflag:write` | — | — | ✅ |
 | `/v1/admin/feature-flags/:key` | PATCH | `admin:featureflag:write` | — | — | ✅ |
+| `/v1/admin/identities/:id/deletion` | POST | `admin:account:delete` **+ step-up** | target must be a customer, else 404 | schedules deletion on the customer's behalf | ✅ |
+| `/v1/admin/identities/:id/deletion` | DELETE | `admin:account:delete` **+ step-up** | as above | cancels a scheduled deletion | ✅ |
+| `/v1/admin/identities/:id/deletion` | GET | `admin:user:read` | — | — | ✅ |
 
 Notes:
 - Support and finance are **globally scoped by design** — a support agent works
@@ -109,6 +112,11 @@ Notes:
   auth plus the audit log, not a tenancy boundary.
 - `support:refund:request` and `finance:refund:approve` are deliberately
   separate: an agent cannot approve their own request.
+- The staff deletion path (`admin:account:delete`) is separate from the
+  self-service one: its own permission, a **mandatory reason** (10–1000 chars),
+  and an `onBehalfOf` audit entry, so it can never be exercised silently. A
+  missing identity and a non-customer identity both return the same 404 —
+  no oracle for which ids exist.
 
 ---
 
@@ -180,6 +188,39 @@ deliberately so: they *are* the authentication surface. The webhook is the ninth
 authenticated by signature. A script rebuilds this list from the route code
 during audit; nothing else was found unguarded.
 
+## Customer — account deletion and data export
+
+`apps/api/src/routes/account.ts`
+
+| Endpoint | Method | Permission | Scope | State transition | Cov |
+|---|---|---|---|---|---|
+| `/v1/account/deletion` | POST | `account:delete:own` **+ step-up + `Idempotency-Key`** | acts only on `actor.identityId` | `→ scheduled` (cooling-off window) | ✅ |
+| `/v1/account/deletion` | GET | session | own request only | — | ✅ |
+| `/v1/account/deletion` | DELETE | session | own request only; **no step-up** — de-escalating | `scheduled → cancelled` | ✅ |
+| `/v1/account/export` | POST | `account:export:own` **+ step-up + `Idempotency-Key`** | acts only on `actor.identityId` | `→ pending`, queues a build | ✅ |
+| `/v1/account/export` | GET | session | own requests only; **never carries a token** | — | ✅ |
+| `/v1/account/export/:id` | GET | session | own request only, else 404 | hands back a signed download token while `ready` and unread | ✅ |
+| `/v1/account/export/:id/download` | GET | session **+ signed token** in `?token=` | own request only, else 404 | `ready → delivered` (single-use; archive deleted immediately) | ✅ |
+
+Notes:
+- The write paths sit behind step-up because `account:delete:own` and
+  `account:export:own` are in `STEP_UP_PERMISSIONS`. Reads and cancellation do
+  not — a status check is not sensitive, and cancelling only ever reduces risk.
+- **Anonymise, never delete, anything the ledger references.** Finalisation
+  clears profile fields and deletes credentials and drafts; orders, payments,
+  refunds, settlements, and every ledger entry survive with their ids and
+  amounts intact. The policy is `packages/domain/src/account`, tested there.
+- The download authorisation is a **stateless signed HMAC capability** carrying
+  the request id and an expiry — nothing stored. Single-use is enforced by a
+  guarded `downloadCount: 0` update, so two near-simultaneous downloads cannot
+  both win. A bad token and a wrong id return the same 404.
+- A finalised account's live sessions are gone, so its access tokens stop
+  working immediately (`loadActor` returns nothing).
+- Cooling-off window and download TTL: `ACCOUNT_DELETION_COOLING_OFF_DAYS`
+  (default 14) and `DATA_EXPORT_TTL_HOURS` (default 24), both range-checked at
+  boot. Finalisation and stale-archive cleanup run from
+  `npm run maintenance:accounts` — see [`RETENTION.md`](RETENTION.md).
+
 ## Vendor payout details
 
 | Endpoint | Method | Permission | Scope | Cov |
@@ -213,6 +254,8 @@ settlement path only.
 | Public catalogue and search | 30 |
 | Payment webhooks | 24 |
 | Retention job | 31 |
+| Account deletion (self-service, staff, finalisation, maintenance) | 34 |
+| Personal-data export (request, build, download, sweep) | 20 |
 | Observability and health | 22 |
 | Config guards | 40 |
 | Rate limiting | 4 |

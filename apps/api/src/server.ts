@@ -17,6 +17,7 @@ import {
   ConsolePushAdapter,
   ConsoleSmsAdapter,
   LocalGeoAdapter,
+  LocalExportArchiveAdapter,
   LocalStorageAdapter,
   MemoryQueueAdapter,
   MockPaymentAdapter,
@@ -38,7 +39,9 @@ import { registerVendorRoutes } from './routes/vendor.js';
 import { registerRiderRoutes } from './routes/rider.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
+import { registerAccountRoutes } from './routes/account.js';
 import { registerDispatchWorker } from './workers/dispatch.js';
+import { registerAccountExportWorker } from './workers/account-export.js';
 
 export interface BuildOptions {
   config?: Config;
@@ -63,6 +66,8 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     email: overrides.email ?? new ConsoleEmailAdapter(quiet),
     push: overrides.push ?? new ConsolePushAdapter(quiet),
     storage: overrides.storage ?? new LocalStorageAdapter(config.STORAGE_LOCAL_DIR),
+    exportArchive:
+      overrides.exportArchive ?? new LocalExportArchiveAdapter(config.STORAGE_LOCAL_DIR),
     queue: overrides.queue ?? new MemoryQueueAdapter(),
     // Stacks are withheld in production: a stack can carry interpolated values
     // from the frame that threw, and those are exactly what must not travel to
@@ -239,11 +244,19 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerRiderRoutes(app);
   await registerAdminRoutes(app);
   await registerWebhookRoutes(app);
+  await registerAccountRoutes(app);
 
   // --- Background workers ----------------------------------------------------
   // Registered after routes so the queue handlers exist before the first job
   // can be enqueued by a request.
   registerDispatchWorker({ prisma: services.prisma, queue: services.queue, log: app.log });
+  registerAccountExportWorker({
+    prisma: services.prisma,
+    queue: services.queue,
+    archive: services.exportArchive,
+    ttlHours: config.DATA_EXPORT_TTL_HOURS,
+    log: app.log,
+  });
 
   return app;
 }

@@ -15,9 +15,14 @@ import { buildRefund, buildWalletCredit, verifyLedgerIntegrity } from '@dash/dom
 import { postLedgerTransaction, writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission, requireScope } from '../http/context.js';
+import {
+  cancelAccountDeletion,
+  getAccountDeletion,
+  requestAccountDeletion,
+} from '../account/deletion.js';
 
 export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma, queue } = app.services;
+  const { prisma, queue, config } = app.services;
 
   // -------------------------------------------------------------------------
   // GET /v1/ops/live — the dispatch board
@@ -684,6 +689,97 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       });
 
       return { flag: updated };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/admin/identities/:id/deletion
+  //
+  // The staff path to schedule deletion of a customer's account. Separate from
+  // the self-service route: its own permission (`admin:account:delete`, which
+  // is step-up-gated), a mandatory reason, and an on-behalf-of audit entry so
+  // it can never be exercised silently.
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/admin/identities/:id/deletion',
+    {
+      preHandler: requirePermission('admin:account:delete'),
+      config: { rateLimit: { max: 20, timeWindow: '60 minutes' } },
+    },
+    async (request) => {
+      const actor = actorOf(request);
+      const body = z
+        .object({ reason: z.string().trim().min(10).max(1000) })
+        .parse(request.body);
+
+      const target = await prisma.identity.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, customer: { select: { id: true } } },
+      });
+      // A 404 whether the identity is missing or is not a customer — no oracle
+      // for which ids exist.
+      if (!target || !target.customer) throw ApiError.notFound();
+
+      const view = await requestAccountDeletion(prisma, {
+        identityId: target.id,
+        customerId: target.customer.id,
+        requestedBy: actor.identityId,
+        onBehalfOf: target.id,
+        coolingOffDays: config.ACCOUNT_DELETION_COOLING_OFF_DAYS,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'] ?? null,
+        reason: body.reason,
+        requestId: request.id,
+      });
+
+      return {
+        deletion: {
+          status: view.status,
+          requestedAt: view.requestedAt,
+          scheduledPurgeAt: view.scheduledPurgeAt,
+          cancellable: view.cancellable,
+        },
+      };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // DELETE /v1/admin/identities/:id/deletion  — cancel on the customer's behalf
+  // -------------------------------------------------------------------------
+  app.delete<{ Params: { id: string } }>(
+    '/v1/admin/identities/:id/deletion',
+    { preHandler: requirePermission('admin:account:delete') },
+    async (request) => {
+      const actor = actorOf(request);
+
+      const target = await prisma.identity.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, customer: { select: { id: true } } },
+      });
+      if (!target || !target.customer) throw ApiError.notFound();
+
+      const view = await cancelAccountDeletion(prisma, {
+        identityId: target.id,
+        cancelledBy: actor.identityId,
+        onBehalfOf: target.id,
+        ipAddress: request.ip,
+        userAgent: request.headers['user-agent'] ?? null,
+        requestId: request.id,
+      });
+
+      return { deletion: { status: view.status, cancelledAt: view.cancelledAt } };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /v1/admin/identities/:id/deletion
+  // -------------------------------------------------------------------------
+  app.get<{ Params: { id: string } }>(
+    '/v1/admin/identities/:id/deletion',
+    { preHandler: requirePermission('admin:user:read') },
+    async (request) => {
+      const view = await getAccountDeletion(prisma, request.params.id);
+      return { deletion: view };
     },
   );
 }

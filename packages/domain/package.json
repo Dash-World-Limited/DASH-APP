@@ -17,7 +17,8 @@
     "./ports": "./src/ports/index.ts",
     "./envelope": "./src/envelope/index.ts",
     "./mfa": "./src/mfa/index.ts",
-    "./retention": "./src/retention/index.ts"
+    "./retention": "./src/retention/index.ts",
+    "./account": "./src/account/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
