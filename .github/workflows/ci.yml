@@ -80,6 +80,9 @@ jobs:
 
       # Named explicitly so a failure in the money or authorization suites is
       # obvious in the job list rather than buried in a single "Test" step.
+      # `npm test` above already runs these. Naming them again is deliberate:
+      # if someone narrows the default test glob, this step still fails, and the
+      # list documents which suites are considered non-negotiable.
       - name: Business-critical suites
         run: >
           npx vitest run
@@ -88,6 +91,13 @@ jobs:
           apps/api/src/__tests__/dispatch.test.ts
           apps/api/src/__tests__/finance.test.ts
           apps/api/src/__tests__/staff.test.ts
+          apps/api/src/__tests__/auth.test.ts
+          apps/api/src/__tests__/mfa.test.ts
+          apps/api/src/__tests__/payout.test.ts
+          apps/api/src/__tests__/retention.test.ts
+          apps/api/src/__tests__/webhooks.test.ts
+          apps/api/src/__tests__/catalog.test.ts
+          apps/api/src/__tests__/config.test.ts
 
   fresh-boot:
     name: Fresh database boot and seed
@@ -121,6 +131,21 @@ jobs:
       # success, so a green seed is also a money-integrity check.
       - name: Confirm the seed produced a balanced ledger
         run: node scripts/ci-verify-seed.mjs
+
+      # The retention job is scheduled infrastructure that does not exist yet,
+      # so this is the only place it runs against a real database. Dry run:
+      # CI asserts it executes and reports, never that it deletes.
+      - name: Retention job dry run
+        env:
+          DATABASE_URL: file:./dev.db
+          JWT_ACCESS_SECRET: ci-only-access-secret-not-used-for-anything-real
+          JWT_REFRESH_SECRET: ci-only-refresh-secret-not-used-for-anything-real
+          # No ENCRYPTION_KEY, and MFA off to match: config validates key
+          # material whenever it is supplied, and a made-up value would fail
+          # that check rather than exercising the job. Retention encrypts
+          # nothing, so it needs no key.
+          MFA_ENABLED: 'false'
+        run: npm run maintenance:retention -- --dry-run
 
   build:
     name: Production build
@@ -183,3 +208,104 @@ jobs:
       # not stop a security fix from shipping.
       - name: Audit
         run: npm audit --audit-level=high
+
+  # ---------------------------------------------------------------------------
+  # Static analysis
+  #
+  # CodeQL rather than a third-party scanner: it is first-party, needs no token,
+  # and its TypeScript queries cover the injection and data-flow classes that
+  # matter for an API. It is not a substitute for the adversarial tests in the
+  # suite — it finds different things.
+  # ---------------------------------------------------------------------------
+  sast:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      # Required to upload results to the Security tab.
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+
+      - uses: github/codeql-action/analyze@v3
+
+  # ---------------------------------------------------------------------------
+  # Dependency review
+  #
+  # Pull requests only — it diffs the manifest against the base branch, so it
+  # has nothing to compare on a push. Blocks a PR that introduces a dependency
+  # with a known high-severity advisory, which `npm audit` would only catch
+  # after the fact.
+  # ---------------------------------------------------------------------------
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  # ---------------------------------------------------------------------------
+  # Repository hygiene
+  #
+  # Catches the class of mistake that gitleaks does not: a file that contains no
+  # recognisable secret pattern but still should never have been committed — a
+  # populated .env, a SQLite database with real rows, a build directory, an
+  # upload someone tested with.
+  # ---------------------------------------------------------------------------
+  hygiene:
+    name: No committed artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse committed environment files, databases, and build output
+        run: |
+          set -euo pipefail
+
+          # `.env.example` is expected and carries only placeholders.
+          offenders=$(git ls-files             | grep -E '(^|/)\.env$|(^|/)\.env\.(local|production|development)$|\.db$|\.sqlite3?$|(^|/)\.next/|(^|/)dist/|(^|/)\.storage/|\.log$'             || true)
+
+          if [ -n "$offenders" ]; then
+            echo "These files must never be committed:"
+            echo "$offenders"
+            exit 1
+          fi
+
+          echo "No environment files, databases, build output, or logs are tracked."
+
+      - name: Confirm .env.example holds only placeholders
+        run: |
+          set -euo pipefail
+
+          # A real 32-byte base64 key or a long random-looking secret in the
+          # example file means someone pasted their own by mistake.
+          if grep -qE '^(ENCRYPTION_KEY|JWT_[A-Z_]+SECRET)=' .env.example; then
+            if ! grep -qE '^(ENCRYPTION_KEY|JWT_[A-Z_]+SECRET)=replace-me' .env.example; then
+              echo ".env.example must use replace-me placeholders, not real values."
+              grep -nE '^(ENCRYPTION_KEY|JWT_[A-Z_]+SECRET)=' .env.example
+              exit 1
+            fi
+          fi
+
+          echo ".env.example contains placeholders only."

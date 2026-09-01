@@ -364,8 +364,11 @@ Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
 
 ### Medium
 
-1. **No container or infrastructure scanning, no SAST, no DAST.** Dependency
-   and secret scanning run in CI; the rest do not exist.
+1. **No DAST, and no container or infrastructure scanning.** CodeQL (SAST),
+   dependency review, `npm audit`, and `gitleaks` all run in CI. There are no
+   container or IaC files to scan yet. Authenticated DAST needs a deployed
+   staging target, which does not exist — the handoff plan is in
+   `docs/RUNBOOKS.md`.
 2b. **The public catalogue and webhook replay paths are script-only.**
    `/v1/vendors`, `/v1/search`, and the webhook amount-mismatch and replay
    branches are covered by `scripts/smoke.mjs`, which needs a running server and
