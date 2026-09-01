@@ -15,7 +15,7 @@
     "dev:api": "npm run dev --workspace @dash/api",
     "dev:web": "npm run dev --workspace @dash/web",
     "build": "npm run build --workspaces --if-present",
-    "typecheck": "tsc --build --verbose",
+    "typecheck": "node scripts/typecheck.mjs",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",

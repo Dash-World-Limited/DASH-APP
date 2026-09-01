@@ -63,12 +63,10 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Calls the same script a developer runs locally, so the gating command
+      # and the documented command cannot drift apart.
       - name: Typecheck
-        run: |
-          npx tsc --noEmit -p packages/domain/tsconfig.json
-          npx tsc --noEmit -p packages/db/tsconfig.json
-          npx tsc --noEmit -p apps/api/tsconfig.json
-          npx tsc --noEmit -p apps/web/tsconfig.json
+        run: npm run typecheck
 
       # `npm test` now includes the business API integration suites — orders,
       # vendor, dispatch/rider, finance/ledger, and staff authorization. They
