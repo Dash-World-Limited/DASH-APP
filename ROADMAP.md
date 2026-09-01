@@ -2,9 +2,10 @@
 
 Where DASH APP is and what comes next, in the order it should happen.
 
-Current tag: **`v0.1.0-mvp`** — local MVP, complete order lifecycle, no external
-integration. Phase 1 (CI and production-grade authentication) has landed on
-`main` since that tag.
+Latest tag: **`v0.2.0-auth`**. Considerable work has landed on `master` since —
+business API coverage, administrator MFA, encryption at rest, retention,
+security scanning, and observability seams — and is deliberately **untagged**
+because one requested milestone (account deletion and export) is not built.
 
 The ordering is not arbitrary. Each phase removes a blocker for the next, and
 the two hard gates below exist because getting them wrong is expensive to undo.
@@ -76,17 +77,41 @@ a fresh step-up that revokes every session. 72 new tests.
 
 ---
 
-## Phase 2 — Test depth and observability
+## Done — Phase 2: test depth and observability
 
-- Extend API integration coverage beyond auth: ordering, dispatch, vendor, and
-  finance routes. Auth is covered; the rest still rely on the script suites.
-- Adversarial suite as automated tests: IDOR sweeps, privilege escalation, mass
-  assignment, rate-limit bypass, race conditions, webhook replay.
-- Playwright journeys for the customer, vendor, and ops surfaces.
-- Structured request/response metrics, health checks, an error-tracking adapter.
-- Accessibility checks in CI (axe), responsive viewport checks.
-- Container and infrastructure scanning; SAST and DAST. (Dependency and secret
-  scanning already run in CI.)
+Shipped, except where noted.
+
+- ✅ API integration coverage for every business and public endpoint — ordering,
+  vendor, dispatch, rider, finance, staff, catalogue, search, and webhooks. No
+  behaviour depends on the script suites alone any more.
+- ✅ Adversarial cases as automated tests: IDOR sweeps, privilege escalation,
+  cross-tenant probes, rate-limit behaviour, webhook replay and concurrent
+  delivery, MFA replay, and retention concurrency.
+- ✅ Liveness/readiness split, an error-reporting port, and a metrics port —
+  all with console implementations and redaction, no vendor selected.
+- ✅ SAST (CodeQL), dependency review, and a repository-hygiene job, alongside
+  the existing secret scan and dependency audit.
+- ❌ Playwright journeys for the web surfaces — not started.
+- ❌ Accessibility checks in CI — not started.
+- ❌ DAST — needs a deployed staging target. Handoff plan in `docs/RUNBOOKS.md`.
+- ❌ Container and IaC scanning — no container or IaC files exist to scan.
+
+## Done — administrator MFA, encryption at rest, and retention
+
+- ✅ TOTP enforced for all seven staff roles, with encrypted secrets, replay
+  protection, single-use recovery codes, and step-up-gated disable.
+- ✅ AES-256-GCM envelope with key-version rotation, protecting TOTP secrets and
+  vendor payout details, each bound to its owner.
+- ✅ Retention policy and job — delete, anonymise, or retain, with dry run,
+  batching, convergence, and concurrency safety. **Nothing schedules it yet.**
+- ✅ Runbooks: incident response, secret inventory, backup/restore, environment
+  separation, readiness checklist, rollback criteria, alert severities.
+
+## Next — account deletion and data export
+
+The one requested milestone still outstanding. Specification and the reason it
+must not be shipped partially are in
+[`HANDOFF.md`](HANDOFF.md#what-is-not-done).
 
 ---
 

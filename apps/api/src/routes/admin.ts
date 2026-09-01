@@ -130,23 +130,24 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
       assertTransition(order.status as OrderStatus, 'ready', 'ops');
 
-      await prisma.$transaction(async (tx) => {
+      const reassignmentEventId = await prisma.$transaction(async (tx) => {
+        // Created first so its id can key the dispatch job below.
+        const event = await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: 'ready',
+            actorType: 'ops',
+            actorId: actor.identityId,
+            reasonCode: body.reasonCode,
+            reason: body.note ?? null,
+          },
+          select: { id: true },
+        });
+
         await tx.order.update({
           where: { id: order.id },
-          data: {
-            status: 'ready',
-            riderId: null,
-            statusEvents: {
-              create: {
-                fromStatus: order.status,
-                toStatus: 'ready',
-                actorType: 'ops',
-                actorId: actor.identityId,
-                reasonCode: body.reasonCode,
-                reason: body.note ?? null,
-              },
-            },
-          },
+          data: { status: 'ready', riderId: null },
         });
 
         if (order.riderId) {
@@ -159,12 +160,32 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
             data: { status: 'withdrawn' },
           });
         }
+
+        return event.id;
       });
 
+      // Keyed on the reassignment itself rather than the clock.
+      //
+      // `Date.now()` here meant every call produced a fresh key, so a
+      // double-clicked reassign enqueued two dispatch jobs and two expiry
+      // sweeps — offers going to more riders than intended, for an order only
+      // one of them can claim. Not a money bug (the claim is an atomic
+      // updateMany guarded on riderId: null), but wasteful and confusing for
+      // the riders who receive a dead offer.
+      //
+      // The event id is unique per real reassignment, so a genuine second
+      // reassignment still dispatches, and the key traces back to the audited
+      // action that caused it.
+      //
+      // Note this does not make the *endpoint* idempotent: two requests create
+      // two events. Request-level double-submit protection would mean requiring
+      // an Idempotency-Key header here, as order creation does. Recorded as an
+      // open item rather than changed silently, because it alters the contract
+      // for every existing ops client.
       await queue.enqueue({
         name: 'dispatch.find_rider',
         payload: { orderId: order.id },
-        idempotencyKey: `dispatch_${order.id}_reassign_${Date.now()}`,
+        idempotencyKey: `dispatch_${order.id}_reassign_${reassignmentEventId}`,
       });
 
       await writeAudit(prisma, {

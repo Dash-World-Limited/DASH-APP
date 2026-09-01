@@ -153,6 +153,51 @@ Two properties worth naming because they are easy to get backwards:
 
 ---
 
+## Authentication and MFA
+
+| Endpoint | Method | Auth | Notes | Cov |
+|---|---|---|---|---|
+| `/v1/auth/login` | POST | none | Staff receive an MFA challenge, **not** a session | ✅ |
+| `/v1/auth/otp/request` | POST | none | Identical response whether or not the number exists | ✅ |
+| `/v1/auth/otp/verify` | POST | none | Single-use, attempt-limited | ✅ |
+| `/v1/auth/refresh` | POST | refresh cookie + CSRF | Rotates; reuse revokes the family | ✅ |
+| `/v1/auth/logout` | POST | session | | ✅ |
+| `/v1/auth/logout-everywhere` | POST | session | | ✅ |
+| `/v1/auth/me` | GET | session | | ✅ |
+| `/v1/auth/sessions` | GET | session | Own sessions only | ✅ |
+| `/v1/auth/sessions/:id` | DELETE | session | Own sessions only; 404 otherwise | ✅ |
+| `/v1/auth/mfa` | GET | session | Status only — never the secret | ✅ |
+| `/v1/auth/mfa/enrol/start` | POST | challenge **or** session | Refuses if already enrolled | ✅ |
+| `/v1/auth/mfa/enrol/confirm` | POST | challenge **or** session | Proves possession; issues recovery codes | ✅ |
+| `/v1/auth/mfa/verify` | POST | challenge | TOTP or one recovery code, never both | ✅ |
+| `/v1/auth/mfa/step-up` | POST | session | | ✅ |
+| `/v1/auth/mfa/recovery/regenerate` | POST | session + step-up | Voids all unused codes | ✅ |
+| `/v1/auth/mfa/disable` | POST | session + step-up | Revokes every session | ✅ |
+
+The eight endpoints above with `none` or `challenge` auth are the only
+state-changing routes in the API without a `preHandler` guard, and each is
+deliberately so: they *are* the authentication surface. The webhook is the ninth,
+authenticated by signature. A script rebuilds this list from the route code
+during audit; nothing else was found unguarded.
+
+## Vendor payout details
+
+| Endpoint | Method | Permission | Scope | Cov |
+|---|---|---|---|---|
+| `/v1/vendor/payout-details` | GET | `vendor:settlement:read` | own vendor; masked to last four digits | ✅ |
+| `/v1/vendor/payout-details` | PUT | `vendor:payout:write` **+ step-up** | own vendor; owner only | ✅ |
+
+There is deliberately **no endpoint that reads the account number in clear**, and
+no permission that would allow one. Decryption happens server-side in the
+settlement path only.
+
+## Health
+
+| Endpoint | Method | Auth | Notes |
+|---|---|---|---|
+| `/health` | GET | none | Liveness. Touches no dependency, so a database blip cannot trigger a restart loop. |
+| `/health/ready` | GET | none | Readiness. Dependency name and status only — no provider, host, version, or failure reason. 503 when not ready. |
+
 ## Coverage summary
 
 | Area | Automated integration tests |
@@ -164,8 +209,11 @@ Two properties worth naming because they are easy to get backwards:
 | Staff / ops / admin | 29 |
 | Authentication | 41 |
 | Administrator MFA | 51 |
+| Vendor payout details | 24 |
 | Public catalogue and search | 30 |
 | Payment webhooks | 24 |
+| Retention job | 31 |
+| Observability and health | 22 |
 | Config guards | 40 |
 | Rate limiting | 4 |
 

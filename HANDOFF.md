@@ -1,4 +1,4 @@
-# Handoff — `v0.1.0-mvp`
+# Handoff
 
 Everything needed to pick this up cold. Read this first, then
 [`ARCHITECTURE.md`](ARCHITECTURE.md), then
@@ -6,36 +6,43 @@ Everything needed to pick this up cold. Read this first, then
 
 ---
 
-## Milestone reference
+## Where this is
+
+**Code-level pre-integration readiness.** The platform runs end to end on one
+machine, with administrator MFA, encryption at rest, retention, and observability
+seams in place. It has never been deployed, and no adapter has been exercised
+against a live provider.
+
+It is **not** production ready. That phrase requires deployment, observability
+wired to something real, backup and restore rehearsed, incident response
+practised, and external verification — none of which has happened.
 
 | | |
 |---|---|
-| **Latest tag** | `v0.2.0-auth` |
-| **Commit** | `ad2e81bdde5504cbf688e11a34ffe5390cceeeda` (short: `ad2e81b`) |
-| **Date** | 2026-08-31 |
-| **Branch** | `main` |
-| **Scope** | CI and production-grade authentication on top of the MVP. Still no live integration, never deployed. |
+| **Branch** | `master` |
+| **Latest tag** | `v0.2.0-auth` (`ad2e81b`) — this work is **untagged**, see below |
+| **Date** | 2026-09-01 |
 
-| Previous tag | |
-|---|---|
-| **Tag** | `v0.1.0-mvp` |
-| **Commit** | `6d536234828ac4f362764a79f8a6488ca305fa3d` (short: `6d53623`) |
-| **Date** | 2026-08-30 |
-| **Scope** | Local MVP. Complete order lifecycle, no external integration. |
+### Milestones on `master` since `v0.2.0-auth`
 
-> The hash is recorded here by the commit *after* the tag — a commit cannot
-> contain its own hash. The tag points at `6d53623`; this line just saves you
-> the lookup.
+| | Commit | What |
+|---|---|---|
+| — | `f7078b5` | Business API integration coverage and BOLA audit |
+| — | `33ef023` | Fix the typecheck script, which never ran |
+| A | `3640d52` | Enforce real administrator MFA |
+| B | `960e6be` | Automate the last script-only endpoint coverage |
+| D | `efa2d29` | Encrypt vendor payout details at rest |
+| C | `3d7ac5b` | Privacy retention and session housekeeping |
+| F | `d25eb22` | Security scanning in CI and operational runbooks |
+| G | `8839312` | Observability seams without a vendor |
+
+**No new tag has been created.** Milestone E (account deletion and data export)
+was requested and is not built, so tagging this as the completed set would be a
+false claim. See *What is not done* below.
 
 ```bash
-git tag -l -n1                           # both milestones
-git show v0.2.0-auth --stat | head -30   # what the latest one contains
-
-# These are ANNOTATED tags, so a bare rev-parse returns the tag OBJECT hash,
-# not the commit. The ^{commit} suffix dereferences it.
-git rev-parse v0.2.0-auth^{commit}       # ad2e81b… — the commit
-git rev-parse v0.1.0-mvp^{commit}        # 6d53623… — the commit
-git rev-parse v0.2.0-auth                # the tag object, not what you want
+git log --oneline v0.2.0-auth..HEAD    # everything since the last tag
+git tag -l -n1                         # existing tags
 ```
 
 ---
@@ -103,7 +110,7 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).t
 | `npm run dev` | API on `:4000` and web on `:3000`, prefixed output, Ctrl-C stops both |
 | `npm run dev:api` | API only |
 | `npm run dev:web` | Web only |
-| `npm test` | 268 unit tests |
+| `npm test` | 769 tests — domain units and API integration suites |
 | `npm run lint` | ESLint across all workspaces |
 | `npm run typecheck` | `tsc --build` across project references |
 | `npm run db:seed` | Wipe and reseed (safe to re-run; refuses in production) |
@@ -113,15 +120,21 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).t
 ### Verification
 
 ```bash
-npm test                          # 268 unit tests
+npm test                          # 769 tests, no server needed
+npm run typecheck                 # all four workspaces
+npm run lint
 npx vitest run --coverage packages/domain
+
+npm run maintenance:retention -- --dry-run   # retention, reports only
+
 npm run dev:api                   # then, in a second terminal:
-node scripts/smoke.mjs            # 48 checks — journey + authorization probes
-node scripts/dispatch-check.mjs   # 20 checks — dispatch loop through PIN delivery
+node scripts/smoke.mjs            # 49 checks
+node scripts/dispatch-check.mjs   # 21 checks
 ```
 
-Both scripts need a **running API and a seeded database**. They are not
-automated tests and are not wired into CI — that is Phase 1 work.
+The two scripts need a **running API and a seeded database**. They are
+supplementary — every business and public endpoint also has an automated
+integration suite that runs in `npm test` and in CI.
 
 ### Stopping a stuck server (Windows)
 
@@ -133,28 +146,50 @@ Get-NetTCPConnection -LocalPort 4000 -State Listen | Select-Object -ExpandProper
 
 ---
 
-## Test totals at this tag
+## Verification state
 
-At the `v0.1.0-mvp` tag: 268 unit tests.
+Everything below was run on this machine at this commit.
 
-On `main` today, after Phase 1:
+| Check | Result |
+|---|---|
+| `npm test` | **769 passing**, 25 files, 0 failing |
+| `npm run typecheck` | 4 projects clean |
+| `npm run lint` | clean |
+| `npm run build` | web app builds, 11 routes |
+| Domain coverage | **94.32%** statements · 94.33% branches · 95.28% functions |
+| `node scripts/smoke.mjs` | 49/49 |
+| `node scripts/dispatch-check.mjs` | 21/21 |
+| `npm run maintenance:retention -- --dry-run` | runs, reports, writes nothing |
 
-| Suite | Count | Result | Needs |
-|---|---|---|---|
-| `npm test` | **340** across 11 files | all passing | nothing |
-| - domain units | 268 | | |
-| - API integration | 72 | | |
-| Smoke (`scripts/smoke.mjs`) | 48 checks | all passing | running API + seed |
-| Dispatch (`scripts/dispatch-check.mjs`) | 20 checks | all passing | running API + seed |
+Coverage thresholds are enforced in `vitest.config.ts` at 80/75/80/80.
 
-The API integration tests need no running server: they build a real Fastify
-instance and drive it with `inject()` against a temporary SQLite file.
+### API integration suites
 
-**Domain coverage:** 93.98% statements · 94.97% branches · 94.25% functions.
-Thresholds enforced in `vitest.config.ts` at 80/75/80/80.
+All run under `npm test` with no server to start — each builds a real Fastify
+instance and drives it with `inject()` against a temporary SQLite file.
 
-Lint clean. Typecheck clean across all four workspaces. Web production build
-succeeds (11 routes, ~113 kB first load).
+| Suite | Tests |
+|---|---|
+| `mfa` | 51 |
+| `auth` | 41 |
+| `config` | 40 |
+| `dispatch` | 40 |
+| `orders` | 31 |
+| `retention` | 31 |
+| `vendor` | 31 |
+| `catalog` | 30 |
+| `staff` | 29 |
+| `finance` | 28 |
+| `payout` | 24 |
+| `webhooks` | 24 |
+| `observability` | 22 |
+| `ratelimit` | 4 |
+
+The remainder are domain unit tests in `packages/domain`.
+
+`scripts/smoke.mjs` and `scripts/dispatch-check.mjs` still need a running server
+and a full seed. They are **supplementary** now — no behaviour depends on them
+alone.
 
 ---
 
@@ -182,6 +217,20 @@ boot with that flag set.
 | Vendor owner | `suya-republic@dashapp.test` |
 | Vendor owner | `freshcart-grocers@dashapp.test` |
 | Vendor owner | `carewell-pharmacy@dashapp.test` |
+
+> **Staff sign-in now needs a second factor.** Every seeded staff account shares
+> one fixed, fictional TOTP secret, printed by `npm run db:seed`:
+>
+> ```
+> JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP
+> ```
+>
+> Add it to any authenticator app once as "DASH APP (dev)" and every staff
+> account works. Vendor owners are **not** MFA-required and sign in with a
+> password alone.
+>
+> Signing in twice within the same 30 seconds fails by design — a TOTP step is
+> accepted once. Wait for the next code.
 
 ### OTP accounts
 
@@ -286,41 +335,185 @@ has just become decoration.
 
 ---
 
-## Known limitations at this tag
+## What is not done
 
-Full list in [`docs/PROGRESS.md`](docs/PROGRESS.md#known-limitations-honest-list).
-The ones that will bite first:
+### Requested and not built
 
-### Blocking production
-- **Admin MFA is modelled, not enforced.** No TOTP flow exists; step-up reuses
-  the OTP challenge, so a staff account is protected by a password and a phone
-  rather than a true second factor.
-- **API integration tests cover authentication only.** Ordering, dispatch,
-  vendor, and finance still depend on the script suites, which are not part of
-  the CI gate.
-- **Branch protection is not enabled** on `main`. CI runs, but nothing yet
-  *requires* it to pass - that is a repository setting, not a code change.
+**Milestone E — account deletion and data export.** Not started. This is the
+one requested item that is missing, and it is missing because it was the last
+in the queue rather than because it is blocked.
 
-### Operational
-- **In-memory queue loses jobs on restart.** A second API instance would run its
-  own dispatch worker and double-offer, so this blocks horizontal scale.
-  Correctly rejected in production by config.
-- **SQLite is dev-only.** No concurrent writers, no PostGIS. The geo path tests a
-  city's zones in process — fine at Lagos scale (tens), not national.
-- **No websockets.** Tracking, the vendor queue, and the ops board poll.
+What it needs, so it can be picked up cleanly:
+
+- A `deletionRequestedAt → scheduled → cancelled | completed` state machine on
+  `Identity` (the column exists and is unused).
+- Fresh step-up before a request is accepted, a cooling-off window, and a
+  cancellation path.
+- Session revocation at finalisation.
+- **Anonymise, never delete, anything the ledger references.** Orders, payments,
+  and settlements must survive with stable non-personal ids; only profile fields
+  clear. `packages/domain/src/retention` already models the delete /
+  anonymise / retain distinction and is the right place for the policy.
+- An export request behind fresh authentication, with an expiring single-use
+  download authorisation and a port abstraction so the archive writer can be
+  local in tests and object storage in production.
+- Adversarial tests: IDOR on both request and download, replay, repeated
+  requests, cancellation racing finalisation, concurrent finalisation, and proof
+  that financial records survive.
+
+Do not ship a partial version of this. A deletion flow that half-works on
+records the ledger depends on is worse than none.
+
+### Blocking production — infrastructure, all Codex
+
+- No PostgreSQL/PostGIS, no Redis/BullMQ. The in-memory queue is per-process, so
+  a second API instance would run its own dispatch worker and double-offer.
+- No secret store, no backups, no restore rehearsal.
+- The retention job is implemented and tested but **nothing schedules it**.
+- Error reporting and metrics are console implementations; nothing is wired to a
+  real destination.
+- No branch protection on `master` — a repository setting, not committable.
+
+### Blocking production — integrations, all Codex
+
+Every adapter is offline. Payments, maps, SMS, email, push, and storage have
+each never spoken to a real provider. **An adapter is not an integration until
+it has been run against a sandbox with a signature test, an idempotency test,
+and a failure-path test.**
+
+### Known gaps in what exists
+
+- **`POST /v1/ops/orders/:id/reassign` is not request-idempotent.** Two requests
+  create two reassignment events. The dispatch job keyed off each is now
+  deterministic (fixed during this audit), so the damage is bounded to an extra
+  offer round, and the atomic order claim means only one rider can ever win.
+  Making the endpoint itself idempotent means requiring an `Idempotency-Key`
+  header, which changes the contract for every existing ops client — noted
+  rather than changed silently.
 - **Rider pay is estimated at reservation.** No rider exists when payment is
   captured, so the reservation assumes a motorcycle and a zero approach leg. The
   true-up on delivery corrects it, but the reserved figure is an estimate.
+- **No websockets.** Tracking, the vendor queue, and the ops board poll.
+- **SQLite is development-only.** No concurrent writers, no PostGIS. The geo path
+  tests a city's zones in process — fine at Lagos scale, not national.
+- **`packages/db` reads `process.env` directly** in two places (the Prisma log
+  level, and the seed's encryption key). It cannot import the API's config
+  without a circular dependency. Both reads are narrow and neither bypasses a
+  production guard.
 
 ### Modelled but not built
-Admin MFA (TOTP), vendor/rider onboarding flows, catalogue management UI, support
-agent workspace, finance settlement console, ratings write path, account deletion
-and export, batched dispatch, scheduled orders, package delivery, events
-ticketing.
+
+Vendor and rider onboarding flows, catalogue management UI, support agent
+workspace, finance settlement console, ratings write path, batched dispatch,
+scheduled orders, package delivery, events ticketing.
 
 ### Legal
-Nigerian data-protection (NDPA 2023) and consumer-law obligations have **not**
-been reviewed by counsel. No document in this repository is legal advice.
+
+NDPA 2023 and Nigerian consumer-law obligations have **not** been reviewed by
+counsel. Every retention period is an engineering default, not a compliance
+claim. No document in this repository is legal advice.
+
+---
+
+## CODEX START HERE
+
+The shortest correct path from a clean clone to running, inspecting, and
+extending this.
+
+### 1. Run it
+
+```bash
+npm ci
+cp .env.example .env
+```
+
+Then put three real values in `.env` — two **different** JWT secrets and one
+encryption key. The API refuses to start otherwise, deliberately:
+
+```bash
+node -e "console.log('JWT_ACCESS_SECRET=' + require('crypto').randomBytes(48).toString('base64url'))"
+node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).toString('base64url'))"
+node -e "console.log('ENCRYPTION_KEY=' + require('crypto').randomBytes(32).toString('base64'))"
+```
+
+```bash
+npm run db:generate && npm run db:push && npm run db:seed
+npm run dev
+```
+
+Web on `:3000`, API on `:4000`. Sign in as `admin@dashapp.test` /
+`DashDev!2026`, then supply a TOTP code from the dev secret above.
+
+### 2. Confirm the state matches this document
+
+```bash
+npm test && npm run typecheck && npm run lint && npm run build
+node scripts/smoke.mjs           # with the API running
+node scripts/dispatch-check.mjs
+```
+
+If any of that disagrees with *Verification state*, trust the run and not the
+document.
+
+### 3. Read, in this order
+
+1. [`ARCHITECTURE.md`](ARCHITECTURE.md) — the shape and the five rules
+2. [`SECURITY.md`](../SECURITY.md) — what is defended and what is open
+3. [`docs/API_MATRIX.md`](docs/API_MATRIX.md) — every endpoint, its permission,
+   its ownership rule, its coverage
+4. [`docs/RUNBOOKS.md`](docs/RUNBOOKS.md) — everything marked **[CODEX]** is
+   yours
+5. [`docs/KEY_MANAGEMENT.md`](docs/KEY_MANAGEMENT.md) and
+   [`docs/RETENTION.md`](docs/RETENTION.md) — before touching keys or the
+   retention schedule
+
+### 4. Infrastructure, in dependency order
+
+1. **PostgreSQL + PostGIS.** Change the datasource, run `prisma migrate`, and
+   write the PostGIS `GeoPort`. The schema was authored for this (ADR-0003) — no
+   SQLite-only features, geometry in ordinary columns.
+2. **Secret store.** Before anything else touches a real key. See
+   `KEY_MANAGEMENT.md`, especially that the encryption key must be backed up
+   *separately* from the database.
+3. **Redis + BullMQ.** Replaces `MemoryQueueAdapter`. Until this exists you
+   cannot run two API instances — both would run a dispatch worker and
+   double-offer.
+4. **Backups and a rehearsed restore.** The restore procedure in `RUNBOOKS.md`
+   has never been executed.
+5. **Schedule the retention job.** Daily, off-peak, single concurrency, alert on
+   non-zero exit.
+6. **Wire the observability ports.** `ErrorReportPort` and `MetricsPort` in
+   `apps/api/src/observability` have console implementations; write real ones.
+   Everything is already scrubbed before it leaves.
+
+### 5. Sandbox integrations, in this order
+
+Payments first — everything else is a nicety by comparison.
+
+For each provider, the adapter interface is in
+`packages/domain/src/ports/index.ts` and the offline implementation in
+`apps/api/src/adapters/index.ts`. Write the real one beside it and select it by
+config. **Do not change a call site.**
+
+Before calling any of them integrated, it needs:
+
+- a signature/authentication test,
+- an idempotency test (send the same thing twice, assert one effect),
+- a failure-path test (provider down, provider disagrees, malformed response).
+
+`apps/api/src/__tests__/webhooks.test.ts` is the template — it already covers
+signature, replay, concurrent delivery, and provider-vs-record disagreement
+against the mock.
+
+### 6. Do not
+
+- Do not weaken a production boot guard to make a deployment start. They are
+  tested, and each one prevents a specific incident.
+- Do not add ledger, payment, order, settlement, or audit records to the
+  retention job.
+- Do not build a plaintext read endpoint for vendor bank details. Decryption is
+  server-side, for the payout job only.
+- Do not call an adapter an integration until it has run against a sandbox.
 
 ---
 
