@@ -331,9 +331,28 @@ export function registerErrorHandler(app: FastifyInstance): void {
 
     if (translated.statusCode >= 500) {
       request.log.error(logPayload, 'request failed');
+
+      // Only 5xx reaches the error reporter. A 403 or a 404 is the system
+      // working, and reporting those would bury the failures that matter under
+      // routine authorization noise.
+      request.services?.errors?.report(error, {
+        requestId,
+        route: `${request.method} ${request.routeOptions?.url ?? request.url}`,
+        statusCode: translated.statusCode,
+        identityId: request.actor?.identityId,
+        extra: { code: translated.code },
+      });
     } else {
       request.log.warn(logPayload, 'request rejected');
     }
+
+    // Counted by status class and route pattern, never by URL: a path carrying
+    // an order id would create one time series per order.
+    request.services?.metrics?.increment('http.response', {
+      status: translated.statusCode,
+      code: translated.code,
+      route: request.routeOptions?.url ?? 'unmatched',
+    });
 
     const body: ErrorBody = {
       error: {

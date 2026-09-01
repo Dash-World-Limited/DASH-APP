@@ -25,6 +25,7 @@ import type {
   StoragePort,
 } from '@dash/domain/ports';
 import type { Keyring } from '@dash/domain/envelope';
+import type { ErrorReportPort, MetricsPort } from '../observability/index.js';
 import type { Config } from '../config.js';
 import { bearerFrom, verifyAccessToken } from '../auth/tokens.js';
 import { loadActor } from '../auth/sessions.js';
@@ -37,6 +38,10 @@ export interface Services {
    * MFA disabled; `config.ts` refuses that combination in production.
    */
   keyring: Keyring | null;
+  /** Where unhandled failures go. Console by default; never null. */
+  errors: ErrorReportPort;
+  /** Operational counters and timings. Console by default; never null. */
+  metrics: MetricsPort;
   prisma: PrismaClient;
   payments: PaymentPort;
   geo: GeoPort;

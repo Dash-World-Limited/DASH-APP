@@ -311,6 +311,10 @@ Controls actually exercised by an automated check, not merely written:
 | The retention job never touches ledger, audit, order, or webhook records | `retention.test.ts` |
 | Old rider locations are coarsened, converge, and survive concurrent runs | `retention.test.ts` |
 | Retention output and audit entries contain counts, never rows | `retention.test.ts` |
+| Readiness discloses dependency status but no provider, host, or secret | `observability.test.ts` |
+| Liveness stays up when the database is unreachable | `observability.test.ts` |
+| Credentials, personal data, and coordinates never reach an error tracker | `observability.test.ts` |
+| Metrics tags carry no ids or personal data | `observability.test.ts` |
 | Redirecting settlements needs owner role plus a fresh step-up | `payout.test.ts` |
 | A tampered or wrong-key payout record fails rather than decrypting | `payout.test.ts` |
 | A record under a retired key still opens and is flagged for rotation | `payout.test.ts` |

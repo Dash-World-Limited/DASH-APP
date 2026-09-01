@@ -214,7 +214,7 @@ async function anonymiseRiderLocations(
   // half the batch marked anonymised while still holding precise coordinates.
   await prisma.$transaction(async (tx) => {
     for (const row of due) {
-      await tx.riderLocation.updateMany({
+      const result = await tx.riderLocation.updateMany({
         // The `anonymisedAt: null` guard makes a concurrent run a no-op for any
         // row the other has already taken, rather than a double write.
         where: { id: row.id, anonymisedAt: null },
@@ -229,7 +229,11 @@ async function anonymiseRiderLocations(
           anonymisedAt: new Date(),
         },
       });
-      changed += 1;
+      // Count rows this run actually changed, not iterations. When two runs
+      // race, both read the same batch but only one `updateMany` per row
+      // matches — so counting attempts would report each row twice and make
+      // the aggregate exceed what exists.
+      changed += result.count;
     }
   });
 

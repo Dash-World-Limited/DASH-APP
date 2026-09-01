@@ -23,6 +23,11 @@ import {
 } from './adapters/index.js';
 import { buildKeyring, isEncryptionConfigured, loadConfig, type Config } from './config.js';
 import { registerContext, type Services } from './http/context.js';
+import {
+  checkDependency,
+  ConsoleErrorReporter,
+  ConsoleMetrics,
+} from './observability/index.js';
 import { assertCsrf, assertSecureCookieConfig, requiresCsrf } from './auth/cookies.js';
 import { registerErrorHandler } from './http/errors.js';
 import { registerAuthRoutes } from './routes/auth.js';
@@ -59,6 +64,12 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     push: overrides.push ?? new ConsolePushAdapter(quiet),
     storage: overrides.storage ?? new LocalStorageAdapter(config.STORAGE_LOCAL_DIR),
     queue: overrides.queue ?? new MemoryQueueAdapter(),
+    // Stacks are withheld in production: a stack can carry interpolated values
+    // from the frame that threw, and those are exactly what must not travel to
+    // a third party.
+    errors:
+      overrides.errors ?? new ConsoleErrorReporter(config.NODE_ENV !== 'production', quiet),
+    metrics: overrides.metrics ?? new ConsoleMetrics(quiet),
   };
 }
 
@@ -185,22 +196,38 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   assertSecureCookieConfig(config);
 
   // --- Health ----------------------------------------------------------------
-  app.get('/health', async () => ({ status: 'ok', time: new Date().toISOString() }));
+  // --- Liveness --------------------------------------------------------------
+  // "Is this process running?" and nothing more. It touches no dependency on
+  // purpose: if liveness failed when the database was briefly unreachable, an
+  // orchestrator would restart every instance during a blip and turn a
+  // recoverable incident into an outage.
+  app.get('/health', async () => ({ status: 'ok' }));
 
-  app.get('/health/ready', async (request) => {
-    // Readiness must actually touch the database. A process that is up but
-    // cannot query is not ready, and saying otherwise sends it live traffic.
-    await request.services.prisma.$queryRaw`SELECT 1`;
-    return {
-      status: 'ready',
-      adapters: {
-        payments: services.payments.providerName,
-        paymentsLive: services.payments.isLive,
-        maps: services.geo.providerName,
-        storage: services.storage.providerName,
-        queue: services.queue.providerName,
-      },
-    };
+  // --- Readiness -------------------------------------------------------------
+  // "Should this instance receive traffic?" This one does check dependencies:
+  // a process that is up but cannot query is not ready, and saying otherwise
+  // sends it live requests it will fail.
+  //
+  // The response names dependencies and their status, and nothing else. It is
+  // unauthenticated, so it must not disclose which providers are configured,
+  // which hosts they live on, what version is deployed, or why a check failed.
+  // A payment provider name is a small thing to leak, but it is free
+  // reconnaissance and there is no reason to give it away.
+  app.get('/health/ready', async (request, reply) => {
+    const checks = [
+      await checkDependency('database', () => request.services.prisma.$queryRaw`SELECT 1`),
+    ];
+
+    const ready = checks.every((check) => check.status === 'ok');
+
+    if (!ready) {
+      // 503 so a load balancer removes this instance rather than a 200 that
+      // says "fine" while every request fails.
+      request.log.error({ checks }, 'readiness check failed');
+      return reply.status(503).send({ ready: false, checks });
+    }
+
+    return { ready: true, checks };
   });
 
   // --- Routes ----------------------------------------------------------------

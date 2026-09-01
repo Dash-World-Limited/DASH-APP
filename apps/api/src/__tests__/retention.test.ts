@@ -344,9 +344,11 @@ describe('rider location history', () => {
       a.outcomes.find((o) => o.rule === 'rider_location_history')!.affected +
       b.outcomes.find((o) => o.rule === 'rider_location_history')!.affected;
 
-    // The `anonymisedAt: null` guard means a row claimed by one run is a no-op
-    // for the other, so the total cannot exceed what existed.
-    expect(total).toBeLessThanOrEqual(20);
+    // Each row is anonymised exactly once — the `anonymisedAt: null` guard means
+    // only one of the two racing `updateMany` calls per row matches, and the
+    // job counts matched rows rather than attempts. So the two runs' counts sum
+    // to precisely what existed, however they split the batch.
+    expect(total).toBe(20);
     expect(await context.prisma.riderLocation.count({ where: { anonymisedAt: null } })).toBe(0);
   });
 

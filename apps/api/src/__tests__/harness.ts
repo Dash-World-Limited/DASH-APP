@@ -21,6 +21,7 @@ import { hashPassword } from '@dash/domain/crypto';
 import { NobleCryptoPlugin, ScureBase32Plugin, TOTP } from 'otplib';
 import { loadConfig, resetConfigCache, type Config } from '../config.js';
 import { buildServer } from '../server.js';
+import type { Services } from '../http/context.js';
 import { CSRF_COOKIE, CSRF_HEADER, REFRESH_COOKIE } from '../auth/cookies.js';
 
 /** Fixed, obviously fake, and only ever used against a throwaway database. */
@@ -126,6 +127,11 @@ function buildTemplateDatabase(): string {
 
 export async function createTestContext(
   envOverrides: Record<string, string> = {},
+  /**
+   * Substituted adapters. Used by the observability suite to capture what would
+   * be sent to an error tracker or metrics backend instead of printing it.
+   */
+  serviceOverrides: Partial<Services> = {},
 ): Promise<TestContext> {
   const template = buildTemplateDatabase();
 
@@ -151,7 +157,7 @@ export async function createTestContext(
 
   resetConfigCache();
   const config = loadConfig({ ...testEnv(databaseUrl), ...envOverrides });
-  const app = await buildServer({ config, services: { prisma } });
+  const app = await buildServer({ config, services: { prisma, ...serviceOverrides } });
   await app.ready();
 
   return {
