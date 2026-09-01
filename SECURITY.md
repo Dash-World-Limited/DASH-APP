@@ -288,6 +288,12 @@ HMAC-shaped digest over key and expiry.
   object-storage read failure returns a retryable `503` leaving the row
   untouched, so an outage never burns the one download. A bad token and a wrong
   id return the same 404.
+- **Expiry cannot evict a live download.** The row stays `ready` while a
+  download runs — the lease marks it busy, not the status — so both expiry paths
+  (the expired-link branch and the maintenance sweep) require that no live lease
+  is held. A reader who took its lease before the deadline finishes and commits;
+  expiry waits for the lease to lapse, which is bounded, so a crashed download
+  cannot pin an archive open.
 - **No archive can be stranded.** Every path that removes one — download,
   expiry, build failure — transitions the row first, then deletes, and clears
   `storageKey` only once the delete is confirmed. A failed delete keeps the key,
@@ -377,6 +383,8 @@ Controls actually exercised by an automated check, not merely written:
 | A failed archive delete is retried by the maintenance orphan sweep | `account-export.test.ts` |
 | A failed delete while expiring a link, or during the expiry sweep, keeps the blob reference and a later sweep cleans it | `account-export.test.ts` |
 | A max-attempt give-up cannot fail a build another worker reclaimed after the read | `account-export.test.ts` |
+| A live download lease blocks expiry and archive deletion; the reader still commits exactly once | `account-export.test.ts` |
+| Expiry proceeds once a download lease has gone stale | `account-export.test.ts` |
 | Concurrent export builds: exactly one worker claims, writes a blob, and wins | `account-export.test.ts` |
 | A DB failure after a build write cleans up the blob; a stale claim is reclaimed or failed | `account-export.test.ts` |
 | A build failure marks the request failed without wedging the queue | `account-export.test.ts` |

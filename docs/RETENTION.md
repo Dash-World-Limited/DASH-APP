@@ -111,6 +111,13 @@ short exclusive lease, so a transient object-storage outage returns a retryable
 instant a download completes, and an archive left unread past its window is
 deleted by the expiry sweep.
 
+A row stays `ready` for the whole of a download — the short exclusive lease is
+what marks it busy, not the status — so **neither expiry path may run while a
+live lease is held**. A downloader that took its lease before the deadline is
+entitled to finish and commit; expiry waits for the lease to lapse (bounded by
+`EXPORT_DOWNLOAD_LEASE_SECONDS`, so a crashed download cannot pin an archive
+open) and the next sweep picks the row up.
+
 Every path that removes an archive follows the same order — **make the state
 transition first, then delete, and clear `storageKey` only once the delete is
 confirmed**. A delete that fails therefore leaves the row terminal (delivered,

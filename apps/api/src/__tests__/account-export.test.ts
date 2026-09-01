@@ -20,6 +20,7 @@ import { actAs, buildWorld, idempotencyKey, WORLD_PASSWORD, type Actor, type Wor
 import {
   buildDataExport,
   consumeDataExportDownload,
+  expireDataExport,
   requestDataExport,
   signDownloadToken,
 } from '../account/export.js';
@@ -926,6 +927,89 @@ describe('GET /v1/account/export/:id/download', () => {
     expect(after.downloadCount).toBe(1);
   });
 
+  it('a live lease blocks expiry: an in-flight reader finishes, and cleanup lands exactly once', async () => {
+    const who = await makeThrowawayCustomer('dl-lease-vs-expiry');
+    const { id, storageKey } = await makeReadyExport(who);
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    const token = signDownloadToken(downloadSecret(), id, row.expiresAt!);
+
+    // Hold the archive read open, so the download is provably mid-flight with
+    // its lease taken while everything below tries to expire the row.
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let readEntered!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      readEntered = resolve;
+    });
+    const blocking = wrapArchive({
+      read: async (key: string) => {
+        readEntered();
+        await readGate;
+        return archive().read(key);
+      },
+    });
+
+    const download = consumeDataExportDownload(prisma(), blocking, {
+      requestId: id,
+      identityId: who.identityId,
+      token,
+      downloadSecret: downloadSecret(),
+    });
+    await reading;
+
+    // The lease is held. Now the deadline passes underneath it.
+    await prisma().dataExportRequest.update({
+      where: { id },
+      data: { expiresAt: new Date(Date.now() - HOUR_MS) },
+    });
+    const past = new Date();
+
+    const leased = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(leased.downloadLeaseId).not.toBeNull();
+    expect(leased.status).toBe('ready');
+
+    // 1. A direct expiry attempt must decline.
+    expect(await expireDataExport(prisma(), archive(), { id, storageKey }, past)).toBe(false);
+
+    // 2. The maintenance sweep must decline too.
+    const during = await runAccountMaintenance(prisma(), archive(), { now: past });
+    expect(during.exports.failed).toBe(0);
+
+    // 3. And so must a second caller arriving on the now-expired link: it is
+    //    told its own link is dead, but it may not evict the live reader.
+    await expect(
+      consumeDataExportDownload(prisma(), archive(), {
+        requestId: id,
+        identityId: who.identityId,
+        token,
+        downloadSecret: downloadSecret(),
+        now: past,
+      }),
+    ).rejects.toMatchObject({ reason: 'expired' });
+
+    // Through all of that the row is untouched and the bytes are still there.
+    const stillReady = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(stillReady.status).toBe('ready');
+    expect(stillReady.downloadCount).toBe(0);
+    expect(stillReady.storageKey).toBe(storageKey);
+    await expect(archive().read(storageKey)).resolves.toBeInstanceOf(Buffer);
+
+    // Let the reader finish. It acquired its lease before the deadline, so it
+    // is entitled to commit.
+    releaseRead();
+    const result = await download;
+    expect(result.body.length).toBeGreaterThan(0);
+
+    const delivered = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(delivered.status).toBe('delivered');
+    expect(delivered.downloadCount).toBe(1);
+    expect(delivered.downloadLeaseId).toBeNull();
+    expect(delivered.storageKey).toBeNull();
+    await expect(archive().read(storageKey)).rejects.toBeTruthy();
+  });
+
   it('a delete failure after a successful download is retried by the maintenance sweep', async () => {
     const who = await makeThrowawayCustomer('dl-cleanup-fail');
     const { id, storageKey } = await makeReadyExport(who);
@@ -1016,6 +1100,35 @@ describe('maintenance sweep of stale exports', () => {
     const cleaned = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
     expect(cleaned.status).toBe('expired');
     expect(cleaned.storageKey).toBeNull();
+    await expect(archive().read(storageKey)).rejects.toBeTruthy();
+  });
+
+  it('expires a row whose download lease has gone stale', async () => {
+    const who = await makeThrowawayCustomer('sweep-stale-lease');
+    const { id, storageKey } = await makeReadyExport(who);
+
+    // A download that took a lease and then died: past its deadline, and the
+    // lease lapsed with it.
+    await prisma().dataExportRequest.update({
+      where: { id },
+      data: {
+        expiresAt: new Date(Date.now() - HOUR_MS),
+        downloadLeaseId: `dead_${randomUUID()}`,
+        downloadLeaseUntil: new Date(Date.now() - 60_000),
+      },
+    });
+
+    const didExpire = await expireDataExport(
+      prisma(),
+      archive(),
+      { id, storageKey },
+      new Date(),
+    );
+    expect(didExpire).toBe(true);
+
+    const row = await prisma().dataExportRequest.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe('expired');
+    expect(row.storageKey).toBeNull();
     await expect(archive().read(storageKey)).rejects.toBeTruthy();
   });
 });

@@ -113,8 +113,9 @@ export async function runAccountMaintenance(
   if (!dryRun) {
     for (const row of staleExports) {
       try {
-        await expireDataExport(prisma, archive, row);
-        expired += 1;
+        // False means the row was left alone — a downloader holds a live lease
+        // and may finish. Not a failure; the next run picks it up.
+        if (await expireDataExport(prisma, archive, row, now)) expired += 1;
       } catch {
         exportFailures += 1;
       }

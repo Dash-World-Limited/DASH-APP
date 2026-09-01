@@ -546,6 +546,26 @@ export async function buildDataExport(
 const DOWNLOAD_LEASE_MS = EXPORT_DOWNLOAD_LEASE_SECONDS * 1000;
 
 /**
+ * The guard every `ready → expired` transition must carry.
+ *
+ * A row stays `ready` for the whole of a download — the lease is what marks it
+ * busy, not the status — so expiring on status alone would flip the row and
+ * delete the archive out from under a reader that legitimately acquired its
+ * lease before the deadline. Expiry is therefore only permitted when no lease
+ * is held, or the one held has already lapsed.
+ *
+ * The lease is bounded (`EXPORT_DOWNLOAD_LEASE_SECONDS`), so this defers expiry
+ * by at most that long; a crashed download cannot pin an archive open.
+ */
+function unleasedReadyWhere(id: string, now: Date) {
+  return {
+    id,
+    status: 'ready' as const,
+    OR: [{ downloadLeaseUntil: null }, { downloadLeaseUntil: { lte: now } }],
+  };
+}
+
+/**
  * Delete an archive and clear the row's reference to it — **in that order, and
  * only on success**.
  *
@@ -627,8 +647,12 @@ export async function consumeDataExportDownload(
       // Expired on the way in. Make the state transition *first*: once the row
       // is `expired` no download can lease it, so the blob is ours to remove
       // and we cannot delete it from under an in-flight reader.
+      //
+      // The lease guard covers the reader who is *already* in flight: they
+      // took their lease while the link was still valid and are entitled to
+      // finish. This caller's own link is expired either way.
       const expired = await prisma.dataExportRequest.updateMany({
-        where: { id: request.id, status: 'ready' },
+        where: unleasedReadyWhere(request.id, now),
         data: { status: 'expired' },
       });
       // Only the caller that actually performed the transition owns the blob.
@@ -756,16 +780,20 @@ export async function expireDataExport(
   prisma: PrismaClient,
   archive: ExportArchivePort,
   row: { id: string; storageKey: string | null },
-): Promise<void> {
+  now: Date = new Date(),
+): Promise<boolean> {
   const expired = await prisma.dataExportRequest.updateMany({
-    where: { id: row.id, status: 'ready' },
+    where: unleasedReadyWhere(row.id, now),
     data: { status: 'expired' },
   });
-  // Lost the race to another sweep or to a download that just committed. The
-  // winner owns the blob; leave it alone.
-  if (expired.count === 0) return;
+  // Either we lost the race to another sweep or to a download that just
+  // committed, or a downloader is holding a live lease and is entitled to
+  // finish. Both cases: the blob is not ours to touch. A leased row is picked
+  // up by the next run once the lease lapses.
+  if (expired.count === 0) return false;
 
   if (row.storageKey) await releaseArchive(prisma, archive, row.id, row.storageKey);
+  return true;
 }
 
 /** `building` rows whose claim has gone stale — an abandoned build. */
