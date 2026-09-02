@@ -10,7 +10,13 @@
  */
 
 import { z } from 'zod';
-import { parseKey, type EncryptionKey, type Keyring } from '@dash/domain/envelope';
+import {
+  assembleKeyring,
+  assertValidKeyId,
+  parseKey,
+  parseRetiredKeys,
+  type Keyring,
+} from '@dash/domain/envelope';
 import { assertRetentionDays } from '@dash/domain/retention';
 import {
   assertCoolingOffDays,
@@ -18,6 +24,8 @@ import {
   DELETION_COOLING_OFF_DAYS,
   EXPORT_DOWNLOAD_TTL_HOURS,
 } from '@dash/domain/account';
+import { redactSecretsInText } from '@dash/domain/redaction';
+import { presentSecretValues } from './secrets/classification.js';
 
 const booleanish = z
   .enum(['true', 'false', '1', '0'])
@@ -168,9 +176,58 @@ const schema = z
       }
     }
 
+    // The active key id travels inside every envelope this key writes and must
+    // survive being parsed back out. An id the format cannot carry produces
+    // ciphertext that encrypts fine and can never be decrypted — the loss is
+    // silent until someone tries to read it, which is why it is refused here
+    // rather than discovered later.
+    try {
+      assertValidKeyId(env.ENCRYPTION_KEY_ID, 'ENCRYPTION_KEY_ID');
+    } catch (error) {
+      fail('ENCRYPTION_KEY_ID', error instanceof Error ? error.message : 'is not a valid key id');
+    }
+
+    // --- Rotation coherence ---------------------------------------------------
+    // A keyring that is ambiguous about which key is which must not boot. Every
+    // rule below describes a rotation that has been half-applied, and each of
+    // them fails in the same expensive way: rows that cannot be decrypted, found
+    // weeks later.
     if (env.ENCRYPTION_KEYS_RETIRED.trim() !== '') {
       try {
-        parseRetiredKeys(env.ENCRYPTION_KEYS_RETIRED);
+        const retired = parseRetiredKeys(env.ENCRYPTION_KEYS_RETIRED);
+
+        // Retired keys with nothing active is not a decrypt-only mode — it is a
+        // configuration that can read old rows and write none, which fails at
+        // the first write instead of at boot.
+        if (!env.ENCRYPTION_KEY) {
+          fail(
+            'ENCRYPTION_KEYS_RETIRED',
+            'Retired keys are configured but ENCRYPTION_KEY is not — there would be nothing to encrypt new values with',
+          );
+        }
+
+        // One id naming two different keys makes decryption non-deterministic.
+        // Refused rather than resolved in favour of one, because "the active
+        // entry wins" is a guess about which rotation step was skipped.
+        if (retired.some((entry) => entry.keyId === env.ENCRYPTION_KEY_ID)) {
+          fail(
+            'ENCRYPTION_KEYS_RETIRED',
+            `Key id "${env.ENCRYPTION_KEY_ID}" is both the active key and a retired key — a rotation has been half-applied, and which key a row named cannot be answered`,
+          );
+        }
+
+        // The same bytes under two ids means a rotation that did not rotate.
+        // Comparing material rather than ids catches the case where someone
+        // copied the active key into the retired list under a new name.
+        if (env.ENCRYPTION_KEY) {
+          const active = parseKey(env.ENCRYPTION_KEY, 'ENCRYPTION_KEY');
+          if (retired.some((entry) => entry.key.equals(active))) {
+            fail(
+              'ENCRYPTION_KEYS_RETIRED',
+              'A retired key holds the same material as the active key under a different id — nothing has actually been rotated',
+            );
+          }
+        }
       } catch (error) {
         fail(
           'ENCRYPTION_KEYS_RETIRED',
@@ -206,9 +263,7 @@ const schema = z
       }
     }
 
-    // Account-deletion and export windows, against the domain policy's bounds.
-    try {
-      // --- Redis and PostGIS coherence (every environment) --------------------
+    // --- Redis and PostGIS coherence (every environment) --------------------
     // A misconfiguration that only surfaces in production is a misconfiguration
     // staging never rehearsed, so these run everywhere rather than inside the
     // production block below.
@@ -222,7 +277,9 @@ const schema = z
       );
     }
 
-    assertCoolingOffDays(env.ACCOUNT_DELETION_COOLING_OFF_DAYS);
+    // Account-deletion and export windows, against the domain policy's bounds.
+    try {
+      assertCoolingOffDays(env.ACCOUNT_DELETION_COOLING_OFF_DAYS);
     } catch (error) {
       fail(
         'ACCOUNT_DELETION_COOLING_OFF_DAYS',
@@ -393,9 +450,19 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     const lines = result.error.issues.map(
       (issue) => `  ${issue.path.join('.') || '(root)'}: ${issue.message}`,
     );
-    // Written to stderr and thrown — never log the values themselves, only the
-    // names of what failed.
-    throw new Error(`Invalid environment configuration:\n${lines.join('\n')}`);
+
+    // Every message above is written to name the variable, never its value, and
+    // the tests assert that. The scrub is the second lock on the same door: Zod
+    // echoes the received value for some built-in checks, a future refinement
+    // could interpolate one by accident, and this message is printed to stderr
+    // by `main.ts` where a container platform will capture it. Being wrong here
+    // means a secret in a boot log, so one belt and one set of braces.
+    const message = redactSecretsInText(
+      `Invalid environment configuration:\n${lines.join('\n')}`,
+      presentSecretValues(source),
+    );
+
+    throw new Error(message);
   }
 
   cached = result.data;
@@ -433,31 +500,12 @@ export function describeAdapters(config: Config): string {
 /**
  * Parse `id:base64key,id2:base64key2` into retired keys.
  *
- * Exported for validation at boot. Duplicated ids are rejected: two different
- * keys claiming the same id makes decryption non-deterministic, which is the
- * kind of bug that only shows up on the rows you can no longer read.
+ * Re-exported rather than implemented here. The rules about what makes a set of
+ * keys coherent live in `@dash/domain/envelope` so that the seed — which sits
+ * below `apps/api` and cannot import this module — applies exactly the same
+ * ones. See the keyring-assembly section there.
  */
-export function parseRetiredKeys(raw: string): EncryptionKey[] {
-  const trimmed = raw.trim();
-  if (trimmed === '') return [];
-
-  const seen = new Set<string>();
-
-  return trimmed.split(',').map((entry, index) => {
-    const separator = entry.indexOf(':');
-    if (separator <= 0) {
-      throw new Error(`retired key ${index + 1} is not in "id:base64key" form`);
-    }
-
-    const keyId = entry.slice(0, separator).trim();
-    const encoded = entry.slice(separator + 1).trim();
-
-    if (seen.has(keyId)) throw new Error(`retired key id "${keyId}" appears more than once`);
-    seen.add(keyId);
-
-    return { keyId, key: parseKey(encoded, `retired key "${keyId}"`) };
-  });
-}
+export { parseRetiredKeys };
 
 /**
  * Build the keyring from validated configuration.
@@ -471,18 +519,11 @@ export function buildKeyring(config: Config): Keyring {
     throw new Error('No ENCRYPTION_KEY is configured, so nothing can be encrypted or decrypted');
   }
 
-  const active: EncryptionKey = {
-    keyId: config.ENCRYPTION_KEY_ID,
-    key: parseKey(config.ENCRYPTION_KEY, 'ENCRYPTION_KEY'),
-  };
-
-  const retired = parseRetiredKeys(config.ENCRYPTION_KEYS_RETIRED).filter(
-    // A key that is both active and retired is a rotation half-applied. The
-    // active entry wins; keeping both would be harmless but confusing.
-    (entry) => entry.keyId !== active.keyId,
-  );
-
-  return { active, retired };
+  return assembleKeyring({
+    activeKey: config.ENCRYPTION_KEY,
+    activeKeyId: config.ENCRYPTION_KEY_ID,
+    retired: config.ENCRYPTION_KEYS_RETIRED,
+  });
 }
 
 export function isEncryptionConfigured(config: Config): boolean {

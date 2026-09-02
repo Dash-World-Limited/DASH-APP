@@ -325,7 +325,7 @@ The obvious hazard is that the two drift. Three things stop that:
    genuinely the same document in both dialects.
 
 **Alternatives rejected.** Moving development to PostgreSQL would have meant the
-887-test suite could not run without a database server — it builds a per-worker
+test suite could not run without a database server — it builds a per-worker
 SQLite template file — and would have added exactly the local-development
 friction ADR-0003 exists to avoid. A runtime-switched datasource is not
 available to us at any price: Prisma forbids it.
@@ -427,3 +427,97 @@ it was not is how an export sits `pending` for ever with nobody aware.
 is written down above, asserted in tests, and visible in readiness — which
 reports the dependency by role (`queue`) rather than by technology, preserving
 the `/health/ready` non-disclosure contract from Milestone G.
+
+---
+
+## ADR-0011 — Runtime environment injection as the secret-source contract
+
+**Status:** Accepted · Milestone III
+
+### Context
+
+Milestone III is production secret management. The obvious reading of that
+brief is "integrate a secret manager", and the obvious implementations are AWS
+Secrets Manager, GCP Secret Manager, or HashiCorp Vault.
+
+DASH APP has not chosen a deployment platform. It has never been deployed, and
+the hosting decision is open (see `ROADMAP.md` Gate 2). Choosing a secret store
+now would be choosing a cloud vendor now, by a side door, on the strength of an
+infrastructure milestone rather than a deployment decision.
+
+Meanwhile the actual risks are not hypothetical and are not vendor-specific:
+
+- Secret values could reach a log, an error, or a health response.
+- A misconfigured keyring could boot and silently make rows unreadable.
+- `.env.example` could grow something that looks like a real credential.
+- No inventory said which variables were secret in the first place.
+
+None of those is fixed by an SDK.
+
+### Decision
+
+**Secrets enter the process through the environment. The application does not
+know, and must not ask, what put them there.**
+
+`loadConfig(source: NodeJS.ProcessEnv)` already takes the environment as an
+argument. That parameter *is* the injection seam, and no further abstraction is
+introduced. Specifically:
+
+- **No secret-store SDK is added.** Not AWS, not GCP, not Azure, not Vault.
+- **No `SecretSource` interface is added** either. An interface with exactly one
+  implementation is ceremony that makes the codebase look like it supports
+  something it does not.
+- Investment goes instead into the parts that are vendor-independent and were
+  genuinely missing: an explicit classification of every variable, redaction
+  driven by that classification, hardened key custody, and a rotation procedure
+  with a verifiable retirement gate.
+
+### What this supports
+
+| Environment | How values arrive |
+|---|---|
+| Development, test | A `.env` file, or the harness passing an object directly |
+| Staging, production | The platform's own injection — Kubernetes secrets projected as env vars, AWS/GCP secret managers through the platform, Vault's agent, a hosting provider's secret UI |
+| A future direct integration | An adapter that fetches from a store and returns a populated object, passed to the same `loadConfig(source)` |
+
+The third row is why no abstraction is needed today: the seam for it already
+exists and is already exercised, because every test in the suite uses it.
+
+### Consequences
+
+**The application stays portable.** Any platform that can set an environment
+variable can run this, which is all of them. Nothing needs rewriting when the
+hosting decision is finally made.
+
+**No dependency, no credential, no IAM policy** is required to run the service
+locally or in CI, and no cloud SDK sits in the dependency tree carrying its own
+advisories.
+
+**The honest status is "secret-store-ready", not "secret store integrated".**
+Documentation must say so. A reader who takes this for a managed secret store
+would skip provisioning one.
+
+**Injection quality is the platform's responsibility, and unverified here.**
+Whether the platform's environment injection is itself secure — whether the
+values appear in a pod spec, a build log, or a process listing — is outside what
+this repository can check. It is on the production readiness checklist.
+
+**The classification table becomes load-bearing.** Log redaction, the leak
+tests, and the `.env.example` gate all read from
+`apps/api/src/secrets/classification.ts`. A secret variable that is not
+classified is not protected, so classifying one is part of adding one.
+
+### Rejected alternatives
+
+**Integrate AWS Secrets Manager.** Picks a cloud vendor as a side effect of a
+security milestone, adds an SDK and IAM setup to run the app locally, and would
+have to be rewritten if the platform decision goes elsewhere.
+
+**Write a `SecretSource` interface with an `EnvironmentSecretSource`.** Looks
+like extensibility and provides none: the single implementation reads
+`process.env`, which is what `loadConfig` already does. It would also invite the
+next contributor to write a stub `VaultSecretSource` that nothing uses — a fake
+integration, which is worse than an absent one.
+
+**Write a stub adapter for each cloud provider.** Explicitly rejected. A stub
+that claims a provider is supported is a lie in the shape of a file.

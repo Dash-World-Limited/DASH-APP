@@ -376,15 +376,27 @@ describe('MFA and encryption configuration', () => {
     expectRefusal({ ENCRYPTION_KEYS_RETIRED: 'no-colon-here' }, 'ENCRYPTION_KEYS_RETIRED');
   });
 
-  it('ignores a retired entry that duplicates the active key id', () => {
+  it('refuses a retired entry that duplicates the active key id', () => {
+    // This used to load, dropping the retired entry on the grounds that the
+    // active one should win. Milestone III refuses it instead, because the two
+    // entries hold *different* key material — that is what a half-applied
+    // rotation looks like — and picking one silently makes every row written
+    // under the other unreadable, with no error anywhere. Nothing in the
+    // configuration can say which of the two rotation steps was skipped, so it
+    // does not guess.
     const older = Buffer.alloc(32, 5).toString('base64');
-    resetConfigCache();
-    const config = loadConfig(
-      productionEnv({ ENCRYPTION_KEY_ID: 'k1', ENCRYPTION_KEYS_RETIRED: `k1:${older}` }),
+    expectRefusal(
+      { ENCRYPTION_KEY_ID: 'k1', ENCRYPTION_KEYS_RETIRED: `k1:${older}` },
+      'ENCRYPTION_KEYS_RETIRED',
     );
-    // A rotation half-applied. The active entry wins rather than there being
-    // two candidates for one id.
-    expect(buildKeyring(config).retired).toHaveLength(0);
+  });
+
+  it('refuses a key id the envelope format could not carry', () => {
+    // The envelope is dot-separated, so an id containing a dot is written into
+    // ciphertext that can never be parsed back out. The value encrypts fine and
+    // is then permanently unreadable, which is the worst failure mode available
+    // — nothing complains until a decrypt, and by then the rows exist.
+    expectRefusal({ ENCRYPTION_KEY_ID: 'live.1' }, 'ENCRYPTION_KEY_ID');
   });
 });
 

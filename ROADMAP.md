@@ -4,10 +4,16 @@ Where DASH APP is and what comes next, in the order it should happen.
 
 Latest tag: **`v0.2.0-auth`**. Considerable work has landed on `main` since —
 business API coverage, administrator MFA, encryption at rest, retention,
-security scanning, observability seams, and account deletion and data export
-(Milestone E) — and is deliberately **untagged**. Milestone E is merged and
-locally verified, but nothing here has been run against a real external
-provider or deployed, so a tag would overstate it.
+security scanning, observability seams, account deletion and data export
+(Milestone E), and the PostgreSQL/PostGIS and Redis production path
+(Milestone II) — and is deliberately **untagged**. Milestone II was verified
+against real PostgreSQL, PostGIS, and Redis; everything else on `main` is
+locally verified only. Nothing has been run against a real external provider or
+deployed, so a tag would overstate it.
+
+**Milestone III (secret management and key custody) is not on `main`.** It is
+implemented and locally verified on the branch
+`claude/milestone-iii-secret-management`, and is described below as such.
 
 The ordering is not arbitrary. Each phase removes a blocker for the next, and
 the two hard gates below exist because getting them wrong is expensive to undo.
@@ -19,9 +25,17 @@ the two hard gates below exist because getting them wrong is expensive to undo.
 > signature, idempotency, and failure-path test for each provider.
 >
 > **Gate 2 — no production deployment until CI, secret management, backups, and
-> an incident runbook exist.** *Still closed.* CI now exists; secret management,
-> backups, and the runbook do not. A deployment without those is not a
-> deployment, it is an outage waiting for a date.
+> an incident runbook exist.** *Still closed, but narrower than it was.* CI
+> exists. The incident runbook is written (`docs/RUNBOOKS.md`) and unrehearsed.
+> Secret management is done **on the application side, on a branch that has not
+> been merged** — every variable classified, redaction proven, boot validation
+> fail-closed, key custody and rotation verified locally (Milestone III) — and
+> **no secret store or hosting platform has been chosen**, so nothing injects
+> those secrets anywhere yet.
+> Backups do not exist: the procedure is documented, the key half is rehearsed
+> against synthetic material, and no real backup has ever been taken or
+> restored. A deployment without those last two is not a deployment, it is an
+> outage waiting for a date.
 
 ---
 
@@ -130,18 +144,56 @@ Outstanding: merge and review against `master`, a tag, a scheduler for
 
 ---
 
+## Done — Milestone II: the PostgreSQL/PostGIS and Redis production path
+
+Merged on `main` (`416b6af` → `eabaf72`). A separate PostgreSQL Prisma schema
+and migration path coexists with the SQLite development/test path, the PostGIS
+`GeoPort` pushes zone containment into the database as `ST_Covers`, and
+Redis/BullMQ replaces the in-memory queue with idempotent job handling,
+delay/retry behaviour, and rate-limit counters shared across instances — failing
+**closed** on a Redis outage.
+
+Verified against real infrastructure: PostgreSQL 16 + PostGIS 3.4 (**14/14**
+checks, including boundary and hole semantics) and Redis 7 (**8/8**, including a
+shared rate-limit budget across two API instances). **Merged; not deployed.**
+
+---
+
+## Implemented and locally verified on branch — not merged — Milestone III: secret management and key custody
+
+> **Not on `main`.** This work lives on `claude/milestone-iii-secret-management`
+> and has not been merged, tagged, or deployed. Nothing in this section describes
+> code that has landed on the main line.
+
+Every configuration variable classified secret or non-secret in one table that
+drives log redaction, the leak tests, and the `.env.example` gate. Redaction by
+key fragment *and* by shape inside free text, which is what catches a connection
+string in a driver's own error message. Key custody hardened: an ambiguous
+keyring no longer boots, and a key id the envelope format cannot carry is
+refused before it can write an unreadable row. A rotation survey answers "is it
+safe to destroy the old key yet?" without decrypting anything.
+
+The secret-source contract is **runtime environment injection**
+([ADR-0011](docs/DECISIONS.md#adr-0011--runtime-environment-injection-as-the-secret-source-contract)) —
+deliberately no cloud SDK, because no deployment platform has been chosen.
+Locally verified on the branch. **Not merged. No secret store is integrated and
+no production secret exists.**
+
+---
+
 ## Phase 3 — Durability and scale
 
-- **Redis + BullMQ** replacing the in-memory queue. Today a second API instance
-  would run its own dispatch worker and double-offer, so this gates horizontal
-  scale.
-- **PostgreSQL + PostGIS** replacing SQLite. The schema and `GeoPort` were
-  written for this; it is a datasource change plus the PostGIS `GeoPort`
-  implementation.
+Redis + BullMQ and PostgreSQL + PostGIS landed in Milestone II above. What
+remains:
+
 - Websockets replacing polling on tracking, the vendor queue, and the ops board.
 - Transactional outbox for domain events.
 - Scheduled jobs: session pruning, rider-location retention, account-deletion
   finalisation and export-archive expiry, nightly ledger reconciliation.
+- Background key re-encryption on a schedule. The primitives exist
+  (`apps/api/src/secrets/rotation.ts`); nothing runs them automatically, which
+  is deliberate — rotation is a supervised operation, not something that should
+  be able to start itself.
 
 ---
 
@@ -190,9 +242,15 @@ Features the domain already anticipates but the product does not yet offer:
 
 - Threat model review and a documented authorization matrix.
 - Load testing: order placement, location ingestion, dispatch, dashboards.
-- Backup, restore rehearsal, and point-in-time recovery.
-- Secret management, key rotation, per-environment credentials.
-- Separate development, staging, and production environments.
+- Backup, restore rehearsal, and point-in-time recovery. **Not started** — the
+  procedure is documented and the key half is rehearsed against synthetic
+  material, but no real backup has ever been taken or restored.
+- Secret store selection and runtime injection. The application side is done on
+  the unmerged Milestone III branch; the platform is not chosen.
+- Break-glass role, its holder, and its authoriser. **Owner decisions.**
+- Separate development, staging, and production environments, with per-
+  environment credentials. The rules are written and enforceable in code; the
+  environments do not exist.
 - Incident-response runbook: detection, containment, key rotation, provider
   notification, evidence preservation, recovery, post-incident review.
 - **Nigerian data-protection (NDPA 2023) and consumer-law review by qualified

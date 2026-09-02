@@ -3,11 +3,17 @@
 What DASH APP defends against today, how, and what is still open.
 
 **Scope:** this describes the `main` line — `v0.1.0-mvp` plus the untagged
-Milestones A–G and E (account deletion and data export, merged and locally
-verified). It has never been deployed, never handled real money, never held real
-personal data, and **no adapter has been run against a real external provider**.
-Do not read any control below as production-hardened until it is listed under
-[Verified](#verified) — most are implemented but only tested locally.
+Milestones A–G, E (account deletion and data export), and II (the
+PostgreSQL/PostGIS and Redis production path). It has never been deployed, never
+handled real money, never held real personal data, and **no adapter has been run
+against a real external provider**. Do not read any control below as
+production-hardened until it is listed under [Verified](#verified) — most are
+implemented but only tested locally.
+
+**One section is not on `main`.** [Secret handling](#secret-handling) and the
+Milestone III rows in [Verified](#verified) describe work on the branch
+`claude/milestone-iii-secret-management`, which has **not been merged, tagged, or
+deployed**. Those parts are marked where they appear.
 
 Nigerian data-protection (NDPA 2023) and consumer-law obligations have **not**
 been reviewed by qualified counsel. Nothing here is legal advice.
@@ -320,18 +326,75 @@ HMAC-shaped digest over key and expiry.
 the following hold:
 
 - `DEV_EXPOSE_OTP` is true
-- either JWT secret still holds the `.env.example` placeholder
-- the two JWT secrets are equal
+- either JWT secret still holds a `.env.example` placeholder, or is too
+  low-entropy to be worth having
 - `DATABASE_URL` is SQLite
-- `PAYMENT_PROVIDER=mock`
-- `STORAGE_PROVIDER=local`
-- `QUEUE_PROVIDER=memory`
-- Paystack is selected without a secret key or webhook secret
+- `PAYMENT_PROVIDER=mock`, `MAPS_PROVIDER=local`, `SMS_PROVIDER=console`,
+  `EMAIL_PROVIDER=console`, `PUSH_PROVIDER=console`, `STORAGE_PROVIDER=local`,
+  `QUEUE_PROVIDER=memory`, or `GEO_ZONES_PROVIDER=local`
+- `MFA_ENABLED` is false, or `ENCRYPTION_KEY` is absent
+- `RATE_LIMIT_ENABLED` is false, or `RATE_LIMIT_REDIS` is false
+- `PUBLIC_WEB_URL` is plain HTTP
+- a selected provider's required credential is missing — Paystack without a
+  secret key or webhook secret, Google without an API key, Mapbox without a
+  token, Redis-backed queueing without a URL
 
-The process exits with a readable list of what is wrong. It does not warn and
-continue.
+And in **every** environment, not only production:
+
+- the two JWT secrets are equal — that would make a refresh token verify as an
+  access token, a full authentication bypass invisible until someone tries it
+- `MFA_ENABLED=true` with no encryption key
+- any malformed encryption key material
+- any ambiguous keyring: a key id the envelope format cannot carry, one id that
+  is both active and retired, the same material under two ids, a duplicate
+  retired id, or retired keys with no active key
+  (see [`docs/KEY_MANAGEMENT.md`](docs/KEY_MANAGEMENT.md#what-boot-refuses))
+- a retention period above its policy ceiling, or an out-of-range deletion or
+  export window
+
+The process exits with a readable list of **every** problem at once — a
+one-error-per-restart boot loop is a miserable way to configure a service. The
+message names the variables that failed and never their values. It does not warn
+and continue.
 
 The seed script independently refuses to run against `NODE_ENV=production`.
+
+### Secret handling
+
+> **On a branch, not on `main`.** Everything in this section is Milestone III,
+> which lives on `claude/milestone-iii-secret-management` and has **not been
+> merged, tagged, or deployed**. A clone of `main` has none of it.
+
+Every configuration variable is classified secret or non-secret in
+`apps/api/src/secrets/classification.ts`. That table is the source of truth for
+log redaction, the leak regression tests, and the `.env.example` placeholder
+gate — one list rather than four that drift.
+
+Secrets reach the process through **runtime environment injection**, and the
+application does not know what populated the environment
+([ADR-0011](docs/DECISIONS.md#adr-0011--runtime-environment-injection-as-the-secret-source-contract)).
+**No managed secret store is integrated**, because no deployment platform has
+been chosen; the contract and the guardrails around it are what exist.
+
+Redaction operates in two ways, because neither alone is sufficient:
+
+| Layer | Catches | Where |
+|---|---|---|
+| **By key name**, matched as a fragment of the normalised key | `apiKey`, `jwtAccessSecret`, `PAYSTACK_WEBHOOK_SECRET`, `databaseUrl` — one entry covers every spelling | `@dash/domain/redaction`, used by the audit log, the error-tracker seam, and metric tags |
+| **By shape, inside free text** | The password in `postgresql://dash:pw@db:5432` — no key name reaches inside a sentence, and this is exactly what a Prisma or ioredis connection failure puts in its own message | Pino's `err` serializer and log-method hook, the configuration error message, the verification scripts |
+
+Applied at: configuration errors thrown at boot, request and boot logs
+(including every child logger), the readiness endpoint, the error-reporting
+port, and metric tags. `apps/api/src/__tests__/secrets.test.ts` asserts all four
+by **iterating the classification table**, so classifying a new secret extends
+the coverage rather than requiring a new test.
+
+Repository hygiene is gated by `npm run check:secrets`, which checks every
+secret in `.env.example` individually by the shape of its value — provider key
+prefixes such as `sk_live_`, `AKIA`, and `whsec_` are refused there even as
+placeholders, because a fake key wearing a real prefix is indistinguishable from
+a leaked one to a scanner or a reviewer. It also refuses committed key files,
+dumps, and backups, which carry no pattern `gitleaks` would match.
 
 ---
 
@@ -420,6 +483,29 @@ Controls actually exercised by an automated check, not merely written:
 | Production refuses identical access/refresh secrets | `config.test.ts` |
 | Production refuses disabled rate limiting | `config.test.ts` |
 | Config errors never echo a secret value | `config.test.ts` |
+
+The rows below are **Milestone III, on an unmerged branch** — they do not hold
+for a clone of `main`:
+
+| Control | Where |
+|---|---|
+| No classified secret reaches a config error, for **any** secret and **any** fault | `secrets.test.ts` |
+| No classified secret reaches the real server logger, or a child logger | `secrets.test.ts` |
+| A connection-string password is stripped from an error message, stack, and cause chain | `secrets.test.ts` |
+| No classified secret reaches `/health/ready`, including when a dependency is down | `secrets.test.ts` |
+| Secret-shaped field names an exact-match list would miss are redacted | `secrets.test.ts`, `redaction.test.ts` |
+| Every variable classified secret is caught by the redaction vocabulary | `secrets.test.ts` |
+| Every variable classified public survives redaction | `secrets.test.ts` |
+| A rotated key leaves old rows readable and new rows on the new key | `key-rotation.test.ts` |
+| Re-encryption moves payout **and** TOTP columns, and is idempotent | `key-rotation.test.ts` |
+| Key destruction is gated on a survey that finds no row under an old key | `key-rotation.test.ts` |
+| A key that is not held fails closed, naming the key id and no key material | `key-rotation.test.ts` |
+| Every ambiguous keyring configuration is refused at boot | `key-rotation.test.ts`, `check:keys` |
+| A key id the envelope format cannot carry is refused before it writes a row | `key-rotation.test.ts`, `envelope.test.ts` |
+| A database restored without its key, or without its retired keys, is unrecoverable | `check:keys` |
+| A staging key cannot read a production row | `check:keys` |
+| `.env.example` holds no credential-shaped value, per variable | `check:secrets` |
+| No key file, dump, or backup is tracked in git | `check:secrets` |
 | Login and OTP rate limits actually fire | `ratelimit.test.ts` |
 | Cross-customer order read and cancel return 404 | `orders.test.ts` |
 | A client-supplied price is ignored at quote and checkout | `orders.test.ts` |
@@ -507,13 +593,29 @@ Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
    is not part of the CI gate.
 ### Lower
 
-7. **In-memory queue loses jobs on restart.** Correctly rejected in production
-    by config, but it means dispatch has no durability story yet.
+7. **The in-memory queue loses jobs on restart.** It remains the development
+    default and is refused in production by config. Milestone II added the
+    Redis/BullMQ path that replaces it, verified against a real Redis 7
+    (8/8 checks) but not yet deployed, so the durability story exists in code
+    and has never run anywhere real.
 8. **No SSRF allowlist.** No user-controlled outbound URLs exist today, so
     there is nothing to exploit — but the guard should exist before the first
     provider callback URL does.
-9. **No backup or restore procedure**, because there is no deployment.
-10. **No incident-response runbook.**
+9. **Backup and restore are documented but unrehearsed.** The procedure is in
+    `docs/RUNBOOKS.md` §3 and the key half of it is rehearsed against synthetic
+    material by `npm run check:keys`. **No real backup has ever been created and
+    no restore has ever been performed**, because there is no deployment. A
+    procedure that has never been executed is a hypothesis.
+10. **No secret store, and no deployment platform chosen.** The application side
+    of secret management is done — classification, redaction, boot validation,
+    key custody, and rotation, all locally verified — and the contract is
+    runtime environment injection (ADR-0011). What does not exist is the
+    platform that performs the injection, the production secrets themselves, and
+    the break-glass role, whose holder and authoriser are open owner decisions.
+11. **The incident-response runbook has never been exercised.** `docs/RUNBOOKS.md`
+    §1 documents severity, first fifteen minutes, credential and key rotation,
+    payment incidents, and the post-incident review. None of it has been
+    rehearsed, and there is no on-call rota to rehearse it with.
 
 ---
 

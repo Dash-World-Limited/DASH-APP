@@ -12,6 +12,12 @@
  */
 
 import { redact } from '@dash/db';
+import {
+  isSensitiveKey,
+  redactDeep,
+  redactSecretsInText,
+  redactUrlCredentials,
+} from '@dash/domain/redaction';
 
 // ---------------------------------------------------------------------------
 // Error reporting
@@ -35,60 +41,34 @@ export interface ErrorReportPort {
 }
 
 /**
- * Keys whose values must never reach an error tracker, however nested.
- *
- * Deliberately wider than the audit-log list: an error payload is assembled ad
- * hoc at a failure site, so it is far more likely to carry something nobody
- * intended than a deliberately-constructed audit entry is.
- */
-const NEVER_REPORT = new Set([
-  'password',
-  'passwordhash',
-  'token',
-  'accesstoken',
-  'refreshtoken',
-  'challengetoken',
-  'csrftoken',
-  'code',
-  'devcode',
-  'otp',
-  'pin',
-  'secret',
-  'mfasecret',
-  'totp',
-  'recoverycode',
-  'recoverycodes',
-  'accountnumber',
-  'bankaccountcipher',
-  'mfasecretcipher',
-  'authorization',
-  'cookie',
-  'apikey',
-  'encryptionkey',
-  'phone',
-  'email',
-  'latitude',
-  'longitude',
-]);
-
-/**
  * Strip anything sensitive before an event leaves the process.
  *
- * Runs `redact()` from `@dash/db` first — that is the same function the audit
- * log uses, so the two cannot disagree — then applies the wider list above.
+ * Deliberately wider than the audit log: an error payload is assembled ad hoc
+ * at a failure site, so it is far more likely to carry something nobody
+ * intended than a deliberately-constructed audit entry is. `includePersonal`
+ * is what widens it — a customer's phone number and a rider's coordinates have
+ * no business in a third party's dashboard, however useful they would be.
+ *
+ * The vocabulary is shared with `redact()` in `@dash/db` so the two cannot
+ * disagree, and matching is by fragment rather than exact key: the previous
+ * exact-match list caught `secret` but waved `paystackSecretKey` through.
+ *
+ * String values are scrubbed as well as keys, which is what catches a
+ * connection string interpolated into an error message — no key name reaches
+ * inside a sentence.
  */
-export function scrubForExport(value: unknown, depth = 0): unknown {
-  if (depth > 8 || value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map((entry) => scrubForExport(entry, depth + 1));
-  if (typeof value !== 'object') return value;
+export function scrubForExport(value: unknown): unknown {
+  return redactDeep(value, { includePersonal: true });
+}
 
-  const output: Record<string, unknown> = {};
-  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-    output[key] = NEVER_REPORT.has(key.toLowerCase())
-      ? '[redacted]'
-      : scrubForExport(nested, depth + 1);
-  }
-  return output;
+/**
+ * Is a metric tag name sensitive?
+ *
+ * Metrics tags are a narrower surface than an error payload — they are
+ * dimensions, not payloads — but the same vocabulary decides.
+ */
+function isSensitiveTag(key: string): boolean {
+  return isSensitiveKey(key, true);
 }
 
 /**
@@ -97,19 +77,34 @@ export function scrubForExport(value: unknown, depth = 0): unknown {
  * The message is kept because it is the single most useful field, but a stack
  * is kept only in non-production: a stack can contain interpolated values from
  * the frame that threw, and those are exactly what must not travel.
+ *
+ * Both are scrubbed for embedded credentials before either is returned. This is
+ * the case a key-based redaction pass cannot reach: when the database is
+ * unreachable, the driver's own message carries the whole connection string,
+ * password included, and that message is precisely what an error tracker is for.
+ *
+ * `knownSecrets` is optional because the URI-shape scrub needs no list. Callers
+ * that hold the loaded configuration pass their secret values as well, which
+ * catches a value that reached the string by some route no pattern matches.
  */
 export function describeError(
   error: unknown,
   includeStack: boolean,
+  knownSecrets: readonly string[] = [],
 ): { name: string; message: string; stack?: string } {
+  const clean = (text: string): string => redactSecretsInText(text, knownSecrets);
+
   if (error instanceof Error) {
     return {
       name: error.name,
-      message: error.message,
-      ...(includeStack && error.stack ? { stack: error.stack } : {}),
+      message: clean(error.message),
+      ...(includeStack && error.stack ? { stack: clean(error.stack) } : {}),
     };
   }
-  return { name: 'UnknownError', message: typeof error === 'string' ? error : 'Non-Error thrown' };
+  return {
+    name: 'UnknownError',
+    message: typeof error === 'string' ? clean(error) : 'Non-Error thrown',
+  };
 }
 
 /**
@@ -125,13 +120,15 @@ export class ConsoleErrorReporter implements ErrorReportPort {
   constructor(
     private readonly includeStack: boolean,
     private readonly quiet = false,
+    /** Literal secret values to strip from any message or stack. */
+    private readonly knownSecrets: readonly string[] = [],
   ) {}
 
   report(error: unknown, context: ErrorContext): void {
     if (this.quiet) return;
 
     console.error('[error]', {
-      ...describeError(error, this.includeStack),
+      ...describeError(error, this.includeStack, this.knownSecrets),
       requestId: context.requestId,
       route: context.route,
       statusCode: context.statusCode,
@@ -147,14 +144,17 @@ export class RecordingErrorReporter implements ErrorReportPort {
   readonly isLive = false;
   readonly reports: { error: unknown; context: ErrorContext; payload: unknown }[] = [];
 
-  constructor(private readonly includeStack = false) {}
+  constructor(
+    private readonly includeStack = false,
+    private readonly knownSecrets: readonly string[] = [],
+  ) {}
 
   report(error: unknown, context: ErrorContext): void {
     this.reports.push({
       error,
       context,
       payload: {
-        ...describeError(error, this.includeStack),
+        ...describeError(error, this.includeStack, this.knownSecrets),
         ...scrubForExport(redact({ ...context })) as Record<string, unknown>,
       },
     });
@@ -188,14 +188,33 @@ export interface MetricsPort {
  */
 const MAX_TAG_LENGTH = 64;
 
-export function safeTags(tags: MetricTags | undefined): Record<string, string> {
+export function safeTags(
+  tags: MetricTags | undefined,
+  /**
+   * Literal secret values to refuse. Supplied by the metrics adapter, which
+   * receives the same list the logger uses.
+   */
+  knownSecrets: readonly string[] = [],
+): Record<string, string> {
   if (!tags) return {};
 
   const output: Record<string, string> = {};
   for (const [key, value] of Object.entries(tags)) {
-    if (NEVER_REPORT.has(key.toLowerCase())) continue;
+    if (isSensitiveTag(key)) continue;
 
     const rendered = String(value);
+
+    // A benign key is not a safe value. `target: 'redis://:pw@cache:6379'` has
+    // an unremarkable name, is well under the length cap, and carries a
+    // password — and the console metrics adapter writes through `console.warn`,
+    // not Pino, so nothing downstream would have caught it.
+    //
+    // Dropped rather than scrubbed: a redacted string is still a time-series
+    // dimension, and a dimension whose value was a credential is worthless as a
+    // metric. Losing the tag is the right trade.
+    if (redactUrlCredentials(rendered) !== rendered) continue;
+    if (knownSecrets.some((secret) => secret.length >= 8 && rendered.includes(secret))) continue;
+
     // A long value is almost certainly an id rather than a category.
     output[key] = rendered.length > MAX_TAG_LENGTH ? '[dropped]' : rendered;
   }
@@ -206,7 +225,11 @@ export class ConsoleMetrics implements MetricsPort {
   readonly providerName = 'console';
   readonly isLive = false;
 
-  constructor(private readonly quiet = false) {}
+  constructor(
+    private readonly quiet = false,
+    /** Literal secret values to refuse as tag values. */
+    private readonly knownSecrets: readonly string[] = [],
+  ) {}
 
   increment(name: string, tags?: MetricTags): void {
     this.write('count', name, 1, tags);
@@ -222,7 +245,7 @@ export class ConsoleMetrics implements MetricsPort {
 
   private write(kind: string, name: string, value: number, tags?: MetricTags): void {
     if (this.quiet) return;
-    console.warn(`[metric] ${kind} ${name}=${value}`, safeTags(tags));
+    console.warn(`[metric] ${kind} ${name}=${value}`, safeTags(tags, this.knownSecrets));
   }
 }
 
@@ -233,16 +256,23 @@ export class RecordingMetrics implements MetricsPort {
   readonly events: { kind: string; name: string; value: number; tags: Record<string, string> }[] =
     [];
 
+  constructor(private readonly knownSecrets: readonly string[] = []) {}
+
   increment(name: string, tags?: MetricTags): void {
-    this.events.push({ kind: 'count', name, value: 1, tags: safeTags(tags) });
+    this.events.push({ kind: 'count', name, value: 1, tags: safeTags(tags, this.knownSecrets) });
   }
 
   timing(name: string, milliseconds: number, tags?: MetricTags): void {
-    this.events.push({ kind: 'timing', name, value: milliseconds, tags: safeTags(tags) });
+    this.events.push({
+      kind: 'timing',
+      name,
+      value: milliseconds,
+      tags: safeTags(tags, this.knownSecrets),
+    });
   }
 
   gauge(name: string, value: number, tags?: MetricTags): void {
-    this.events.push({ kind: 'gauge', name, value, tags: safeTags(tags) });
+    this.events.push({ kind: 'gauge', name, value, tags: safeTags(tags, this.knownSecrets) });
   }
 }
 

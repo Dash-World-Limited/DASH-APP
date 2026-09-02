@@ -78,6 +78,13 @@ jobs:
       - name: Coverage thresholds
         run: npx vitest run --coverage packages/domain
 
+      # Rehearses the custody procedure in docs/KEY_MANAGEMENT.md against
+      # synthetic keys generated in memory for the run: backup separation,
+      # rotation order, and the configurations that must not boot. Reads no
+      # secret store, creates no backup, and prints no key value.
+      - name: Key custody drill
+        run: npm run check:keys
+
       # Named explicitly so a failure in the money or authorization suites is
       # obvious in the job list rather than buried in a single "Test" step.
       # `npm test` above already runs these. Naming them again is deliberate:
@@ -98,6 +105,8 @@ jobs:
           apps/api/src/__tests__/webhooks.test.ts
           apps/api/src/__tests__/catalog.test.ts
           apps/api/src/__tests__/config.test.ts
+          apps/api/src/__tests__/secrets.test.ts
+          apps/api/src/__tests__/key-rotation.test.ts
 
   fresh-boot:
     name: Fresh database boot and seed
@@ -294,18 +303,17 @@ jobs:
 
           echo "No environment files, databases, build output, or logs are tracked."
 
-      - name: Confirm .env.example holds only placeholders
-        run: |
-          set -euo pipefail
-
-          # A real 32-byte base64 key or a long random-looking secret in the
-          # example file means someone pasted their own by mistake.
-          if grep -qE '^(ENCRYPTION_KEY|JWT_[A-Z_]+SECRET)=' .env.example; then
-            if ! grep -qE '^(ENCRYPTION_KEY|JWT_[A-Z_]+SECRET)=replace-me' .env.example; then
-              echo ".env.example must use replace-me placeholders, not real values."
-              grep -nE '^(ENCRYPTION_KEY|JWT_[A-Z_]+SECRET)=' .env.example
-              exit 1
-            fi
-          fi
-
-          echo ".env.example contains placeholders only."
+      # Checks every classified secret in `.env.example` individually, by the
+      # shape of its value rather than by the absence of the word "replace-me",
+      # and confirms that no key file, dump, or backup is tracked.
+      #
+      # This replaces a `grep -q '=replace-me'` step that only looked like a
+      # gate: it passed as long as *any one* of the lines it knew about still
+      # matched, so a real encryption key pasted into the file sailed through
+      # while the JWT line above it kept the check green. It also covered three
+      # variable names out of seventeen.
+      #
+      # Deliberately runs with no `npm ci` before it: it is plain Node with no
+      # dependencies, so it gates the repository even if an install fails.
+      - name: Secret hygiene
+        run: node scripts/check-secrets.mjs

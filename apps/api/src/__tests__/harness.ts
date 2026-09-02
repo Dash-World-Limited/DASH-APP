@@ -132,6 +132,12 @@ export async function createTestContext(
    * be sent to an error tracker or metrics backend instead of printing it.
    */
   serviceOverrides: Partial<Services> = {},
+  /**
+   * Where the logger writes. The secret-leak suite passes a collector so it can
+   * assert on what the real logger actually emitted; every other suite leaves
+   * it unset and runs at `silent`.
+   */
+  logDestination?: { write(chunk: string): void },
 ): Promise<TestContext> {
   const template = buildTemplateDatabase();
 
@@ -157,7 +163,11 @@ export async function createTestContext(
 
   resetConfigCache();
   const config = loadConfig({ ...testEnv(databaseUrl), ...envOverrides });
-  const app = await buildServer({ config, services: { prisma, ...serviceOverrides } });
+  const app = await buildServer({
+    config,
+    services: { prisma, ...serviceOverrides },
+    ...(logDestination ? { logDestination } : {}),
+  });
   await app.ready();
 
   return {

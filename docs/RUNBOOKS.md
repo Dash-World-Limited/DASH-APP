@@ -53,6 +53,12 @@ every downstream number is suspect.
 | `ENCRYPTION_KEY` | Follow [`KEY_MANAGEMENT.md`](KEY_MANAGEMENT.md). Rotation does not un-decrypt what an attacker already read: treat every TOTP secret and payout record as compromised, force MFA re-enrolment, and require vendors to re-confirm bank details. |
 | Payment provider keys | Rotate at the provider first, then here. Expect webhook failures during the window; they are retried. |
 | Database credentials | **[CODEX]** Rotate at the database, then redeploy. Requires the separate migration and runtime accounts that do not exist yet. |
+| `REDIS_URL` password | Rotate at Redis, then redeploy. Rate limiting fails **closed** during the window — requests are rejected rather than silently unlimited — so treat the rotation as a brief outage, not a background task. |
+| Anything read during break-glass | Rotate it. A value a person has seen exists outside the store, whether or not it was misused (§2a). |
+
+Rotating a secret is only half of an exposure response. The other half is
+deciding what the exposed value could already have been used for — see the
+`ENCRYPTION_KEY` row above, which is the case where rotation protects the least.
 
 ### Payment incidents
 
@@ -86,31 +92,105 @@ interpret.
 
 Everything the running system needs that must never be committed.
 
+**This table is generated from a source of truth, not maintained by hand.**
+Every variable below is classified in
+[`apps/api/src/secrets/classification.ts`](../apps/api/src/secrets/classification.ts),
+and `npm run check:secrets` fails if a classified secret is missing from this
+section. That is what stops the inventory drifting behind the code — which it
+had, by nine variables, before Milestone III.
+
+### In use today
+
 | Secret | Used by | Rotation | If leaked |
 |---|---|---|---|
 | `JWT_ACCESS_SECRET` | API | Quarterly | Rotate; tokens expire in 15 min anyway |
 | `JWT_REFRESH_SECRET` | API | Quarterly | Rotate **and** revoke all sessions |
-| `ENCRYPTION_KEY` | API, seed | Annual **[CODEX: confirm]** | See KEY_MANAGEMENT.md — treat protected values as compromised |
-| `DATABASE_URL` | API, jobs | On staff change | Rotate at the database |
-| `PAYSTACK_SECRET_KEY` | API | Per provider policy | Rotate at provider first |
-| `PAYSTACK_WEBHOOK_SECRET` | API | Per provider policy | Rotate; unsigned events are already rejected |
-| `REDIS_URL` | Queue **[CODEX]** | On staff change | — |
-| SMS / email / push / storage credentials | Adapters **[CODEX]** | Per provider | — |
+| `ENCRYPTION_KEY` | API, seed | Cadence undecided — owner call | See KEY_MANAGEMENT.md — treat protected values as compromised |
+| `ENCRYPTION_KEYS_RETIRED` | API | Removed only when the rotation survey is clear | Same as `ENCRYPTION_KEY`; removing one too early makes rows permanently unreadable |
+| `DATABASE_URL` | API, jobs | On staff change | Rotate at the database. Carries the password in its userinfo. |
+| `REDIS_URL` | Queue, rate limiter | On staff change | Rotate at Redis. Carries the password in its userinfo. |
+| `PAYSTACK_SECRET_KEY` | Config only — no integration yet | Per provider policy | Rotate at provider first |
+| `PAYSTACK_WEBHOOK_SECRET` | Config only — no integration yet | Per provider policy | Rotate; unsigned events are already rejected |
+| `GOOGLE_MAPS_API_KEY` | Config only — no integration yet | Per provider policy | Rotate at provider; restrict by referrer/IP |
+| `MAPBOX_ACCESS_TOKEN` | Config only — no integration yet | Per provider policy | Rotate at provider |
+
+### Anticipated — reserved names, read by no code
+
+Listed so the placeholder gate and the redaction vocabulary cover them from the
+start, rather than from the day someone first pastes a real value beside an
+unguarded name. **None of these providers is integrated** (Phase 4).
+
+| Secret | For | If leaked |
+|---|---|---|
+| `TERMII_API_KEY` | Termii SMS | Rotate at provider |
+| `TWILIO_AUTH_TOKEN` | Twilio SMS | Rotate at provider |
+| `SMTP_URL` | Email | Rotate the mailbox credential; carries a password in its userinfo |
+| `FCM_SERVICE_ACCOUNT_JSON` | Push | Revoke the service-account key in the Google console |
+| `S3_ACCESS_KEY_ID` | Object storage | Rotate the access key pair |
+| `S3_SECRET_ACCESS_KEY` | Object storage | Rotate the access key pair |
+| `ERROR_TRACKING_DSN` | Error reporting | Rotate the DSN; carries a credential in its userinfo |
+
+`PAYSTACK_PUBLIC_KEY` is deliberately **not** in this table. It is a publishable
+key designed to be embedded in a client, and listing it beside the secret key is
+how the two get confused.
 
 ### Rules
 
-1. **Never in git.** `gitleaks` runs in CI, and a `hygiene` job refuses any
-   committed `.env`, database, or build output.
-2. **Never in a log, an error message, an audit entry, or a screenshot.** The
-   Pino redaction list and `redact()` in `packages/db` enforce this in code;
-   tests assert it.
-3. **Different values per environment.** A staging key that decrypts production
-   data makes staging access equal to production access.
-4. `.env.example` carries `replace-me` placeholders only. CI fails if a value
-   there stops looking like a placeholder.
+1. **Never in git.** `gitleaks` runs in CI for pattern-matchable credentials, a
+   `hygiene` job refuses any committed `.env`, database, or build output, and
+   `npm run check:secrets` refuses committed key files, dumps, and backups that
+   match no credential pattern at all.
+2. **Never in a log, an error message, an audit entry, or a screenshot.**
+   Enforced in code by the shared vocabulary in `@dash/domain/redaction`, the
+   Pino redact paths and `err` serializer in `apps/api/src/secrets/logging.ts`,
+   and `redact()` in `packages/db`. Asserted by
+   `apps/api/src/__tests__/secrets.test.ts`, which iterates the classification
+   table rather than a hand-picked example.
+3. **Different values per environment.** See §4. A staging key that decrypts
+   production data makes staging access equal to production access.
+4. `.env.example` carries placeholders only, checked **per variable** by
+   `npm run check:secrets`. Provider key prefixes (`sk_live_`, `sk_test_`,
+   `AKIA`, `whsec_`, …) are refused there even as placeholders: a fake key
+   wearing a real prefix is indistinguishable from a leaked one to a scanner or
+   to a reviewer skimming a diff.
 
-**[CODEX]** Choose the secret store, wire runtime injection, and record who may
-read each secret and who approves a break-glass read.
+### How secrets reach the process
+
+Every value above arrives in the **process environment**, and something outside
+the application put it there. In development that is a `.env` file; in staging
+and production it is whatever the platform provides. `loadConfig(source)` takes
+the environment as an argument, which is the injection seam.
+
+**No managed secret store is integrated**, because no deployment platform has
+been chosen. That is a deliberate decision, not an omission — see
+[ADR-0011](DECISIONS.md#adr-0011--runtime-environment-injection-as-the-secret-source-contract).
+
+**[CODEX]** Choose the platform and wire its injection. Record who may read each
+secret and who approves a break-glass read (§2a).
+
+---
+
+## 2a. Break-glass access to secrets
+
+**This is a policy, not an implementation.** There is no UI, no endpoint, and no
+code path here — nothing in this repository grants or logs access to a secret
+store, because there is no secret store yet. What follows is the contract the
+chosen platform must be configured to meet.
+
+| Rule | Why |
+|---|---|
+| The **runtime service identity** holds normal read access to the secrets its own environment needs, and to nothing else. | An application that can read staging's keys from production is a lateral-movement path. |
+| **Human read access is denied by default.** No engineer, including whoever provisions the platform, holds standing read access to a production secret. | Standing access is access that is used. The whole point of runtime injection is that no person needs to see the value. |
+| A single named **break-glass role** exists, empty in normal operation, granting temporary read access. | One documented path is auditable. Several undocumented ones are not. |
+| Assuming it requires **explicit authorisation from a second person**, recorded before the access, with a stated reason. | Self-authorised emergency access is standing access with extra steps. |
+| **Every read of the secret store is logged** — by the store itself, not by the application. Who, which secret, when, under what authorisation. | The application cannot log an access it is not party to. If the store cannot log reads, it is not a suitable store. |
+| Every break-glass use is **reviewed afterwards** by someone other than the person who used it, and the review is recorded. | An unreviewed audit log is a log nobody reads. |
+| Any secret exposed to a human during break-glass is **rotated afterwards**, on the assumption it is now known. | A value a person has seen is a value that exists outside the store. |
+
+**Undecided, and an owner decision:** who holds the break-glass role, and who
+authorises assuming it. This repository defines no organisational roles and will
+not invent them. Recorded as open in
+[`KEY_MANAGEMENT.md`](KEY_MANAGEMENT.md#open-decisions).
 
 ---
 
@@ -134,19 +214,47 @@ PostgreSQL is Codex's to provision.
 1. Stop the API and the dispatch worker. A worker writing into a half-restored
    database is worse than downtime.
 2. Restore the database snapshot.
-3. Restore the encryption keyring — including any key in
+3. Restore the encryption keyring — including **every** key in
    `ENCRYPTION_KEYS_RETIRED`. Rows name the key that encrypted them; a missing
-   retired key means those rows are permanently unreadable.
+   retired key means those rows are permanently unreadable. This is the step
+   that fails quietly: the system boots, most rows read, and a minority are
+   dead. `npm run check:keys` demonstrates it against synthetic keys.
 4. Run `npx prisma migrate deploy` to bring the schema forward if the snapshot
    is older than the deployed code.
-5. **Verify before serving traffic:**
+5. **Verify the keyring matches the data, before anything writes.** The survey
+   in `apps/api/src/secrets/rotation.ts` reads each ciphertext's key id out of
+   the envelope prefix without decrypting. It takes key **ids** only
+   (`{ activeKeyId, heldKeyIds }`), so whoever runs it needs no key material —
+   that is enforced by its signature, not by convention:
+   - `unknownKeyIds` must be **empty**. Non-empty means a key is missing from
+     the restore and those rows are already unreadable — stop and find it.
+   - `rowsNeedingReEncryption` above zero is normal mid-rotation and is not a
+     restore failure.
+6. **Verify before serving traffic:**
    - `GET /v1/finance/ledger/integrity` returns `balanced: true` and
      `totalDriftKobo: 0`
    - A staff sign-in completes password **and** TOTP
    - A vendor's masked payout details still render — proves the key matches
-6. Start the API. Start the worker only once the API is confirmed healthy.
-7. Reconcile against the payment provider for the gap between snapshot and
+7. Start the API. Start the worker only once the API is confirmed healthy.
+8. Reconcile against the payment provider for the gap between snapshot and
    incident. Orders in that window may have been paid for but not recorded.
+
+### Rehearsing the key half without a real backup
+
+`npm run check:keys` walks the custody procedure against keys generated in
+memory for that run. It demonstrates, rather than asserts:
+
+- a database restored **without** its key yields unrecoverable ciphertext;
+- a restore that keeps the active key and drops the retired ones silently loses
+  a subset of rows;
+- rotation in the documented order loses nothing, and rotation in the wrong
+  order destroys data;
+- every ambiguous keyring configuration is refused at boot, with no key
+  material in the message.
+
+It reads no secret store, writes nothing to disk, prints no key value, and
+**does not constitute a rehearsed restore**. The database half remains
+unrehearsed and stays on the readiness checklist below.
 
 ---
 
@@ -158,7 +266,8 @@ PostgreSQL is Codex's to provision.
 | Payments | `mock` | Paystack **sandbox** | Paystack live |
 | Queue | in-memory | Redis | Redis |
 | Storage | local disk | S3 bucket | Separate S3 bucket |
-| Secrets | `.env`, fictional | Secret store, staging-only | Secret store, production-only |
+| Secrets | `.env`, fictional | Injected at runtime, staging-only values | Injected at runtime, production-only values |
+| Encryption key | Fictional, in `.env` | Its own key | Its own key |
 | Data | Fictional seed | Synthetic only | Real |
 
 ### Non-negotiable
@@ -167,7 +276,21 @@ PostgreSQL is Codex's to provision.
   laptop, not into a bug report. Staging uses synthetic data generated by the
   same seed.
 - **No credential is shared between environments.** Separate database users,
-  separate encryption keys, separate provider keys.
+  separate encryption keys, separate JWT secrets, separate provider keys.
+  Development, staging, and production each generate their own; none is ever
+  copied from another.
+- **A staging configuration never depends on a production secret.** Not to read
+  a production database, not to decrypt a production row, not to call a
+  provider's live API. Staging exists to rehearse production, and a staging
+  environment holding production credentials makes staging access — which is
+  loosest by design — equal to production access.
+- **The encryption key is per environment, and this is enforceable in
+  practice**: a staging key applied to a production row fails to decrypt rather
+  than merely being discouraged. `npm run check:keys` §5 demonstrates it.
+- **The two JWT secrets differ from each other in every environment**, and boot
+  refuses equal values everywhere, not only in production. Equal secrets mean a
+  refresh token verifies as an access token, which is a full authentication
+  bypass that is invisible until someone tries it.
 - `config.ts` already refuses a production boot with SQLite, mock payments,
   local storage, an in-memory queue, `DEV_EXPOSE_OTP`, disabled rate limiting,
   MFA disabled, a missing encryption key, or placeholder secrets. Those guards
@@ -196,8 +319,21 @@ Nothing may go live until every line is ticked by a named person.
 - [ ] PostgreSQL + PostGIS provisioned, least-privilege users, TLS
 - [ ] Migration account separate from the runtime account
 - [ ] Redis + BullMQ, so a second API instance does not double-dispatch
-- [ ] Secret store with runtime injection
-- [ ] Backups, PITR, and **a rehearsed restore**
+- [ ] **Secret store chosen and its runtime injection wired.** The application
+      side is done — every secret is classified, redacted, and validated at
+      boot, and it reads its configuration from the process environment
+      regardless of what populated it (ADR-0011). What is missing is the
+      platform: nothing has been chosen, and no production secret exists.
+- [ ] Verify the platform's injection does not itself expose values — not in a
+      pod spec, a build log, a process listing, or an image layer. Outside what
+      this repository can check.
+- [ ] Break-glass role created, empty, with authorisation and review recorded
+      (§2a). **Owner decision: who holds it and who authorises assuming it.**
+- [ ] Secret-store read auditing enabled — by the store, not the application
+- [ ] Backups, PITR, and **a rehearsed restore of both halves** — the database
+      *and* the keyring, including retired keys. The key half's procedure is
+      rehearsed against synthetic material by `npm run check:keys`; neither half
+      has been rehearsed against a real backup.
 - [ ] Retention job scheduled and alerting on failure
 - [ ] Structured logs shipped somewhere searchable
 - [ ] Error reporting wired to a real destination

@@ -13,6 +13,7 @@ import {
   assertBalanced,
   type LedgerTransactionDraft,
 } from '@dash/domain/ledger';
+import { redactDeep } from '@dash/domain/redaction';
 
 export * from '@prisma/client';
 
@@ -162,46 +163,25 @@ export interface AuditInput {
   requestId?: string | null;
 }
 
-/** Keys whose values must never reach the audit log, however they are nested. */
-const REDACTED_KEYS = new Set([
-  'password',
-  'passwordhash',
-  'token',
-  'refreshtoken',
-  'accesstoken',
-  'secret',
-  'mfasecret',
-  'codehash',
-  'pin',
-  'deliverypinhash',
-  'pickupcodehash',
-  'bankaccountcipher',
-  'bankaccountnumber',
-  'cardnumber',
-  'cvv',
-  'authorization',
-  'apikey',
-]);
-
 /**
  * Strip secrets before anything is written to the audit trail.
  *
  * The audit log is read by support agents and exported for compliance, so it is
  * one of the widest-read tables in the system. A token that lands here is a
  * token that has leaked, so redaction happens at the write, not at the read.
+ *
+ * The vocabulary lives in `@dash/domain/redaction` rather than here. It used to
+ * be a local set of exact key names, which meant `secret` was caught and
+ * `paystackSecretKey` was not, and which drifted from the near-identical list in
+ * the API's observability seam. One list, matched by fragment, fixes both.
+ *
+ * Personal data is deliberately **not** redacted here. An audit entry recording
+ * which phone number an operator changed is the entire point of an audit entry;
+ * the error-tracker seam, which sends to a third party, opts into the wider
+ * list instead.
  */
-export function redact(value: unknown, depth = 0): unknown {
-  if (depth > 8 || value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map((entry) => redact(entry, depth + 1));
-  if (typeof value !== 'object') return value;
-
-  const output: Record<string, unknown> = {};
-  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-    output[key] = REDACTED_KEYS.has(key.toLowerCase())
-      ? '[redacted]'
-      : redact(nested, depth + 1);
-  }
-  return output;
+export function redact(value: unknown): unknown {
+  return redactDeep(value, { includePersonal: false });
 }
 
 export async function writeAudit(db: DbClient, input: AuditInput): Promise<void> {

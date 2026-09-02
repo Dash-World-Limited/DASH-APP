@@ -25,6 +25,42 @@ export default tseslint.config(
     },
   },
   {
+    // --- The configuration boundary -----------------------------------------
+    //
+    // Secrets enter this system in exactly one place. `loadConfig` validates
+    // every variable at boot, refuses an unsafe production configuration, and
+    // hands the rest of the code a typed object. A `process.env` read anywhere
+    // else skips all of that: no validation, no production guard, no entry in
+    // the classification table that drives log redaction and the leak tests.
+    //
+    // Which is not hypothetical — the development seed used to read
+    // `ENCRYPTION_KEY` directly and assembled a keyring with weaker rules than
+    // the API applies. This rule is what stops the next one.
+    //
+    // The allowlist below is the boundary itself, plus files that are Node
+    // programs rather than application runtime. Adding to it is a decision, and
+    // the diff makes it a visible one.
+    files: ['**/*.ts', '**/*.tsx'],
+    ignores: [
+      'apps/api/src/config.ts',
+      'apps/api/src/__tests__/**',
+      'apps/web/src/**',
+      'packages/db/src/index.ts',
+      'packages/db/src/seed.ts',
+    ],
+    rules: {
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'process',
+          property: 'env',
+          message:
+            'Read configuration through loadConfig() in apps/api/src/config.ts. It validates at boot, enforces the production guards, and classifies the value in apps/api/src/secrets/classification.ts so it is redacted from logs.',
+        },
+      ],
+    },
+  },
+  {
     // Tests may reach for shapes the production rules forbid.
     files: ['**/*.test.ts'],
     rules: {

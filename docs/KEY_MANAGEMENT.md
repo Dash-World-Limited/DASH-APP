@@ -40,11 +40,11 @@ that encrypted them, and re-encryption proceeds at its own pace.
 
 ## Configuration
 
-| Variable | Meaning |
-|---|---|
-| `ENCRYPTION_KEY` | Base64 of exactly 32 bytes. Encrypts all new values. |
-| `ENCRYPTION_KEY_ID` | Name recorded in every envelope this key writes. |
-| `ENCRYPTION_KEYS_RETIRED` | `id:base64key,id2:base64key2` — decrypt-only. |
+| Variable | Secret? | Meaning |
+|---|---|---|
+| `ENCRYPTION_KEY` | **Yes** | Base64 of exactly 32 bytes. Encrypts all new values. |
+| `ENCRYPTION_KEY_ID` | No | Name recorded in every envelope this key writes. It travels in plaintext inside the ciphertext, which is the point of it. |
+| `ENCRYPTION_KEYS_RETIRED` | **Yes** | `id:base64key,id2:base64key2` — decrypt-only. |
 
 Generate key material with:
 
@@ -52,36 +52,115 @@ Generate key material with:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-The API validates key material at boot, not at first use: a malformed key fails
-the process rather than surfacing weeks later in front of a user. An all-zero
-key is rejected outright, because that is what an unset variable decodes to.
+### What boot refuses
 
-Production refuses to start without `ENCRYPTION_KEY`, and refuses to start with
-`MFA_ENABLED=true` and no key — MFA without a key is not "MFA off", it is MFA
-that fails at enrolment.
+Key material is validated at boot, not at first use: a malformed key fails the
+process rather than surfacing weeks later in front of a user.
+
+| Refused | Why |
+|---|---|
+| A key that is not exactly 32 bytes | Wrong algorithm parameters, or a truncated paste |
+| An all-zero key | What an unset variable decodes to |
+| A key id outside `[A-Za-z0-9_-]{1,64}` | The envelope is dot-separated. An id containing a dot, a colon, or a space is written into ciphertext that **cannot be parsed back out** — the value encrypts fine and is then permanently unreadable, with nothing complaining until a decrypt. |
+| One key id that is both active and retired | A half-applied rotation. If the two entries hold different material, choosing either silently destroys every row written under the other. Boot refuses rather than guessing which rotation step was skipped. |
+| The same key material under two ids | A rotation that did not rotate |
+| A duplicate retired id | Decryption would be non-deterministic |
+| A malformed retired entry | The list is wrong, and some key is probably missing from it |
+| Retired keys with no `ENCRYPTION_KEY` | Not a decrypt-only mode: it can read old rows and write none, so it fails at the first write instead of at boot |
+| Production with no `ENCRYPTION_KEY` | Nowhere safe for a TOTP secret to live |
+| `MFA_ENABLED=true` with no key, in any environment | MFA without a key is not "MFA off", it is MFA that fails at enrolment |
+
+**No refusal message ever contains key material.** Asserted in
+`apps/api/src/__tests__/key-rotation.test.ts` and by `npm run check:keys`.
+
+These rules live in one place — `assembleKeyring` in
+`packages/domain/src/envelope` — because the API and the development seed both
+build keyrings, and the seed used to apply weaker rules than the API did.
 
 ---
 
-## Custody — for Codex to implement
+## Custody
 
-**None of this is done. The repository has no production key and no secret
-store.**
+### What exists, and where
 
-Requirements for whoever provisions production:
+Milestone III, all of it code and verified locally. **It is on the branch
+`claude/milestone-iii-secret-management` and has not been merged to `main`**, so
+a clone of `main` has none of the following:
+
+- Every variable is classified secret or non-secret in
+  `apps/api/src/secrets/classification.ts`, and that table drives log
+  redaction, the leak regression tests, and the `.env.example` gate.
+- Key material cannot reach a log, an error message, an audit entry, a metric,
+  or a health response. `apps/api/src/__tests__/secrets.test.ts` iterates the
+  classification table rather than checking one hand-picked example.
+- Every ambiguous keyring configuration in the table above is refused at boot.
+- A rotation survey (`apps/api/src/secrets/rotation.ts`) answers "is it safe to
+  destroy the old key yet?" without decrypting anything.
+- `npm run check:keys` rehearses the custody procedure against synthetic keys.
+
+### What does not exist
+
+**There is no production key, no secret store, and no deployment.** No key
+material has ever been generated for a real environment.
+
+The secret-source contract is runtime environment injection — see
+[ADR-0011](DECISIONS.md#adr-0011--runtime-environment-injection-as-the-secret-source-contract).
+The application reads `ENCRYPTION_KEY` from its environment and does not know
+what put it there. Choosing the platform that puts it there is still open.
+
+### Requirements for whoever provisions production
 
 1. **The key never enters this repository, a container image, a CI log, an
-   environment file in version control, or a ticket.**
+   environment file in version control, a ticket, or a chat message.**
 2. Hold it in a managed secret store (AWS Secrets Manager, GCP Secret Manager,
-   Vault, or the platform's equivalent) and inject it at runtime.
+   Vault, or the platform's equivalent) and inject it into the process
+   environment at runtime. The application needs no change for any of them.
 3. Separate key material per environment. A staging key must not decrypt
    production data, or staging access becomes production access.
 4. Restrict read access to the runtime service identity and a named break-glass
    role. Log every access to the secret itself, not only to the application.
-5. **Back the key up separately from the database, and test restoring it.** A
-   database backup without the key is unrecoverable ciphertext; a key stored
-   beside the backup defeats the encryption. These are the two halves and they
-   must be kept apart.
+   The policy is in [`RUNBOOKS.md` §2a](RUNBOOKS.md#2a-break-glass-access-to-secrets).
+5. **Back the key up separately from the database, and test restoring it.** See
+   the next section — this is the rule with the worst failure mode in the
+   system.
 6. Decide and document who can authorise a break-glass read.
+
+---
+
+## Backup and restore
+
+**The key backup and the database backup are two halves, and they are kept
+apart.** Both halves of that sentence carry weight:
+
+| Situation | Result |
+|---|---|
+| Database backup restored, key **lost** | Every encrypted field is unrecoverable ciphertext. There is no recovery. Vendors must re-enter payout details and every administrator must re-enrol TOTP. |
+| Database backup and key stored **together** | One archive, one theft, and the encryption has protected nothing. The separation *is* the control. |
+| Database restored with the **active key only**, retired keys dropped | The subtle one. The system boots, most rows read, and a minority fail with `unknown_key` — usually discovered by a vendor, weeks later. |
+
+`npm run check:keys` demonstrates all three against synthetic keys. It is a
+rehearsal of the *procedure*, **not** of a real restore: no real backup has ever
+been created, and none has ever been restored.
+
+### What a key backup must contain
+
+- The active key and its id.
+- **Every key in `ENCRYPTION_KEYS_RETIRED`**, with its id. A restore that keeps
+  only the active key loses every row not yet re-encrypted.
+- Which environment each belongs to, so a staging key cannot be restored into
+  production by mistake.
+
+### Restore verification
+
+After restoring both halves and before serving traffic, the survey in
+`apps/api/src/secrets/rotation.ts` answers whether the keyring matches the data:
+
+- `unknownKeyIds` non-empty means **rows are already unreadable** — a key is
+  missing from the restore. Stop and find it before anything writes.
+- `rowsNeedingReEncryption` above zero is normal mid-rotation and is not a
+  restore failure.
+
+The rest of the procedure is in [`RUNBOOKS.md` §3](RUNBOOKS.md#3-backup-and-restore).
 
 ## Rotation
 
@@ -94,15 +173,54 @@ The design supports rotation without downtime or a migration window:
    New writes use the new key. Existing rows keep naming the old one and still
    decrypt, because the retired key is still held.
 
-4. Re-encrypt in the background. `decryptPayoutDetailsForSettlement()` returns
-   `needsReEncryption: true` for any record opened with a non-active key, which
-   is the signal a rotation job uses to find outstanding rows.
-5. Once nothing reports `needsReEncryption`, remove the old key from
+4. Re-encrypt in the background:
+
+   ```ts
+   import { reEncryptAll, surveyKeyUsage } from './secrets/rotation.js';
+
+   const result = await reEncryptAll(prisma, keyring);
+   ```
+
+   This moves **every** encrypted column — vendor payout details *and* both TOTP
+   secret columns. Missing the TOTP columns is exactly how a rotation looks
+   complete and is not: payout details get surveyed, moved, and signed off while
+   every administrator's second factor still sits under the key about to be
+   destroyed.
+
+   `decryptPayoutDetailsForSettlement()` also returns `needsReEncryption: true`
+   for any record opened with a non-active key, which is the per-record form of
+   the same signal.
+
+5. **Check the retirement gate before removing anything.**
+
+   ```ts
+   const survey = await surveyKeyUsage(prisma, keyring);
+   // survey.safeToRetireOtherKeys === true
+   ```
+
+   The survey reads each ciphertext's key id out of the envelope prefix without
+   decrypting. Its parameter is a `KeyringIdentity` — `{ activeKeyId,
+   heldKeyIds }` — not a `Keyring`, so it is the type signature rather than a
+   convention that keeps key material out of it: an operator can run this from
+   the key ids on a deployment manifest, holding no key. `keyringIdentity(ring)`
+   derives those ids at a call site that already has a keyring, discarding the
+   bytes. It reports:
+
+   | Field | Meaning |
+   |---|---|
+   | `rowsNeedingReEncryption` | Rows still under a non-active key. Must be `0`. |
+   | `unknownKeyIds` | Key ids found in stored data that the keyring does not hold. Must be empty — non-empty means rows are **already** unreadable, which is an incident, not a rotation step. |
+   | `safeToRetireOtherKeys` | Both of the above are clear. **This is the only signal that gates key destruction.** |
+
+6. Only once `safeToRetireOtherKeys` is true, remove the old key from
    `ENCRYPTION_KEYS_RETIRED` and destroy it per the retention policy.
 
-**Do not skip step 4.** Removing a retired key while rows still name it makes
-those rows permanently unreadable — the failure is `unknown_key`, and there is
-no recovery except restoring the key.
+**Do not skip steps 4 and 5.** Removing a retired key while rows still name it
+makes those rows permanently unreadable — the failure is `unknown_key`, and
+there is no recovery except restoring the key. `npm run check:keys`
+demonstrates this failure against synthetic material, and
+`apps/api/src/__tests__/key-rotation.test.ts` walks the whole sequence above
+against a real database.
 
 ### When to rotate
 
@@ -123,10 +241,11 @@ TOTP secret, and require vendors to re-confirm payout details.
 
 ## Open decisions
 
-| Question | Owner |
-|---|---|
-| Which secret store | Codex / infrastructure |
-| Rotation cadence | Owner |
-| Who may authorise a break-glass read | Owner |
-| Key backup location and restore drill schedule | Codex / infrastructure |
-| Whether NDPA 2023 imposes specific key-custody duties | Qualified Nigerian counsel |
+| Question | Owner | Status |
+|---|---|---|
+| Which secret store, and which deployment platform | Codex / infrastructure | Open. Deliberately not chosen here — ADR-0011. The application needs no change for any of them. |
+| Rotation cadence | Owner | Open. Annual is a common baseline; nothing is decided. |
+| Who holds the break-glass role | Owner | Open. This repository defines no organisational roles and will not invent them. |
+| Who authorises assuming it | Owner | Open. The policy requires a second person; who that is, is not decided. |
+| Key backup location and restore drill schedule | Codex / infrastructure | Open. No backup exists and none has been rehearsed. |
+| Whether NDPA 2023 imposes specific key-custody duties | Qualified Nigerian counsel | Open. Nothing here is a compliance statement. |

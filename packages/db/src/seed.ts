@@ -15,7 +15,7 @@ import { naira } from '@dash/domain/money';
 import { boundingBoxOf, parsePolygon } from '@dash/domain/geo';
 import { buildOrderCapture } from '@dash/domain/ledger';
 import { buildQuote, computeSettlement, type PricingRules } from '@dash/domain/pricing';
-import { encrypt, parseKey, type Keyring } from '@dash/domain/envelope';
+import { assembleKeyring, encrypt, type Keyring } from '@dash/domain/envelope';
 
 const prisma = new PrismaClient();
 
@@ -103,15 +103,24 @@ async function main(): Promise<void> {
   // Staff roles require a second factor, so the seed needs the same keyring the
   // API uses. Without a key the accounts are still created — they simply arrive
   // unenrolled and must enrol on first sign-in, which is the real flow anyway.
+  //
+  // This is the one place outside `apps/api/src/config.ts` that reads secret
+  // material from the environment, and it is deliberate: `@dash/db` sits below
+  // `apps/api`, so it cannot call `loadConfig`. What it must not do is apply
+  // *weaker* rules than the API does — it used to build the keyring by hand and
+  // skipped the key-id check entirely, which meant an id the envelope format
+  // cannot carry would be refused at API boot and accepted here, seeding rows
+  // the API could never read. `assembleKeyring` is the same function the API
+  // configuration calls, so the two cannot disagree again.
+  //
+  // Retired keys are not read: the seed only ever writes new values, and it
+  // writes them with the active key.
   const encryptionKey = process.env['ENCRYPTION_KEY'];
   const keyring: Keyring | null = encryptionKey
-    ? {
-        active: {
-          keyId: process.env['ENCRYPTION_KEY_ID'] ?? 'k1',
-          key: parseKey(encryptionKey, 'ENCRYPTION_KEY'),
-        },
-        retired: [],
-      }
+    ? assembleKeyring({
+        activeKey: encryptionKey,
+        activeKeyId: process.env['ENCRYPTION_KEY_ID'] ?? 'k1',
+      })
     : null;
 
   // -------------------------------------------------------------------------

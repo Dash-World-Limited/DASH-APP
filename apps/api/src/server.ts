@@ -32,6 +32,13 @@ import {
   ConsoleErrorReporter,
   ConsoleMetrics,
 } from './observability/index.js';
+import {
+  buildErrorSerializer,
+  buildLogMethodHook,
+  knownSecretValues,
+  LOG_REDACT_PATHS,
+  REDACTED,
+} from './secrets/logging.js';
 import { assertCsrf, assertSecureCookieConfig, requiresCsrf } from './auth/cookies.js';
 import { registerErrorHandler } from './http/errors.js';
 import { registerAuthRoutes } from './routes/auth.js';
@@ -49,10 +56,23 @@ import { registerAccountExportWorker } from './workers/account-export.js';
 export interface BuildOptions {
   config?: Config;
   services?: Partial<Services>;
+  /**
+   * Where the logger writes.
+   *
+   * Exists so the secret-leak suite can assert against the *real* logger — the
+   * same redact paths, the same `err` serializer, the same hook — rather than
+   * rebuilding an approximation of this configuration in a test and proving
+   * only that the approximation works. Unset everywhere else, which leaves
+   * Pino's default destination untouched.
+   */
+  logDestination?: { write(chunk: string): void };
 }
 
 export function buildServices(config: Config, overrides: Partial<Services> = {}): Services {
   const prisma = overrides.prisma ?? defaultPrisma;
+  // Passed to the error reporter so a secret that reached an error message by
+  // some route no pattern matches is still stripped before it leaves.
+  const knownSecrets = knownSecretValues(config as unknown as Record<string, unknown>);
   // A test run should not print a wall of fake SMS. `silent` is the level the
   // test harness sets, so it doubles as the signal here.
   const quiet = config.LOG_LEVEL === 'silent';
@@ -86,8 +106,9 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     // from the frame that threw, and those are exactly what must not travel to
     // a third party.
     errors:
-      overrides.errors ?? new ConsoleErrorReporter(config.NODE_ENV !== 'production', quiet),
-    metrics: overrides.metrics ?? new ConsoleMetrics(quiet),
+      overrides.errors ??
+      new ConsoleErrorReporter(config.NODE_ENV !== 'production', quiet, knownSecrets),
+    metrics: overrides.metrics ?? new ConsoleMetrics(quiet, knownSecrets),
   };
 }
 
@@ -95,22 +116,28 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   const config = options.config ?? loadConfig();
   const services = buildServices(config, options.services ?? {});
 
+  // Captured once. The values do not change while the process runs, and
+  // re-reading them per log line would be both slow and a second place secret
+  // material is handled.
+  const knownSecrets = knownSecretValues(config as unknown as Record<string, unknown>);
+
   const app = Fastify({
     logger: {
       level: config.LOG_LEVEL,
-      // Never let a credential reach the logs, even by accident.
+      // Three layers, because one is not enough. Paths censor the fields whose
+      // location is known; the `err` serializer and the log-method hook scrub
+      // credentials that arrive *inside* a string, which no path can reach —
+      // a Prisma or ioredis connection failure carries the whole URL, password
+      // included, in its message. See secrets/logging.ts.
       redact: {
-        paths: [
-          'req.headers.authorization',
-          'req.headers.cookie',
-          'req.headers["idempotency-key"]',
-          'req.body.password',
-          'req.body.code',
-          'req.body.refreshToken',
-          'res.headers["set-cookie"]',
-        ],
-        censor: '[redacted]',
+        paths: [...LOG_REDACT_PATHS],
+        censor: REDACTED,
       },
+      serializers: { err: buildErrorSerializer(knownSecrets) },
+      // Pino copies hooks onto child loggers, so this covers every per-request
+      // logger as well as the root.
+      hooks: { logMethod: buildLogMethodHook(knownSecrets) },
+      ...(options.logDestination ? { stream: options.logDestination } : {}),
       ...(config.NODE_ENV === 'development'
         ? { transport: { target: 'pino-pretty', options: { colorize: true, translateTime: 'HH:MM:ss' } } }
         : {}),

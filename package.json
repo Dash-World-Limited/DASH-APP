@@ -32,6 +32,8 @@
     "db:pg:migrate:status": "prisma migrate status --schema packages/db/prisma/postgres/schema.prisma",
     "check:postgres": "tsx scripts/postgres-check.mjs",
     "check:redis": "tsx scripts/redis-check.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check:keys": "tsx scripts/key-custody-check.mjs",
     "db:studio": "prisma studio --schema packages/db/prisma/schema.prisma",
     "db:seed": "tsx packages/db/src/seed.ts",
     "setup": "npm install && npm run db:generate && npm run db:push && npm run db:seed",

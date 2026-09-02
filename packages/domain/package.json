@@ -16,6 +16,7 @@
     "./permissions": "./src/permissions/index.ts",
     "./ports": "./src/ports/index.ts",
     "./envelope": "./src/envelope/index.ts",
+    "./redaction": "./src/redaction/index.ts",
     "./mfa": "./src/mfa/index.ts",
     "./retention": "./src/retention/index.ts",
     "./account": "./src/account/index.ts"

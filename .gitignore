@@ -14,7 +14,41 @@ out/
 .env
 .env.local
 .env.*.local
+.env.production
+.env.staging
+.env.development
 !.env.example
+
+# key and credential material — NEVER commit any of this
+#
+# gitleaks catches things that match a known credential pattern. These are the
+# files that carry key material without matching one: a PEM body, a binary
+# keystore, a service-account JSON. Excluded by filename so a stray one cannot
+# be added by accident in the first place.
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+service-account*.json
+serviceaccount*.json
+credentials.json
+gcp-*.json
+*.gpg
+*.asc
+
+# database dumps and key backups — a dump carries the real rows, and a key
+# backup stored beside one defeats the separation the encryption depends on
+*.dump
+*.sql.gz
+*.bak
+backups/
 
 # database (local SQLite dev store)
 *.db
