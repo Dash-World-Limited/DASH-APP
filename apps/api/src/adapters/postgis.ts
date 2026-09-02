@@ -130,9 +130,9 @@ export class PostgisGeoAdapter implements GeoPort {
              ${usable.map((zone) => zone.id)}::text[],
              ${usable.map((zone) => zone.wkt)}::text[]
            ) AS z("id", "wkt")
-      WHERE ST_Contains(
-              ST_SetSRID(ST_GeomFromText(z."wkt"), ${SRID}),
-              ST_SetSRID(ST_GeomFromText(${pointWkt}), ${SRID})
+      WHERE ST_Covers(
+              ST_SetSRID(ST_GeomFromText(z."wkt"), ${SRID}::integer),
+              ST_SetSRID(ST_GeomFromText(${pointWkt}), ${SRID}::integer)
             )
     `;
 

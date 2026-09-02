@@ -80,7 +80,7 @@ describe('zone containment', () => {
     // database can index, not a spatial operation.
     expect(prefilter!.sql).toContain('"minLatitude"');
     expect(prefilter!.sql).toContain('"maxLongitude"');
-    expect(prefilter!.sql).not.toContain('ST_Contains');
+    expect(prefilter!.sql).not.toContain('ST_Covers');
     // City, then the point twice per axis — all bound, none interpolated.
     expect(prefilter!.values).toEqual(['city_1', 6.5, 6.5, 3.4, 3.4]);
   });
@@ -108,7 +108,7 @@ describe('zone containment', () => {
     expect(zones).toEqual(['zone_1']);
 
     const [, containment] = calls;
-    expect(containment!.sql).toContain('ST_Contains');
+    expect(containment!.sql).toContain('ST_Covers');
     expect(containment!.sql).toContain('ST_SetSRID');
 
     // The WKT is a bound parameter, never spliced into the statement.
