@@ -543,15 +543,23 @@ document.
 
 ### 4. Infrastructure, in dependency order
 
-1. **PostgreSQL + PostGIS.** Change the datasource, run `prisma migrate`, and
-   write the PostGIS `GeoPort`. The schema was authored for this (ADR-0003) — no
-   SQLite-only features, geometry in ordinary columns.
+1. **PostgreSQL + PostGIS — implemented and real-infrastructure verified in Milestone II.**
+   A separate PostgreSQL Prisma schema and migration path now coexists with the
+   SQLite development/test path. PostgreSQL 16 + PostGIS 3.4 were exercised
+   against a fresh disposable database: migration apply, migration status, and
+   schema drift all passed. The PostGIS `GeoPort` was verified against the real
+   service, including boundary and hole semantics, with **14/14 checks passing**.
+   Boundary-inclusive containment uses `ST_Covers`, and SRID parameters are
+   explicitly bound as PostgreSQL integers. **Not yet merged or deployed.**
 2. **Secret store.** Before anything else touches a real key. See
    `KEY_MANAGEMENT.md`, especially that the encryption key must be backed up
    *separately* from the database.
-3. **Redis + BullMQ.** Replaces `MemoryQueueAdapter`. Until this exists you
-   cannot run two API instances — both would run a dispatch worker and
-   double-offer.
+3. **Redis + BullMQ — implemented and real-infrastructure verified in Milestone II.**
+   Redis-backed queueing, idempotent job handling, delay/retry behaviour, and
+   shared fail-closed rate limiting are implemented. Verification against Redis
+   7 passed **8/8 checks**, including a shared rate-limit budget across two API
+   instances. This removes the previous single-instance `MemoryQueueAdapter`
+   limitation for these paths. **Not yet merged or deployed.**
 4. **Backups and a rehearsed restore.** The restore procedure in `RUNBOOKS.md`
    has never been executed.
 5. **Schedule the retention job.** Daily, off-peak, single concurrency, alert on
