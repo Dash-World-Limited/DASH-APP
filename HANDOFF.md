@@ -550,7 +550,7 @@ document.
    schema drift all passed. The PostGIS `GeoPort` was verified against the real
    service, including boundary and hole semantics, with **14/14 checks passing**.
    Boundary-inclusive containment uses `ST_Covers`, and SRID parameters are
-   explicitly bound as PostgreSQL integers. **Not yet merged or deployed.**
+   explicitly bound as PostgreSQL integers. **Merged on `main`; not yet deployed.**
 2. **Secret store.** Before anything else touches a real key. See
    `KEY_MANAGEMENT.md`, especially that the encryption key must be backed up
    *separately* from the database.
@@ -559,7 +559,7 @@ document.
    shared fail-closed rate limiting are implemented. Verification against Redis
    7 passed **8/8 checks**, including a shared rate-limit budget across two API
    instances. This removes the previous single-instance `MemoryQueueAdapter`
-   limitation for these paths. **Not yet merged or deployed.**
+   limitation for these paths. **Merged on `main`; not yet deployed.**
 4. **Backups and a rehearsed restore.** The restore procedure in `RUNBOOKS.md`
    has never been executed.
 5. **Schedule the retention job.** Daily, off-peak, single concurrency, alert on
