@@ -57,6 +57,11 @@ export default tseslint.config(
       'apps/web/src/**',
       'packages/db/src/index.ts',
       'packages/db/src/seed.ts',
+      // Runs the seed as a subprocess and has to hand it a `DATABASE_URL`
+      // pointing at a throwaway file. That is building a child environment,
+      // not reading application configuration, which is what the rule guards
+      // against — the same reason the API's own test directory is listed.
+      'packages/db/src/seed.test.ts',
     ],
     rules: {
       'no-restricted-properties': [

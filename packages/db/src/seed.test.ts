@@ -1,0 +1,142 @@
+/**
+ * The seed, run for real against a disposable database.
+ *
+ * One property is worth this much machinery: **a freshly seeded rider must be
+ * dispatchable.**
+ *
+ * Every other timestamp in the seed is pinned to `SEED_NOW`, a fixed date, so
+ * re-seeding produces identical, comparable data. Location freshness cannot
+ * be, and that exception is the whole subject of this file. Dispatch excludes
+ * any rider whose last reported position is older than
+ * `maximumLocationAgeSeconds`, measured against the real clock at the moment
+ * the engine runs. A `locationReportedAt` pinned to a fixed date is therefore
+ * stale the day after that date and stale for ever after: every seeded rider
+ * is excluded as `location_stale`, every order escalates to manual dispatch,
+ * and no rider can receive an offer in local development at all.
+ *
+ * That failure is expensive because of how it reads. Nothing errors. The API
+ * returns 200, the outbox records the job, the worker runs and reports a
+ * decision — with `ranked: 0` and every candidate excluded. It looks exactly
+ * like "dispatch is broken", and the rider journey is simply untestable until
+ * someone works out that the *seed* is the stale thing.
+ *
+ * So this asserts against `DEFAULT_CONFIG` rather than a copy of the number:
+ * if the freshness window is ever tightened, this test fails and the seed is
+ * corrected, instead of local development quietly losing its riders again.
+ *
+ * It runs the actual seed as a subprocess against a throwaway SQLite file.
+ * Asserting on the source, or on a re-implementation of it, would prove
+ * nothing about what `npm run db:seed` actually writes.
+ */
+
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { PrismaClient } from '@prisma/client';
+import { DEFAULT_CONFIG } from '@dash/domain/dispatch';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+/** The fixed date every other seeded timestamp is derived from. */
+const SEED_NOW = new Date('2026-08-30T12:00:00.000Z');
+
+let directory: string;
+let prisma: PrismaClient;
+/** When the seed ran, so freshness is measured from the right moment. */
+let seededAt: number;
+
+beforeAll(() => {
+  directory = mkdtempSync(join(tmpdir(), 'dash-seed-'));
+  const file = join(directory, 'seed.db');
+  const databaseUrl = `file:${file}`;
+
+  // The Prisma CLI's JS entry point through the current Node binary rather
+  // than `npx`: on Windows `npx` resolves to `npx.cmd`, and Node refuses to
+  // spawn a `.cmd` without a shell, failing with a bare EINVAL.
+  const prismaCli = createRequire(import.meta.url).resolve('prisma/build/index.js');
+  execFileSync(
+    process.execPath,
+    [prismaCli, 'db', 'push', '--skip-generate', '--schema', 'packages/db/prisma/schema.prisma'],
+    { cwd: process.cwd(), env: { ...process.env, DATABASE_URL: databaseUrl }, stdio: 'pipe' },
+  );
+
+  seededAt = Date.now();
+  execFileSync(process.execPath, ['--import', 'tsx', 'packages/db/src/seed.ts'], {
+    cwd: process.cwd(),
+    // No ENCRYPTION_KEY: the seed treats the keyring as optional and simply
+    // skips MFA enrolment, which this test does not look at.
+    env: { ...process.env, DATABASE_URL: databaseUrl },
+    stdio: 'pipe',
+  });
+
+  prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+}, 180_000);
+
+afterAll(async () => {
+  await prisma?.$disconnect();
+  if (directory) rmSync(directory, { recursive: true, force: true });
+});
+
+describe('a freshly seeded rider is dispatchable', () => {
+  it('reports a location inside the dispatch freshness window', async () => {
+    const riders = await prisma.rider.findMany({
+      select: { id: true, availability: true, locationReportedAt: true },
+    });
+
+    expect(riders.length).toBeGreaterThan(0);
+
+    for (const rider of riders) {
+      expect(rider.locationReportedAt).not.toBeNull();
+
+      // The exact comparison `decideDispatch` makes, against the same config.
+      const ageSeconds = (seededAt - rider.locationReportedAt!.getTime()) / 1000;
+
+      expect(ageSeconds).toBeLessThanOrEqual(DEFAULT_CONFIG.maximumLocationAgeSeconds);
+      // A position from the future is refused just as firmly as a stale one,
+      // so a seed that overshot the clock would be no better.
+      expect(ageSeconds).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('does not pin rider freshness to the fixed seed date', async () => {
+    // The regression in one assertion. `SEED_NOW` is a constant in the past;
+    // anchoring freshness to it is what made every rider permanently stale.
+    const rider = await prisma.rider.findFirstOrThrow({
+      select: { locationReportedAt: true },
+    });
+
+    expect(rider.locationReportedAt!.getTime()).toBeGreaterThan(SEED_NOW.getTime());
+  });
+});
+
+describe('the rest of the seed stays deterministic', () => {
+  it('still pins every other rider timestamp to the seed date', async () => {
+    // Freshness is the single documented exception. If a later change reaches
+    // for `Date.now()` again, two runs of the seed stop being comparable and
+    // this catches it.
+    const rider = await prisma.rider.findFirstOrThrow({
+      where: { lastAssignedAt: { not: null } },
+      select: { lastAssignedAt: true },
+    });
+
+    expect(rider.lastAssignedAt!.toISOString()).toBe(
+      new Date(SEED_NOW.getTime() - 900_000).toISOString(),
+    );
+  });
+
+  it('still pins the fictional world it builds', async () => {
+    const city = await prisma.city.findFirstOrThrow({ select: { slug: true } });
+    expect(city.slug).toBe('lagos');
+
+    // The seed is documented as idempotent and comparable. A spot check that
+    // its shape has not drifted, so "deterministic" is asserted rather than
+    // assumed.
+    const [vendors, riders, customers] = await Promise.all([
+      prisma.vendor.count(),
+      prisma.rider.count(),
+      prisma.customer.count(),
+    ]);
+    expect({ vendors, riders, customers }).toEqual({ vendors: 4, riders: 4, customers: 3 });
+  });
+});

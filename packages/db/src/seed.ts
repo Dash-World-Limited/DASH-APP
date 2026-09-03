@@ -762,7 +762,19 @@ async function main(): Promise<void> {
         availability: definition.availability,
         lastLatitude: definition.latitude,
         lastLongitude: definition.longitude,
-        locationReportedAt: new Date(SEED_NOW.getTime() - 15_000),
+        // Relative to the real clock, not to `SEED_NOW`.
+        //
+        // Everything else here is pinned to `SEED_NOW` so a reseed produces
+        // identical data. Location freshness cannot be: dispatch excludes any
+        // rider whose last position is more than
+        // `maximumLocationAgeSeconds` (120) old, measured against the actual
+        // time the engine runs. Pinned to a fixed date, every seeded rider is
+        // permanently `location_stale`, dispatch escalates every order to
+        // manual, and **no rider can ever receive an offer in local
+        // development** — which makes the entire rider journey untestable from
+        // a fresh seed. It reads as "dispatch is broken" rather than "the seed
+        // is stale", which is what made it worth a comment this long.
+        locationReportedAt: new Date(Date.now() - 15_000),
         qualityScore: 88,
         lastAssignedAt: new Date(SEED_NOW.getTime() - 900_000),
         canCarryCash: true,
