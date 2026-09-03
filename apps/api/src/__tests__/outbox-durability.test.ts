@@ -119,10 +119,14 @@ describe('an accepted order survives a queue outage', () => {
 
     // 2. The work actually happens.
     expect(result.published).toBeGreaterThan(0);
-    expect(queue.published.some((job) => job.idempotencyKey === `dispatch_${order.id}`)).toBe(true);
+    // `_accepted` because the key is scoped to the transition that asked for
+    // the dispatch, not just the order: checkout asks once and the vendor's
+    // accept asks again, and the queue has to be able to tell them apart or it
+    // discards the second as a redelivery of the first. See dispatch.test.ts.
+    expect(queue.published.some((job) => job.idempotencyKey === `dispatch_${order.id}_accepted`)).toBe(true);
 
     const settled = await context.prisma.outboxEvent.findFirstOrThrow({
-      where: { idempotencyKey: `dispatch_${order.id}` },
+      where: { idempotencyKey: `dispatch_${order.id}_accepted` },
     });
     expect(settled.status).toBe('published');
   });
@@ -167,9 +171,9 @@ describe('an accepted order survives a queue outage', () => {
       payload: { prepMinutes: 20 },
     });
 
-    expect(queue.published.some((job) => job.idempotencyKey === `dispatch_${order.id}`)).toBe(true);
+    expect(queue.published.some((job) => job.idempotencyKey === `dispatch_${order.id}_accepted`)).toBe(true);
     const event = await context.prisma.outboxEvent.findFirstOrThrow({
-      where: { idempotencyKey: `dispatch_${order.id}` },
+      where: { idempotencyKey: `dispatch_${order.id}_accepted` },
     });
     expect(event.status).toBe('published');
   });

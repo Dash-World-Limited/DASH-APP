@@ -662,6 +662,107 @@ describe('location reporting', () => {
 });
 
 // ---------------------------------------------------------------------------
+describe('every trigger that should dispatch, dispatches', () => {
+  /**
+   * An order is sent to dispatch more than once on purpose, and each of those
+   * has to survive the queue's idempotency check.
+   *
+   * This is a regression test for a real defect found by driving the app in a
+   * browser: checkout and vendor-accept both enqueued `dispatch.find_rider`
+   * under the key `dispatch_<orderId>`, so the queue — which remembers keys
+   * for ever, by design, because that is what makes at-least-once delivery
+   * safe — discarded the accept-time job as a redelivery of the checkout one.
+   *
+   * The symptom was invisible from any single endpoint: every request returned
+   * 200 and the outbox row said `published`. Only the second dispatch never
+   * ran. Orders whose first dispatch found no eligible rider — the common case,
+   * since it fires five seconds after payment, before the vendor has even
+   * accepted — escalated to manual dispatch and were never retried.
+   *
+   * Asserted on the keys rather than on an offer appearing, because the worker
+   * is scheduled off the prep estimate and waiting for it would make this test
+   * slow and timing-dependent. The keys are the thing that was wrong.
+   */
+  it('gives checkout and vendor-accept different queue keys', async () => {
+    const created = await context.app.inject({
+      method: 'POST',
+      url: '/v1/orders',
+      headers: { ...customerA.headers, 'idempotency-key': idempotencyKey('dkey') },
+      payload: {
+        branchId: world.vendorA.branchId,
+        items: [
+          { itemId: world.vendorA.itemId, quantity: 1, modifierIds: [world.vendorA.modifierId] },
+        ],
+        mode: 'delivery',
+        addressId: world.customerA.addressId,
+        paymentMethod: 'card',
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const orderId = created.json<{ order: { id: string } }>().order.id;
+
+    const accepted = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/accept`,
+      headers: vendorA.headers,
+      payload: { prepMinutes: 20 },
+    });
+    expect(accepted.statusCode).toBe(200);
+
+    const jobs = await context.prisma.outboxEvent.findMany({
+      where: { name: 'dispatch.find_rider', payload: { contains: orderId } },
+      select: { idempotencyKey: true },
+    });
+
+    // Both triggers recorded a job...
+    expect(jobs).toHaveLength(2);
+    // ...and the queue can tell them apart, which is the whole point.
+    const keys = new Set(jobs.map((job) => job.idempotencyKey));
+    expect(keys.size).toBe(2);
+  });
+
+  it('keeps a retried accept idempotent', async () => {
+    // The keys must distinguish *different* triggers without making the same
+    // trigger enqueue twice — a double-tapped Accept button is one dispatch.
+    const created = await context.app.inject({
+      method: 'POST',
+      url: '/v1/orders',
+      headers: { ...customerA.headers, 'idempotency-key': idempotencyKey('dkey2') },
+      payload: {
+        branchId: world.vendorA.branchId,
+        items: [
+          { itemId: world.vendorA.itemId, quantity: 1, modifierIds: [world.vendorA.modifierId] },
+        ],
+        mode: 'delivery',
+        addressId: world.customerA.addressId,
+        paymentMethod: 'card',
+      },
+    });
+    const orderId = created.json<{ order: { id: string } }>().order.id;
+
+    const accept = async () =>
+      context.app.inject({
+        method: 'POST',
+        url: `/v1/vendor/orders/${orderId}/accept`,
+        headers: vendorA.headers,
+        payload: { prepMinutes: 20 },
+      });
+
+    expect((await accept()).statusCode).toBe(200);
+    // The second is refused by the state machine — an accepted order cannot be
+    // accepted again — so no second job is recorded either way.
+    await accept();
+
+    const jobs = await context.prisma.outboxEvent.findMany({
+      where: { name: 'dispatch.find_rider', payload: { contains: orderId } },
+      select: { idempotencyKey: true },
+    });
+    expect(new Set(jobs.map((job) => job.idempotencyKey)).size).toBe(jobs.length);
+    expect(jobs.length).toBeLessThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe('ops reassignment', () => {
   it('returns an assigned order to the dispatch pool', async () => {
     const order = await readyOrder();

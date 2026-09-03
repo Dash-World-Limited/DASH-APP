@@ -1017,9 +1017,17 @@ export async function confirmOrderPaid(
     await enqueueViaOutbox(tx, {
       name: 'dispatch.find_rider',
       payload: { orderId: order.id },
-      // Unchanged from the enqueue this replaces: the relay passes it straight
-      // through to the queue, which is what makes at-least-once safe.
-      idempotencyKey: `dispatch_${order.id}`,
+      // Scoped to the transition that caused it, not just the order.
+      //
+      // An order is dispatched more than once on purpose: here when it is
+      // paid, again when the vendor accepts and a real prep estimate exists,
+      // and again on an ops reassignment. Keying all of them on the order id
+      // alone made the queue treat the later ones as retries of this one and
+      // silently drop them — so an order that found no rider in these first
+      // five seconds was never dispatched again, and waited for a human who
+      // had no reason to be looking. `_placed` keeps this enqueue idempotent
+      // against its own redelivery, which is all the key is for.
+      idempotencyKey: `dispatch_${order.id}_placed`,
       delayMs: 5_000,
     });
 

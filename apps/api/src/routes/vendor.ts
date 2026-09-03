@@ -159,7 +159,12 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
           name: 'dispatch.find_rider',
           payload: { orderId: order.id },
           delayMs: Math.max(0, (body.prepMinutes - 8) * 60_000),
-          idempotencyKey: `dispatch_${order.id}`,
+          // Distinct from the enqueue at checkout — see the note there. This
+          // is the dispatch that matters, because it is the first one timed
+          // against a real prep estimate rather than guessed five seconds
+          // after payment. Sharing a key with that one meant this never ran.
+          // An order reaches `accepted` once, so this stays idempotent.
+          idempotencyKey: `dispatch_${order.id}_accepted`,
         });
 
         // The customer's tracking screen is waiting on exactly this. Recorded
