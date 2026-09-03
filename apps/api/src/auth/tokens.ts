@@ -34,6 +34,20 @@ export interface AccessTokenClaims {
   sua?: number;
   /** Set when an admin is impersonating this identity. */
   imp?: string;
+  /**
+   * Expiry, epoch seconds, as verification read it.
+   *
+   * Surfaced because a WebSocket needs it and an HTTP request does not. A
+   * request is authorized once and finishes; a socket authenticates once and
+   * then lives for hours, so it has to know when the authority it was granted
+   * runs out and close itself. Without this the only way to find out would be
+   * to decode the token a second time somewhere else.
+   *
+   * Set by `verifyAccessToken` from the verified payload — never read from an
+   * unverified token, and never supplied by a caller when issuing, where the
+   * TTL argument decides it.
+   */
+  exp?: number;
 }
 
 export interface RefreshTokenClaims {
@@ -109,6 +123,9 @@ export async function verifyAccessToken(
       ...(Array.isArray(payload['cityIds']) ? { cityIds: payload['cityIds'] as string[] } : {}),
       ...(typeof payload['sua'] === 'number' ? { sua: payload['sua'] } : {}),
       ...(typeof payload['imp'] === 'string' ? { imp: payload['imp'] } : {}),
+      // `jwtVerify` has already rejected an expired token, so this is a future
+      // instant by the time it is read here.
+      ...(typeof payload.exp === 'number' ? { exp: payload.exp } : {}),
     };
   } catch (error) {
     if (error instanceof TokenError) throw error;

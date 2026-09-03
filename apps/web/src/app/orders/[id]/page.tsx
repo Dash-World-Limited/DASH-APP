@@ -15,6 +15,7 @@ import {
 } from '@/components/ui';
 import { ApiRequestError, type QuoteLine } from '@/lib/api';
 import { authedFetch } from '@/lib/session';
+import { liveLabel, useLive } from '@/lib/useLive';
 
 interface OrderDetail {
   id: string;
@@ -92,22 +93,31 @@ export default function OrderTrackingPage() {
   }, [params.id]);
 
   useEffect(() => {
-    void load();
     try {
       setPin(sessionStorage.getItem(`dash.pin.${params.id}`));
     } catch {
       setPin(null);
     }
-  }, [load, params.id]);
+  }, [params.id]);
 
-  // Poll while the order is live. Websockets are Milestone 4; until then this
-  // is honest polling rather than a fake "live" indicator.
-  useEffect(() => {
-    if (!order) return;
-    if (order.phase === 'complete' || order.phase === 'stopped') return;
-    const timer = setInterval(() => void load(), 10_000);
-    return () => clearInterval(timer);
-  }, [order, load]);
+  // A finished order has nothing left to announce, so both the socket and the
+  // timer stop. `order === null` counts as live so the very first read happens.
+  const stillMoving =
+    order === null || (order.phase !== 'complete' && order.phase !== 'stopped');
+
+  // Realtime, with the ten-second poll kept underneath it.
+  //
+  // The notification carries `{subject, version}` and nothing else; the refresh
+  // it triggers is this screen's own `load()`, which is the same authorized
+  // read it has always made. That is what stops the socket showing a customer
+  // anything `GET /v1/orders/:id` would not have — the rider's position only
+  // while the order is active, no delivery PIN, no other customer's order.
+  const { status } = useLive({
+    topics: [`order:${params.id}`],
+    load,
+    pollMs: 10_000,
+    enabled: stillMoving,
+  });
 
   if (error) {
     return (
@@ -166,6 +176,15 @@ export default function OrderTrackingPage() {
               {order.statusLabel}
             </Badge>
           </div>
+          {stillMoving ? (
+            // Says what is actually happening rather than a decorative "live"
+            // dot. When the socket is not connected this screen is still
+            // correct — it is re-reading on a timer, which is what it always
+            // did — and saying so is more use than implying otherwise.
+            <p className="mt-2 text-xs text-graphite-400" aria-live="polite">
+              {liveLabel(status, 10_000)}
+            </p>
+          ) : null}
         </header>
 
         {/* --- Progress ------------------------------------------------------ */}

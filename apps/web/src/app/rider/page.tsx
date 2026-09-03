@@ -14,7 +14,8 @@ import {
   formatNaira,
 } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch, useHasSession } from '@/lib/session';
+import { authedFetch, useHasSession, useMe } from '@/lib/session';
+import { liveLabel, useLive } from '@/lib/useLive';
 
 /**
  * Rider app.
@@ -53,6 +54,7 @@ export default function RiderPage() {
   const [error, setError] = useState<ApiRequestError | null>(null);
   const [busy, setBusy] = useState(false);
   const signedIn = useHasSession();
+  const { me } = useMe();
 
   const load = useCallback(async (): Promise<void> => {
     if (!signedIn) return;
@@ -74,15 +76,31 @@ export default function RiderPage() {
     }
   }, [signedIn]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
-    if (availability !== 'idle') return;
-    const timer = setInterval(() => void load(), 6000);
-    return () => clearInterval(timer);
-  }, [availability, load]);
+  /**
+   * Offers, pushed.
+   *
+   * This is the screen where the difference is not a nicety. A dispatch offer
+   * expires in thirty seconds, so a six-second poll spends up to a fifth of the
+   * window before the rider has even seen the job — and a rider who never sees
+   * it is recorded as having ignored it.
+   *
+   * The rider's own topic is the only place this can arrive: an offered rider
+   * has no relationship to the order yet, so the server would refuse them the
+   * order topic outright. They are told on `rider:<their own id>`, and answer
+   * it by re-reading their own offer list.
+   *
+   * Their GPS position deliberately stays on its own twenty-second timer below.
+   * Position changes every few seconds per rider and is written *by* this
+   * client, not read by it — pushing it through a notify-then-re-read design
+   * would multiply it by the number of watchers to tell this screen something
+   * it already knows.
+   */
+  const { status } = useLive({
+    topics: me?.riderId ? [`rider:${me.riderId}`] : [],
+    load,
+    pollMs: 6_000,
+    enabled: signedIn && availability === 'idle',
+  });
 
   const setOnline = async (next: Availability): Promise<void> => {
     setBusy(true);
@@ -212,10 +230,17 @@ export default function RiderPage() {
           </div>
 
           {availability === 'idle' ? (
-            <p className="mt-4 text-xs text-[var(--ink-muted)]">
-              Your location is shared while you are online so orders can be matched to you, and
-              stops the moment you go offline.
-            </p>
+            <>
+              <p className="mt-4 text-xs text-[var(--ink-muted)]" aria-live="polite">
+                {status === 'live'
+                  ? 'Offers arrive the moment they are made.'
+                  : liveLabel(status, 6_000)}
+              </p>
+              <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                Your location is shared while you are online so orders can be matched to you, and
+                stops the moment you go offline.
+              </p>
+            </>
           ) : null}
         </Card>
 

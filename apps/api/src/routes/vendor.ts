@@ -14,6 +14,7 @@ import { writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { readMaskedPayoutDetails, setPayoutDetails } from '../vendor/payout.js';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
+import { recordOrderChange } from '../realtime/notify.js';
 import {
   actorOf,
   requirePermission,
@@ -160,6 +161,13 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
           delayMs: Math.max(0, (body.prepMinutes - 8) * 60_000),
           idempotencyKey: `dispatch_${order.id}`,
         });
+
+        // The customer's tracking screen is waiting on exactly this. Recorded
+        // in the same transaction for the same reason the dispatch intent is:
+        // a notification sent before the commit can describe a state the order
+        // never reached, and one sent after can be lost in the gap with nothing
+        // remembering it was owed.
+        await recordOrderChange(tx, order.id);
       });
 
       // Publish now if the queue is reachable; the scheduled relay covers it
@@ -237,6 +245,8 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
           payload: { orderId: order.id, reason: 'vendor_rejected' },
           idempotencyKey: `refund_${order.id}`,
         });
+
+        await recordOrderChange(tx, order.id);
       });
 
       // Publish now if the queue is reachable; the scheduled relay covers it
@@ -269,21 +279,29 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       const actingAs = transitionActorFor(actor);
       assertTransition(order.status as OrderStatus, body.to, actingAs);
 
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: body.to,
-          ...(body.to === 'ready' ? { readyAt: new Date() } : {}),
-          statusEvents: {
-            create: {
-              fromStatus: order.status,
-              toStatus: body.to,
-              actorType: actingAs,
-              actorId: actor.identityId,
+      // Wrapped in a transaction so the notification commits with the
+      // transition. It was a bare update before there was anything to announce.
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: body.to,
+            ...(body.to === 'ready' ? { readyAt: new Date() } : {}),
+            statusEvents: {
+              create: {
+                fromStatus: order.status,
+                toStatus: body.to,
+                actorType: actingAs,
+                actorId: actor.identityId,
+              },
             },
           },
-        },
+        });
+
+        await recordOrderChange(tx, order.id);
       });
+
+      await flushOutbox(prisma, queue);
 
       return { status: body.to };
     },

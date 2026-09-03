@@ -75,6 +75,23 @@ const schema = z
     QUEUE_PROVIDER: z.enum(['memory', 'redis']).default('memory'),
     REDIS_URL: z.string().optional(),
 
+    // --- Realtime ------------------------------------------------------------
+    // Switches off the WebSocket endpoint. It stays reachable when off and
+    // closes each socket with a code that means "this deployment does not do
+    // realtime", so clients fall back to polling in one round trip instead of
+    // retrying into an opaque connection error. Every screen it feeds worked by
+    // polling before this milestone and still does, so turning it off degrades
+    // freshness and nothing else.
+    REALTIME_ENABLED: booleanish.default('true'),
+
+    // How a notification reaches the *other* instances. `memory` repeats it
+    // inside this process only, which is correct on one instance and silently
+    // wrong on more than one — the customer watching an order is connected to
+    // whichever instance the load balancer picked, and it is rarely the one
+    // whose worker handled the job. Production is refused it below, exactly as
+    // it is refused the in-memory queue.
+    REALTIME_BROADCAST: z.enum(['memory', 'redis']).default('memory'),
+
     // Which implementation answers `GeoPort.zonesContaining`. `postgis` pushes
     // the point-in-polygon test into the database as `ST_Contains`; `local`
     // tests rings in process. Kept separate from MAPS_PROVIDER because PostGIS
@@ -367,6 +384,15 @@ const schema = z
         'Per-process rate-limit counters multiply the real limit by the number of instances; production must share them through Redis',
       );
     }
+    // Only when realtime is on: a deployment that has deliberately turned it
+    // off has no fan-out to get wrong, and demanding Redis for a feature that
+    // is switched off would be a startup failure with no cause.
+    if (env.REALTIME_ENABLED && env.REALTIME_BROADCAST === 'memory') {
+      fail(
+        'REALTIME_BROADCAST',
+        'In-process fan-out reaches only the sockets on one instance, so most clients would silently never be notified; production must broadcast through Redis',
+      );
+    }
 
     // --- Credentials required by the chosen providers ------------------------
     if (env.PAYMENT_PROVIDER === 'paystack') {
@@ -377,6 +403,9 @@ const schema = z
     }
     if (env.QUEUE_PROVIDER === 'redis' && !env.REDIS_URL) {
       fail('REDIS_URL', 'Required when QUEUE_PROVIDER is redis');
+    }
+    if (env.REALTIME_BROADCAST === 'redis' && !env.REDIS_URL) {
+      fail('REDIS_URL', 'Required when REALTIME_BROADCAST is redis');
     }
     if (env.MAPS_PROVIDER === 'google' && !env.GOOGLE_MAPS_API_KEY) {
       fail('GOOGLE_MAPS_API_KEY', 'Required when MAPS_PROVIDER is google');
@@ -490,6 +519,10 @@ export function describeAdapters(config: Config): string {
     `sms=${config.SMS_PROVIDER}`,
     `storage=${config.STORAGE_PROVIDER}`,
     `queue=${config.QUEUE_PROVIDER}`,
+    // `off` rather than the broadcast provider when disabled: printing
+    // `realtime=memory` on a deployment that serves no sockets at all would
+    // describe a fan-out that is never reached.
+    `realtime=${config.REALTIME_ENABLED ? config.REALTIME_BROADCAST : 'off'}`,
   ].join('  ');
 }
 

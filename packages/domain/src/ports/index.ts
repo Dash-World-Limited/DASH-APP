@@ -252,6 +252,65 @@ export interface QueuePort {
 }
 
 // ---------------------------------------------------------------------------
+// Realtime fan-out
+// ---------------------------------------------------------------------------
+
+/**
+ * Carries one notification to every server instance.
+ *
+ * ## Why this is not the queue
+ *
+ * The queue and this port look similar and do opposite things. A queue job is
+ * delivered to **exactly one** consumer — that is what stops two instances
+ * dispatching the same order twice, and it is the property `QueuePort` exists
+ * to provide. A realtime notification has to reach **every** instance, because
+ * the customer watching order `abc` is connected to whichever instance a load
+ * balancer happened to pick, and that is almost never the instance whose worker
+ * picked up the job.
+ *
+ * Sending a notification through the queue alone would deliver it to one
+ * instance, which would fan it out to its own sockets and silently drop it for
+ * everyone connected elsewhere. The symptom is the worst kind: it works
+ * perfectly on a single-instance development machine and loses most updates in
+ * production, in proportion to how well the deployment is scaled.
+ *
+ * So the path is queue *then* broadcast: the outbox relay publishes a job, one
+ * worker consumes it, and that worker hands it to this port, which repeats it
+ * to every instance including its own. The queue keeps the delivery durable and
+ * exactly-once-ish; this makes it universal.
+ *
+ * ## Failure mode: degradable
+ *
+ * If the broadcast channel is unavailable, notifications stop and clients fall
+ * back to polling the same authorized routes they already use. Nothing is lost,
+ * because nothing here is a record — the durable state committed to PostgreSQL
+ * before any of this began. That classification is registered in
+ * `REDIS_RESPONSIBILITIES` and asserted by `redis.test.ts`.
+ */
+export interface RealtimeBroadcastPort {
+  readonly providerName: string;
+
+  /**
+   * Repeat a notification to every instance, including this one.
+   *
+   * Local delivery must not depend on the round trip succeeding: an instance
+   * that cannot reach the channel still serves its own sockets correctly.
+   */
+  publish(notification: unknown): Promise<void>;
+
+  /**
+   * Register the handler that receives notifications from any instance.
+   *
+   * The payload is `unknown` deliberately. It has crossed a process boundary on
+   * shared infrastructure, so the handler validates it before believing a word
+   * of it — see `parseNotification` in `@dash/domain/realtime`.
+   */
+  subscribe(handler: (notification: unknown) => void): void;
+
+  close(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
 // Clock
 // ---------------------------------------------------------------------------
 

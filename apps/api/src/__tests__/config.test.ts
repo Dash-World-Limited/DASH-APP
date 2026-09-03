@@ -10,7 +10,13 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { buildKeyring, loadConfig, parseRetiredKeys, resetConfigCache } from '../config.js';
+import {
+  buildKeyring,
+  describeAdapters,
+  loadConfig,
+  parseRetiredKeys,
+  resetConfigCache,
+} from '../config.js';
 import { assertSecureCookieConfig } from '../auth/cookies.js';
 
 beforeEach(() => {
@@ -38,6 +44,7 @@ function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEn
     QUEUE_PROVIDER: 'redis',
     REDIS_URL: 'redis://cache.internal:6379',
     RATE_LIMIT_REDIS: 'true',
+    REALTIME_BROADCAST: 'redis',
     GEO_ZONES_PROVIDER: 'postgis',
     // Obviously fake, generated for this file, and only ever used against
     // an in-memory config object. Never decrypts anything real.
@@ -102,6 +109,37 @@ describe('mock adapters are refused in production', () => {
 
   it('refuses the in-memory queue', () => {
     expectRefusal({ QUEUE_PROVIDER: 'memory' }, 'QUEUE_PROVIDER');
+  });
+
+  it('refuses in-process realtime fan-out', () => {
+    // The failure this prevents is the quiet kind: in-process fan-out works
+    // perfectly on one instance and, on several, reaches only the sockets that
+    // happen to be on the instance whose worker took the job.
+    expectRefusal({ REALTIME_BROADCAST: 'memory' }, 'REALTIME_BROADCAST');
+  });
+
+  it('allows in-process fan-out when realtime is switched off entirely', () => {
+    // Nothing to get wrong when there is no socket to feed, and failing the
+    // boot over an unused setting would be a startup error with no cause.
+    resetConfigCache();
+    const config = loadConfig(
+      productionEnv({ REALTIME_ENABLED: 'false', REALTIME_BROADCAST: 'memory' }),
+    );
+    expect(config.REALTIME_ENABLED).toBe(false);
+  });
+
+  it('requires a Redis URL for realtime broadcast', () => {
+    expectRefusal({ REALTIME_BROADCAST: 'redis', REDIS_URL: '' }, 'REDIS_URL');
+  });
+
+  it('does not claim realtime is live when it is disabled', () => {
+    resetConfigCache();
+    const off = loadConfig(productionEnv({ REALTIME_ENABLED: 'false' }));
+    expect(describeAdapters(off)).toContain('realtime=off');
+
+    resetConfigCache();
+    const on = loadConfig(productionEnv());
+    expect(describeAdapters(on)).toContain('realtime=redis');
   });
 
   it('refuses SQLite', () => {

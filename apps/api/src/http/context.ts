@@ -22,6 +22,7 @@ import type {
   PaymentPort,
   PushPort,
   QueuePort,
+  RealtimeBroadcastPort,
   SmsPort,
   StoragePort,
 } from '@dash/domain/ports';
@@ -53,6 +54,14 @@ export interface Services {
   /** Where built personal-data export archives are held until download. */
   exportArchive: ExportArchivePort;
   queue: QueuePort;
+  /**
+   * Repeats a realtime notification to every instance.
+   *
+   * Distinct from `queue` because the two have opposite delivery semantics: a
+   * queue job goes to exactly one consumer, a notification has to reach them
+   * all. See `RealtimeBroadcastPort`.
+   */
+  broadcast: RealtimeBroadcastPort;
 }
 
 declare module 'fastify' {

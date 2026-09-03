@@ -37,6 +37,10 @@ import {
 } from '../secrets/rotation.js';
 import { decryptPayoutDetailsForSettlement, setPayoutDetails } from '../vendor/payout.js';
 import { createTestContext, type TestContext } from './harness.js';
+import { useIntegrationTimeouts } from './timeouts.js';
+
+// Real Fastify, real SQLite, real round trips — see timeouts.ts.
+useIntegrationTimeouts();
 
 /** Synthetic key material. A constant fill, so the suite is deterministic. */
 const K1 = Buffer.alloc(32, 0x11).toString('base64');

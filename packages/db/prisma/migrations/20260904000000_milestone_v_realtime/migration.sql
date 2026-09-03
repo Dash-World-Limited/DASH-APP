@@ -1,0 +1,11 @@
+-- Milestone V: the realtime notification ordering counter.
+--
+-- `Order.revision` is incremented inside the same transaction as every change a
+-- watching client should hear about. It is the ordering for realtime
+-- notifications, which need a monotonic value per order that `updatedAt` cannot
+-- supply: two writes in the same millisecond are indistinguishable, and wall
+-- clocks on different instances do not agree closely enough to order anything.
+--
+-- Existing rows start at 0, which is correct — a client comparing against a
+-- revision it has never seen re-reads, and re-reading is always safe.
+ALTER TABLE "Order" ADD COLUMN "revision" INTEGER NOT NULL DEFAULT 0;

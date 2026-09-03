@@ -20,6 +20,10 @@ import {
 } from '../events/outbox.js';
 import type { QueuePort } from '@dash/domain/ports';
 import { createTestContext, type TestContext } from './harness.js';
+import { useIntegrationTimeouts } from './timeouts.js';
+
+// Real Fastify, real SQLite, real round trips — see timeouts.ts.
+useIntegrationTimeouts();
 
 let context: TestContext;
 

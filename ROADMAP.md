@@ -182,6 +182,71 @@ no production secret exists.**
 
 ---
 
+## Implemented and locally verified on branch — not merged — Milestone V: realtime
+
+> **Not on `main`.** This work lives on `claude/milestone-v-realtime`, based on
+> the (also unmerged) Milestone IV commit. It has not been merged, tagged, or
+> deployed.
+
+**A WebSocket endpoint that pushes notifications, not data.** `GET /v1/realtime`
+sends `{subject, version}` and the client re-reads through the ordinary
+authorized route. The extra round trip is the point: the field-level projection
+rules that took the whole project to get right — vendor sees a first name and no
+phone number, rider position only while the order is active, delivery PIN to
+nobody — live in the route handlers, and a socket that pushed rows would bypass
+every one of them, silently, for every subscriber at once
+([ADR-0013](docs/DECISIONS.md#adr-0013--realtime-carries-notifications-not-data)).
+
+**Everything else follows from that choice.** At-least-once and unordered
+delivery stop being dangerous, because acting on a duplicate re-reads state that
+is already current. Reconnection needs no replay — a fresh subscription is told
+`resync` and reads the current state. And degrading to polling is not a second
+code path: it is the same read on a timer, which is what these screens already
+did.
+
+**Authentication is a frame, not a handshake.** No token in the query string, no
+cookie — the first would put a 15-minute credential in access logs, the second
+is cross-site WebSocket hijacking waiting to happen. The socket opens with no
+privilege and sends the ordinary access token. That also fixes the problem most
+long-lived sockets ignore: authority on a socket cannot outlive authority on an
+HTTP request, because the socket closes when its token lapses, and a sweep
+re-reads the session on a timer.
+
+**Notifications go through the Milestone IV outbox — no second dual write.**
+`recordOrderChange(tx, orderId)` bumps a monotonic `Order.revision` and records
+the notification inside the caller's transaction. Publishing before the commit
+would announce a state the order never reached; publishing after it would lose
+the notification in the gap with nothing recording that it was owed.
+
+**Queue *then* broadcast**, because they are opposites. A queue job goes to one
+consumer; a notification must reach every instance, since the client watching an
+order is rarely on the instance whose worker took the job. Redis pub/sub is
+classified `degradable` — losing it means screens refresh on a timer.
+`REALTIME_BROADCAST=memory` is refused in production for the same reason
+`QUEUE_PROVIDER=memory` is.
+
+**196 tests**: 76 pure (topic parsing against crafted input, authorization truth
+tables, frame parsing, backoff), 49 over real sockets on an ephemeral port, 24
+on the hub, 13 on the outbox seam, and 34 on the browser client — including a
+rendered component proving a hostile frame never reaches the DOM.
+
+**Verified against real infrastructure.** `npm run check:redis` passes 14/14: a
+notification published by one instance reaches a second instance's hub and
+becomes a frame on its socket, deployments sharing one Redis are isolated by
+prefix, and malformed or crafted broadcasts are rejected rather than delivered.
+`npm run check:postgres` passes 17/17 against PostgreSQL 16 + PostGIS 3.4 with
+the `Order.revision` migration in the history, from an empty database.
+
+**All four screens consume it, and all four keep polling.** Customer tracking,
+the vendor queue, the dispatch board, and the rider's offer list share one
+socket per tab and re-read on a notification; their existing poll stretches to a
+30-second safety net while live and returns to its old interval when not. The
+rider's *position* stays on its own timer — it changes every few seconds, is
+written by that client rather than read by it, and pushing it would multiply it
+by the number of watchers.
+
+---
+
 ## Implemented and locally verified on branch — not merged — Milestone IV: durability
 
 > **Not on `main`.** This work lives on `claude/milestone-iv-durability-scale`,
@@ -219,7 +284,13 @@ expiry were already implemented — what they lacked was anything to run them.
 Redis + BullMQ and PostgreSQL + PostGIS landed in Milestone II. The transactional
 outbox and the maintenance jobs landed in Milestone IV, below. What remains:
 
-- Websockets replacing polling on tracking, the vendor queue, and the ops board.
+- **A browser journey against a running server.** Milestone V's client is
+  covered by tests against a fake socket and a real DOM, and its server by a
+  real WebSocket on an ephemeral port, but the two have never been connected in
+  an actual browser.
+- **Rider position streaming.** Deliberately excluded from Milestone V: a
+  notify-then-re-read design multiplies position pings by the number of
+  watchers. Pushing coarse position on its own channel is separate work.
 - **A scheduler that invokes `npm run maintenance:all`.** The command exists and
   is idempotent; nothing in this repository calls it on a timer, deliberately
   ([ADR-0012](docs/DECISIONS.md#adr-0012--a-transactional-outbox-and-a-scheduler-this-repository-does-not-own)).

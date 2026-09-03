@@ -35,6 +35,7 @@ import { computeRiderPay, DEFAULT_RIDER_PAY_RULES } from '@dash/domain/pay';
 import { postLedgerTransaction, writeAudit, type PrismaClient } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
+import { recordOrderChange } from '../realtime/notify.js';
 import type { QueuePort } from '@dash/domain/ports';
 import { actorOf, requirePermission, requireScope, withIdempotency } from '../http/context.js';
 
@@ -848,25 +849,35 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
 
       assertTransition(status, 'cancelled', 'customer');
 
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: 'cancelled',
-          cancelledAt: new Date(),
-          cancelledBy: actor.identityId,
-          cancellationReason: body.reason ?? outcome.reasonCode,
-          statusEvents: {
-            create: {
-              fromStatus: status,
-              toStatus: 'cancelled',
-              actorType: 'customer',
-              actorId: actor.identityId,
-              reasonCode: outcome.reasonCode,
-              reason: body.reason ?? null,
+      // A cancellation is the transition a vendor most needs to hear about
+      // immediately — it is the one that stops food being cooked. The
+      // notification commits with it rather than after, so there is no window
+      // in which the order is cancelled and nobody has been told.
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancelledBy: actor.identityId,
+            cancellationReason: body.reason ?? outcome.reasonCode,
+            statusEvents: {
+              create: {
+                fromStatus: status,
+                toStatus: 'cancelled',
+                actorType: 'customer',
+                actorId: actor.identityId,
+                reasonCode: outcome.reasonCode,
+                reason: body.reason ?? null,
+              },
             },
           },
-        },
+        });
+
+        await recordOrderChange(tx, order.id);
       });
+
+      await flushOutbox(prisma, queue);
 
       await writeAudit(prisma, {
         identityId: actor.identityId,
@@ -1011,6 +1022,12 @@ export async function confirmOrderPaid(
       idempotencyKey: `dispatch_${order.id}`,
       delayMs: 5_000,
     });
+
+    // This is the transition the vendor's incoming queue is waiting for, and
+    // the first one the customer's tracking screen has to show. It commits with
+    // the placement and the ledger, so a notification can never describe an
+    // order that was not actually placed.
+    await recordOrderChange(tx, order.id);
   });
 
   // Outside the transaction on purpose: publishing is a network call, and a

@@ -22,6 +22,8 @@ import type { VehicleType } from '@dash/domain/dispatch';
 import { postLedgerTransaction, writeAudit, type PrismaClient } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission, requireScope } from '../http/context.js';
+import { flushOutbox } from '../events/outbox.js';
+import { recordOrderChange } from '../realtime/notify.js';
 
 /**
  * The fastest plausible sustained speed for a Lagos rider, in metres/second.
@@ -31,7 +33,7 @@ import { actorOf, requirePermission, requireScope } from '../http/context.js';
 const MAX_PLAUSIBLE_SPEED_MPS = 25;
 
 export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma } = app.services;
+  const { prisma, queue } = app.services;
 
   function riderIdOf(request: Parameters<typeof actorOf>[0]): string {
     const actor = actorOf(request);
@@ -337,12 +339,17 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
         throw ApiError.conflict('Another rider took that order first.');
       }
 
-      await prisma.$transaction([
-        prisma.dispatchOffer.update({
+      // The callback form rather than the array form, so the notification can
+      // be recorded inside the same transaction. This transition changes who
+      // may watch the order — the rider topic only exists once a rider is
+      // assigned — so `recordOrderChange` recomputes the fan-out from the row
+      // it has just claimed rather than from anything read earlier.
+      await prisma.$transaction(async (tx) => {
+        await tx.dispatchOffer.update({
           where: { id: offer.id },
           data: { status: 'accepted', respondedAt: new Date() },
-        }),
-        prisma.orderStatusEvent.create({
+        });
+        await tx.orderStatusEvent.create({
           data: {
             orderId: offer.order.id,
             fromStatus: offer.order.status,
@@ -350,12 +357,16 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
             actorType: 'rider',
             actorId: actor.identityId,
           },
-        }),
-        prisma.rider.update({
+        });
+        await tx.rider.update({
           where: { id: riderId },
           data: { availability: 'on_delivery', lastAssignedAt: new Date() },
-        }),
-      ]);
+        });
+
+        await recordOrderChange(tx, offer.order.id);
+      });
+
+      await flushOutbox(prisma, queue);
 
       return { accepted: true, orderId: offer.order.id };
     },
@@ -428,21 +439,29 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
 
       assertTransition(order.status as OrderStatus, body.to, 'rider');
 
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: body.to,
-          ...(body.to === 'picked_up' ? { pickedUpAt: new Date() } : {}),
-          statusEvents: {
-            create: {
-              fromStatus: order.status,
-              toStatus: body.to,
-              actorType: 'rider',
-              actorId: actor.identityId,
+      // These are the transitions a customer watches most closely — picked up,
+      // on the way, arrived — so the notification commits with each of them.
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: body.to,
+            ...(body.to === 'picked_up' ? { pickedUpAt: new Date() } : {}),
+            statusEvents: {
+              create: {
+                fromStatus: order.status,
+                toStatus: body.to,
+                actorType: 'rider',
+                actorId: actor.identityId,
+              },
             },
           },
-        },
+        });
+
+        await recordOrderChange(tx, order.id);
       });
+
+      await flushOutbox(prisma, queue);
 
       return { status: body.to };
     },
@@ -590,7 +609,13 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
             }),
           );
         }
+
+        // The last transition an order makes, and the one the customer, the
+        // vendor, and the board are all waiting to see.
+        await recordOrderChange(tx, order.id);
       });
+
+      await flushOutbox(prisma, queue);
 
       await writeAudit(prisma, {
         identityId: actor.identityId,

@@ -469,6 +469,12 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       vendorId: actor.vendorId ?? null,
       riderId: actor.riderId ?? null,
       customerId: actor.customerId ?? null,
+      // The cities this actor is scoped to, so the dispatch board knows which
+      // `city:` topics to follow. Their own scope, derived server-side from
+      // their role rows and already implicit in every ops response they get —
+      // this discloses nothing they could not infer from the board itself.
+      // Empty for an unscoped ops role, which reaches every city.
+      cityIds: actor.cityIds ? [...actor.cityIds] : [],
       steppedUpAt: actor.steppedUpAt ?? null,
     };
   });

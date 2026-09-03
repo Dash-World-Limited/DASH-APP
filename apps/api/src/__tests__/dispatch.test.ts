@@ -12,6 +12,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, idempotencyKey, type Actor, type World } from './world.js';
+import { useIntegrationTimeouts } from './timeouts.js';
+
+// Real Fastify, real SQLite, real round trips — see timeouts.ts.
+useIntegrationTimeouts();
 
 let context: TestContext;
 let world: World;

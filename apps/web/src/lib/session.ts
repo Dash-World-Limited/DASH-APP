@@ -182,6 +182,45 @@ export function useHasSession(): boolean {
   return value;
 }
 
+/**
+ * The signed-in actor, or null before it is known.
+ *
+ * Shares `loadMe`'s cache, so a page using both this and `usePermissions` still
+ * makes one request. Screens need it for the ids their realtime topics are
+ * built from — a vendor's own vendor, a rider's own rider, a dispatcher's own
+ * cities — none of which the client may invent, and all of which the server
+ * re-checks on every subscription anyway.
+ */
+export function useMe(): { me: Me | null; loaded: boolean } {
+  const [me, setMe] = useState<Me | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const sync = async (): Promise<void> => {
+      if (!hasSession()) {
+        if (!cancelled) {
+          setMe(null);
+          setLoaded(true);
+        }
+        return;
+      }
+      const value = await loadMe();
+      if (cancelled) return;
+      setMe(value);
+      setLoaded(true);
+    };
+    void sync();
+    const unsubscribe = subscribeToSession(() => void sync());
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  return { me, loaded };
+}
+
 /** The signed-in actor's permissions, or an empty set before they are known. */
 export function usePermissions(): { permissions: Set<string>; loaded: boolean } {
   const [permissions, setPermissions] = useState<Set<string>>(new Set());

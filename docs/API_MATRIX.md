@@ -247,6 +247,44 @@ settlement path only.
 | `/health` | GET | none | Liveness. Touches no dependency, so a database blip cannot trigger a restart loop. |
 | `/health/ready` | GET | none | Readiness. Dependency name and status only — no provider, host, version, or failure reason. 503 when not ready. |
 
+## Realtime
+
+`apps/api/src/routes/realtime.ts`
+
+One endpoint, and it is a WebSocket upgrade rather than a request/response pair,
+so the table below describes frames instead of methods.
+
+| Endpoint | Method | Permission | Scope | Notes |
+|---|---|---|---|---|
+| `/v1/realtime` | GET (upgrade) | none at the upgrade | — | Opens with **no privilege**. `Origin` is checked against the CORS allowlist. Rate-limited as an ordinary GET. Closes with 4013 when `REALTIME_ENABLED=false`, 4001 if no `authenticate` frame arrives within 10s. |
+
+**Client frames**
+
+| Frame | Requires | Scope | Notes |
+|---|---|---|---|
+| `authenticate` | a valid access token | — | The same credential every HTTP request uses; verified, then the actor is rebuilt from the database exactly as `authenticate()` does. Renewing on a live socket clears its subscriptions and returns `resync`. |
+| `subscribe` | authenticated | `canSubscribe` **and** `canReachOrder` / `canReachVendor` | Per-topic result. A refusal is always `not_found`, never `forbidden`, so it cannot be used to test whether an order exists. Max 50 topics per frame, 200 subscriptions per socket. |
+| `unsubscribe` | authenticated | — | Can only remove something the socket already holds, so it needs no check. |
+| `ping` | none | — | Answered with `pong`. |
+
+**Topics**
+
+| Topic | Who may hold it |
+|---|---|
+| `order:<id>` | the customer who placed it, the assigned rider, the fulfilling vendor (and branch, if branch-bound), and `ops:order:read:all` within the order's city |
+| `vendor:<id>` | that vendor's users; `ops:order:read:all` within the vendor's city |
+| `rider:<id>` | that rider only — deliberately narrower than `ops:rider:read:all` |
+| `city:<id>` | `ops:livemap:read`, restricted to the actor's own cities when the role is city-scoped |
+
+**Server frames** carry `{topics, subject, version, eventId, occurredAt}` and
+**never domain data** — the client re-reads through the authorized routes above,
+which is what keeps their field-level projection rules applying to realtime
+([ADR-0013](DECISIONS.md#adr-0013--realtime-carries-notifications-not-data)).
+
+**Close codes:** 4001 unauthenticated · 4002 protocol violation or bad origin ·
+4003 session invalid · 4008 rate limited · 4009 slow consumer · 4013 disabled ·
+4014 going away.
+
 ## Coverage summary
 
 | Area | Automated integration tests |
@@ -267,6 +305,12 @@ settlement path only.
 | Observability and health | 22 |
 | Config guards | 40 |
 | Rate limiting | 4 |
+| Realtime protocol and authorization (domain) | 76 |
+| Realtime sockets, end to end | 49 |
+| Realtime hub: fan-out, backpressure, revalidation | 24 |
+| Realtime and the outbox seam | 13 |
+| Realtime browser client (fake socket) | 23 |
+| Realtime in a rendered component (jsdom) | 11 |
 
 Every business and public endpoint above now has automated integration
 coverage that runs in `npm test` and in CI without a manually started server.

@@ -647,3 +647,194 @@ into a database outage.
 
 **Change nothing and rely on the queue's own durability.** BullMQ is durable
 once it has the job. The failure is in never getting it.
+
+---
+
+## ADR-0013 — Realtime carries notifications, not data
+
+**Status:** Accepted · Milestone V
+
+### Context
+
+Tracking, the vendor queue, and the ops board all polled. Polling is honest but
+wrong-shaped for this product: a rider's dispatch offer times out in seconds, a
+vendor needs to see an incoming order before the customer wonders why nothing
+has happened, and a dispatcher watching an escalation wants it on the board when
+it escalates, not up to a poll interval later.
+
+The obvious design is to push the changed record down the socket. It is also the
+one that quietly undoes the access-control work of every previous milestone.
+
+Field-level projection rules live in the route handlers, and they are not
+uniform: the vendor list returns the customer's **first name only** and no phone
+number, the customer's tracking route returns the rider's coarse position **only
+while the order is active**, the ops board returns a different shape again, and
+the delivery PIN is returned to nobody. Those rules took the whole project to
+get right. A socket that pushed rows out of the outbox would bypass every one of
+them, silently, for every subscriber at once — and the bypass would not show up
+in any test of the HTTP routes, because the HTTP routes would still be correct.
+
+### Decision
+
+**A realtime message carries identifiers and a version. Never domain data.**
+
+```json
+{ "type": "event", "topics": ["order:abc"], "subject": "order:abc",
+  "version": 12, "eventId": "order:abc@12", "occurredAt": 1788000000000 }
+```
+
+The client answers it by re-reading through the ordinary authorized HTTP route.
+That is an extra round trip, and it buys the only property that matters: the
+projection rules apply to realtime automatically, and they can never drift from
+the ones the API already enforces, because they *are* the ones the API enforces.
+
+Four consequences follow, and each removes a problem rather than adding one.
+
+**Ordering and duplicates stop being dangerous.** Delivery is at-least-once and
+unordered. Acting on a duplicate means re-reading state that is already current;
+acting on a stale one means re-reading state that is newer than the notification
+claimed. Neither can corrupt anything. `version` exists so a client can skip
+work it has already done — not so it can reconstruct state from the stream,
+which would be event sourcing, and this is not that.
+
+**Reconnection needs no replay.** There is no per-topic log and none is needed:
+a client that subscribes is told `resync: true` and reads the current state.
+There is no gap to replay, only a screen to refresh.
+
+**Degrading is not a second code path.** With no socket, the client polls the
+same route on a timer — which is what every one of these screens did before this
+milestone and still does. Losing realtime costs freshness and nothing else.
+
+**Authorization is one decision, made twice.** `canSubscribe` answers "could
+this actor ever watch a topic of this kind?" from the actor alone;
+`canReachOrder` / `canReachVendor` answer "may they watch *this* one?" against
+the row. Both are pure functions in `@dash/domain/realtime` with truth-table
+tests, and both mirror the checks the corresponding routes already make. A
+refusal is always `not_found`, never `forbidden` — the same reason `assertScope`
+returns 404 rather than 403.
+
+### Authentication is a frame, not a handshake
+
+A browser cannot set an `Authorization` header on a WebSocket. Of the four ways
+round that, three are worse:
+
+| Approach | Why not |
+|---|---|
+| Token in the query string | Lands in access logs, proxy logs, URL sampling. This codebase already refuses to put personal data in a URL; a 15-minute credential is worse. |
+| Cookie | Upgrades are not subject to CORS and browsers send cookies on them — cross-site WebSocket hijacking. The refresh cookie is scoped to `/v1/auth` for this family of reasons. |
+| `Sec-WebSocket-Protocol` | Keeps it out of the URL, but overloads a negotiation header with a credential and is awkward to rotate on a live socket. |
+
+So the socket opens with no privilege at all and authenticates from an
+`authenticate` frame carrying the ordinary access token. Unauthenticated sockets
+are closed after ten seconds; the `Origin` header is checked against the same
+allowlist CORS uses.
+
+This also solves the problem long-lived sockets usually ignore. An access token
+expires in fifteen minutes; a socket lives for hours. Because authentication is
+a frame, the client simply sends another — and **authority on a socket can never
+outlive authority on an HTTP request**, because the socket is closed when its
+token lapses. A revocation sweep re-reads the session on a timer, closing that
+window further, and re-authentication clears the connection's subscriptions so
+their ownership checks are re-run rather than assumed.
+
+### Queue *then* broadcast
+
+`QueuePort` and `RealtimeBroadcastPort` look similar and do opposite things. A
+queue job goes to exactly one consumer — that is what stops two instances
+dispatching the same order twice. A notification has to reach **every** instance,
+because the customer watching an order is connected to whichever instance the
+load balancer picked, and that is rarely the one whose worker took the job.
+
+Routing notifications through the queue alone would deliver to one instance and
+silently drop them for everyone connected elsewhere: perfect on a developer's
+machine, losing most updates in production in proportion to how well the
+deployment is scaled. So the path is outbox → relay → queue → one worker →
+broadcast → every hub. `REALTIME_BROADCAST=memory` is refused in production for
+the same reason `QUEUE_PROVIDER=memory` is.
+
+Redis pub/sub is classified **degradable** in `REDIS_RESPONSIBILITIES`: losing
+it makes screens refresh on a timer instead of on a change. Nothing is lost,
+because the state was committed to PostgreSQL before any notification existed.
+
+### The outbox, again — not a new dual write
+
+Notifications are recorded with `enqueueViaOutbox` inside the transaction that
+caused them, exactly as dispatch and refund intents are
+([ADR-0012](#adr-0012--a-transactional-outbox-and-a-scheduler-this-repository-does-not-own)).
+Publishing before the commit would announce a state the order never reached, and
+a rolled-back transaction would leave clients re-reading and watching the screen
+move backwards. Publishing after it would lose the notification in the gap with
+nothing recording that it was owed.
+
+### `Order.revision`
+
+Ordering needs a monotonic value per order, and nothing existing could be one.
+`updatedAt` cannot: two writes in the same millisecond are indistinguishable,
+and wall clocks on different instances do not agree closely enough to order
+anything. A notification wrongly judged older than what a client holds is
+dropped, and the symptom is a screen that stays stale — the exact failure this
+milestone exists to prevent. So a counter, incremented inside the transaction,
+in the one helper that also records the notification, where it cannot be
+forgotten.
+
+It is per *subject*, not per topic. A client watching a vendor queue sees
+notifications about many orders and tracks each order's version separately;
+comparing two different orders' revisions would be meaningless.
+
+### On the client
+
+The same rule, enforced by shape rather than by discipline. The browser client's
+refresh callback receives `{reason, subjects}` — a reason and identifiers — and
+nothing from the frame. A screen therefore *cannot* render notification content
+even by accident: there is no field to reach for. Its only possible response is
+to call its own authorized read, which is the same fetch it made on a timer
+before any of this existed.
+
+Polling is slowed, never removed: 6–10 seconds becomes a 30-second safety net
+while the socket is live, and returns when it is not. At-least-once delivery
+promises a notification may arrive *twice*; nothing promises one always arrives.
+A dropped frame with no poll behind it is a screen that is silently wrong until
+someone reloads — a worse failure than the polling it replaced, and an invisible
+one.
+
+### Consequences
+
+- Rider **location** streaming is deliberately **not** included. Position updates
+  arrive every few seconds per rider and have different economics — a
+  notification-then-re-read design would multiply them by the number of
+  watchers. Tracking screens still poll for the rider pin. Doing it properly
+  means pushing coarse position on its own channel, and that is its own piece of
+  work.
+- An ownership relationship that ends mid-socket — a rider reassigned off an
+  order — is not re-derived on every sweep, because that would mean loading
+  every subscribed order. It is bounded instead: re-authentication clears
+  subscriptions, so a stale relationship cannot outlive one access token, and
+  what it exposes in the meantime is a version number for an order the actor was
+  legitimately attached to minutes earlier — never any of its data.
+- `canSubscribe` is **stricter** than `GET /v1/ops/live` in one case: that route
+  applies its city filter only when the actor has cities listed, so a dispatcher
+  with an empty list sees every city there and none here. Failing closed is the
+  right direction for the looser of two checks to be corrected towards; the
+  route itself is left alone rather than changed as a side effect of this
+  milestone.
+
+### Rejected alternatives
+
+**Push the changed record.** The reason this ADR exists. It bypasses every
+field-level projection rule in the API, for every subscriber, invisibly.
+
+**Server-Sent Events instead of WebSockets.** SSE is simpler and would carry
+these notifications adequately. It is also one-directional, so subscription
+management would need a parallel HTTP API and per-connection state keyed by
+something other than the connection — which is more moving parts, not fewer, and
+the client-side reconnect semantics are the same either way.
+
+**A durable per-topic event log for replay.** Would let a reconnecting client
+receive what it missed. It is also a second source of truth for state that
+PostgreSQL already holds, with its own retention, compaction, and drift
+problems, in exchange for saving one HTTP read on reconnect.
+
+**A short-lived ticket endpoint.** Genuinely reasonable, and rejected only
+because in-band authentication needs no new endpoint, no new token type, no new
+secret, and no new table — and solves token renewal on a live socket, which a
+ticket does not.

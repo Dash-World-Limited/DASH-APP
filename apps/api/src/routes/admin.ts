@@ -11,6 +11,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { kobo } from '@dash/domain/money';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
+import { recordOrderChange } from '../realtime/notify.js';
 import { ACTIVE_STATUSES, assertTransition, type OrderStatus } from '@dash/domain/orders';
 import { buildRefund, buildWalletCredit, verifyLedgerIntegrity } from '@dash/domain/ledger';
 import { postLedgerTransaction, writeAudit } from '@dash/db';
@@ -175,6 +176,13 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           payload: { orderId: order.id },
           idempotencyKey: `dispatch_${order.id}_reassign_${event.id}`,
         });
+
+        // Recorded after the rider is cleared, so the fan-out is computed from
+        // the order as it now stands. That matters here more than anywhere
+        // else: the reassigned rider is no longer on the order, so the
+        // `rider:` topic in this notification is absent rather than naming
+        // someone who has just been taken off the job.
+        await recordOrderChange(tx, order.id);
       });
 
       // Publish now if the queue is reachable; the scheduled relay covers it

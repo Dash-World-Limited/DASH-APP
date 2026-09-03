@@ -13,7 +13,8 @@ import {
   formatNaira,
 } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch, useHasSession, usePermissions } from '@/lib/session';
+import { authedFetch, useHasSession, useMe, usePermissions } from '@/lib/session';
+import { useLive } from '@/lib/useLive';
 
 /**
  * Operations console.
@@ -58,8 +59,10 @@ export default function OpsPage() {
   const [ledger, setLedger] = useState<LedgerIntegrity | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
   const signedIn = useHasSession();
+  const { me } = useMe();
   const { permissions } = usePermissions();
   const canReadLedger = permissions.has('finance:ledger:read');
+  const [cityIds, setCityIds] = useState<string[]>([]);
 
   const load = useCallback(async (): Promise<void> => {
     if (!signedIn) return;
@@ -91,15 +94,42 @@ export default function OpsPage() {
     }
   }, [signedIn, canReadLedger]);
 
+  /**
+   * Which city boards to follow.
+   *
+   * A city-scoped dispatcher gets their own cities from `/v1/auth/me`. An
+   * unscoped ops role — platform or super admin — reaches every city and has no
+   * list of its own, so it takes the live cities from the public catalogue.
+   * Neither is a grant: the server refuses any city topic the actor is not
+   * entitled to, and the board's own query is filtered by `actor.cityIds`
+   * regardless of what is subscribed here.
+   */
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!signedIn || !me) return;
+    if (me.cityIds.length > 0) {
+      setCityIds(me.cityIds);
+      return;
+    }
+    let cancelled = false;
+    void authedFetch<{ cities: { id: string }[] }>('/v1/cities')
+      .then((result) => {
+        if (!cancelled) setCityIds(result.cities.map((city) => city.id));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [signedIn, me]);
 
-  useEffect(() => {
-    if (!signedIn) return;
-    const timer = setInterval(() => void load(), 7000);
-    return () => clearInterval(timer);
-  }, [load, signedIn]);
+  // Realtime over the seven-second poll. An escalation is the case this
+  // matters for: it happens when dispatch has given up, often minutes after the
+  // customer ordered, and nobody is watching the screen at that moment.
+  const { status } = useLive({
+    topics: cityIds.map((cityId) => `city:${cityId}`),
+    load,
+    pollMs: 7_000,
+    enabled: signedIn,
+  });
 
   if (!signedIn) {
     return (
@@ -280,7 +310,9 @@ export default function OpsPage() {
         </section>
 
         <p className="mt-8 text-xs text-[var(--ink-muted)]">
-          This board polls every 7 seconds. Live websocket push is not built yet.
+          {status === 'live'
+            ? 'Live. Changes appear as they happen, and the board still re-reads every 30 seconds in case one is missed.'
+            : 'Not connected for live updates — re-reading every 7 seconds instead.'}
         </p>
       </main>
     </div>

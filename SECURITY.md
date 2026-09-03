@@ -396,6 +396,36 @@ placeholders, because a fake key wearing a real prefix is indistinguishable from
 a leaked one to a scanner or a reviewer. It also refuses committed key files,
 dumps, and backups, which carry no pattern `gitleaks` would match.
 
+### Realtime sockets
+
+A WebSocket is a long-lived, unauthenticated TCP stream that browsers will open
+cross-site with the user's ambient credentials attached. Every control here
+exists because one of those three properties breaks an assumption the HTTP API
+was allowed to make.
+
+| Threat | Control |
+|---|---|
+| **Data leaking past the API's projection rules** | A frame carries `{topics, subject, version, eventId, occurredAt}` and nothing else. The client re-reads through the ordinary authorized route, so the field-level rules — vendor sees a first name and no phone, rider position only while the order is active, PIN to nobody — apply to realtime automatically and cannot drift. Asserted by a test that enumerates the frame's keys. ([ADR-0013](docs/DECISIONS.md#adr-0013--realtime-carries-notifications-not-data)) |
+| **Cross-site WebSocket hijacking** | Upgrades are not subject to CORS and carry cookies. The socket authenticates from a frame, so an attacker's page has nothing to send; and `Origin` is checked against the same allowlist CORS uses. |
+| **Credentials in URLs and logs** | No token in the query string and no cookie authentication. The access token travels in an `authenticate` frame over the established TLS connection. |
+| **Authority outliving the session** | A socket is closed when the token that authenticated it expires, so socket authority is never staler than an HTTP request's. A sweep re-reads the session on a timer and closes sockets whose session was revoked, suspended, or expired — one query per session, not per socket. A lookup failure keeps sockets rather than disconnecting everyone; the expiry bound needs no database. |
+| **Stale authorization on a live socket** | Re-authentication clears the connection's subscriptions and returns `resync`, so their ownership checks are re-run rather than assumed. The sweep additionally drops any subscription `canSubscribe` no longer allows — a dispatcher moved between cities, a vendor manager removed from the vendor. |
+| **Resource existence disclosure** | A refused topic is always `not_found`, whether the order does not exist or exists and belongs to someone else — the same choice `assertScope` makes by returning 404 rather than 403. Tested by asserting the refusal for a real order and an invented id are byte-identical. |
+| **Subscription widening** | Topic names are `kind:id` with the id constrained to the cuid alphabet, matched by exact string equality everywhere. No globbing exists anywhere in the system. `order:*`, `order:a:b`, and a traversal are all refused, and topic names arriving over the broadcast channel are **re-parsed** rather than trusted. |
+| **Unauthenticated sockets as a resource** | Closed after 10s without an `authenticate` frame. The upgrade is an ordinary HTTP GET and is rate-limited per IP; once authenticated, an identity is capped at 10 concurrent sockets. |
+| **Frames bypassing the rate limiter** | `@fastify/rate-limit` sees the upgrade and nothing after it. Each connection carries its own frame budget (60 per 10s) and is closed when it exceeds it. |
+| **Memory exhaustion** | Frames are capped at 4KB, enforced by `ws` before assembly and again before `JSON.parse` is given anything to allocate; 50 topics per frame; 200 subscriptions per socket; and a client that stops reading is closed once its buffer passes 256KB rather than being buffered indefinitely. |
+| **Untrusted input on internal channels** | The broadcast channel is shared infrastructure that more than one deployment may point at. Every notification is re-validated on arrival — id, subject, topic names, and a version that must be a non-negative safe integer — and anything malformed is dropped and counted, never logged verbatim. |
+| **A client trusting the wire** | The browser client's refresh callback receives `{reason, subjects}` — a reason and identifiers, and no field from the frame. There is no shape a component could render even by mistake, which is a stronger guarantee than remembering not to. A rendered-component test pushes a frame carrying a status, a total, a phone number and a delivery PIN, and asserts none of it appears in the document. |
+| **Compression side channels** | `permessage-deflate` is disabled. Mixing attacker-influenced identifiers with server data in a compressed stream is the shape of CRIME/BREACH, and these frames are far too small for compression to pay. |
+
+**Delivery is at-least-once and unordered, and neither is a security property
+being wished away.** A duplicate causes a re-read of state that is already
+current; a stale notification causes a re-read of state that is newer than it
+claimed. `Order.revision` is monotonic per order so a client can drop the stale
+one, and the hub admits an event id once per connection so a redelivery never
+becomes two frames.
+
 ---
 
 ## Verified
@@ -405,6 +435,23 @@ Controls actually exercised by an automated check, not merely written:
 | Control | Where |
 |---|---|
 | Client-supplied prices ignored; server reprices from DB | `smoke.mjs` |
+| Realtime frames carry no order data (keys enumerated) | `realtime.test.ts` |
+| Cross-customer, cross-vendor, cross-rider, cross-city socket subscriptions refused as `not_found` | `realtime.test.ts` |
+| A refused real order and an invented id are indistinguishable | `realtime.test.ts` |
+| Cross-origin socket upgrade refused | `realtime.test.ts` |
+| Refresh token replayed as a socket credential refused | `realtime.test.ts` |
+| Socket closed when its session is revoked | `realtime.test.ts`, `realtime-hub.test.ts` |
+| Subscriptions dropped when the actor loses the role behind them | `realtime-hub.test.ts` |
+| Crafted topic names (`order:*`, traversal, oversized) refused | `realtime.test.ts`, `realtime.test.ts` (domain) |
+| Malformed broadcast payloads dropped, never delivered | `realtime.test.ts`, `realtime-outbox.test.ts` |
+| Per-socket frame budget and per-identity connection cap enforced | `realtime.test.ts` |
+| Slow consumer closed rather than buffered indefinitely | `realtime-hub.test.ts` |
+| Realtime notification payloads refused if they carry personal data | `realtime-outbox.test.ts` |
+| A hostile frame's fields never reach the DOM; the screen renders the authorized read | `useLive.test.tsx` |
+| A client ignores a frame naming a topic it never subscribed to | `useLive.test.tsx`, `realtime.test.ts` (web) |
+| Duplicate and stale notifications do not roll a screen backwards | `useLive.test.tsx` |
+| A screen stays correct with no WebSocket at all | `useLive.test.tsx` |
+| Cross-instance fan-out, prefix isolation, and rejection of crafted broadcasts, against a real Redis | `npm run check:redis` (14/14) |
 | Cross-tenant vendor access returns 404 with `Not found.` | `smoke.mjs` |
 | Customer cannot reach ops, vendor, or audit endpoints | `smoke.mjs` |
 | Super admin still needs step-up for a refund | `smoke.mjs` |

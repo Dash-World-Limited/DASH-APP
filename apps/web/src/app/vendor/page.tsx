@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { AppHeader } from '@/components/AppHeader';
 import {
   Badge,
@@ -13,7 +13,8 @@ import {
   formatNaira,
 } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch, useHasSession } from '@/lib/session';
+import { authedFetch, useHasSession, useMe } from '@/lib/session';
+import { liveLabel, useLive } from '@/lib/useLive';
 
 interface VendorOrder {
   id: string;
@@ -52,6 +53,7 @@ export default function VendorConsolePage() {
   const [error, setError] = useState<ApiRequestError | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const signedIn = useHasSession();
+  const { me } = useMe();
 
   const load = useCallback(async (): Promise<void> => {
     if (!signedIn) {
@@ -74,16 +76,24 @@ export default function VendorConsolePage() {
     }
   }, [tab, signedIn]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  // A kitchen cannot watch a screen. Poll briskly so a new order shows up fast.
-  useEffect(() => {
-    if (!signedIn) return;
-    const timer = setInterval(() => void load(), 8000);
-    return () => clearInterval(timer);
-  }, [load, signedIn]);
+  // A kitchen cannot watch a screen, so a new order has to arrive by itself.
+  //
+  // Two topics. The vendor queue announces every order for this vendor, which
+  // is what makes an incoming order appear the moment it is placed rather than
+  // up to eight seconds later. The eight-second poll stays underneath as the
+  // recovery path — a dropped frame on a kitchen screen is a missed order, and
+  // that is not a failure worth being clever about.
+  //
+  // `me.vendorId` comes from the server. A vendor id typed into this list would
+  // change nothing: the subscription is re-checked against the actor's own
+  // scope, and the queue itself is filtered by `actor.vendorId`, never by
+  // anything the client sends.
+  const { status } = useLive({
+    topics: me?.vendorId ? [`vendor:${me.vendorId}`] : [],
+    load,
+    pollMs: 8_000,
+    enabled: signedIn,
+  });
 
   const act = async (id: string, run: () => Promise<unknown>): Promise<void> => {
     setBusyId(id);
@@ -125,7 +135,12 @@ export default function VendorConsolePage() {
       <AppHeader variant="staff" />
       <main id="main" className="mx-auto max-w-4xl px-5 py-8">
         <div className="flex flex-wrap items-center justify-between gap-4">
-          <h1 className="text-3xl font-extrabold tracking-tight">Order queue</h1>
+          <div>
+            <h1 className="text-3xl font-extrabold tracking-tight">Order queue</h1>
+            <p className="mt-1 text-xs text-graphite-400" aria-live="polite">
+              {liveLabel(status, 8_000)}
+            </p>
+          </div>
           <Button variant="ghost" size="sm" onClick={() => void load()}>
             Refresh
           </Button>

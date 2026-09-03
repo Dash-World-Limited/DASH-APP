@@ -38,6 +38,10 @@ import {
   scrubForExport,
 } from '../observability/index.js';
 import { createTestContext, type TestContext } from './harness.js';
+import { useIntegrationTimeouts } from './timeouts.js';
+
+// Real Fastify, real SQLite, real round trips — see timeouts.ts.
+useIntegrationTimeouts();
 
 /**
  * A distinctive value per secret variable.

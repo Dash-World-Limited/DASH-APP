@@ -534,6 +534,107 @@ in place:
 Not done for this milestone: merge, tag, and everything that needs a platform —
 see below.
 
+**Milestone V — realtime.** On `claude/milestone-v-realtime`, based on the
+Milestone IV commit. **Not merged.** What is in place:
+
+- **`GET /v1/realtime`** (`apps/api/src/routes/realtime.ts`), a WebSocket
+  endpoint that carries **identifiers and a version, never domain data**. The
+  client re-reads through the ordinary authorized route, which is what keeps the
+  API's field-level projection rules applying to realtime instead of being
+  bypassed by it ([ADR-0013](docs/DECISIONS.md#adr-0013--realtime-carries-notifications-not-data)).
+  A test enumerates the frame's keys so widening it fails the suite.
+- **Authorization split in two, both pure.** `canSubscribe` answers "could this
+  actor ever watch a topic of this kind?" from the actor alone; `canReachOrder`
+  and `canReachVendor` answer "may they watch *this* one?" against the row.
+  Both live in `@dash/domain/realtime` with truth-table tests, and both mirror
+  the checks the corresponding routes already make. A refusal is always
+  `not_found` — a test asserts the refusal for a real order and an invented id
+  are identical.
+- **In-band authentication.** No token in the query string, no cookie. The
+  socket opens with no privilege, authenticates from a frame carrying the
+  ordinary access token, and is closed if none arrives in ten seconds. `Origin`
+  is checked against the CORS allowlist. Renewing the token on a live socket
+  clears its subscriptions so their ownership checks are re-run.
+- **Authority on a socket cannot outlive an HTTP request's.** The socket closes
+  when its token lapses, and a sweep re-reads the session on a timer — one query
+  per session, not per socket — closing sockets whose session was revoked and
+  dropping subscriptions an actor's current roles no longer allow.
+- **The Milestone IV outbox, reused.** `recordOrderChange(tx, orderId)` bumps
+  `Order.revision` and records the notification inside the caller's transaction.
+  There is no second dual-write path, and `realtime-outbox.test.ts` asserts a
+  rolled-back transaction discards both the revision and the notification.
+- **`RealtimeBroadcastPort`** with in-process and Redis pub/sub adapters,
+  because a queue job goes to one consumer and a notification must reach every
+  instance. `REALTIME_BROADCAST=memory` is refused in production. Redis pub/sub
+  is registered as `degradable` in `REDIS_RESPONSIBILITIES`, and is
+  **verified against a real Redis**: `npm run check:redis` passes 14/14,
+  including a notification published by one instance reaching a second
+  instance's hub and becoming a frame on its socket, prefix isolation between
+  deployments sharing one server, and malformed or crafted broadcasts being
+  rejected rather than delivered.
+- **One migration**, `Order.revision`, for both dialects. The PostgreSQL one is
+  hand-written and `ALTER TABLE … ADD COLUMN` with a constant default, which is
+  catalogue-only on PostgreSQL 11+ — no table rewrite, no long lock.
+  **Verified against a real PostgreSQL 16 + PostGIS 3.4 server**:
+  `npm run check:postgres` passes **17/17** with this migration in the history,
+  from an empty database. The SQLite history also applies from zero with a clean
+  `migrate status` and no drift.
+- **196 tests**: 76 pure, 49 over real sockets on an ephemeral port, 24 on the
+  hub (fan-out, backpressure, revalidation), 13 on the outbox seam, and 34 on
+  the browser client — 23 driving a fake socket through redelivery, stale
+  arrival and reconnection, and 11 rendering a real component to prove a frame
+  never reaches the DOM.
+- **Ten suites carry integration-shaped timeouts** (`__tests__/timeouts.ts`),
+  applied per file with `vi.setConfig` because they build a Fastify instance and
+  a SQLite database per test or per file. The other thirty-three keep Vitest's
+  strict 5s/10s defaults, including all fourteen pure domain suites — a pure
+  function that suddenly takes five seconds should still fail. No assertion was
+  relaxed and nothing is skipped.
+- **Outbox volume roughly quadruples per order** — one notification per
+  transition rather than the two or three intents Milestone IV wrote. Growth
+  stays bounded because the retention job already prunes `published` rows, but
+  the relay batch size and the retention window are now worth watching on a
+  real deployment.
+
+**What Milestone V does not do**, and should not be described as doing:
+
+- **All four screens consume it, and all four keep polling.** Customer tracking,
+  the vendor queue, the dispatch board, and the rider's offer list subscribe to
+  their own topics through one shared socket per tab and re-read on a
+  notification. The poll they had before is not removed — it stretches from
+  6–10s to a 30s safety net while the socket is live and returns to its old
+  interval when it is not. At-least-once delivery promises a notification may
+  arrive twice; nothing promises one always arrives, and a dropped frame with
+  no poll behind it is a screen that is silently wrong until a reload.
+- **A notification cannot put anything on a screen.** The client's callback
+  receives `{reason, subjects}` — a reason and identifiers, no field from the
+  frame — so the only thing a screen can do with one is call its own authorized
+  read. `useLive.test.tsx` renders a real component, pushes a frame carrying
+  `status: 'delivered'`, a total, a phone number and a delivery PIN, and asserts
+  none of it reaches the DOM while the screen shows what the server returned.
+- **Rider position is deliberately still polled.** It changes every few seconds,
+  is written *by* the rider's client rather than read by it, and a
+  notify-then-re-read design would multiply it by the number of watchers to tell
+  a screen something it already knows.
+
+**What Milestone V does not do**, and should not be described as doing:
+
+- **A stale ownership relationship is bounded, not eliminated.** A rider
+  reassigned off an order keeps receiving version-only notifications for it until
+  the socket re-authenticates (≤ one access-token lifetime). Re-deriving it on
+  every sweep would mean loading every subscribed order; what leaks meanwhile is
+  a version number for an order that actor was legitimately attached to minutes
+  earlier, never any of its data.
+- **No browser has run this end to end.** The client is covered by 34 tests
+  against a fake socket and a real DOM, and the server by a real WebSocket over
+  an ephemeral port, but the two have never been connected to each other in a
+  browser. A `scripts/` journey against a running server and a seeded database
+  is the honest next check.
+- **The ops board subscribes per city.** An unscoped ops role reads the live city
+  list to know which topics to follow, so a deployment with very many cities
+  would approach the 200-subscription cap on that one screen. Not a problem at
+  Lagos scale; worth remembering before national rollout.
+
 **Milestone IV — durability.** On `claude/milestone-iv-durability-scale`, based
 on the Milestone III commit. **Not merged.** What is in place:
 
@@ -616,7 +717,11 @@ and a failure-path test.**
 - **Rider pay is estimated at reservation.** No rider exists when payment is
   captured, so the reservation assumes a motorcycle and a zero approach leg. The
   true-up on delivery corrects it, but the reserved figure is an estimate.
-- **No websockets.** Tracking, the vendor queue, and the ops board poll.
+- **Realtime carries notifications, not data.** Tracking, the vendor queue,
+  and the ops board are pushed a `{subject, version}` notification and re-read
+  through the ordinary authorized route. Losing the socket degrades to the
+  polling those screens already did. **Rider position is not pushed** — it
+  changes every few seconds and is still polled. Milestone V; unmerged.
 - **SQLite is development-only.** No concurrent writers, no PostGIS. The
   PostgreSQL/PostGIS path landed in Milestone II and is the production target;
   the in-process geo path remains the development default and tests a city's

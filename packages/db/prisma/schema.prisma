@@ -944,6 +944,21 @@ model Order {
   status String @default("draft")
   mode   String @default("delivery") // delivery | pickup | vendor_delivery
 
+  // Monotonic counter, incremented in the same transaction as every change
+  // worth telling a watching client about. It is the ordering for realtime
+  // notifications and exists because nothing else here can be one.
+  //
+  // `updatedAt` cannot: two writes inside the same millisecond are
+  // indistinguishable, and comparing wall clocks set by different instances
+  // orders nothing at all. A notification wrongly judged "older than what I
+  // have" is dropped, and the symptom is a screen that stays stale — the one
+  // failure this whole milestone exists to prevent. A counter incremented
+  // inside the transaction cannot have either problem.
+  //
+  // Never exposed to clients as a cursor; it is only ever compared with another
+  // revision of the same order. See packages/domain/src/realtime.
+  revision Int @default(0)
+
   // --- The quote, frozen at checkout -------------------------------------
   // Stored as individual columns for querying plus the full explained
   // breakdown as JSON, so a receipt can be reproduced exactly.

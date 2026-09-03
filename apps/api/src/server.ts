@@ -24,7 +24,20 @@ import {
 } from './adapters/index.js';
 import { PostgisGeoAdapter } from './adapters/postgis.js';
 import { RedisQueueAdapter } from './adapters/redis-queue.js';
-import { createQueueRedis, createRateLimitRedis, pingRedis } from './redis/client.js';
+import {
+  createBroadcastRedis,
+  createQueueRedis,
+  createRateLimitRedis,
+  pingRedis,
+} from './redis/client.js';
+import {
+  InProcessBroadcastAdapter,
+  RedisBroadcastAdapter,
+} from './realtime/broadcast.js';
+import { RealtimeHub } from './realtime/hub.js';
+import { registerRealtimeWorker } from './realtime/worker.js';
+import { registerRealtimeRoutes } from './routes/realtime.js';
+import { parseNotification } from '@dash/domain/realtime';
 import { buildKeyring, isEncryptionConfigured, loadConfig, type Config } from './config.js';
 import { registerContext, type Services } from './http/context.js';
 import {
@@ -66,6 +79,20 @@ export interface BuildOptions {
    * Pino's default destination untouched.
    */
   logDestination?: { write(chunk: string): void };
+  /**
+   * Realtime timings, for tests.
+   *
+   * A suite cannot wait 25 seconds for a heartbeat or 60 for a revalidation
+   * sweep, and making those constants smaller everywhere to suit the tests
+   * would change production behaviour to make a test convenient. Overriding
+   * them here keeps the defaults honest.
+   */
+  realtime?: {
+    heartbeatMs?: number;
+    authenticateDeadlineMs?: number;
+    revalidateIntervalMs?: number;
+    maxConnectionsPerIdentity?: number;
+  };
 }
 
 export function buildServices(config: Config, overrides: Partial<Services> = {}): Services {
@@ -102,6 +129,17 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
       (config.QUEUE_PROVIDER === 'redis' && config.REDIS_URL
         ? new RedisQueueAdapter(createQueueRedis(config.REDIS_URL))
         : new MemoryQueueAdapter()),
+    // Two Redis connections, because a subscriber cannot publish — see
+    // `createBroadcastRedis`. The in-process adapter is correct on a single
+    // instance and refused in production by `config.ts`.
+    broadcast:
+      overrides.broadcast ??
+      (config.REALTIME_BROADCAST === 'redis' && config.REDIS_URL
+        ? new RedisBroadcastAdapter(
+            createBroadcastRedis(config.REDIS_URL),
+            createBroadcastRedis(config.REDIS_URL),
+          )
+        : new InProcessBroadcastAdapter()),
     // Stacks are withheld in production: a stack can carry interpolated values
     // from the frame that threw, and those are exactly what must not travel to
     // a third party.
@@ -327,6 +365,43 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerWebhookRoutes(app);
   await registerAccountRoutes(app);
 
+  // --- Realtime --------------------------------------------------------------
+  // The hub is per instance and holds only sockets, so it needs no shutdown
+  // beyond the `preClose` hook the route registers.
+  const hub = new RealtimeHub({
+    log: app.log,
+    ...(options.realtime?.maxConnectionsPerIdentity === undefined
+      ? {}
+      : { maxConnectionsPerIdentity: options.realtime.maxConnectionsPerIdentity }),
+  });
+
+  // Every notification that reaches this instance — from its own worker or from
+  // another instance's — arrives here. It is validated before it is believed:
+  // the broadcast channel is shared infrastructure, and `parseNotification`
+  // re-parses every topic name rather than trusting that whatever published it
+  // was one of ours.
+  services.broadcast.subscribe((raw) => {
+    try {
+      hub.publish(parseNotification(raw));
+    } catch {
+      app.log.warn({}, 'realtime: discarded an invalid broadcast');
+    }
+  });
+
+  await registerRealtimeRoutes(app, {
+    hub,
+    enabled: config.REALTIME_ENABLED,
+    ...(options.realtime?.heartbeatMs === undefined
+      ? {}
+      : { heartbeatMs: options.realtime.heartbeatMs }),
+    ...(options.realtime?.authenticateDeadlineMs === undefined
+      ? {}
+      : { authenticateDeadlineMs: options.realtime.authenticateDeadlineMs }),
+    ...(options.realtime?.revalidateIntervalMs === undefined
+      ? {}
+      : { revalidateIntervalMs: options.realtime.revalidateIntervalMs }),
+  });
+
   // --- Background workers ----------------------------------------------------
   // Registered after routes so the queue handlers exist before the first job
   // can be enqueued by a request.
@@ -338,6 +413,12 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     ttlHours: config.DATA_EXPORT_TTL_HOURS,
     log: app.log,
   });
+  // Consumes the notifications the outbox relay published and repeats each to
+  // every instance. Registered even when the endpoint is disabled: the jobs are
+  // still produced by the order routes, and a worker that is not listening
+  // would leave them to expire in the queue rather than be consumed and
+  // harmlessly dropped by a hub with no sockets.
+  registerRealtimeWorker({ queue: services.queue, broadcast: services.broadcast, log: app.log });
 
   return app;
 }

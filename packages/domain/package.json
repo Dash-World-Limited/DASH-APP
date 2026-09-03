@@ -17,6 +17,7 @@
     "./ports": "./src/ports/index.ts",
     "./envelope": "./src/envelope/index.ts",
     "./redaction": "./src/redaction/index.ts",
+    "./realtime": "./src/realtime/index.ts",
     "./mfa": "./src/mfa/index.ts",
     "./retention": "./src/retention/index.ts",
     "./account": "./src/account/index.ts"

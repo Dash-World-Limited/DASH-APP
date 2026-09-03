@@ -24,6 +24,8 @@ import {
 import { parseJsonColumn, type PrismaClient } from '@dash/db';
 import type { QueuePort } from '@dash/domain/ports';
 import type { FastifyBaseLogger } from 'fastify';
+import { flushOutbox } from '../events/outbox.js';
+import { recordOrderChange } from '../realtime/notify.js';
 
 export interface FindRiderJob {
   orderId: string;
@@ -191,43 +193,77 @@ export function registerDispatchWorker(deps: {
         { code: order.code, round, reason: outcome.reason },
         'dispatch: escalating to manual dispatch',
       );
-      await prisma.orderStatusEvent.create({
-        data: {
-          orderId: order.id,
-          fromStatus: order.status,
-          toStatus: order.status,
-          actorType: 'system',
-          reasonCode: 'dispatch_escalated',
-          reason: outcome.reason,
-        },
+      await prisma.$transaction(async (tx) => {
+        await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: order.status,
+            actorType: 'system',
+            reasonCode: 'dispatch_escalated',
+            reason: outcome.reason,
+          },
+        });
+
+        // An escalation is exactly what a dispatcher's board exists to show,
+        // and it is the one dispatch outcome nobody is watching a screen for —
+        // it happens when the system has given up, often minutes after the
+        // customer placed the order. Announcing it commits with the record of
+        // it, so the board cannot be told about an escalation that rolled back.
+        await recordOrderChange(tx, order.id);
       });
+
+      await flushOutbox(prisma, queue);
       return;
     }
 
     // --- Create the offers ---------------------------------------------------
     const expiresAt = new Date(now.getTime() + OFFER_TIMEOUT_SECONDS * 1000);
 
-    for (const riderId of decision.offerTo) {
-      const scored = decision.ranked.find((entry) => entry.riderId === riderId);
-      if (!scored) continue;
+    const offered: string[] = [];
 
-      await prisma.dispatchOffer.create({
-        data: {
-          orderId: order.id,
-          riderId,
-          round,
-          status: 'pending',
-          score: scored.score,
-          // The full factor breakdown. This is what makes an assignment
-          // explainable rather than a number nobody can defend.
-          scoreBreakdown: JSON.stringify(scored.factors),
-          ruleVersion: decision.ruleVersion,
-          pickupEtaSeconds: scored.pickupEtaSeconds,
-          pickupDistanceMetres: scored.pickupDistanceMetres,
-          expiresAt,
-        },
+    await prisma.$transaction(async (tx) => {
+      for (const riderId of decision.offerTo) {
+        const scored = decision.ranked.find((entry) => entry.riderId === riderId);
+        if (!scored) continue;
+
+        await tx.dispatchOffer.create({
+          data: {
+            orderId: order.id,
+            riderId,
+            round,
+            status: 'pending',
+            score: scored.score,
+            // The full factor breakdown. This is what makes an assignment
+            // explainable rather than a number nobody can defend.
+            scoreBreakdown: JSON.stringify(scored.factors),
+            ruleVersion: decision.ruleVersion,
+            pickupEtaSeconds: scored.pickupEtaSeconds,
+            pickupDistanceMetres: scored.pickupDistanceMetres,
+            expiresAt,
+          },
+        });
+        offered.push(riderId);
+      }
+
+      if (offered.length === 0) return;
+
+      // The offered riders are told on their own `rider:` topics, which is the
+      // only place they could hear it: they have no relationship to this order
+      // yet and `canReachOrder` would refuse them the order topic outright.
+      // They answer by re-reading their own offer list, so the notification
+      // grants them nothing they could not already ask for — and a rider who
+      // declines never gains a way to watch the order afterwards.
+      //
+      // An offer has a timeout measured in seconds, so this is the one
+      // notification where the difference between a push and a poll interval is
+      // the difference between a rider seeing the job and missing it.
+      await recordOrderChange(tx, order.id, {
+        extraTopics: offered.map((riderId) => `rider:${riderId}`),
       });
-    }
+    });
+
+    await flushOutbox(prisma, queue);
 
     // --- Schedule the timeout sweep -----------------------------------------
     // A round that nobody answers must move on by itself. Without this, a rider

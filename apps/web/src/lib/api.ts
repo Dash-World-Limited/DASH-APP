@@ -291,4 +291,13 @@ export interface Me {
   vendorId: string | null;
   riderId: string | null;
   customerId: string | null;
+  /**
+   * Cities this actor is scoped to. Empty for an unscoped ops role, which
+   * reaches every city.
+   *
+   * Used to decide which `city:` realtime topics the dispatch board follows.
+   * It is the actor's own scope and grants nothing — the server re-checks every
+   * subscription against it regardless of what the client asks for.
+   */
+  cityIds: string[];
 }

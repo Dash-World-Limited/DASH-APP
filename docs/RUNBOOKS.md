@@ -484,6 +484,8 @@ routing decision is not also a policy decision.
 | Retention job failed | SEV3 | Non-zero exit, or no run in 48h | Personal data retained past policy |
 | Provider degradation | SEV3 | Adapter error rate up | Early warning before customers notice |
 | Certificate expiry | SEV2 | Under 14 days | Entirely avoidable outage |
+| Realtime fan-out down | SEV3 | Redis pub/sub unreachable, or connected socket count drops to zero | Screens fall back to polling — slower, never wrong. SEV3 because nothing is lost: the state was committed to PostgreSQL before any notification existed. |
+| Realtime notification backlog | SEV2 | `realtime.notify` rows pending and ageing | The relay is not running. Sockets are open and silent, which looks *worse* to a user than an outage: the page appears live and is not. |
 
 ### Ownership **[CODEX + owner]**
 
@@ -491,6 +493,47 @@ Undecided and blocking: who is on call, what the escalation path is, and what
 the acknowledgement target is per severity. An alert with no owner is a log
 line.
 
+
+---
+
+## 8. Realtime is degraded
+
+**Symptom:** clients report stale screens, or the connected-socket count falls.
+
+**First thing to know: nothing is lost.** Realtime carries `{subject, version}`
+notifications, never data ([ADR-0013](DECISIONS.md#adr-0013--realtime-carries-notifications-not-data)).
+Every screen it feeds reads its state from an ordinary authorized HTTP route and
+falls back to polling — which is what all of them did before Milestone V. A
+realtime outage costs freshness and nothing else, so it is never a reason to
+take traffic away from an instance.
+
+**Turning it off is safe and immediate.** Set `REALTIME_ENABLED=false` and
+restart. Sockets are closed with code 4013, which tells clients to stop retrying
+and poll rather than reconnect into a wall. Do this if the socket layer is
+implicated in an incident; the product keeps working.
+
+**Triage, in order:**
+
+1. **Is the relay running?** Count `OutboxEvent` rows with `name =
+   'realtime.notify'` and `status = 'pending'`. A rising, ageing backlog means
+   `npm run maintenance:all` is not being invoked — the same cause as any other
+   stalled outbox work (§4a). This is the case worth paging for: sockets stay
+   open and silent, so the page looks live while it is not.
+2. **Is Redis answering?** `GET /health/ready` reports the queue dependency.
+   Pub/sub is classified `degradable` in `REDIS_RESPONSIBILITIES`: if it is
+   down, each instance still serves its own sockets, so the symptom is partial —
+   some users live, some not, depending on which instance they landed on.
+3. **Is `REALTIME_BROADCAST` set to `redis`?** With `memory`, only the instance
+   whose worker took the job notifies anyone. Production refuses to boot with
+   `memory`, so this only bites in a staging environment configured by hand.
+4. **Are sockets being closed?** Close code 4008 means clients are exceeding the
+   frame budget (a client-side loop); 4009 means they are not reading their own
+   socket; 4003 in volume means sessions are being revoked or tokens are not
+   being renewed.
+
+**What not to do:** do not disable the revalidation sweep to keep sockets alive
+during a database incident. It already keeps sockets when its lookup fails —
+they stay bounded by their token expiry, which needs no database.
 
 ---
 

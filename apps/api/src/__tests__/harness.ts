@@ -138,6 +138,20 @@ export async function createTestContext(
    * it unset and runs at `silent`.
    */
   logDestination?: { write(chunk: string): void },
+  /**
+   * Realtime timings.
+   *
+   * The defaults are a 25-second heartbeat, a 10-second handshake deadline, and
+   * a 60-second revalidation sweep. A suite cannot wait for any of those, and
+   * shortening the constants themselves would be changing production behaviour
+   * to suit a test. The realtime suite passes small numbers here instead.
+   */
+  realtime?: {
+    heartbeatMs?: number;
+    authenticateDeadlineMs?: number;
+    revalidateIntervalMs?: number;
+    maxConnectionsPerIdentity?: number;
+  },
 ): Promise<TestContext> {
   const template = buildTemplateDatabase();
 
@@ -167,6 +181,10 @@ export async function createTestContext(
     config,
     services: { prisma, ...serviceOverrides },
     ...(logDestination ? { logDestination } : {}),
+    // Off unless a suite asks for it: a sweep timer firing under every other
+    // suite would run database queries after the test that owns them has
+    // finished, which is how a suite becomes intermittently flaky.
+    realtime: { revalidateIntervalMs: 0, ...(realtime ?? {}) },
   });
   await app.ready();
 
