@@ -173,6 +173,16 @@ async function applyRule(
       return (await prisma.riderLocation.deleteMany({ where })).count;
     }
 
+    case 'published_outbox_events': {
+      // `status: 'published'` is the whole guard. A `pending` event is work the
+      // platform still owes someone and a `failed` one is work it dropped —
+      // deleting either would destroy the only record that it was ever meant to
+      // happen, which is the opposite of what this table is for.
+      const where = { status: 'published', publishedAt: { lt: cutoff } };
+      if (dryRun) return prisma.outboxEvent.count({ where });
+      return (await prisma.outboxEvent.deleteMany({ where })).count;
+    }
+
     case 'rider_location_history': {
       return anonymiseRiderLocations(prisma, cutoff, dryRun, batchSize);
     }
@@ -289,5 +299,6 @@ export const IMPLEMENTED_RULES: ReadonlySet<string> = new Set([
   'consumed_mfa_challenges',
   'expired_idempotency_keys',
   'rejected_rider_locations',
+  'published_outbox_events',
   'rider_location_history',
 ]);

@@ -19,7 +19,7 @@ import type { FastifyInstance } from 'fastify';
 import { confirmOrderPaid } from './orders.js';
 
 export async function registerWebhookRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma, payments } = app.services;
+  const { prisma, payments, queue } = app.services;
 
   // The raw body is required for signature verification — a re-serialized JSON
   // object will not produce the same bytes, so the signature would never match.
@@ -128,7 +128,7 @@ export async function registerWebhookRoutes(app: FastifyInstance): Promise<void>
       if (verified.status === 'captured') {
         // Idempotent by order state — a second capture event for the same order
         // finds it already placed and does nothing.
-        await confirmOrderPaid(prisma, payment.orderId, 'system');
+        await confirmOrderPaid(prisma, payment.orderId, 'system', queue);
       }
 
       await prisma.paymentWebhook.updateMany({

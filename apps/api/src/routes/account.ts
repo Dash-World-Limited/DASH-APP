@@ -21,6 +21,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ApiError } from '../http/errors.js';
+import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import { actorOf, requireAuth, requirePermission, withIdempotency } from '../http/context.js';
 import {
   cancelAccountDeletion,
@@ -146,19 +147,30 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
       customerIdOrForbid(request);
 
       return withIdempotency(request, 'POST /v1/account/export', async () => {
-        const { view, jobRequestId } = await requestDataExport(prisma, {
-          identityId: actor.identityId,
-          ipAddress: request.ip,
-          requestId: request.id,
+        // The request row and the instruction to build it commit together, so
+        // a queue outage can no longer strand an export in `pending` with
+        // nothing scheduled to pick it up.
+        const { view } = await prisma.$transaction(async (tx) => {
+          const created = await requestDataExport(tx, {
+            identityId: actor.identityId,
+            ipAddress: request.ip,
+            requestId: request.id,
+          });
+
+          if (created.jobRequestId) {
+            await enqueueViaOutbox(tx, {
+              name: 'account.export.build',
+              payload: { requestId: created.jobRequestId },
+              idempotencyKey: `export_build_${created.jobRequestId}`,
+            });
+          }
+
+          return created;
         });
 
-        if (jobRequestId) {
-          await queue.enqueue({
-            name: 'account.export.build',
-            payload: { requestId: jobRequestId },
-            idempotencyKey: `export_build_${jobRequestId}`,
-          });
-        }
+        // Publish now if the queue is reachable; the scheduled relay covers it
+        // if not. Never raises — the row is already durable.
+        await flushOutbox(prisma, queue);
 
         return {
           export: { id: view.id, status: view.status, requestedAt: view.requestedAt },

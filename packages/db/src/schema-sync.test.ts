@@ -18,7 +18,7 @@
  *      character-identical, computed without going through the transform at all.
  */
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -59,10 +59,30 @@ describe('the two schemas stay in step', () => {
 });
 
 describe('the dialect differences are declared, not incidental', () => {
-  it('differs only in the datasource provider', () => {
-    expect(DIALECT_SUBSTITUTIONS).toHaveLength(1);
+  it('differs only in the datasource provider and the client output path', () => {
+    // Two declared differences, and the list is asserted exhaustively so a
+    // third cannot be added without this test being edited deliberately. Both
+    // are about *where the schema points*, never about what it models — the
+    // model-surface comparison above is what guarantees that half.
+    expect(DIALECT_SUBSTITUTIONS).toHaveLength(2);
+
     expect(DIALECT_SUBSTITUTIONS[0]!.from).toBe('provider = "sqlite"');
     expect(DIALECT_SUBSTITUTIONS[0]!.to).toBe('provider = "postgresql"');
+
+    // The second exists because both schemas previously generated into the
+    // hoisted root @prisma/client and overwrote each other. `db:generate`
+    // (SQLite) runs far more often, so the ambient client was always the SQLite
+    // one, and a SQLite client rejects a postgresql:// URL — which meant
+    // `check:postgres` could not connect to the database it verifies.
+    expect(DIALECT_SUBSTITUTIONS[1]!.to).toContain('output   = "./.client"');
+    expect(DIALECT_SUBSTITUTIONS[1]!.from).toContain('No custom `output`');
+  });
+
+  it('gives the PostgreSQL client its own output directory', () => {
+    // The property that matters, asserted on the generated file rather than on
+    // the substitution that produces it.
+    expect(postgresSchema).toMatch(/output\s*=\s*"\.\/\.client"/);
+    expect(sqliteSchema).not.toMatch(/output\s*=/);
   });
 
   it('gives every declared difference a written reason', () => {
@@ -116,6 +136,24 @@ describe('the PostgreSQL migration history is its own', () => {
     'utf8',
   );
 
+  /**
+   * Every PostgreSQL migration concatenated.
+   *
+   * The model-coverage check below used to read `initMigration` alone, which
+   * quietly assumed there would only ever be one migration. The first migration
+   * added after it — Milestone IV's outbox — failed the test for a model that
+   * was correctly created, just not in the baseline. Coverage is a property of
+   * the history, not of its first entry.
+   */
+  const allMigrations = readdirSync(join(here, '../prisma/postgres/migrations'), {
+    withFileTypes: true,
+  })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) =>
+      readFileSync(join(here, '../prisma/postgres/migrations', entry.name, 'migration.sql'), 'utf8'),
+    )
+    .join('\n');
+
   it('pins the PostgreSQL provider', () => {
     expect(migrationLock).toContain('provider = "postgresql"');
     expect(migrationLock).not.toContain('sqlite');
@@ -134,7 +172,7 @@ describe('the PostgreSQL migration history is its own', () => {
   it('creates every model as a table', () => {
     const models = [...sqliteSchema.matchAll(/^model\s+(\w+)\s*\{/gm)].map((match) => match[1]!);
     for (const model of models) {
-      expect(initMigration, `no CREATE TABLE for ${model}`).toContain(`CREATE TABLE "${model}"`);
+      expect(allMigrations, `no CREATE TABLE for ${model}`).toContain(`CREATE TABLE "${model}"`);
     }
   });
 });

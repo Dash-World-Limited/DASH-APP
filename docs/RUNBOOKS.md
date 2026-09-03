@@ -299,6 +299,81 @@ unrehearsed and stays on the readiness checklist below.
 
 ---
 
+## 4a. Scheduled maintenance
+
+**One command. Something outside this repository has to call it.**
+
+```bash
+npm run maintenance:all              # the scheduled run
+npm run maintenance:all -- --dry-run # reports, writes nothing
+npm run maintenance:all -- --only=outbox
+```
+
+It runs four jobs in a fixed order, each under a lease:
+
+| Order | Job | What it does |
+|---|---|---|
+| 1 | `outbox` | Publishes committed domain events to the queue. **First, always** — its backlog is work already promised to a customer. |
+| 2 | `retention` | Session pruning, spent OTP/MFA challenges, rider-location coarsening, published outbox events. |
+| 3 | `accounts` | Deletion finalisation, export archive expiry, abandoned builds, orphaned blobs. |
+| 4 | `ledger` | Nightly reconciliation across the **whole** ledger. |
+
+### Suggested schedule **[CODEX]**
+
+| Job | Cadence | Why |
+|---|---|---|
+| `--only=outbox` | every 1–5 minutes | It is the safety net under the in-request publish. A backlog here is undispatched orders. |
+| everything else | nightly, off-peak | Reconciliation reads the whole ledger; retention takes write locks in batches. |
+
+A Kubernetes CronJob, a systemd timer, or a cron entry are all fine. Nothing in
+this repository schedules itself, deliberately —
+[ADR-0012](DECISIONS.md#adr-0012--a-transactional-outbox-and-a-scheduler-this-repository-does-not-own).
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Every job ran cleanly, or was skipped because another instance held its lease. |
+| `1` | A job failed, the ledger did not balance, or **a job is overdue**. |
+
+**A skipped job is not a failure.** Two instances firing the same cron minute is
+ordinary; the lease makes one of them a no-op. Alerting on that would page
+someone nightly until they stopped reading the alerts.
+
+### What to alarm on
+
+1. **Non-zero exit.** Route it to whoever is on call.
+2. **`ledger` failing — always SEV1**, per §1, even if no customer has noticed.
+   The job never repairs anything; corrections are reversing transactions posted
+   by a human who understands the discrepancy (ADR-0006).
+3. **Overdue jobs.** The runner reports a job whose last success is older than
+   its threshold, and treats "never succeeded" as overdue. This is the alert
+   that matters most: a job that fails loudly gets noticed, and a job that
+   silently stops being scheduled is the one that goes unnoticed for a quarter.
+   That is not hypothetical — four jobs in this repository were implemented,
+   tested, and run by nothing for three milestones.
+4. **A growing outbox backlog.** `outboxHealth` distinguishes the two cases: a
+   *fresh* backlog during a Redis outage is the outbox working as designed; an
+   *old* backlog means the relay itself is not running. Only the second is a
+   fault, and `failed` events always are.
+
+### If the outbox has failed events
+
+A `failed` event has exhausted its attempts or carried an unparseable payload.
+It is never deleted by retention — it is outstanding work, and the row is the
+only record that it was ever meant to happen.
+
+1. Read `lastError`. It is scrubbed of credentials and bounded to 500 characters.
+2. Fix the cause (usually the queue being unreachable for longer than the
+   retry budget).
+3. Re-arm by setting `status = 'pending'`, `attempts = 0`, and `availableAt` to
+   now. The dedupe key means a job that did in fact run is a harmless no-op.
+
+Do **not** delete a failed event to clear an alert. That is the one action that
+turns a visible problem into an invisible one.
+
+---
+
 ## 5. Production readiness checklist
 
 Nothing may go live until every line is ticked by a named person.

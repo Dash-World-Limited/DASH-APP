@@ -521,3 +521,129 @@ integration, which is worse than an absent one.
 
 **Write a stub adapter for each cloud provider.** Explicitly rejected. A stub
 that claims a provider is supported is a lie in the shape of a file.
+
+---
+
+## ADR-0012 — A transactional outbox, and a scheduler this repository does not own
+
+**Status:** Accepted · Milestone IV
+
+### Context
+
+Every background job was scheduled by a dual write:
+
+```ts
+await prisma.order.update({ ... });           // committed
+await queue.enqueue({ name: 'dispatch...' }); // separate network call
+```
+
+Two systems, no shared transaction. The gap between them is where work
+disappears, and it was not theoretical: `redis/client.ts` already classified an
+enqueue failure as `retryable` and noted that the caller's durable row is
+already committed. So a vendor accepts an order, the row commits, Redis is
+briefly unreachable — and the endpoint returns **500** for an order that is, in
+the database, accepted. A rider is never dispatched. Nothing records that one
+was supposed to be. A test added in this milestone reproduces exactly that
+against the pre-existing code.
+
+Five call sites had this shape, and the worst was vendor rejection: the customer
+is charged, the order is dead, and the refund the platform owes is queued by a
+network call that may not happen.
+
+Separately, four maintenance jobs — retention, session pruning, account deletion
+finalisation, export expiry — were implemented, tested, and run by nothing.
+`HANDOFF.md` had said "nothing schedules them" since Milestone C.
+
+### Decision
+
+**Two things, deliberately separate.**
+
+**1. A transactional outbox for domain events.** The intent to enqueue is a row
+written inside the caller's transaction (`enqueueViaOutbox(tx, …)`). A relay
+publishes it afterwards. If the transaction rolls back, the intent rolls back;
+if it commits, the intent is durable and will be published however long the
+queue is down.
+
+Delivery is **at-least-once** and that is stated rather than wished away: the
+relay can publish and crash before marking, so a duplicate is possible. The
+dedupe key is therefore mandatory (`assertPublishable` refuses an event without
+one) and passed straight through to the queue. Exactly-once across two systems
+is not purchasable; a harmless duplicate is.
+
+Latency is preserved by a best-effort `flushOutbox` immediately after commit.
+When the queue is healthy the job is published in-request exactly as before;
+when it is not, the flush swallows the failure and the scheduled relay takes
+over. A durable row must never become a failed customer request.
+
+**2. A single maintenance command, not an in-process scheduler.**
+`npm run maintenance:all` runs the outbox relay, retention, account
+maintenance, and ledger reconciliation, in that order, each under a lease.
+
+### Why not an in-process timer
+
+A `setInterval` in the API means every instance runs every job, so how often the
+ledger gets reconciled becomes a function of how many pods happen to be up.
+Queue-based self-scheduling is worse: the queue is Redis, Redis is precisely
+what maintenance must keep working without, and a job that schedules its own
+successor stops for ever the first time one run dies.
+
+What this repository does not have is a deployment platform — the same fact
+behind [ADR-0011](#adr-0011--runtime-environment-injection-as-the-secret-source-contract).
+cron, systemd timers, and Kubernetes CronJobs all exist, are operated by people
+who understand the platform, and restart on their own. Inventing a worse one
+here would be the same mistake as inventing a secret store.
+
+### The lease
+
+Two instances firing the same cron minute is ordinary. The jobs are individually
+safe to run concurrently, but doing the same work twice still costs two full
+ledger scans and two audit rows for one fact.
+
+Acquisition uses nothing provider-specific, because this repository runs SQLite
+in development and PostgreSQL in production: a guarded `updateMany` takes over a
+lease whose expiry has passed, and a `create` claims a job that has never run,
+with the primary key deciding that race. No advisory locks, no `SELECT … FOR
+UPDATE`.
+
+The lease **expires** rather than being held until success, so an instance
+killed mid-run does not block the job until a human notices. It prevents waste,
+not corruption — correctness still comes from the jobs' own idempotency.
+
+### Consequences
+
+**The dual write is gone from all five call sites**, and the routes no longer
+reference the queue at all — the compiler confirmed that by reporting `queue` as
+unused in four files.
+
+**The outbox table needs its own retention.** An append-only record of every
+domain event that ever fired grows without bound and holds nothing the audit log
+does not, so `published_outbox_events` is deleted after 14 days. `pending` and
+`failed` events are never deleted: those are outstanding work.
+
+**Payloads are identifiers only.** This table is unencrypted, widely read, and
+lives in backups — exactly where Milestone III keeps personal data out of. The
+same `isSensitiveKey` vocabulary the logger and audit log use refuses a payload
+carrying a phone number or a secret.
+
+**Staleness is the alert that matters.** A job that fails loudly gets noticed; a
+job that silently stops being scheduled is the one that goes unnoticed for a
+quarter — which is exactly how four implemented jobs came to be run by nothing.
+`maintenanceStaleness` treats "never succeeded" and "succeeded long ago" as the
+same fact, and the runner exits non-zero for both.
+
+**Key rotation is deliberately excluded.** Its primitives exist and are not
+scheduled, because rotation is a supervised operation with a runbook. That
+remains true.
+
+### Rejected alternatives
+
+**Keep the dual write and retry the enqueue in-process.** A retry loop holds the
+request open while Redis is down and still loses the work when the process
+restarts. The durability has to be in the database.
+
+**Publish inside the transaction.** A transaction that waits on Redis holds
+database locks while a third party is unreachable, which turns a queue outage
+into a database outage.
+
+**Change nothing and rely on the queue's own durability.** BullMQ is durable
+once it has the job. The failure is in never getting it.

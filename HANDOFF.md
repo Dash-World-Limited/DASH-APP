@@ -42,6 +42,7 @@ verification — none of which has happened.
 | I | `0f0c533` | Checkpoint reconciliation — dependency-audit analysis, smoke repair, status corrections |
 | II | `416b6af` → `eabaf72` | PostgreSQL/PostGIS + Redis production path — **merged on `main`, verified against real PostgreSQL 16 + PostGIS 3.4 (14/14) and Redis 7 (8/8)** |
 | III | *(branch `claude/milestone-iii-secret-management`)* | Secret management and key custody — **implemented, locally verified, not merged** |
+| IV | *(branch `claude/milestone-iv-durability-scale`, based on III)* | Transactional outbox, nightly ledger reconciliation, scheduled maintenance — **implemented, locally verified, not merged** |
 
 **Milestone E is merged on `main` and remains untagged.** It is implemented and
 **locally verified only**: the full suite, typecheck, lint, build, coverage,
@@ -125,7 +126,7 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).t
 | `npm run dev` | API on `:4000` and web on `:3000`, prefixed output, Ctrl-C stops both |
 | `npm run dev:api` | API only |
 | `npm run dev:web` | Web only |
-| `npm test` | 1112 tests — domain units and API integration suites |
+| `npm test` | 1171 tests — domain units and API integration suites |
 | `npm run lint` | ESLint across all workspaces |
 | `npm run typecheck` | `tsc --build` across project references |
 | `npm run db:seed` | Wipe and reseed (safe to re-run; refuses in production) |
@@ -182,19 +183,20 @@ Everything below was run on this machine at this commit.
 
 | Check | Result |
 |---|---|
-| `npm test` | **1112 passing**, 34 files, 0 failing |
+| `npm test` | **1171 passing**, 37 files, 0 failing |
 | `npm run typecheck` | 4 projects clean |
 | `npm run lint` | clean |
 | `npm run build` | web app builds, 11 routes |
 | `npm run check:secrets` | 11/11, over 23 protected file classes |
 | `npm run check:keys` | 31/31 |
-| Domain coverage, full suite | **97.36%** statements · 94.82% branches · 96.62% functions (`src/redaction` 99.15%, `src/envelope` 98.98%, `src/account` 100%) |
-| Domain coverage, `--coverage packages/domain` (the CI gate) | 95.44% statements · 95.04% branches, against thresholds of 80/75/80/80 |
+| `npm run check:postgres` | **17/17** against real PostgreSQL 16 + PostGIS 3.4, from an empty database |
+| Domain coverage, full suite | **97.37%** statements · 94.67% branches · 96.62% functions (`src/retention` 100%, `src/redaction` 99.15%, `src/envelope` 98.98%) |
+| Domain coverage, `--coverage packages/domain` (the CI gate) | 95.45% statements · 95.04% branches, against thresholds of 80/75/80/80 |
 | `node scripts/smoke.mjs` | 52/52 |
 | `node scripts/dispatch-check.mjs` | 21/21 |
 | `npm run maintenance:retention -- --dry-run` | runs, reports, writes nothing |
 | `npm run maintenance:accounts -- --dry-run` | runs, reports, writes nothing |
-| `npm run db:migrate` on a fresh DB + drift check | applies `0_init` + `milestone_e`, `migrate status` clean, no drift vs schema |
+| `npm run db:migrate` on a fresh DB + drift check | applies `0_init` + `milestone_e` + `milestone_iv_outbox_maintenance`, `migrate status` clean, no drift vs schema |
 | SQLite `db push` + `db:seed` + `ci-verify-seed` on a fresh temp database | passes |
 
 > **Two coverage figures, because there are two commands.** CI runs
@@ -477,9 +479,11 @@ production blockers a Codex review of that commit found. What is in place:
   single-use** capability with an expiry (`DATA_EXPORT_TTL_HOURS`, default 24).
 - `npm run maintenance:accounts` finalises due deletions, retries held ones,
   expires stale archives, fails abandoned builds, and cleans orphaned blobs.
-  Still **nothing schedules it** — see below.
+  Run by `npm run maintenance:all` since Milestone IV; a scheduler still has to
+  invoke that (see below).
 - **Checked-in Prisma migrations** (`packages/db/prisma/migrations/`): a
-  `0_init` baseline + a `milestone_e` migration. `npm run db:migrate` on a fresh
+  `0_init` baseline + `milestone_e` + `milestone_iv_outbox_maintenance`.
+  `npm run db:migrate` on a fresh
   database + a drift check reproduce `schema.prisma` exactly. `db push` is still
   the local/test path.
 - Adversarial coverage: `account-deletion.test.ts` (42), `account-export.test.ts`
@@ -530,6 +534,37 @@ in place:
 Not done for this milestone: merge, tag, and everything that needs a platform —
 see below.
 
+**Milestone IV — durability.** On `claude/milestone-iv-durability-scale`, based
+on the Milestone III commit. **Not merged.** What is in place:
+
+- **A transactional outbox** (`apps/api/src/events/outbox.ts`) replacing a dual
+  write at five call sites. `enqueueViaOutbox(tx, …)` records the intent inside
+  the caller's transaction; a relay publishes it afterwards. The routes no
+  longer reference the queue at all — the compiler confirmed that by reporting
+  `queue` unused in four files.
+- **The bug it removes, reproduced.** Reinstating the dual write in the vendor
+  accept path makes the endpoint return **500** while the order is already
+  accepted in the database. `outbox-durability.test.ts` drives the real
+  endpoints through a broken queue and asserts both halves: the request
+  succeeds, *and* the work happens once the queue returns.
+- **Nightly ledger reconciliation** (`apps/api/src/jobs/ledger-reconciliation.ts`)
+  over the whole ledger by keyset pagination, not the newest 5 000 the on-demand
+  endpoint checks. Catches transactions with no entries, which balance
+  vacuously. Repairs nothing.
+- **`npm run maintenance:all`** — outbox relay, retention, accounts, ledger, in
+  that order, each under a portable lease that works identically on SQLite and
+  PostgreSQL. Exits non-zero for a failure *or* an overdue job.
+- **Two new models**, `OutboxEvent` and `MaintenanceLease`, with checked-in
+  migrations for both dialects. The PostgreSQL one was hand-written, because
+  `prisma migrate diff` needs a live PostgreSQL shadow database to generate one,
+  and has since been **verified against a real PostgreSQL 16 + PostGIS 3.4
+  server**: `npm run check:postgres` passes **17/17** from an empty database.
+- **Outbox payloads are identifiers only**, enforced by the same
+  `isSensitiveKey` vocabulary Milestone III introduced, because this table is
+  unencrypted, widely read, and lives in backups.
+
+Not done for this milestone: merge, tag, and a scheduler to invoke the command.
+
 ### Blocking production — infrastructure, all Codex
 
 - **A secret store and a hosting platform.** The application side is done
@@ -546,10 +581,18 @@ see below.
   services (Milestone II) but **not provisioned anywhere**. Until they are, the
   in-memory queue remains the running configuration, and it is per-process — a
   second API instance would run its own dispatch worker and double-offer.
-- The retention **and account-maintenance** jobs are implemented and tested
-  but **nothing schedules them**. Nor does anything schedule key re-encryption,
-  which is deliberate — rotation is supervised — but it does mean a half-finished
-  rotation stays half-finished until someone looks.
+- **A scheduler must invoke `npm run maintenance:all`.** Milestone IV replaced
+  "nothing schedules them" with one idempotent command that runs the outbox
+  relay, retention, account maintenance, and ledger reconciliation under a
+  lease, and exits non-zero if a job fails *or is overdue*. What it deliberately
+  does not do is schedule itself — see
+  [ADR-0012](docs/DECISIONS.md#adr-0012--a-transactional-outbox-and-a-scheduler-this-repository-does-not-own).
+  Wire it to cron, a systemd timer, or a Kubernetes CronJob. Until something
+  does, the jobs still never run, and the staleness check will say so the first
+  time it is invoked.
+- Key re-encryption is still not scheduled, which is deliberate — rotation is
+  supervised — but it does mean a half-finished rotation stays half-finished
+  until someone looks.
 - Error reporting and metrics are console implementations; nothing is wired to a
   real destination.
 - No branch protection on `master` — a repository setting, not committable.

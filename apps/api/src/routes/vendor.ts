@@ -13,6 +13,7 @@ import { assertTransition, type OrderStatus } from '@dash/domain/orders';
 import { writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { readMaskedPayoutDetails, setPayoutDetails } from '../vendor/payout.js';
+import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import {
   actorOf,
   requirePermission,
@@ -128,31 +129,42 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
 
       const readyAt = new Date(Date.now() + body.prepMinutes * 60_000);
 
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: 'accepted',
-          acceptedAt: new Date(),
-          estimatedReadyAt: readyAt,
-          statusEvents: {
-            create: {
-              fromStatus: order.status,
-              toStatus: 'accepted',
-              actorType: actingAs,
-              actorId: actor.identityId,
+      // The accept and the intent to dispatch commit together or not at all.
+      // This used to be a dual write — the update committed, then `enqueue` was
+      // a separate network call — so a Redis outage in the gap left an accepted
+      // order that no rider was ever sent to, with nothing recording that one
+      // was supposed to be. See events/outbox.ts.
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: 'accepted',
+            acceptedAt: new Date(),
+            estimatedReadyAt: readyAt,
+            statusEvents: {
+              create: {
+                fromStatus: order.status,
+                toStatus: 'accepted',
+                actorType: actingAs,
+                actorId: actor.identityId,
+              },
             },
           },
-        },
+        });
+
+        // Dispatch aims to have a rider arrive as the food is ready, so it is
+        // scheduled from the vendor's own prep estimate rather than immediately.
+        await enqueueViaOutbox(tx, {
+          name: 'dispatch.find_rider',
+          payload: { orderId: order.id },
+          delayMs: Math.max(0, (body.prepMinutes - 8) * 60_000),
+          idempotencyKey: `dispatch_${order.id}`,
+        });
       });
 
-      // Dispatch aims to have a rider arrive as the food is ready, so it is
-      // scheduled from the vendor's own prep estimate rather than immediately.
-      await queue.enqueue({
-        name: 'dispatch.find_rider',
-        payload: { orderId: order.id },
-        delayMs: Math.max(0, (body.prepMinutes - 8) * 60_000),
-        idempotencyKey: `dispatch_${order.id}`,
-      });
+      // Publish now if the queue is reachable; the scheduled relay covers it
+      // if not. Never raises — the row is already durable.
+      await flushOutbox(prisma, queue);
 
       await writeAudit(prisma, {
         identityId: actor.identityId,
@@ -193,33 +205,43 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       const actingAs = transitionActorFor(actor);
       assertTransition(order.status as OrderStatus, 'rejected', actingAs);
 
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: 'rejected',
-          cancelledAt: new Date(),
-          cancelledBy: actor.identityId,
-          cancellationReason: body.note ?? body.reasonCode,
-          statusEvents: {
-            create: {
-              fromStatus: order.status,
-              toStatus: 'rejected',
-              actorType: actingAs,
-              actorId: actor.identityId,
-              reasonCode: body.reasonCode,
-              reason: body.note ?? null,
+      // The rejection and the refund it obliges commit together. A refund that
+      // was owed and never queued is the worst of the dual-write failures here:
+      // the customer is charged, the order is dead, and nothing in the system
+      // remembers that money has to go back.
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: 'rejected',
+            cancelledAt: new Date(),
+            cancelledBy: actor.identityId,
+            cancellationReason: body.note ?? body.reasonCode,
+            statusEvents: {
+              create: {
+                fromStatus: order.status,
+                toStatus: 'rejected',
+                actorType: actingAs,
+                actorId: actor.identityId,
+                reasonCode: body.reasonCode,
+                reason: body.note ?? null,
+              },
             },
           },
-        },
+        });
+
+        // A rejected customer is never at fault, so the refund is queued
+        // automatically rather than waiting for them to ask for it.
+        await enqueueViaOutbox(tx, {
+          name: 'refund.full',
+          payload: { orderId: order.id, reason: 'vendor_rejected' },
+          idempotencyKey: `refund_${order.id}`,
+        });
       });
 
-      // A rejected customer is never at fault, so the refund is queued
-      // automatically rather than waiting for them to ask for it.
-      await queue.enqueue({
-        name: 'refund.full',
-        payload: { orderId: order.id, reason: 'vendor_rejected' },
-        idempotencyKey: `refund_${order.id}`,
-      });
+      // Publish now if the queue is reachable; the scheduled relay covers it
+      // if not. Never raises — the row is already durable.
+      await flushOutbox(prisma, queue);
 
       await writeAudit(prisma, {
         identityId: actor.identityId,

@@ -73,6 +73,14 @@ export const RETENTION_RULES: readonly RetentionRule[] = [
       'Points rejected as implausible are kept briefly as fraud evidence, then dropped. They were never trusted enough to act on.',
   },
 
+  {
+    name: 'published_outbox_events',
+    action: 'delete',
+    afterDays: 14,
+    reason:
+      'A published outbox event has done its job — the queue has the work and the state change it accompanied is in the audit log. Kept a fortnight so a delivery question can be answered after a weekend, then dropped, because an append-only table of every domain event that ever fired grows without bound and holds nothing the audit trail does not. Failed and pending events are never deleted: those are outstanding work.',
+  },
+
   // --- Anonymised ---------------------------------------------------------
   {
     name: 'rider_location_history',
@@ -161,6 +169,7 @@ export const MAX_ALLOWED_DAYS: Readonly<Record<string, number>> = {
   consumed_mfa_challenges: 30,
   expired_idempotency_keys: 90,
   rejected_rider_locations: 90,
+  published_outbox_events: 90,
   rider_location_history: 365,
 };
 

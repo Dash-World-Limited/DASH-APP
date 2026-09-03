@@ -11,9 +11,10 @@ against real PostgreSQL, PostGIS, and Redis; everything else on `main` is
 locally verified only. Nothing has been run against a real external provider or
 deployed, so a tag would overstate it.
 
-**Milestone III (secret management and key custody) is not on `main`.** It is
-implemented and locally verified on the branch
-`claude/milestone-iii-secret-management`, and is described below as such.
+**Milestones III and IV are not on `main`.** Secret management and key custody
+(III) is on `claude/milestone-iii-secret-management`; durability (IV) builds on
+it on `claude/milestone-iv-durability-scale`. Both are implemented and locally
+verified, and are described below as such.
 
 The ordering is not arbitrary. Each phase removes a blocker for the next, and
 the two hard gates below exist because getting them wrong is expensive to undo.
@@ -119,9 +120,9 @@ Shipped, except where noted.
 - ✅ AES-256-GCM envelope with key-version rotation, protecting TOTP secrets and
   vendor payout details, each bound to its owner.
 - ✅ Retention policy and job — delete, anonymise, or retain, with dry run,
-  batching, convergence, and concurrency safety. **Nothing schedules it yet.**
-  The account-maintenance job (Milestone E) shares the same properties and the
-  same gap.
+  batching, convergence, and concurrency safety. Runnable on a schedule since
+  Milestone IV via `npm run maintenance:all`; a scheduler still has to invoke
+  that command.
 - ✅ Runbooks: incident response, secret inventory, backup/restore, environment
   separation, readiness checklist, rollback criteria, alert severities.
 
@@ -181,15 +182,48 @@ no production secret exists.**
 
 ---
 
+## Implemented and locally verified on branch — not merged — Milestone IV: durability
+
+> **Not on `main`.** This work lives on `claude/milestone-iv-durability-scale`,
+> based on the (also unmerged) Milestone III commit. It has not been merged,
+> tagged, or deployed.
+
+**A transactional outbox**, closing a dual write at five call sites. The intent
+to enqueue is now a row written inside the same transaction as the state change
+that caused it, so an accepted order and the instruction to dispatch a rider can
+no longer disagree. Before this, a Redis outage between the two returned **500**
+for an order that was already accepted in the database — reproduced by a test
+against the pre-existing code. Delivery is at-least-once and says so; the dedupe
+key is mandatory and passed through to the queue. A best-effort flush after
+commit keeps latency unchanged when the queue is healthy.
+
+**A nightly ledger reconciliation** over the *whole* ledger by keyset
+pagination, rather than the newest 5 000 the on-demand endpoint checks. It also
+catches the invariant `verifyLedgerIntegrity` cannot see on its own: a
+transaction with no entries sums to zero vacuously while recording money that
+did not move. It repairs nothing (ADR-0006) and records every run.
+
+**One maintenance command** — `npm run maintenance:all` — running the outbox
+relay, retention, account maintenance, and reconciliation under a portable
+lease, exiting non-zero for a failure *or* an overdue job. It does not schedule
+itself ([ADR-0012](docs/DECISIONS.md#adr-0012--a-transactional-outbox-and-a-scheduler-this-repository-does-not-own));
+a cron entry, systemd timer, or CronJob must invoke it.
+
+Session pruning, rider-location retention, deletion finalisation, and export
+expiry were already implemented — what they lacked was anything to run them.
+
+---
+
 ## Phase 3 — Durability and scale
 
-Redis + BullMQ and PostgreSQL + PostGIS landed in Milestone II above. What
-remains:
+Redis + BullMQ and PostgreSQL + PostGIS landed in Milestone II. The transactional
+outbox and the maintenance jobs landed in Milestone IV, below. What remains:
 
 - Websockets replacing polling on tracking, the vendor queue, and the ops board.
-- Transactional outbox for domain events.
-- Scheduled jobs: session pruning, rider-location retention, account-deletion
-  finalisation and export-archive expiry, nightly ledger reconciliation.
+- **A scheduler that invokes `npm run maintenance:all`.** The command exists and
+  is idempotent; nothing in this repository calls it on a timer, deliberately
+  ([ADR-0012](docs/DECISIONS.md#adr-0012--a-transactional-outbox-and-a-scheduler-this-repository-does-not-own)).
+  Until a cron entry, systemd timer, or CronJob exists, the jobs do not run.
 - Background key re-encryption on a schedule. The primitives exist
   (`apps/api/src/secrets/rotation.ts`); nothing runs them automatically, which
   is deliberate — rotation is a supervised operation, not something that should

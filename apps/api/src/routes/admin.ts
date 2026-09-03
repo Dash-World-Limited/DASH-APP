@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { kobo } from '@dash/domain/money';
+import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import { ACTIVE_STATUSES, assertTransition, type OrderStatus } from '@dash/domain/orders';
 import { buildRefund, buildWalletCredit, verifyLedgerIntegrity } from '@dash/domain/ledger';
 import { postLedgerTransaction, writeAudit } from '@dash/db';
@@ -135,7 +136,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
       assertTransition(order.status as OrderStatus, 'ready', 'ops');
 
-      const reassignmentEventId = await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx) => {
         // Created first so its id can key the dispatch job below.
         const event = await tx.orderStatusEvent.create({
           data: {
@@ -166,8 +167,19 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           });
         }
 
-        return event.id;
+        // Recorded with the reassignment, in the same transaction. The key is
+        // the event id, so a genuine second reassignment still dispatches while
+        // a retried publish of this one does not.
+        await enqueueViaOutbox(tx, {
+          name: 'dispatch.find_rider',
+          payload: { orderId: order.id },
+          idempotencyKey: `dispatch_${order.id}_reassign_${event.id}`,
+        });
       });
+
+      // Publish now if the queue is reachable; the scheduled relay covers it
+      // if not. Never raises — the row is already durable.
+      await flushOutbox(prisma, queue);
 
       // Keyed on the reassignment itself rather than the clock.
       //
@@ -187,12 +199,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       // an Idempotency-Key header here, as order creation does. Recorded as an
       // open item rather than changed silently, because it alters the contract
       // for every existing ops client.
-      await queue.enqueue({
-        name: 'dispatch.find_rider',
-        payload: { orderId: order.id },
-        idempotencyKey: `dispatch_${order.id}_reassign_${reassignmentEventId}`,
-      });
-
       await writeAudit(prisma, {
         identityId: actor.identityId,
         action: 'ops.order.reassigned',

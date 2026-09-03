@@ -4,6 +4,10 @@ node_modules/
 .pnp.js
 
 # builds
+# The PostgreSQL Prisma client, generated on demand by `npm run check:postgres`
+# into its own directory so it cannot overwrite the SQLite client the rest of
+# the workspace uses.
+packages/db/prisma/postgres/.client/
 dist/
 build/
 .next/

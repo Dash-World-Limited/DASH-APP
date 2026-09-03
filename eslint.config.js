@@ -3,7 +3,17 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/.next/**', '**/coverage/**', '**/*.d.ts'],
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/.next/**',
+      '**/coverage/**',
+      '**/*.d.ts',
+      // The PostgreSQL Prisma client, generated on demand by
+      // `npm run check:postgres` into its own directory so it cannot overwrite
+      // the SQLite client. Generated code, gitignored, and not ours to lint.
+      'packages/db/prisma/postgres/.client/**',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

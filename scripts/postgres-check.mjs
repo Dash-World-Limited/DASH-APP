@@ -25,9 +25,10 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCHEMA = join(root, 'packages/db/prisma/postgres/schema.prisma');
@@ -65,6 +66,27 @@ const prisma = (args) =>
 
 console.log('\nDASH APP — PostgreSQL + PostGIS verification\n' + '='.repeat(50));
 
+// --- 0. The target must genuinely be empty ---------------------------------
+//
+// "Run it against a fresh database" was previously an instruction in a comment
+// and nothing enforced it. A re-used database produces the most confusing
+// failure available: `migrate deploy` finds a history it did not write, or
+// applies nothing, and the drift check then reports a long list of "missing"
+// tables that are missing only because the history never ran. That is exactly
+// the shape of the failure this check was sent back to fix, so it is asserted
+// first rather than assumed.
+console.log('\nPre-flight');
+try {
+  prisma(['migrate', 'diff', '--from-url', url, '--to-empty', '--exit-code']);
+  check('the target database is empty before anything is applied', true);
+} catch (error) {
+  const detail =
+    error.status === 2
+      ? 'The database already contains objects. Drop and recreate it - this check migrates from zero, and its results are meaningless against a partially-migrated database.'
+      : error.stdout || error.message;
+  check('the target database is empty before anything is applied', false, detail);
+}
+
 // --- 1. Fresh migration ----------------------------------------------------
 console.log('\nMigration');
 try {
@@ -80,6 +102,22 @@ try {
 } catch (error) {
   check('migrate status is clean', false, error.stdout || error.message);
 }
+
+// Every migration directory on disk must actually have been applied.
+//
+// `migrate deploy` reporting success is not the same as the history being
+// complete, and a hand-written PostgreSQL migration is exactly the kind that
+// can sit in the tree looking applied while its tables do not exist. Comparing
+// the directory listing against what the database recorded closes that gap and
+// names the offending migration, instead of leaving it to be inferred from a
+// drift dump.
+const migrationsDir = join(root, 'packages/db/prisma/postgres/migrations');
+const onDisk = readdirSync(migrationsDir, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
+
+check('the PostgreSQL migration history is non-empty', onDisk.length > 0, `${onDisk.length} on disk`);
 
 // --- 2. Drift --------------------------------------------------------------
 try {
@@ -97,7 +135,31 @@ try {
 
 // --- 3 & 4. PostGIS --------------------------------------------------------
 console.log('\nPostGIS');
-const { PrismaClient } = await import('@prisma/client');
+// Generated here, from the PostgreSQL schema, into its own directory.
+//
+// This is the defect that made the entire PostGIS half of this check
+// unrunnable. Both schemas used to generate into the hoisted root
+// `@prisma/client`, so they overwrote each other and the winner was whichever
+// ran last - always `npm run db:generate` (SQLite), because every other
+// workflow runs it. A SQLite-generated client rejects a `postgresql://` URL
+// outright, so this script could never connect to the database it exists to
+// verify.
+//
+// Generating on demand also means the check cannot pass against a stale client
+// built before the schema last changed.
+try {
+  prisma(['generate', '--schema', SCHEMA]);
+  check('a PostgreSQL client generates from the PostgreSQL schema', true);
+} catch (error) {
+  check(
+    'a PostgreSQL client generates from the PostgreSQL schema',
+    false,
+    error.stdout || error.message,
+  );
+}
+
+const clientEntry = join(root, 'packages/db/prisma/postgres/.client/index.js');
+const { PrismaClient } = await import(pathToFileURL(clientEntry).href);
 const { PostgisGeoAdapter } = await import('../apps/api/src/adapters/postgis.ts');
 const { LocalGeoAdapter } = await import('../apps/api/src/adapters/index.ts');
 const { isPointInPolygon } = await import('@dash/domain/geo');

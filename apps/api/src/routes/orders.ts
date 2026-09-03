@@ -34,6 +34,8 @@ import { buildOrderCapture } from '@dash/domain/ledger';
 import { computeRiderPay, DEFAULT_RIDER_PAY_RULES } from '@dash/domain/pay';
 import { postLedgerTransaction, writeAudit, type PrismaClient } from '@dash/db';
 import { ApiError } from '../http/errors.js';
+import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
+import type { QueuePort } from '@dash/domain/ports';
 import { actorOf, requirePermission, requireScope, withIdempotency } from '../http/context.js';
 
 const basketItemSchema = z.object({
@@ -644,13 +646,10 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
         }
 
         if (intent.status === 'captured') {
-          await confirmOrderPaid(prisma, order.id, actor.identityId);
-          await queue.enqueue({
-            name: 'dispatch.find_rider',
-            payload: { orderId: order.id },
-            delayMs: 5_000,
-            idempotencyKey: `dispatch_${order.id}`,
-          });
+          // Enqueues nothing here. `confirmOrderPaid` records the dispatch
+          // intent in the outbox inside the same transaction that places the
+          // order, so the two cannot disagree.
+          await confirmOrderPaid(prisma, order.id, actor.identityId, queue);
         }
 
         await writeAudit(prisma, {
@@ -902,6 +901,14 @@ export async function confirmOrderPaid(
   prisma: PrismaClient,
   orderId: string,
   actorId: string,
+  /**
+   * Optional, and only used to publish the dispatch intent promptly.
+   *
+   * The intent is committed to the outbox inside the transaction below whether
+   * or not this is supplied, so omitting it delays dispatch until the next
+   * scheduled relay — it never loses it.
+   */
+  queue?: QueuePort,
 ): Promise<void> {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
@@ -991,5 +998,23 @@ export async function confirmOrderPaid(
     });
 
     await postLedgerTransaction(tx as unknown as PrismaClient, draft);
+
+    // The dispatch intent commits with the payment, not after it. Previously
+    // the caller enqueued once this function returned, so a Redis outage in
+    // that gap left an order paid, placed, and never dispatched — with nothing
+    // recording that a rider was supposed to be found. See events/outbox.ts.
+    await enqueueViaOutbox(tx, {
+      name: 'dispatch.find_rider',
+      payload: { orderId: order.id },
+      // Unchanged from the enqueue this replaces: the relay passes it straight
+      // through to the queue, which is what makes at-least-once safe.
+      idempotencyKey: `dispatch_${order.id}`,
+      delayMs: 5_000,
+    });
   });
+
+  // Outside the transaction on purpose: publishing is a network call, and a
+  // transaction that waits on Redis holds database locks while a third party is
+  // unreachable. Best effort — the row is durable either way.
+  if (queue) await flushOutbox(prisma, queue);
 }
