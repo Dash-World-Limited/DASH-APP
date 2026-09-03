@@ -12,6 +12,7 @@ import {
   formatNaira,
   formatNairaCompact,
 } from '@/components/ui';
+import { Modal } from '@/components/Modal';
 import { apiFetch, ApiRequestError, type MenuItem, type VendorDetail } from '@/lib/api';
 import { useBasket } from '@/lib/basket';
 
@@ -23,6 +24,7 @@ export default function VendorPage() {
   const [vendor, setVendor] = useState<VendorDetail | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
   const [selected, setSelected] = useState<MenuItem | null>(null);
+  const [basketReplaced, setBasketReplaced] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -194,12 +196,26 @@ export default function VendorPage() {
             if (result.switchedVendor) {
               // Tell the customer their previous basket was replaced. Silently
               // discarding it would be a nasty surprise at checkout.
-              window.alert(
-                'Your basket had items from another vendor, so it has been replaced. DASH APP delivers one vendor per order.',
-              );
+              setBasketReplaced(true);
             }
           }}
         />
+      ) : null}
+
+      {basketReplaced ? (
+        <Modal
+          title="Your basket was replaced"
+          onClose={() => setBasketReplaced(false)}
+          labelledBy="basket-replaced-title"
+        >
+          <p className="text-sm text-[var(--ink-muted)]">
+            Your basket had items from another vendor. DASH APP delivers one vendor per order, so
+            the earlier items have been removed.
+          </p>
+          <Button onClick={() => setBasketReplaced(false)} className="mt-5 w-full">
+            Got it
+          </Button>
+        </Modal>
       ) : null}
     </>
   );

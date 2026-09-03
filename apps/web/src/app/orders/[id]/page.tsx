@@ -13,6 +13,7 @@ import {
   LoadingBlock,
   formatNaira,
 } from '@/components/ui';
+import { Modal } from '@/components/Modal';
 import { ApiRequestError, type QuoteLine } from '@/lib/api';
 import { authedFetch } from '@/lib/session';
 import { liveLabel, useLive } from '@/lib/useLive';
@@ -74,6 +75,8 @@ export default function OrderTrackingPage() {
   const [error, setError] = useState<ApiRequestError | null>(null);
   const [pin, setPin] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -336,20 +339,7 @@ export default function OrderTrackingPage() {
                   variant="danger"
                   className="mt-3"
                   disabled={cancelling}
-                  onClick={() => {
-                    if (
-                      !window.confirm(
-                        `${cancellation.explanation}\n\nAre you sure you want to cancel?`,
-                      )
-                    ) {
-                      return;
-                    }
-                    setCancelling(true);
-                    void authedFetch(`/v1/orders/${order.id}/cancel`, { method: 'POST', body: {} })
-                      .then(() => load())
-                      .catch(() => undefined)
-                      .finally(() => setCancelling(false));
-                  }}
+                  onClick={() => setConfirmingCancel(true)}
                 >
                   {cancelling ? 'Cancelling…' : 'Cancel this order'}
                 </Button>
@@ -360,6 +350,59 @@ export default function OrderTrackingPage() {
           </section>
         ) : null}
       </main>
+
+      {confirmingCancel && cancellation ? (
+        <Modal
+          title="Cancel this order?"
+          onClose={() => setConfirmingCancel(false)}
+          labelledBy="cancel-title"
+        >
+          <p className="text-sm text-[var(--ink-muted)]">{cancellation.explanation}</p>
+
+          {cancelError ? (
+            <p role="alert" className="mt-3 text-sm font-medium text-coral-600">
+              {cancelError}
+            </p>
+          ) : null}
+
+          <div className="mt-5 flex gap-2">
+            <Button
+              variant="ghost"
+              className="flex-1"
+              disabled={cancelling}
+              onClick={() => setConfirmingCancel(false)}
+            >
+              Keep my order
+            </Button>
+            <Button
+              variant="danger"
+              className="flex-1"
+              disabled={cancelling}
+              onClick={() => {
+                setCancelling(true);
+                setCancelError(null);
+                void authedFetch(`/v1/orders/${params.id}/cancel`, { method: 'POST', body: {} })
+                  .then(async () => {
+                    await load();
+                    setConfirmingCancel(false);
+                  })
+                  .catch((caught: unknown) => {
+                    // Kept open on failure. A cancellation that silently did
+                    // not happen is the one error a customer must not miss.
+                    setCancelError(
+                      caught instanceof ApiRequestError
+                        ? caught.message
+                        : 'We could not cancel that. Please try again.',
+                    );
+                  })
+                  .finally(() => setCancelling(false));
+              }}
+            >
+              {cancelling ? 'Cancelling…' : 'Yes, cancel'}
+            </Button>
+          </div>
+        </Modal>
+      ) : null}
     </>
   );
 }

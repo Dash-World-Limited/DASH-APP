@@ -1,6 +1,16 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // The same `@/*` the web app's tsconfig maps. Web components import each
+      // other through it, so without this a component test fails to resolve
+      // imports the Next build resolves fine — a difference between the test
+      // environment and the real one, which is exactly what a test must not have.
+      '@': fileURLToPath(new URL('./apps/web/src', import.meta.url)),
+    },
+  },
   // The web app is a Next project, which compiles JSX with the automatic
   // runtime — no `import React` at the top of every file. Vitest's own esbuild
   // defaults to the classic transform, so without this a component test fails

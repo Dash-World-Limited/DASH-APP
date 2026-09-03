@@ -259,11 +259,82 @@ export function usePermissions(): { permissions: Set<string>; loaded: boolean } 
 // browser stores it; this code never sees the value.
 // ---------------------------------------------------------------------------
 
-export async function signInWithPassword(email: string, password: string): Promise<Session> {
-  const session = await apiFetch<Session>('/v1/auth/login', {
+/**
+ * What a password sign-in produced.
+ *
+ * A discriminated union rather than a `Session`, because for a staff account
+ * the password stage deliberately does **not** produce one. The API answers
+ * `200 { mfaRequired: true, challengeToken }` with no access token at all, and
+ * the previous code passed that straight to `storeAccess` — which set the token
+ * to `undefined`, reported success, and redirected. The caller then looked
+ * signed in, held nothing, and every request failed with "you do not have
+ * access", blaming permissions for a missing second factor.
+ *
+ * Making the two outcomes different *types* is what stops that recurring: there
+ * is no longer a shape a challenge and a session both satisfy, so a caller
+ * cannot treat one as the other without the compiler objecting.
+ */
+export type PasswordSignInResult =
+  | { kind: 'session'; session: Session }
+  | {
+      kind: 'mfa_required';
+      /** `verify` means prove an existing authenticator; `enrol` means set one up. */
+      stage: 'verify' | 'enrol';
+      challengeToken: string;
+      expiresAt: string;
+    };
+
+interface MfaChallengeResponse {
+  mfaRequired?: boolean;
+  stage?: 'verify' | 'enrol';
+  challengeToken?: string;
+  expiresAt?: string;
+}
+
+export async function signInWithPassword(
+  email: string,
+  password: string,
+): Promise<PasswordSignInResult> {
+  const response = await apiFetch<Session & MfaChallengeResponse>('/v1/auth/login', {
     method: 'POST',
     body: { email, password },
   });
+
+  if (response.mfaRequired) {
+    // Nothing is stored. The session begins after the second factor or not at
+    // all — the whole point of requiring one.
+    return {
+      kind: 'mfa_required',
+      stage: response.stage ?? 'verify',
+      challengeToken: response.challengeToken ?? '',
+      expiresAt: response.expiresAt ?? '',
+    };
+  }
+
+  // Belt and braces: a response without a token is never a session, whatever
+  // else it claims.
+  if (!response.accessToken) {
+    throw new ApiRequestError(0, 'unknown', 'Sign-in did not complete. Please try again.');
+  }
+
+  storeAccess(response);
+  return { kind: 'session', session: response };
+}
+
+/**
+ * Finish a staff sign-in with the authenticator code.
+ *
+ * The challenge token identifies the half-finished sign-in; the code proves
+ * possession. Only on success does a session exist.
+ */
+export async function verifyMfa(challengeToken: string, code: string): Promise<Session> {
+  const session = await apiFetch<Session>('/v1/auth/mfa/verify', {
+    method: 'POST',
+    body: { challengeToken, code },
+  });
+  if (!session.accessToken) {
+    throw new ApiRequestError(0, 'unknown', 'That did not complete sign-in. Please try again.');
+  }
   storeAccess(session);
   return session;
 }

@@ -5,7 +5,7 @@ import { Suspense, useState } from 'react';
 import { AppHeader } from '@/components/AppHeader';
 import { Button, Card, ErrorState, Field, Input, Wordmark } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
-import { requestOtp, signInWithPassword, verifyOtp } from '@/lib/session';
+import { requestOtp, signInWithPassword, verifyMfa, verifyOtp } from '@/lib/session';
 
 type Mode = 'otp' | 'password';
 
@@ -21,6 +21,13 @@ function SignInForm() {
   const [password, setPassword] = useState('');
   const [stage, setStage] = useState<'enter' | 'verify'>('enter');
   const [devCode, setDevCode] = useState<string | null>(null);
+  // Set only when the password stage returned a challenge instead of a
+  // session. Its presence is what puts the form on the second-factor step.
+  const [challenge, setChallenge] = useState<{
+    token: string;
+    stage: 'verify' | 'enrol';
+  } | null>(null);
+  const [totp, setTotp] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiRequestError | null>(null);
 
@@ -169,13 +176,97 @@ function SignInForm() {
               </button>
             </form>
           )
+        ) : challenge ? (
+          challenge.stage === 'enrol' ? (
+            <div className="space-y-4">
+              <h2 className="text-lg font-bold">Set up an authenticator first</h2>
+              <p className="text-sm text-graphite-600">
+                This account holds a staff role, so it needs an authenticator app before it can be
+                used. Enrolment happens in the security settings of an already-signed-in session —
+                ask an administrator to complete it for you.
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="lg"
+                className="w-full"
+                onClick={() => setChallenge(null)}
+              >
+                Back to sign in
+              </Button>
+            </div>
+          ) : (
+            <form
+              className="space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void run(async () => {
+                  await verifyMfa(challenge.token, totp);
+                  // Only now does a session exist.
+                  router.push(next);
+                });
+              }}
+            >
+              <h2 className="text-lg font-bold">Enter your authenticator code</h2>
+              <p className="text-sm text-graphite-600">
+                Staff accounts need a second factor. Open your authenticator app and enter the
+                current six-digit code for DASH APP.
+              </p>
+
+              <Field label="6-digit code" htmlFor="totp">
+                <Input
+                  id="totp"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="\d{6}"
+                  maxLength={6}
+                  required
+                  autoFocus
+                  value={totp}
+                  onChange={(event) => setTotp(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className="text-center text-2xl tracking-[0.4em]"
+                />
+              </Field>
+
+              <Button
+                type="submit"
+                size="lg"
+                className="w-full"
+                disabled={busy || totp.length !== 6}
+              >
+                {busy ? 'Checking…' : 'Verify and continue'}
+              </Button>
+              <button
+                type="button"
+                className="w-full text-sm text-graphite-600 underline"
+                onClick={() => {
+                  // Abandons the challenge rather than hiding it. The password
+                  // stage has to be repeated, which is correct — the challenge
+                  // is short-lived and single-use.
+                  setChallenge(null);
+                  setTotp('');
+                  setPassword('');
+                }}
+              >
+                Use a different account
+              </button>
+            </form>
+          )
         ) : (
           <form
             className="space-y-4"
             onSubmit={(event) => {
               event.preventDefault();
               void run(async () => {
-                await signInWithPassword(email, password);
+                const result = await signInWithPassword(email, password);
+                if (result.kind === 'mfa_required') {
+                  // No session exists yet, so nothing is redirected. The
+                  // account holds a privileged role and the password alone is
+                  // explicitly not enough to reach it.
+                  setChallenge({ token: result.challengeToken, stage: result.stage });
+                  setTotp('');
+                  return;
+                }
                 router.push(next);
               });
             }}

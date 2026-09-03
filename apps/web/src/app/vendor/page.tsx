@@ -12,6 +12,7 @@ import {
   LoadingBlock,
   formatNaira,
 } from '@/components/ui';
+import { PickupDialog, RejectDialog } from '@/components/vendor-dialogs';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, useHasSession, useMe } from '@/lib/session';
 import { liveLabel, useLive } from '@/lib/useLive';
@@ -39,19 +40,13 @@ interface VendorOrder {
 
 type Tab = 'incoming' | 'active' | 'completed';
 
-const REJECT_REASONS = [
-  { value: 'out_of_stock', label: 'Out of stock' },
-  { value: 'too_busy', label: 'Too busy right now' },
-  { value: 'closing_soon', label: 'Closing soon' },
-  { value: 'cannot_fulfil_instructions', label: 'Cannot meet the instructions' },
-  { value: 'other', label: 'Another reason' },
-] as const;
-
 export default function VendorConsolePage() {
   const [tab, setTab] = useState<Tab>('incoming');
   const [orders, setOrders] = useState<VendorOrder[] | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [rejecting, setRejecting] = useState<VendorOrder | null>(null);
+  const [verifying, setVerifying] = useState<VendorOrder | null>(null);
   const signedIn = useHasSession();
   const { me } = useMe();
 
@@ -273,22 +268,7 @@ export default function VendorConsolePage() {
                         <Button
                           variant="danger"
                           disabled={busyId === order.id}
-                          onClick={() => {
-                            const reason = window.prompt(
-                              `Why are you rejecting ${order.code}?\n\n${REJECT_REASONS.map(
-                                (option, index) => `${index + 1}. ${option.label}`,
-                              ).join('\n')}\n\nEnter a number 1–5:`,
-                            );
-                            const index = Number(reason) - 1;
-                            const chosen = REJECT_REASONS[index];
-                            if (!chosen) return;
-                            void act(order.id, () =>
-                              authedFetch(`/v1/vendor/orders/${order.id}/reject`, {
-                                method: 'POST',
-                                body: { reasonCode: chosen.value },
-                              }),
-                            );
-                          }}
+                          onClick={() => setRejecting(order)}
                         >
                           Reject
                         </Button>
@@ -331,19 +311,7 @@ export default function VendorConsolePage() {
                       <Button
                         variant="ghost"
                         disabled={busyId === order.id}
-                        onClick={() => {
-                          const code = window.prompt(
-                            `Ask the rider for the 4-digit pickup code for ${order.code}:`,
-                          );
-                          if (!code) return;
-                          void act(order.id, async () => {
-                            await authedFetch(`/v1/vendor/orders/${order.id}/verify-pickup`, {
-                              method: 'POST',
-                              body: { code },
-                            });
-                            window.alert('Pickup code verified. Hand over the order.');
-                          });
-                        }}
+                        onClick={() => setVerifying(order)}
                       >
                         Verify pickup code
                       </Button>
@@ -361,6 +329,22 @@ export default function VendorConsolePage() {
           )}
         </div>
       </main>
+
+      {rejecting ? (
+        <RejectDialog
+          order={rejecting}
+          onClose={() => setRejecting(null)}
+          onDone={load}
+        />
+      ) : null}
+
+      {verifying ? (
+        <PickupDialog
+          order={verifying}
+          onClose={() => setVerifying(null)}
+          onDone={load}
+        />
+      ) : null}
     </>
   );
 }
