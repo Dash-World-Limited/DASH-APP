@@ -290,6 +290,8 @@ export interface Me {
   permissions: string[];
   vendorId: string | null;
   riderId: string | null;
+  /** The rider's own working state, so the app can recover it after a restart. */
+  riderAvailability: 'offline' | 'idle' | 'on_break' | 'on_delivery' | null;
   customerId: string | null;
   /**
    * Cities this actor is scoped to. Empty for an unscoped ops role, which

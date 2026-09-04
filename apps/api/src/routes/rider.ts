@@ -32,6 +32,60 @@ import { recordOrderChange } from '../realtime/notify.js';
  */
 const MAX_PLAUSIBLE_SPEED_MPS = 25;
 
+/**
+ * The statuses that mean "this rider still owes someone this order".
+ *
+ * From accepting the offer until it is delivered or cancelled — which is
+ * deliberately wider than `RIDER_HOLDING_STATUSES` in the domain. That set is
+ * about physical custody (`picked_up` onwards) and gates things like refusing
+ * to go offline with food. This one is about assignment: a rider riding to the
+ * vendor is holding nothing yet, but the job is theirs and must stay on their
+ * screen.
+ */
+const ACTIVE_DELIVERY_STATUSES = [
+  'rider_assigned',
+  'rider_arrived',
+  'picked_up',
+  'en_route',
+  'arrived',
+] as const;
+
+/**
+ * What an assigned rider may see of an order.
+ *
+ * Identical to the single-delivery projection below, deliberately: two shapes
+ * would drift, and the list is the one a rider's screen hydrates from after a
+ * restart. Nothing here belongs to the customer beyond what delivering the
+ * order requires — no email, no order total, no payment detail. The full
+ * address is included because the rider is already assigned and has to go
+ * there; the pickup and delivery codes are not, because they are held only as
+ * hashes and are the other party's to speak aloud.
+ */
+const ACTIVE_DELIVERY_SELECT = {
+  id: true,
+  code: true,
+  status: true,
+  riderId: true,
+  mode: true,
+  contactless: true,
+  instructions: true,
+  distanceMetres: true,
+  estimatedReadyAt: true,
+  branch: { select: { name: true, address: true, phone: true, latitude: true, longitude: true } },
+  address: {
+    select: {
+      line1: true,
+      landmark: true,
+      instructions: true,
+      contactPhone: true,
+      latitude: true,
+      longitude: true,
+    },
+  },
+  items: { select: { nameSnapshot: true, quantity: true } },
+  vendor: { select: { name: true } },
+} as const;
+
 export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, queue } = app.services;
 
@@ -373,6 +427,39 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // -------------------------------------------------------------------------
+  // GET /v1/rider/deliveries — what this rider is carrying right now
+  //
+  // An accepted offer leaves `/v1/rider/offers` immediately, which is correct:
+  // it is no longer pending. Without this endpoint the rider app had no way to
+  // ask "what am I carrying?" — the order id existed only in the response to
+  // the accept call, so the trip vanished from the screen the moment it was
+  // taken, and closing the app lost it for good.
+  //
+  // Scoped by the actor's own rider id, never by a query parameter, so this
+  // cannot be pointed at another rider's work.
+  // -------------------------------------------------------------------------
+  app.get(
+    '/v1/rider/deliveries',
+    { preHandler: requirePermission('rider:delivery:progress') },
+    async (request) => {
+      const riderId = riderIdOf(request);
+
+      const deliveries = await prisma.order.findMany({
+        where: {
+          riderId,
+          // Everything between accepting the job and finishing it. A delivered
+          // or cancelled order is history and belongs in earnings, not here.
+          status: { in: [...ACTIVE_DELIVERY_STATUSES] },
+        },
+        orderBy: { acceptedAt: 'asc' },
+        select: ACTIVE_DELIVERY_SELECT,
+      });
+
+      return { deliveries };
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // GET /v1/rider/deliveries/:id — full detail, only once assigned
   // -------------------------------------------------------------------------
   app.get<{ Params: { id: string } }>(
@@ -383,30 +470,7 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
 
       const order = await prisma.order.findUnique({
         where: { id: request.params.id },
-        select: {
-          id: true,
-          code: true,
-          status: true,
-          riderId: true,
-          mode: true,
-          contactless: true,
-          instructions: true,
-          distanceMetres: true,
-          estimatedReadyAt: true,
-          branch: { select: { name: true, address: true, phone: true, latitude: true, longitude: true } },
-          address: {
-            select: {
-              line1: true,
-              landmark: true,
-              instructions: true,
-              contactPhone: true,
-              latitude: true,
-              longitude: true,
-            },
-          },
-          items: { select: { nameSnapshot: true, quantity: true } },
-          vendor: { select: { name: true } },
-        },
+        select: ACTIVE_DELIVERY_SELECT,
       });
 
       if (!order) throw ApiError.notFound();
@@ -442,19 +506,39 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
       // These are the transitions a customer watches most closely — picked up,
       // on the way, arrived — so the notification commits with each of them.
       await prisma.$transaction(async (tx) => {
-        await tx.order.update({
-          where: { id: order.id },
+        // Claim the transition, rather than assume it.
+        //
+        // `assertTransition` judged a status read before this transaction
+        // opened, so two taps landing together can both find the order in the
+        // prior state, both judge the move legal, and both write it. The status
+        // converges — they write the same value — which is what made this easy
+        // to miss. The record around it does not: a second `OrderStatusEvent`,
+        // a second `revision` bump, and a second realtime notification for a
+        // change that happened once. That record is what an operator reads to
+        // reconstruct a disputed delivery, and `pickedUpAt` feeds the billable
+        // waiting time a rider is paid for.
+        //
+        // Naming the expected prior status makes this a compare-and-set: the
+        // first request to commit moves the delivery, and the second matches no
+        // row, throws, and takes its own writes down with it.
+        const claimed = await tx.order.updateMany({
+          where: { id: order.id, status: order.status },
           data: {
             status: body.to,
             ...(body.to === 'picked_up' ? { pickedUpAt: new Date() } : {}),
-            statusEvents: {
-              create: {
-                fromStatus: order.status,
-                toStatus: body.to,
-                actorType: 'rider',
-                actorId: actor.identityId,
-              },
-            },
+          },
+        });
+        if (claimed.count === 0) {
+          throw ApiError.conflict('That delivery has already moved on.');
+        }
+
+        await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: body.to,
+            actorType: 'rider',
+            actorId: actor.identityId,
           },
         });
 
@@ -525,19 +609,27 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
       assertTransition(order.status as OrderStatus, 'delivered', 'rider');
 
       await prisma.$transaction(async (tx) => {
-        await tx.order.update({
-          where: { id: order.id },
+        // Claim the completion, for the same reason as the progress route
+        // above — with more at stake. Two completions racing wrote two status
+        // events, two proofs of delivery, and two revision bumps for one
+        // handover. The rider's pay was protected, but only by the ledger's own
+        // idempotency key; everything the ledger does not guard duplicated
+        // freely, and a proof of delivery is evidence in a dispute.
+        const claimed = await tx.order.updateMany({
+          where: { id: order.id, status: order.status },
+          data: { status: 'delivered', deliveredAt: new Date() },
+        });
+        if (claimed.count === 0) {
+          throw ApiError.conflict('This delivery has already been completed.');
+        }
+
+        await tx.orderStatusEvent.create({
           data: {
-            status: 'delivered',
-            deliveredAt: new Date(),
-            statusEvents: {
-              create: {
-                fromStatus: order.status,
-                toStatus: 'delivered',
-                actorType: 'rider',
-                actorId: actor.identityId,
-              },
-            },
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: 'delivered',
+            actorType: 'rider',
+            actorId: actor.identityId,
           },
         });
 

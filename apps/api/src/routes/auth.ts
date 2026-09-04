@@ -460,6 +460,21 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     });
     if (!identity) throw ApiError.unauthorized();
 
+    // A rider's own working state, so their app can recover it after a restart.
+    //
+    // Without this the client had no way to learn it: availability was only
+    // ever set locally by the "go online" button, so relaunching the app reset
+    // it to `offline` in the UI while the server still had the rider working.
+    // Everything gated on that flag — the offer subscription and the GPS
+    // reporting loop — then stopped silently, and the rider was invisible to
+    // dispatch while their own screen looked normal.
+    const riderState = actor.riderId
+      ? await prisma.rider.findUnique({
+          where: { id: actor.riderId },
+          select: { availability: true },
+        })
+      : null;
+
     return {
       identity,
       roles: actor.roles,
@@ -468,6 +483,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       permissions: [...actor.permissions],
       vendorId: actor.vendorId ?? null,
       riderId: actor.riderId ?? null,
+      riderAvailability: riderState?.availability ?? null,
       customerId: actor.customerId ?? null,
       // The cities this actor is scoped to, so the dispatch board knows which
       // `city:` topics to follow. Their own scope, derived server-side from
