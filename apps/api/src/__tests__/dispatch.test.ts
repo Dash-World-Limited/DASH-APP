@@ -570,6 +570,35 @@ describe('location reporting', () => {
     });
   });
 
+  it('keeps accepting positions once the rider is on a delivery', async () => {
+    // `on_delivery` is a state the rider cannot select — the server sets it on
+    // assignment. The offline rule must refuse `offline` and nothing else: a
+    // delivery in progress is when the customer is actively watching the rider
+    // approach, and it is the worst possible moment to stop knowing where they
+    // are. Freshness and the plausibility check are untouched by this.
+    await baseline(6.5, 3.4);
+    await context.prisma.rider.update({
+      where: { id: world.riderA.riderId },
+      data: { availability: 'on_delivery' },
+    });
+
+    const response = await context.app.inject({
+      method: 'POST',
+      url: '/v1/rider/location',
+      headers: riderA.headers,
+      payload: { latitude: 6.5013, longitude: 3.4004, accuracy: 10 },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ accepted: boolean }>().accepted).toBe(true);
+
+    // Put the rider back, because the server rightly refuses to let a rider go
+    // offline mid-delivery and the following tests need to be able to.
+    await context.prisma.rider.update({
+      where: { id: world.riderA.riderId },
+      data: { availability: 'idle' },
+    });
+  });
+
   it('rejects a position while the rider is offline', async () => {
     await context.app.inject({
       method: 'POST',

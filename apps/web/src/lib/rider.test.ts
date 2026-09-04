@@ -13,9 +13,10 @@
  * whatever the screen later decides to display.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  diagnosticsEnabled,
   isOfferNoLongerAvailable,
   shouldReportLocation,
   toScreenAvailability,
@@ -92,5 +93,73 @@ describe('isOfferNoLongerAvailable', () => {
     for (const status of [0, 400, 401, 403, 422, 429, 500, 502, 503]) {
       expect(isOfferNoLongerAvailable({ status })).toBe(false);
     }
+  });
+});
+
+/**
+ * The reporting decision must be made from the server's state, not the
+ * screen's.
+ *
+ * The rider screen can only display three states, so showing the server's
+ * `on_delivery` means folding it into `idle`. Those two answers agree today —
+ * which is exactly the hazard: reporting during a delivery survived only as a
+ * side effect of a display choice, and a later decision to show `on_delivery`
+ * as its own state would have switched off tracking mid-delivery without
+ * touching a line of location code.
+ */
+describe('reporting is decided by server state', () => {
+  it('covers every state the server can hold', () => {
+    const decision: Record<RiderAvailability, boolean> = {
+      offline: false,
+      idle: true,
+      on_break: false,
+      on_delivery: true,
+    };
+    for (const [state, expected] of Object.entries(decision)) {
+      expect(shouldReportLocation(state as RiderAvailability), state).toBe(expected);
+    }
+  });
+
+  it('does not depend on the display fold to keep a delivery reporting', () => {
+    // `on_delivery` must report on its own merits, before any mapping.
+    expect(shouldReportLocation('on_delivery')).toBe(true);
+    // And the fold is not what makes that true — it is merely consistent.
+    expect(shouldReportLocation(toScreenAvailability('on_delivery'))).toBe(true);
+  });
+});
+
+describe('diagnosticsEnabled', () => {
+  const original = { node: process.env.NODE_ENV, flag: process.env.NEXT_PUBLIC_DASH_DIAGNOSTICS };
+  const set = (node: string | undefined, flag: string | undefined): void => {
+    (process.env as Record<string, string | undefined>)['NODE_ENV'] = node;
+    (process.env as Record<string, string | undefined>)['NEXT_PUBLIC_DASH_DIAGNOSTICS'] = flag;
+  };
+  afterEach(() => set(original.node, original.flag));
+
+  it('is on in development, where the panel earns its keep', () => {
+    set('development', undefined);
+    expect(diagnosticsEnabled()).toBe(true);
+  });
+
+  it('is off in a production build', () => {
+    set('production', undefined);
+    expect(diagnosticsEnabled()).toBe(false);
+  });
+
+  it('cannot be switched on in production by any flag', () => {
+    // There is deliberately no escape hatch. A flag that could re-enable the
+    // panel in production would be a route for it to reach a real rider — via
+    // a mistaken deployment variable, or a copied build script — in exchange
+    // for a capability nothing needs, since the test APK loads from the
+    // development server rather than a production bundle.
+    for (const value of ['true', 'TRUE', '1', 'yes', 'false', '']) {
+      set('production', value);
+      expect(diagnosticsEnabled(), `flag=${value}`).toBe(false);
+    }
+  });
+
+  it('is on in test builds too, which is where the handset work happens', () => {
+    set('test', 'anything');
+    expect(diagnosticsEnabled()).toBe(true);
   });
 });

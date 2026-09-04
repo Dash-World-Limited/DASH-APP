@@ -73,3 +73,30 @@ export function toScreenAvailability(server: RiderAvailability): ScreenAvailabil
 export function isOfferNoLongerAvailable(error: { status: number }): boolean {
   return error.status === 409 || error.status === 404;
 }
+
+/**
+ * Whether this build may show the location diagnostics panel.
+ *
+ * The panel states, in order, what the location path actually did — bridge,
+ * plugin, permission, fix, send, server answer. Every failure in that chain
+ * has been silent at least once, and each cost a round of physical testing to
+ * find, so it earns its place on a test handset. It has no place in front of a
+ * real rider, who cannot act on any of it.
+ *
+ * A production build is refused outright, with no flag to override it. An
+ * escape hatch would be a way for the panel to reach real users — through a
+ * mistaken deployment variable, or a build script someone copied — in exchange
+ * for a capability nothing needs: the test APK loads from the development
+ * server, so a production bundle has never been where diagnostics were wanted.
+ *
+ * `NODE_ENV` is substituted by Next at build time, so in production this folds
+ * to `false` and the block it guards is eliminated rather than merely hidden.
+ * That is the property being relied on, and it is verified by grepping the
+ * built chunk rather than assumed — an earlier version of this gate read a
+ * `NEXT_PUBLIC_` flag, which Next does not substitute unless the variable is
+ * actually defined, so the expression stayed dynamic and shipped the panel
+ * into production while looking correct.
+ */
+export function diagnosticsEnabled(): boolean {
+  return process.env.NODE_ENV !== 'production';
+}

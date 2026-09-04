@@ -9,6 +9,10 @@ export default tseslint.config(
       '**/.next/**',
       '**/coverage/**',
       '**/*.d.ts',
+      // The Android shell's Gradle output and the Capacitor runtime it copies
+      // in. Generated, gitignored, and not ours to lint.
+      'apps/mobile/android/**',
+      'apps/mobile/www/**',
       // The PostgreSQL Prisma client, generated on demand by
       // `npm run check:postgres` into its own directory so it cannot overwrite
       // the SQLite client. Generated code, gitignored, and not ours to lint.
@@ -86,7 +90,7 @@ export default tseslint.config(
   {
     // Developer scripts are Node programs whose whole job is printing to a
     // terminal, so `console` and the Node globals are expected here.
-    files: ['scripts/**/*.mjs', 'packages/db/src/seed.ts'],
+    files: ['scripts/**/*.mjs', 'apps/mobile/scripts/**/*.mjs', 'packages/db/src/seed.ts'],
     languageOptions: {
       globals: {
         console: 'readonly',

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppHeader } from '@/components/AppHeader';
 import {
   Badge,
@@ -9,6 +9,8 @@ import {
   Card,
   EmptyState,
   ErrorState,
+  Field,
+  Input,
   LoadingBlock,
   formatDistance,
   formatNaira,
@@ -16,6 +18,15 @@ import {
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, useHasSession, useMe } from '@/lib/session';
 import { liveLabel, useLive } from '@/lib/useLive';
+import { describeBridge, ensurePermission, geolocationAvailability, getFix } from '@/lib/geolocation';
+import {
+  diagnosticsEnabled,
+  isOfferNoLongerAvailable,
+  shouldReportLocation,
+  toScreenAvailability,
+  type RiderAvailability,
+  type ScreenAvailability,
+} from '@/lib/rider';
 
 /**
  * Rider app.
@@ -23,6 +34,20 @@ import { liveLabel, useLive } from '@/lib/useLive';
  * Rendered on the dark "field" surface: it is read outdoors, in sun, one-handed,
  * often in a hurry. Large targets, high contrast, and very little to read.
  */
+
+/**
+ * How often a working rider reports a position, and how soon after a failure.
+ *
+ * The server treats a position older than 120 seconds as stale and excludes
+ * the rider from dispatch, so the healthy cycle has to be comfortably inside
+ * that even if one attempt is lost. The two failure delays are shorter because
+ * both failures they cover are recoverable: an acquisition that did not finish
+ * in time usually finishes on the next try, and a refusal from the server is
+ * measured against elapsed time and so resolves itself by waiting.
+ */
+const REPORT_INTERVAL_MS = 20_000;
+const RETRY_INTERVAL_MS = 10_000;
+const REJECTED_RETRY_MS = 5_000;
 
 interface Offer {
   id: string;
@@ -39,32 +64,116 @@ interface Offer {
   };
 }
 
+interface Delivery {
+  id: string;
+  code: string;
+  status: string;
+  mode: string;
+  contactless: boolean;
+  instructions: string | null;
+  distanceMetres: number | null;
+  estimatedReadyAt: string | null;
+  vendor: { name: string };
+  branch: { name: string; address: string; phone: string | null; latitude: number; longitude: number };
+  address: {
+    line1: string;
+    landmark: string | null;
+    instructions: string | null;
+    contactPhone: string;
+    latitude: number;
+    longitude: number;
+  } | null;
+  items: { nameSnapshot: string; quantity: number }[];
+}
+
 interface Earnings {
   balanceOwed: number;
   completedDeliveries: number;
   recentEntries: { amount: number; memo: string; at: string }[];
 }
 
-type Availability = 'offline' | 'idle' | 'on_break';
+type Availability = ScreenAvailability;
 
 export default function RiderPage() {
   const [availability, setAvailability] = useState<Availability>('offline');
+  /**
+   * The rider's state as the *server* holds it, kept apart from the one the
+   * control displays.
+   *
+   * These are two different questions. The control can only express the three
+   * states a rider may choose, so displaying the server's `on_delivery`
+   * requires folding it into `idle`. Reporting must not be decided by that
+   * fold: it happens to agree today, which is precisely what makes it
+   * dangerous — a later decision to show `on_delivery` as its own state would
+   * have switched off tracking mid-delivery as a side effect of a display
+   * change. The reporting loop reads this value instead.
+   */
+  const [serverAvailability, setServerAvailability] = useState<RiderAvailability>('offline');
   const [offers, setOffers] = useState<Offer[] | null>(null);
   const [earnings, setEarnings] = useState<Earnings | null>(null);
+  /**
+   * What this rider is carrying, read from the server.
+   *
+   * Deliberately not derived from the accept response. An accepted offer
+   * leaves the pending list immediately — correctly — and if the only record
+   * of the assignment were React state, the trip would vanish on a refresh,
+   * a reconnect, or an app restart, with no way to get it back.
+   */
+  const [deliveries, setDeliveries] = useState<Delivery[] | null>(null);
+  const [completionPin, setCompletionPin] = useState('');
+  const [completionError, setCompletionError] = useState<string | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
+  /** An expected, non-fatal outcome worth telling the rider about. */
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * Whether the server actually accepted the last position report.
+   *
+   * Not cosmetic: dispatch refuses any rider whose last accepted fix is over
+   * two minutes old, so a rider whose reports are being rejected is invisible
+   * to dispatch while appearing perfectly online to themselves.
+   */
+  const [locationHealthy, setLocationHealthy] = useState<boolean | null>(null);
+  /**
+   * A plain record of what the location path actually did.
+   *
+   * Temporary, and deliberately blunt. Every failure in this chain so far has
+   * been silent, and each one cost a round of physical testing to find. Until
+   * the handset is confirmed working this states each step in order.
+   */
+  const [geo, setGeo] = useState<{
+    capacitor: string;
+    platform: string;
+    plugin: string;
+    permission: string;
+    fix: string;
+    sent: string;
+    server: string;
+  }>({
+    capacitor: '…',
+    platform: '…',
+    plugin: '…',
+    permission: '…',
+    fix: '…',
+    sent: '…',
+    server: '…',
+  });
+  /** Timestamp of the reading already reported, so a repeat can be spotted. */
+  const lastTakenAt = useRef<string | undefined>(undefined);
   const signedIn = useHasSession();
   const { me } = useMe();
 
   const load = useCallback(async (): Promise<void> => {
     if (!signedIn) return;
     try {
-      const [offerResult, earningsResult] = await Promise.all([
+      const [offerResult, earningsResult, deliveryResult] = await Promise.all([
         authedFetch<{ offers: Offer[] }>('/v1/rider/offers'),
         authedFetch<Earnings>('/v1/rider/earnings'),
+        authedFetch<{ deliveries: Delivery[] }>('/v1/rider/deliveries'),
       ]);
       setOffers(offerResult.offers);
       setEarnings(earningsResult);
+      setDeliveries(deliveryResult.deliveries);
       setError(null);
     } catch (caught) {
       setError(
@@ -75,6 +184,51 @@ export default function RiderPage() {
       setOffers([]);
     }
   }, [signedIn]);
+
+  /**
+   * Answer a dispatch offer.
+   *
+   * An offer is a race with a thirty-second clock: it can expire, another
+   * rider can take it, and a rider can tap twice. The server refuses all three
+   * with 409, which is the correct answer and not a malfunction — but both
+   * buttons used to call the API as a floating promise with no `catch`, so a
+   * rider tapping an offer that had just lapsed got a full-screen developer
+   * error over an otherwise healthy app.
+   *
+   * Whatever the outcome, the recovery is the same and unconditional: re-read
+   * the server's own view. That clears the stale offer, and — the part that
+   * matters most — restores Current Delivery if this rider does in fact own
+   * the order, so an accepted trip can never be lost to a failed response.
+   *
+   * Only the expected refusals are treated as routine. Anything else still
+   * surfaces as an error, because a rider tapping Accept on a dead server must
+   * not be met with silence.
+   */
+  const respondToOffer = useCallback(
+    async (offerId: string, accept: boolean): Promise<void> => {
+      try {
+        await authedFetch(`/v1/rider/offers/${offerId}/respond`, {
+          method: 'POST',
+          body: { accept },
+        });
+        setNotice(null);
+        setError(null);
+      } catch (caught) {
+        if (caught instanceof ApiRequestError && isOfferNoLongerAvailable(caught)) {
+          setNotice('That offer was taken or expired before your tap landed.');
+        } else {
+          setError(
+            caught instanceof ApiRequestError
+              ? caught
+              : new ApiRequestError(0, 'unknown', 'Could not respond to that offer.'),
+          );
+        }
+      } finally {
+        await load();
+      }
+    },
+    [load],
+  );
 
   /**
    * Offers, pushed.
@@ -99,8 +253,31 @@ export default function RiderPage() {
     topics: me?.riderId ? [`rider:${me.riderId}`] : [],
     load,
     pollMs: 6_000,
-    enabled: signedIn && availability === 'idle',
+    // A rider mid-delivery is `on_delivery`, not `idle`, and must keep
+    // receiving updates about the job they are already on.
+    enabled: signedIn && (availability === 'idle' || (deliveries?.length ?? 0) > 0),
   });
+
+  /**
+   * Recover the rider's working state from the server.
+   *
+   * `availability` used to live only in this component, set by the button and
+   * nowhere else, so relaunching the app reset it to `offline` in the UI while
+   * the server still had the rider working. Both the offer subscription and
+   * the GPS reporting loop are gated on it, so both stopped — silently, with
+   * the rider's own screen looking entirely normal and dispatch unable to see
+   * them at all.
+   */
+  useEffect(() => {
+    if (!me) return;
+    const server = me.riderAvailability;
+    if (!server) return;
+    // `on_delivery` is a working state the rider cannot select; for this
+    // screen's purposes it behaves as online. See lib/rider.ts — this mapping
+    // is what keeps location reporting alive during a delivery.
+    setServerAvailability(server as RiderAvailability);
+    setAvailability(toScreenAvailability(server as RiderAvailability));
+  }, [me]);
 
   const setOnline = async (next: Availability): Promise<void> => {
     setBusy(true);
@@ -110,6 +287,8 @@ export default function RiderPage() {
         body: { availability: next },
       });
       setAvailability(next);
+      // A state the rider selected is also a state the server now holds.
+      setServerAvailability(next);
       await load();
     } catch (caught) {
       setError(
@@ -125,34 +304,219 @@ export default function RiderPage() {
   /**
    * Report the rider's position.
    *
-   * Only while they are actually online — an offline rider's location is not
-   * collected at all, and the API rejects it too.
+   * Only while they are actually working. The fix comes from the native
+   * plugin inside the Android shell and from `navigator.geolocation` in a
+   * browser — see lib/geolocation.ts for why the web API cannot be used on the
+   * shell's insecure origin.
    */
   useEffect(() => {
-    if (availability !== 'idle' || !navigator.geolocation) return;
+    // The server's own state, not the screen's. `on_delivery` is reachable
+    // here and is a reporting state; `offline` and `on_break` are not.
+    if (!shouldReportLocation(serverAvailability)) return;
 
-    const report = (): void => {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          void authedFetch('/v1/rider/location', {
-            method: 'POST',
-            body: {
-              latitude: position.coords.latitude,
-              longitude: position.coords.longitude,
-              accuracy: position.coords.accuracy,
-              recordedAt: new Date().toISOString(),
-            },
-          }).catch(() => undefined);
-        },
-        () => undefined,
-        { enableHighAccuracy: true, timeout: 10_000 },
-      );
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const bridge = describeBridge();
+    const available = geolocationAvailability();
+    setGeo((g) => ({
+      ...g,
+      capacitor: bridge.capacitor ? 'yes' : 'NO',
+      platform: bridge.capacitor
+        ? `${bridge.platform} (native: ${bridge.native ? 'yes' : 'no'})`
+        : `browser (secure context: ${available.secureContext ? 'yes' : 'NO'})`,
+      plugin: bridge.geolocationPlugin ? 'available' : 'NOT available',
+    }));
+
+    /**
+     * Book the next cycle, replacing any cycle already booked.
+     *
+     * This used to be a 20s `setInterval` with a separate retry timer layered
+     * on top, so a struggling handset ran both at once and asked the platform
+     * for a position more often than intended — which makes an acquisition
+     * timeout more likely, not less, because each request holds the receiver.
+     * One timer, rescheduled at the end of every attempt, cannot overlap.
+     */
+    const scheduleNext = (ms: number): void => {
+      if (timer) clearTimeout(timer);
+      if (cancelled) return;
+      timer = setTimeout(() => void report(), ms);
     };
 
-    report();
-    const timer = setInterval(report, 20_000);
-    return () => clearInterval(timer);
-  }, [availability]);
+    /**
+     * Ask for a position, send it, and record what happened at each step.
+     *
+     * `/v1/rider/location` can answer **200 with `accepted: false`** — the
+     * anti-spoofing rule refuses a fix implying an impossible speed, and the
+     * offline rule refuses one from a rider who is not working. That used to be
+     * swallowed by `.catch(() => undefined)`, so the app believed it was
+     * reporting while the server held nothing and dispatch excluded the rider
+     * as `location_stale`. A refusal is recoverable — the rule is relative to
+     * elapsed time — so it retries sooner rather than waiting the full cycle.
+     */
+    const report = async (): Promise<void> => {
+      if (cancelled) return;
+
+      const permission = await ensurePermission();
+      if (cancelled) return;
+      setGeo((g) => ({ ...g, permission: permission.state }));
+
+      if (!permission.granted) {
+        setLocationHealthy(false);
+        setGeo((g) => ({ ...g, fix: 'not requested', sent: 'no', server: '—' }));
+        // Not permanent: the rider may grant it in Settings and come back.
+        scheduleNext(REPORT_INTERVAL_MS);
+        return;
+      }
+
+      const result = await getFix(lastTakenAt.current);
+      if (cancelled) return;
+
+      // The platform gave back the reading we already sent and would not
+      // produce a newer one. Sending it again cannot move the server's
+      // freshness clock, so wait for the platform rather than spend a request.
+      if (result.duplicate) {
+        setGeo((g) => ({ ...g, fix: 'unchanged since last report', sent: 'skipped' }));
+        scheduleNext(RETRY_INTERVAL_MS);
+        return;
+      }
+
+      if (!result.ok || !result.fix) {
+        setLocationHealthy(false);
+        setGeo((g) => ({
+          ...g,
+          fix: `FAILED (${result.source}): ${result.error ?? 'unknown'}`,
+          sent: 'no',
+          server: '—',
+        }));
+        scheduleNext(RETRY_INTERVAL_MS);
+        return;
+      }
+
+      setGeo((g) => ({
+        ...g,
+        fix: `acquired via ${result.source}${result.degraded ? ' (coarse)' : ''}${
+          result.fix?.accuracy ? ` (±${Math.round(result.fix.accuracy)}m)` : ''
+        }`,
+        sent: 'sending…',
+      }));
+
+      try {
+        const response = await authedFetch<{ accepted: boolean; reason?: string }>(
+          '/v1/rider/location',
+          {
+            method: 'POST',
+            body: {
+              latitude: result.fix.latitude,
+              longitude: result.fix.longitude,
+              accuracy: result.fix.accuracy,
+              // The platform's own timestamp, never this moment. A cached
+              // reading is genuinely older, and the server derives both
+              // staleness and plausible speed from this field — substituting
+              // "now" would renew freshness against a reading that is not
+              // fresh. `Fix.takenAt` is required, so there is nothing to
+              // substitute: a reading without one never gets this far.
+              recordedAt: result.fix.takenAt,
+            },
+          },
+        );
+        if (cancelled) return;
+
+        if (response?.accepted) {
+          lastTakenAt.current = result.fix.takenAt;
+          setLocationHealthy(true);
+          setGeo((g) => ({ ...g, sent: 'yes', server: 'accepted' }));
+          scheduleNext(REPORT_INTERVAL_MS);
+          return;
+        }
+
+        setLocationHealthy(false);
+        setGeo((g) => ({
+          ...g,
+          sent: 'yes',
+          server: `REJECTED: ${response?.reason ?? 'no reason given'}`,
+        }));
+        scheduleNext(REJECTED_RETRY_MS);
+      } catch (caught) {
+        if (cancelled) return;
+        setLocationHealthy(false);
+        setGeo((g) => ({
+          ...g,
+          sent: 'failed',
+          server: caught instanceof ApiRequestError ? `${caught.status}: ${caught.message}` : 'request failed',
+        }));
+        scheduleNext(REJECTED_RETRY_MS);
+      }
+    };
+
+    void report();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [serverAvailability]);
+
+  /**
+   * The next step of the delivery, according to the server's own status.
+   *
+   * Driven by `delivery.status` rather than local state, so a rider who
+   * reopens the app mid-trip sees the step they are actually on. `arrived` is
+   * the end of the progress chain — completing needs the customer's PIN and is
+   * handled separately below.
+   */
+  const nextStep = (
+    status: string,
+  ): { to: string; label: string } | null => {
+    switch (status) {
+      case 'rider_assigned':
+        return { to: 'rider_arrived', label: "I'm at the vendor" };
+      case 'rider_arrived':
+        return { to: 'picked_up', label: 'Picked up the order' };
+      case 'picked_up':
+        return { to: 'en_route', label: 'On my way' };
+      case 'en_route':
+        return { to: 'arrived', label: "I'm at the customer" };
+      default:
+        return null;
+    }
+  };
+
+  const progress = async (id: string, to: string): Promise<void> => {
+    setBusy(true);
+    try {
+      await authedFetch(`/v1/rider/deliveries/${id}/progress`, { method: 'POST', body: { to } });
+      await load();
+    } catch (caught) {
+      setError(
+        caught instanceof ApiRequestError
+          ? caught
+          : new ApiRequestError(0, 'unknown', 'Could not update the delivery.'),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const complete = async (id: string): Promise<void> => {
+    const pin = completionPin.trim();
+    if (!/^\d{4}$/.test(pin)) {
+      setCompletionError('Enter the 4-digit code the customer reads out.');
+      return;
+    }
+    setBusy(true);
+    setCompletionError(null);
+    try {
+      await authedFetch(`/v1/rider/deliveries/${id}/complete`, { method: 'POST', body: { pin } });
+      setCompletionPin('');
+      await load();
+    } catch (caught) {
+      setCompletionError(
+        caught instanceof ApiRequestError ? caught.message : 'That code was not accepted.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (!signedIn) {
     return (
@@ -190,10 +554,46 @@ export default function RiderPage() {
                     : 'Offline'}
               </p>
             </div>
-            <Badge tone={availability === 'idle' ? 'success' : 'neutral'}>
-              {availability === 'idle' ? 'Taking offers' : 'Not taking offers'}
+            <Badge
+              tone={
+                availability !== 'idle' ? 'neutral' : locationHealthy === false ? 'warning' : 'success'
+              }
+            >
+              {availability !== 'idle'
+                ? 'Not taking offers'
+                : locationHealthy === false
+                  ? 'Location not confirmed'
+                  : 'Taking offers'}
             </Badge>
           </div>
+
+          {/*
+            Location diagnostics — development and test builds only.
+            See `diagnosticsEnabled` in lib/rider.ts: the condition is a
+            build-time constant, so a production bundle drops this block
+            rather than hiding it. Every failure in this chain has been silent
+            at least once, and each cost a round of physical testing to find.
+          */}
+          {diagnosticsEnabled() && availability === 'idle' ? (
+            <dl className="mt-4 space-y-1 rounded-lg border border-[var(--line)] p-3 font-mono text-[11px] leading-relaxed">
+              {(
+                [
+                  ['Capacitor', geo.capacitor],
+                  ['platform', geo.platform],
+                  ['geo plugin', geo.plugin],
+                  ['permission', geo.permission],
+                  ['gps fix', geo.fix],
+                  ['sent', geo.sent],
+                  ['server', geo.server],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label} className="flex gap-2">
+                  <dt className="w-20 shrink-0 text-[var(--ink-muted)]">{label}</dt>
+                  <dd className="break-all">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
 
           <div className="mt-5 flex gap-2">
             {availability === 'idle' ? (
@@ -254,9 +654,101 @@ export default function RiderPage() {
           </div>
         ) : null}
 
+        {/* --- Active delivery ------------------------------------------------ */}
+        {deliveries && deliveries.length > 0 ? (
+          <section className="mt-8">
+            <h2 className="text-lg font-bold">Current delivery</h2>
+            <div className="mt-3 space-y-4">
+              {deliveries.map((delivery) => {
+                const step = nextStep(delivery.status);
+                return (
+                  <Card key={delivery.id} className="p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="font-mono font-bold">{delivery.code}</h3>
+                        <p className="mt-0.5 text-sm text-[var(--ink-muted)]">
+                          {delivery.vendor.name}
+                        </p>
+                      </div>
+                      <Badge tone="gold">{delivery.status.replace(/_/g, ' ')}</Badge>
+                    </div>
+
+                    <dl className="mt-4 space-y-2 border-t pt-4 text-sm">
+                      <div>
+                        <dt className="text-[var(--ink-muted)]">Pick up from</dt>
+                        <dd className="font-medium">{delivery.branch.name}</dd>
+                        <dd className="text-[var(--ink-muted)]">{delivery.branch.address}</dd>
+                      </div>
+                      {delivery.address ? (
+                        <div>
+                          <dt className="text-[var(--ink-muted)]">Deliver to</dt>
+                          <dd className="font-medium">{delivery.address.line1}</dd>
+                          {delivery.address.landmark ? (
+                            <dd className="text-[var(--ink-muted)]">{delivery.address.landmark}</dd>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <div>
+                        <dt className="text-[var(--ink-muted)]">Items</dt>
+                        <dd>
+                          {delivery.items
+                            .map((item) => `${item.quantity}x ${item.nameSnapshot}`)
+                            .join(', ')}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    {step ? (
+                      <Button
+                        size="lg"
+                        className="mt-5 w-full"
+                        disabled={busy}
+                        onClick={() => void progress(delivery.id, step.to)}
+                      >
+                        {step.label}
+                      </Button>
+                    ) : (
+                      <div className="mt-5">
+                        <Field
+                          label="Customer's delivery code"
+                          htmlFor={`pin-${delivery.id}`}
+                          error={completionError ?? undefined}
+                        >
+                          <Input
+                            id={`pin-${delivery.id}`}
+                            value={completionPin}
+                            onChange={(event) =>
+                              setCompletionPin(event.target.value.replace(/\D/g, '').slice(0, 4))
+                            }
+                            inputMode="numeric"
+                            autoComplete="off"
+                            placeholder="0000"
+                            className="text-center font-mono text-2xl tracking-[0.4em]"
+                          />
+                        </Field>
+                        <Button
+                          size="lg"
+                          className="mt-3 w-full"
+                          disabled={busy || completionPin.length !== 4}
+                          onClick={() => void complete(delivery.id)}
+                        >
+                          Complete delivery
+                        </Button>
+                      </div>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+          </section>
+        ) : null}
+
         {/* --- Offers --------------------------------------------------------- */}
         <section className="mt-8">
           <h2 className="text-lg font-bold">Delivery offers</h2>
+          {notice ? (
+            <p className="mt-2 text-sm text-[var(--ink-muted)]">{notice}</p>
+          ) : null}
           <div className="mt-3">
             {availability !== 'idle' ? (
               <EmptyState
@@ -311,24 +803,14 @@ export default function RiderPage() {
                         variant="ghost"
                         size="lg"
                         className="flex-1"
-                        onClick={() =>
-                          void authedFetch(`/v1/rider/offers/${offer.id}/respond`, {
-                            method: 'POST',
-                            body: { accept: false },
-                          }).then(() => load())
-                        }
+                        onClick={() => void respondToOffer(offer.id, false)}
                       >
                         Decline
                       </Button>
                       <Button
                         size="lg"
                         className="flex-[2]"
-                        onClick={() =>
-                          void authedFetch(`/v1/rider/offers/${offer.id}/respond`, {
-                            method: 'POST',
-                            body: { accept: true },
-                          }).then(() => load())
-                        }
+                        onClick={() => void respondToOffer(offer.id, true)}
                       >
                         Accept
                       </Button>
