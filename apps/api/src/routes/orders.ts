@@ -34,7 +34,7 @@ import { buildOrderCapture } from '@dash/domain/ledger';
 import { computeRiderPay, DEFAULT_RIDER_PAY_RULES } from '@dash/domain/pay';
 import { postLedgerTransaction, writeAudit, type PrismaClient } from '@dash/db';
 import { ApiError } from '../http/errors.js';
-import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
+import { flushOutbox } from '../events/outbox.js';
 import { recordOrderChange } from '../realtime/notify.js';
 import type { QueuePort } from '@dash/domain/ports';
 import { actorOf, requirePermission, requireScope, withIdempotency } from '../http/context.js';
@@ -1010,26 +1010,19 @@ export async function confirmOrderPaid(
 
     await postLedgerTransaction(tx as unknown as PrismaClient, draft);
 
-    // The dispatch intent commits with the payment, not after it. Previously
-    // the caller enqueued once this function returned, so a Redis outage in
-    // that gap left an order paid, placed, and never dispatched — with nothing
-    // recording that a rider was supposed to be found. See events/outbox.ts.
-    await enqueueViaOutbox(tx, {
-      name: 'dispatch.find_rider',
-      payload: { orderId: order.id },
-      // Scoped to the transition that caused it, not just the order.
-      //
-      // An order is dispatched more than once on purpose: here when it is
-      // paid, again when the vendor accepts and a real prep estimate exists,
-      // and again on an ops reassignment. Keying all of them on the order id
-      // alone made the queue treat the later ones as retries of this one and
-      // silently drop them — so an order that found no rider in these first
-      // five seconds was never dispatched again, and waited for a human who
-      // had no reason to be looking. `_placed` keeps this enqueue idempotent
-      // against its own redelivery, which is all the key is for.
-      idempotencyKey: `dispatch_${order.id}_placed`,
-      delayMs: 5_000,
-    });
+    // Checkout deliberately does NOT dispatch a rider.
+    //
+    // It used to, five seconds after payment. That is before the vendor has
+    // even seen the order, let alone agreed to make it: the search ran against
+    // whoever happened to be nearby at that instant, usually found nobody
+    // because riders had no reason to be positioned yet, and burned the first
+    // round on an order that might still be rejected. A rider committed to a
+    // job the kitchen has not accepted is a rider who may be stood down.
+    //
+    // The single trigger for normal dispatch is the vendor moving the order
+    // into `preparing` — see routes/vendor.ts. Ops reassignment and the
+    // worker's own re-rounding remain separate paths, because those are
+    // recovery, not initial dispatch.
 
     // This is the transition the vendor's incoming queue is waiting for, and
     // the first one the customer's tracking screen has to show. It commits with

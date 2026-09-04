@@ -81,9 +81,30 @@ async function placeOrder(): Promise<{ id: string }> {
   return response.json<{ order: { id: string } }>().order;
 }
 
-describe('an accepted order survives a queue outage', () => {
-  it('accepts the order, records the dispatch intent, and dispatches once Redis returns', async () => {
-    const order = await placeOrder();
+/**
+ * Take an order to `accepted` with the queue healthy.
+ *
+ * Dispatch is triggered by the move into `preparing`, not by accepting, so a
+ * durability test about the dispatch job has to get the order to the point
+ * where that transition is legal before it breaks the queue.
+ */
+async function acceptedOrder(): Promise<{ id: string }> {
+  const order = await placeOrder();
+  const accepted = await context.app.inject({
+    method: 'POST',
+    url: `/v1/vendor/orders/${order.id}/accept`,
+    headers: vendorA.headers,
+    payload: { prepMinutes: 20 },
+  });
+  if (accepted.statusCode !== 200) {
+    throw new Error(`accept failed: ${accepted.statusCode} ${accepted.body}`);
+  }
+  return order;
+}
+
+describe('an order being prepared survives a queue outage', () => {
+  it('starts preparing, records the dispatch intent, and dispatches once Redis returns', async () => {
+    const order = await acceptedOrder();
 
     // --- Redis goes down ----------------------------------------------------
     queue.broken = true;
@@ -91,9 +112,9 @@ describe('an accepted order survives a queue outage', () => {
 
     const response = await context.app.inject({
       method: 'POST',
-      url: `/v1/vendor/orders/${order.id}/accept`,
+      url: `/v1/vendor/orders/${order.id}/progress`,
       headers: vendorA.headers,
-      payload: { prepMinutes: 20 },
+      payload: { to: 'preparing' },
     });
 
     // 1. The vendor's request succeeds. The old dual write would have thrown
@@ -101,7 +122,7 @@ describe('an accepted order survives a queue outage', () => {
     expect(response.statusCode).toBe(200);
     expect(
       (await context.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status,
-    ).toBe('accepted');
+    ).toBe('preparing');
 
     // Nothing reached the queue, and the intent is durable instead.
     expect(queue.published.length).toBe(published);
@@ -123,10 +144,10 @@ describe('an accepted order survives a queue outage', () => {
     // the dispatch, not just the order: checkout asks once and the vendor's
     // accept asks again, and the queue has to be able to tell them apart or it
     // discards the second as a redelivery of the first. See dispatch.test.ts.
-    expect(queue.published.some((job) => job.idempotencyKey === `dispatch_${order.id}_accepted`)).toBe(true);
+    expect(queue.published.some((job) => job.idempotencyKey === `dispatch_${order.id}_preparing`)).toBe(true);
 
     const settled = await context.prisma.outboxEvent.findFirstOrThrow({
-      where: { idempotencyKey: `dispatch_${order.id}_accepted` },
+      where: { idempotencyKey: `dispatch_${order.id}_preparing` },
     });
     expect(settled.status).toBe('published');
   });
@@ -161,19 +182,19 @@ describe('an accepted order survives a queue outage', () => {
   it('publishes in the request when the queue is healthy, so latency is unchanged', async () => {
     // The outbox must not turn every dispatch into a wait for the next
     // scheduled relay. With Redis up, the flush publishes inline.
-    const order = await placeOrder();
+    const order = await acceptedOrder();
     queue.broken = false;
 
     await context.app.inject({
       method: 'POST',
-      url: `/v1/vendor/orders/${order.id}/accept`,
+      url: `/v1/vendor/orders/${order.id}/progress`,
       headers: vendorA.headers,
-      payload: { prepMinutes: 20 },
+      payload: { to: 'preparing' },
     });
 
-    expect(queue.published.some((job) => job.idempotencyKey === `dispatch_${order.id}_accepted`)).toBe(true);
+    expect(queue.published.some((job) => job.idempotencyKey === `dispatch_${order.id}_preparing`)).toBe(true);
     const event = await context.prisma.outboxEvent.findFirstOrThrow({
-      where: { idempotencyKey: `dispatch_${order.id}_accepted` },
+      where: { idempotencyKey: `dispatch_${order.id}_preparing` },
     });
     expect(event.status).toBe('published');
   });

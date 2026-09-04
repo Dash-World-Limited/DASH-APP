@@ -662,32 +662,32 @@ describe('location reporting', () => {
 });
 
 // ---------------------------------------------------------------------------
-describe('every trigger that should dispatch, dispatches', () => {
+describe('preparing is the only trigger for normal dispatch', () => {
   /**
-   * An order is sent to dispatch more than once on purpose, and each of those
-   * has to survive the queue's idempotency check.
+   * Which transition sends a rider, and which deliberately do not.
    *
-   * This is a regression test for a real defect found by driving the app in a
-   * browser: checkout and vendor-accept both enqueued `dispatch.find_rider`
-   * under the key `dispatch_<orderId>`, so the queue — which remembers keys
-   * for ever, by design, because that is what makes at-least-once delivery
-   * safe — discarded the accept-time job as a redelivery of the checkout one.
+   * This started as a regression test for a queue-key collision: checkout and
+   * vendor-accept both enqueued `dispatch.find_rider` under the same key, so
+   * the queue — which remembers keys for ever, because that is what makes
+   * at-least-once delivery safe — silently discarded the second one.
    *
-   * The symptom was invisible from any single endpoint: every request returned
-   * 200 and the outbox row said `published`. Only the second dispatch never
-   * ran. Orders whose first dispatch found no eligible rider — the common case,
-   * since it fires five seconds after payment, before the vendor has even
-   * accepted — escalated to manual dispatch and were never retried.
+   * The rule it guards has since changed, and the reason is worth keeping. A
+   * rider is now sent when the vendor moves the order into `preparing`, and at
+   * no other point in the normal path. Checkout is before the vendor has
+   * agreed to make the order at all. Accepting is agreement without
+   * commitment — a vendor may accept several orders and start them in whatever
+   * sequence suits the kitchen, and a rider dispatched on accept waits at a
+   * counter for food that is fourth in line. `ready` is too late: the food is
+   * already sitting there while a rider is still being found.
    *
-   * Asserted on the keys rather than on an offer appearing, because the worker
-   * is scheduled off the prep estimate and waiting for it would make this test
-   * slow and timing-dependent. The keys are the thing that was wrong.
+   * So the assertions below are as much about the transitions that must stay
+   * silent as the one that must fire.
    */
-  it('gives checkout and vendor-accept different queue keys', async () => {
+  async function placedOrder(tag: string): Promise<string> {
     const created = await context.app.inject({
       method: 'POST',
       url: '/v1/orders',
-      headers: { ...customerA.headers, 'idempotency-key': idempotencyKey('dkey') },
+      headers: { ...customerA.headers, 'idempotency-key': idempotencyKey(tag) },
       payload: {
         branchId: world.vendorA.branchId,
         items: [
@@ -699,7 +699,53 @@ describe('every trigger that should dispatch, dispatches', () => {
       },
     });
     expect(created.statusCode).toBe(200);
-    const orderId = created.json<{ order: { id: string } }>().order.id;
+    return created.json<{ order: { id: string } }>().order.id;
+  }
+
+  /**
+   * The dispatch intents recorded for exactly this order.
+   *
+   * Matched by parsing the payload rather than by a substring search over it.
+   * `contains` would also match a payload that merely mentions this order id
+   * somewhere else, and an assertion that something did *not* happen is only
+   * as trustworthy as its ability to see everything that did.
+   */
+  const dispatchJobs = async (orderId: string): Promise<string[]> => {
+    const rows = await context.prisma.outboxEvent.findMany({
+      where: { name: 'dispatch.find_rider' },
+      select: { idempotencyKey: true, payload: true },
+    });
+    return rows
+      .filter((row) => {
+        try {
+          return (JSON.parse(row.payload) as { orderId?: string }).orderId === orderId;
+        } catch {
+          return false;
+        }
+      })
+      .map((row) => row.idempotencyKey ?? '');
+  };
+
+  /** Take an order to `accepted`, the state `preparing` is legal from. */
+  const acceptedOrder = async (tag: string): Promise<string> => {
+    const orderId = await placedOrder(tag);
+    const accepted = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/accept`,
+      headers: vendorA.headers,
+      payload: { prepMinutes: 20 },
+    });
+    expect(accepted.statusCode).toBe(200);
+    return orderId;
+  };
+
+  it('does not dispatch when the order is merely placed', async () => {
+    const orderId = await placedOrder('dtrig1');
+    expect(await dispatchJobs(orderId)).toEqual([]);
+  });
+
+  it('does not dispatch when the vendor only accepts', async () => {
+    const orderId = await placedOrder('dtrig2');
 
     const accepted = await context.app.inject({
       method: 'POST',
@@ -709,56 +755,114 @@ describe('every trigger that should dispatch, dispatches', () => {
     });
     expect(accepted.statusCode).toBe(200);
 
-    const jobs = await context.prisma.outboxEvent.findMany({
-      where: { name: 'dispatch.find_rider', payload: { contains: orderId } },
-      select: { idempotencyKey: true },
-    });
-
-    // Both triggers recorded a job...
-    expect(jobs).toHaveLength(2);
-    // ...and the queue can tell them apart, which is the whole point.
-    const keys = new Set(jobs.map((job) => job.idempotencyKey));
-    expect(keys.size).toBe(2);
+    // Accepting is agreement, not commitment. No rider is sent yet.
+    expect(await dispatchJobs(orderId)).toEqual([]);
   });
 
-  it('keeps a retried accept idempotent', async () => {
-    // The keys must distinguish *different* triggers without making the same
-    // trigger enqueue twice — a double-tapped Accept button is one dispatch.
-    const created = await context.app.inject({
-      method: 'POST',
-      url: '/v1/orders',
-      headers: { ...customerA.headers, 'idempotency-key': idempotencyKey('dkey2') },
-      payload: {
-        branchId: world.vendorA.branchId,
-        items: [
-          { itemId: world.vendorA.itemId, quantity: 1, modifierIds: [world.vendorA.modifierId] },
-        ],
-        mode: 'delivery',
-        addressId: world.customerA.addressId,
-        paymentMethod: 'card',
-      },
-    });
-    const orderId = created.json<{ order: { id: string } }>().order.id;
+  it('dispatches exactly once when the vendor starts preparing', async () => {
+    const orderId = await placedOrder('dtrig3');
 
-    const accept = async () =>
+    await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/accept`,
+      headers: vendorA.headers,
+      payload: { prepMinutes: 20 },
+    });
+
+    const preparing = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/progress`,
+      headers: vendorA.headers,
+      payload: { to: 'preparing' },
+    });
+    expect(preparing.statusCode).toBe(200);
+
+    expect(await dispatchJobs(orderId)).toEqual([`dispatch_${orderId}_preparing`]);
+  });
+
+  it('does not dispatch again when the order becomes ready', async () => {
+    const orderId = await placedOrder('dtrig4');
+
+    for (const step of [
+      { url: `/v1/vendor/orders/${orderId}/accept`, payload: { prepMinutes: 20 } },
+      { url: `/v1/vendor/orders/${orderId}/progress`, payload: { to: 'preparing' } },
+      { url: `/v1/vendor/orders/${orderId}/progress`, payload: { to: 'ready' } },
+    ]) {
+      const response = await context.app.inject({
+        method: 'POST',
+        url: step.url,
+        headers: vendorA.headers,
+        payload: step.payload,
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    // Still the single job from `preparing` — `ready` adds nothing.
+    expect(await dispatchJobs(orderId)).toEqual([`dispatch_${orderId}_preparing`]);
+  });
+
+  it('records one dispatch intent when two Preparing transitions race', async () => {
+    // The sequential case is guarded by the state machine, but `assertTransition`
+    // runs on an order read *before* the transaction opens. Two requests can
+    // therefore both read `accepted`, both judge the transition legal, and both
+    // proceed — and `OutboxEvent.idempotencyKey` is deliberately not unique, so
+    // the database will not stop a second intent being written.
+    //
+    // One intent means one round of offers. Two would mean a rider being
+    // offered work that another rider may already be riding to collect.
+    const orderId = await acceptedOrder('dtrig6');
+
+    const startPreparing = () =>
       context.app.inject({
         method: 'POST',
-        url: `/v1/vendor/orders/${orderId}/accept`,
+        url: `/v1/vendor/orders/${orderId}/progress`,
         headers: vendorA.headers,
-        payload: { prepMinutes: 20 },
+        payload: { to: 'preparing' },
       });
 
-    expect((await accept()).statusCode).toBe(200);
-    // The second is refused by the state machine — an accepted order cannot be
-    // accepted again — so no second job is recorded either way.
-    await accept();
+    const responses = await Promise.all([startPreparing(), startPreparing()]);
 
-    const jobs = await context.prisma.outboxEvent.findMany({
-      where: { name: 'dispatch.find_rider', payload: { contains: orderId } },
-      select: { idempotencyKey: true },
+    // At least one must succeed — a race must not lose the transition entirely.
+    expect(responses.some((response) => response.statusCode === 200)).toBe(true);
+
+    // The assertion that matters: exactly one intent, carrying exactly the key
+    // this transition owns, associated with exactly this order.
+    const keys = await dispatchJobs(orderId);
+    expect(keys).toEqual([`dispatch_${orderId}_preparing`]);
+  });
+
+  it('cannot be made to dispatch twice by repeating the transition', async () => {
+    // A double-tapped button, or a retried request. The state machine refuses
+    // `preparing -> preparing`, and the idempotency key would stop the queue
+    // running a redelivered publication twice even if it did not.
+    const orderId = await placedOrder('dtrig5');
+
+    await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/accept`,
+      headers: vendorA.headers,
+      payload: { prepMinutes: 20 },
     });
-    expect(new Set(jobs.map((job) => job.idempotencyKey)).size).toBe(jobs.length);
-    expect(jobs.length).toBeLessThanOrEqual(2);
+
+    const first = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/progress`,
+      headers: vendorA.headers,
+      payload: { to: 'preparing' },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/progress`,
+      headers: vendorA.headers,
+      payload: { to: 'preparing' },
+    });
+    expect(second.statusCode).toBeGreaterThanOrEqual(400);
+
+    const keys = await dispatchJobs(orderId);
+    expect(keys).toEqual([`dispatch_${orderId}_preparing`]);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });
 

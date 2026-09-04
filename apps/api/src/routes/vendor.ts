@@ -153,19 +153,21 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
           },
         });
 
-        // Dispatch aims to have a rider arrive as the food is ready, so it is
-        // scheduled from the vendor's own prep estimate rather than immediately.
-        await enqueueViaOutbox(tx, {
-          name: 'dispatch.find_rider',
-          payload: { orderId: order.id },
-          delayMs: Math.max(0, (body.prepMinutes - 8) * 60_000),
-          // Distinct from the enqueue at checkout — see the note there. This
-          // is the dispatch that matters, because it is the first one timed
-          // against a real prep estimate rather than guessed five seconds
-          // after payment. Sharing a key with that one meant this never ran.
-          // An order reaches `accepted` once, so this stays idempotent.
-          idempotencyKey: `dispatch_${order.id}_accepted`,
-        });
+        // Accepting deliberately does NOT dispatch a rider.
+        //
+        // Accept and "start preparing" are two decisions, and only the second
+        // one commits the kitchen. A vendor may accept a queue of orders and
+        // begin them in whatever sequence suits the kitchen; dispatching on
+        // accept would send riders for food nobody has started cooking, and
+        // they would wait at the counter for an order that is fourth in line.
+        //
+        // The prep-time delay this replaces was worse in the other direction:
+        // `(prepMinutes - 8)` minutes meant a 25-minute prep pushed the search
+        // 17 minutes into the future, and it looked exactly like dispatch being
+        // broken. Neither timer is the right answer — the vendor telling us
+        // they have started is.
+        //
+        // See the `preparing` branch in the progress route below.
 
         // The customer's tracking screen is waiting on exactly this. Recorded
         // in the same transaction for the same reason the dispatch intent is:
@@ -287,21 +289,73 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       // Wrapped in a transaction so the notification commits with the
       // transition. It was a bare update before there was anything to announce.
       await prisma.$transaction(async (tx) => {
-        await tx.order.update({
-          where: { id: order.id },
+        // Claim the transition, rather than assume it.
+        //
+        // `assertTransition` above judged a status read before this
+        // transaction opened, so two near-simultaneous requests can both see
+        // `accepted`, both judge `preparing` legal, and both arrive here. The
+        // outbox does not stop them: `OutboxEvent.idempotencyKey` is
+        // deliberately not unique, because the same key may legitimately be
+        // enqueued again once an earlier job's dedupe window has passed. The
+        // result was two `dispatch.find_rider` intents for one order — two
+        // rounds of offers, and a rider sent for food another rider may
+        // already be riding to collect.
+        //
+        // Naming the expected prior status in the `where` makes the update a
+        // compare-and-set: whichever request commits first moves the order,
+        // and the other matches no row, throws, and takes its outbox write
+        // down with it. The winner is arbitrary, which is correct — they are
+        // the same request — but exactly one of them happens.
+        const claimed = await tx.order.updateMany({
+          where: { id: order.id, status: order.status },
           data: {
             status: body.to,
             ...(body.to === 'ready' ? { readyAt: new Date() } : {}),
-            statusEvents: {
-              create: {
-                fromStatus: order.status,
-                toStatus: body.to,
-                actorType: actingAs,
-                actorId: actor.identityId,
-              },
-            },
           },
         });
+        if (claimed.count === 0) {
+          throw ApiError.conflict(`A vendor cannot change an order that is ${body.to}.`);
+        }
+
+        await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: body.to,
+            actorType: actingAs,
+            actorId: actor.identityId,
+          },
+        });
+
+        // `preparing` is the ONE trigger for normal rider dispatch.
+        //
+        // Not checkout, not accept, and not `ready`. Checkout is before the
+        // vendor has agreed to make the order; accept is agreement without
+        // commitment, and a vendor may accept several orders and start them in
+        // whatever order suits the kitchen; `ready` is too late, because the
+        // food is then sitting on the counter while a rider is still being
+        // found. Starting to prepare is the moment the kitchen commits, which
+        // makes it the moment a rider is worth spending — and dispatching here
+        // lets the rider travel to the vendor while the food is being made.
+        //
+        // The only other paths that enqueue this job are exceptions, not normal
+        // dispatch: an ops reassignment (routes/admin.ts, keyed on the audit
+        // event) and the worker's own re-rounding when a round expires
+        // (workers/dispatch.ts, keyed on the round number).
+        //
+        // The key is scoped to this transition. An order enters `preparing`
+        // once — `assertTransition` refuses `preparing → preparing`, so a
+        // double-tapped button is rejected by the state machine before it gets
+        // here — and the key stops the queue running a redelivered publication
+        // of this same event twice. Neither a retry nor a duplicate publish can
+        // produce a second round of offers.
+        if (body.to === 'preparing') {
+          await enqueueViaOutbox(tx, {
+            name: 'dispatch.find_rider',
+            payload: { orderId: order.id },
+            idempotencyKey: `dispatch_${order.id}_preparing`,
+          });
+        }
 
         await recordOrderChange(tx, order.id);
       });
