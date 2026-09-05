@@ -16,6 +16,7 @@ import {
 import { redactDeep } from '@dash/domain/redaction';
 
 export * from '@prisma/client';
+export { ensureRidersAreCustomers, type RiderCustomerRepair } from './rider-customer.js';
 
 declare global {
   var __dashPrisma: PrismaClient | undefined;

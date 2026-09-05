@@ -12,6 +12,7 @@
  */
 
 import type { PrismaClient } from '@prisma/client';
+import { ensureRidersAreCustomers } from '@dash/db';
 import { hashPassword, generateReference } from '@dash/domain/crypto';
 import { naira } from '@dash/domain/money';
 import { signInWithPassword, type TestContext } from './harness.js';
@@ -302,7 +303,7 @@ export async function buildWorld(prisma: PrismaClient): Promise<World> {
     return { identityId: identity.id, email };
   }
 
-  return {
+  const world = {
     cityId: city.id,
     zoneId: zone.id,
     vendorA: await makeVendor('a'),
@@ -316,6 +317,17 @@ export async function buildWorld(prisma: PrismaClient): Promise<World> {
     dispatcher: await makeStaff('dispatcher', city.id),
     admin: await makeStaff('super_admin'),
   };
+
+  // Riders are customers too, by the same function the seed uses.
+  //
+  // DASH has one consumer identity: an approved rider is a customer who can
+  // also work. A fixture whose riders lacked the customer half would let a
+  // test pass against a shape the real database never has — and would make the
+  // capability payload untestable, since `customerId` would be null for every
+  // rider here. One implementation of the invariant, exercised by both.
+  await ensureRidersAreCustomers(prisma);
+
+  return world;
 }
 
 // ---------------------------------------------------------------------------

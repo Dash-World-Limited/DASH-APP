@@ -292,6 +292,14 @@ export interface Me {
   riderId: string | null;
   /** The rider's own working state, so the app can recover it after a restart. */
   riderAvailability: 'offline' | 'idle' | 'on_break' | 'on_delivery' | null;
+  /**
+   * Whether this identity may work as a rider.
+   *
+   * Not the same as having a `riderId`: a pending, suspended or rejected rider
+   * has one. Rider mode is offered only for `approved`, and the server refuses
+   * the rider routes to everyone else independently.
+   */
+  riderStatus: 'pending' | 'approved' | 'suspended' | 'rejected' | null;
   customerId: string | null;
   /**
    * Cities this actor is scoped to. Empty for an unscoped ops role, which

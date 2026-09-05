@@ -471,7 +471,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     const riderState = actor.riderId
       ? await prisma.rider.findUnique({
           where: { id: actor.riderId },
-          select: { availability: true },
+          select: { availability: true, status: true },
         })
       : null;
 
@@ -484,6 +484,13 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       vendorId: actor.vendorId ?? null,
       riderId: actor.riderId ?? null,
       riderAvailability: riderState?.availability ?? null,
+      // Whether this identity may actually work as a rider, which is not the
+      // same question as whether it has a rider profile. A pending, suspended
+      // or rejected rider still has a `riderId`; only `approved` may switch
+      // into rider mode, and the server refuses the rider routes to the rest
+      // regardless of what any client believes. Returned so the app can hide
+      // an option it would not be allowed to use, never so it can grant one.
+      riderStatus: riderState?.status ?? null,
       customerId: actor.customerId ?? null,
       // The cities this actor is scoped to, so the dispatch board knows which
       // `city:` topics to follow. Their own scope, derived server-side from

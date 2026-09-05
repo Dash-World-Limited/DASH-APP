@@ -137,6 +137,120 @@ describe('the rest of the seed stays deterministic', () => {
       prisma.rider.count(),
       prisma.customer.count(),
     ]);
-    expect({ vendors, riders, customers }).toEqual({ vendors: 4, riders: 4, customers: 3 });
+    // Seven customers, not three: the three consumer accounts plus one for
+    // each of the four riders. DASH has a single consumer identity, so an
+    // approved rider *is* a customer who can also work — see the capability
+    // suite below. If this number drops back to three, the back-fill has
+    // stopped running and rider accounts can no longer shop.
+    expect({ vendors, riders, customers }).toEqual({ vendors: 4, riders: 4, customers: 7 });
+  });
+});
+
+/**
+ * Every rider is also a customer.
+ *
+ * DASH has one consumer identity: a person signs in once, is a Customer by
+ * default, and switches that same session into Rider mode when their rider
+ * profile is approved. A `Rider` without the underlying Customer capability is
+ * therefore a broken identity — switching to Customer mode would land on a
+ * shop with no basket, no address and no way to order — and the seed used to
+ * produce exactly that shape.
+ *
+ * Asserted against the real seeded database rather than against the source,
+ * because what matters is what `npm run db:seed` actually writes.
+ */
+describe('a seeded rider carries the customer capability too', () => {
+  it('gives every rider identity a customer profile', async () => {
+    const riders = await prisma.rider.findMany({
+      select: { identityId: true, identity: { select: { customer: { select: { id: true } } } } },
+    });
+
+    expect(riders.length).toBeGreaterThan(0);
+    for (const rider of riders) {
+      expect(rider.identity.customer, `rider identity ${rider.identityId}`).not.toBeNull();
+    }
+  });
+
+  it('gives every rider identity both roles on the same identity', async () => {
+    const riders = await prisma.rider.findMany({
+      select: { identityId: true, identity: { select: { roles: { select: { role: true } } } } },
+    });
+
+    for (const rider of riders) {
+      const roles = rider.identity.roles.map((entry) => entry.role);
+      expect(roles, `rider identity ${rider.identityId}`).toContain('rider');
+      expect(roles, `rider identity ${rider.identityId}`).toContain('customer');
+    }
+  });
+
+  it('creates exactly one customer profile and one customer role per rider', async () => {
+    // The invariant that makes the back-fill safe to re-run: a repeated seed,
+    // or a repair over an already-repaired database, must converge rather than
+    // accumulate.
+    const riders = await prisma.rider.findMany({ select: { identityId: true } });
+
+    for (const rider of riders) {
+      const profiles = await prisma.customer.count({ where: { identityId: rider.identityId } });
+      expect(profiles, `profiles for ${rider.identityId}`).toBe(1);
+
+      const roles = await prisma.identityRole.count({
+        where: { identityId: rider.identityId, role: 'customer' },
+      });
+      expect(roles, `customer roles for ${rider.identityId}`).toBe(1);
+    }
+  });
+
+  it('gives the rider-customer exactly one delivery address it can order to', async () => {
+    // Without an address the account can browse and fill a basket but cannot
+    // check out, which would leave the customer half of the capability
+    // untestable.
+    const riders = await prisma.rider.findMany({
+      select: {
+        identityId: true,
+        identity: { select: { customer: { select: { id: true } } } },
+      },
+    });
+
+    for (const rider of riders) {
+      const customerId = rider.identity.customer?.id;
+      expect(customerId).toBeTruthy();
+      const addresses = await prisma.address.findMany({
+        where: { customerId },
+        select: { isDefault: true, latitude: true, longitude: true },
+      });
+      expect(addresses, `addresses for ${rider.identityId}`).toHaveLength(1);
+      expect(addresses[0]?.isDefault).toBe(true);
+    }
+  });
+
+  it('creates no second identity for the customer half', async () => {
+    // One identity, two capabilities. A second account would mean a second
+    // login, which is the thing this architecture exists to avoid.
+    const riders = await prisma.rider.findMany({
+      select: { identityId: true, identity: { select: { customer: { select: { identityId: true } } } } },
+    });
+
+    for (const rider of riders) {
+      expect(rider.identity.customer?.identityId).toBe(rider.identityId);
+    }
+  });
+
+  it('does not turn staff identities into customers', async () => {
+    // Vendor, ops and admin accounts are separate web-side identities. Giving
+    // them a consumer profile would blur a role boundary the platform relies
+    // on, so the back-fill is scoped to riders only.
+    const staffRoles = ['vendor_owner', 'vendor_manager', 'vendor_staff', 'support_agent',
+      'dispatcher', 'finance_analyst', 'city_manager', 'platform_admin', 'super_admin'];
+
+    const staff = await prisma.identity.findMany({
+      where: { roles: { some: { role: { in: staffRoles } } }, rider: null },
+      select: { id: true, customer: { select: { id: true } }, roles: { select: { role: true } } },
+    });
+
+    expect(staff.length).toBeGreaterThan(0);
+    for (const identity of staff) {
+      expect(identity.customer, `staff identity ${identity.id}`).toBeNull();
+      expect(identity.roles.map((r) => r.role)).not.toContain('customer');
+    }
   });
 });

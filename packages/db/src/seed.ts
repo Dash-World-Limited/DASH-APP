@@ -11,6 +11,7 @@
 
 import { PrismaClient } from '@prisma/client';
 import { hashPassword, hashOtp, generateReference, generatePin } from '@dash/domain/crypto';
+import { ensureRidersAreCustomers } from './rider-customer.js';
 import { naira } from '@dash/domain/money';
 import { boundingBoxOf, parsePolygon } from '@dash/domain/geo';
 import { buildOrderCapture } from '@dash/domain/ledger';
@@ -784,6 +785,18 @@ async function main(): Promise<void> {
     });
     createdRiders.push({ identity, rider });
   }
+
+  // Every rider is also a customer.
+  //
+  // Reconciled by the same function that repairs an existing database rather
+  // than by nested `create` here, so a fresh seed and a live repair cannot
+  // drift apart — and so this invariant has exactly one implementation to
+  // test. See rider-customer.ts.
+  const repair = await ensureRidersAreCustomers(prisma);
+  console.warn(
+    `  riders given the customer capability: ${repair.profilesCreated} profile(s), ` +
+      `${repair.rolesGranted} role(s), ${repair.addressesCreated} address(es)`,
+  );
 
   // -------------------------------------------------------------------------
   // Promotions
