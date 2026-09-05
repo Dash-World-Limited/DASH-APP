@@ -14,8 +14,17 @@ import {
   formatNairaCompact,
 } from '@/components/ui';
 import { apiFetch, ApiRequestError, type VendorSummary } from '@/lib/api';
+import { authedFetch, useHasSession } from '@/lib/session';
 
-/** Where the customer is browsing from. Victoria Island is the seeded default. */
+/**
+ * Where to look from before anything better is known.
+ *
+ * Only a starting guess. A signed-in customer's own default address replaces
+ * it below, because answering "do you deliver here?" about a fixed point in
+ * Victoria Island is answering a question nobody asked: a customer whose
+ * address is anywhere else is told the service is unavailable while their
+ * actual address is perfectly serviceable.
+ */
 const DEFAULT_POSITION = { latitude: 6.4281, longitude: 3.4219 };
 
 const CATEGORIES = [
@@ -43,6 +52,38 @@ export default function BrowsePage() {
   const [search, setSearch] = useState('');
   const [error, setError] = useState<ApiRequestError | null>(null);
   const [locating, setLocating] = useState(false);
+  const signedIn = useHasSession();
+
+  /**
+   * Browse from the customer's own default address once it is known.
+   *
+   * Serviceability and the vendor list are both distance questions, so asking
+   * them about the constant above rather than about where the customer's order
+   * would actually go produces a confident, wrong answer.
+   */
+  useEffect(() => {
+    if (!signedIn) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const result = await authedFetch<{
+          addresses: { latitude: number; longitude: number; isDefault: boolean }[];
+        }>('/v1/addresses');
+        if (cancelled) return;
+        const preferred = result.addresses.find((a) => a.isDefault) ?? result.addresses[0];
+        if (preferred) {
+          setPosition({ latitude: preferred.latitude, longitude: preferred.longitude });
+        }
+      } catch {
+        // Keep the default. A failure here is not worth interrupting browsing.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [signedIn]);
 
   useEffect(() => {
     let cancelled = false;

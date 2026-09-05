@@ -3,29 +3,52 @@
 /**
  * DASH APP design tokens.
  *
- * Gold is a brand accent, not a surface colour — it appears on the wordmark and
- * on primary actions, and nowhere else. Customer screens are bright and warm;
- * rider and operations screens trade warmth for contrast and larger targets,
- * because they are read outdoors, in a hurry, one-handed.
+ * Two layers, deliberately. The palette below names colours; everything the
+ * app actually styles with is a *semantic* token — `--surface`, `--ink`,
+ * `--primary` — declared beneath it. Components reference the semantic layer
+ * only, so changing the brand means editing this file rather than hunting
+ * colour classes across every screen. The previous palette had to be found in
+ * 190 places, which is the mistake this structure exists to avoid repeating.
+ *
+ * The direction is deep navy and charcoal, with electric blue carrying every
+ * primary action and teal supporting it. Gold is a Dash World accent — the
+ * wordmark and premium marks, nothing else; it is not a surface and not a
+ * button. Customer screens are bright and spacious; rider and operations
+ * screens invert to dark, which is a legibility decision rather than a theme
+ * preference: both are read outdoors in direct sun or in a dim dispatch room.
  */
 @theme {
-  /* Brand */
-  --color-graphite-50: #f6f7f8;
-  --color-graphite-100: #e9ebed;
-  --color-graphite-200: #cbd0d6;
-  --color-graphite-400: #6b7480;
-  --color-graphite-600: #3a4048;
-  --color-graphite-800: #1a1e23;
-  --color-graphite-900: #0b0d10;
+  /* --- Palette ------------------------------------------------------------
+     Named colours only. Nothing in the app should reference these directly;
+     use the semantic tokens below. */
 
-  --color-gold-50: #fbf7e8;
+  /* Foundation: deep navy through charcoal. */
+  --color-navy-50: #f4f7fb;
+  --color-navy-100: #e4eaf3;
+  --color-navy-200: #c3cfe2;
+  --color-navy-400: #6b7f9e;
+  --color-navy-600: #33455f;
+  --color-navy-800: #16233a;
+  --color-navy-900: #0b1424;
+
+  /* Electric blue: the primary action colour. */
+  --color-blue-50: #eaf1ff;
+  --color-blue-200: #b8ccff;
+  --color-blue-400: #4d7cff;
+  --color-blue-500: #2f62f5;
+  --color-blue-600: #1f4bd8;
+
+  /* Teal: supporting accent, used for secondary emphasis and live states. */
+  --color-teal-50: #e6f7f6;
+  --color-teal-400: #17b3a6;
+  --color-teal-600: #0e8d83;
+
+  /* Gold: Dash World brand accent. Restrained by design. */
   --color-gold-200: #efdfa4;
   --color-gold-400: #d4af37;
-  --color-gold-500: #bd9a2a;
   --color-gold-600: #9a7c1f;
 
-  --color-ivory: #faf8f2;
-
+  /* Status. */
   --color-emerald-50: #e7f7f0;
   --color-emerald-400: #13a86b;
   --color-emerald-600: #0d8353;
@@ -34,19 +57,76 @@
   --color-coral-400: #ef5b5b;
   --color-coral-600: #c93c3c;
 
-  --color-slate-400: #64748b;
+  --color-cloud: #f7f9fc;
 
-  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* --- Transitional aliases ------------------------------------------------
+     The previous palette, remapped onto the new one.
+
+     190 colour references across 16 screens were written against these names.
+     Rewriting them all in one pass would be a large untested edit touching
+     every surface at once, so the names survive and now resolve to the new
+     brand: screens keep rendering, and they change appearance because the
+     values changed, not because each file was hand-edited.
+
+     Shared components and the customer shell use the semantic tokens directly.
+     These aliases are removed as the remaining screens migrate to them. */
+  --color-graphite-50: var(--color-navy-50);
+  --color-graphite-100: var(--color-navy-100);
+  --color-graphite-200: var(--color-navy-200);
+  --color-graphite-400: var(--color-navy-400);
+  --color-graphite-600: var(--color-navy-600);
+  --color-graphite-800: var(--color-navy-800);
+  --color-graphite-900: var(--color-navy-900);
+  --color-ivory: var(--color-cloud);
+  --color-slate-400: var(--color-navy-400);
+  --color-gold-50: #fbf7e8;
+  --color-gold-500: #bd9a2a;
+
+  --font-sans: var(--font-manrope), 'Manrope', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 
   --radius-card: 0.875rem;
 }
 
 :root {
-  --surface: var(--color-ivory);
+  /* --- Semantic tokens -----------------------------------------------------
+     What components actually use. Every screen reads from here. */
+
+  /* Surfaces, from the page ground upwards. */
+  --surface: var(--color-cloud);
   --surface-raised: #ffffff;
-  --ink: var(--color-graphite-900);
-  --ink-muted: var(--color-graphite-400);
-  --line: var(--color-graphite-100);
+  --surface-sunken: var(--color-navy-50);
+
+  /* Text. */
+  --ink: var(--color-navy-900);
+  --ink-muted: var(--color-navy-400);
+  --ink-inverted: #ffffff;
+
+  /* Lines and separators. */
+  --line: var(--color-navy-100);
+  --line-strong: var(--color-navy-200);
+
+  /* Actions. Electric blue carries the primary; teal supports it. */
+  --primary: var(--color-blue-500);
+  --primary-hover: var(--color-blue-600);
+  --primary-soft: var(--color-blue-50);
+  --on-primary: #ffffff;
+
+  --accent: var(--color-teal-400);
+  --accent-soft: var(--color-teal-50);
+
+  /* Dash World brand mark. Not a UI colour. */
+  --brand-gold: var(--color-gold-400);
+
+  /* Status. */
+  --success: var(--color-emerald-400);
+  --success-soft: var(--color-emerald-50);
+  --danger: var(--color-coral-400);
+  --danger-soft: var(--color-coral-50);
+
+  /* Shape and depth. */
+  --radius-control: 0.75rem;
+  --shadow-card: 0 1px 2px rgb(11 20 36 / 0.04), 0 8px 24px -12px rgb(11 20 36 / 0.12);
+  --shadow-raised: 0 2px 6px rgb(11 20 36 / 0.06), 0 16px 40px -20px rgb(11 20 36 / 0.2);
 }
 
 /**
@@ -57,11 +137,19 @@
  * full-screen white surface is genuinely hard to read.
  */
 [data-surface='field'] {
-  --surface: var(--color-graphite-900);
-  --surface-raised: var(--color-graphite-800);
+  --surface: var(--color-navy-900);
+  --surface-raised: var(--color-navy-800);
+  --surface-sunken: #060d18;
   --ink: #ffffff;
-  --ink-muted: var(--color-graphite-200);
-  --line: var(--color-graphite-600);
+  --ink-muted: var(--color-navy-200);
+  --line: var(--color-navy-600);
+  --line-strong: var(--color-navy-400);
+  --primary: var(--color-blue-400);
+  --primary-hover: var(--color-blue-500);
+  --primary-soft: var(--color-navy-800);
+  --accent-soft: var(--color-navy-800);
+  --success-soft: var(--color-navy-800);
+  --danger-soft: var(--color-navy-800);
 
   /*
    * Re-declaring `color` and `background` here is NOT redundant.
@@ -103,7 +191,7 @@ body {
 
 /* A visible focus ring on every interactive element. Never removed. */
 :where(a, button, input, select, textarea, [tabindex]):focus-visible {
-  outline: 2px solid var(--color-gold-400);
+  outline: 2px solid var(--primary);
   outline-offset: 2px;
   border-radius: 4px;
 }

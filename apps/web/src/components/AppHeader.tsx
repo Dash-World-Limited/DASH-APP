@@ -69,7 +69,7 @@ export function AppHeader({ variant = 'customer' }: { variant?: 'customer' | 'st
               Basket
               {count > 0 ? (
                 <span
-                  className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-gold-400 px-1 text-xs font-bold text-graphite-900"
+                  className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--primary)] px-1 text-xs font-bold text-[var(--ink)]"
                   aria-label={`${count} items in basket`}
                 >
                   {count}
@@ -91,7 +91,7 @@ export function AppHeader({ variant = 'customer' }: { variant?: 'customer' | 'st
           ) : (
             <Link
               href="/signin"
-              className="rounded-xl bg-graphite-900 px-4 py-2 text-sm font-semibold text-white"
+              className="rounded-xl bg-[var(--ink)] px-4 py-2 text-sm font-semibold text-white"
             >
               Sign in
             </Link>

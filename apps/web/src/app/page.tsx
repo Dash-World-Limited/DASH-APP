@@ -10,7 +10,7 @@ import { Card, Wordmark } from '@/components/ui';
 
 const SURFACES = [
   {
-    href: '/browse',
+    href: '/home',
     title: 'Order something',
     description: 'Browse Lagos vendors, build a basket, and track it to your door.',
     role: 'Customer',

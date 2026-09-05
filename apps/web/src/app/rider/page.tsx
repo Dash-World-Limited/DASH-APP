@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppHeader } from '@/components/AppHeader';
+import { ModeSwitch } from '@/components/ModeSwitch';
 import {
   Badge,
   Button,
@@ -742,6 +743,11 @@ export default function RiderPage() {
             </div>
           </section>
         ) : null}
+
+        {/* Back to the customer side of the same account. */}
+        <div className="mt-8">
+          <ModeSwitch to="customer" />
+        </div>
 
         {/* --- Offers --------------------------------------------------------- */}
         <section className="mt-8">

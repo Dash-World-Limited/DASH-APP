@@ -30,6 +30,18 @@ const nextConfig = {
     return config;
   },
 
+  /**
+   * `/browse` became `/home` when the customer shell arrived.
+   *
+   * Redirected rather than removed: the old path is in test scripts, in
+   * bookmarks, and on at least one handset that is mid-test. `/browse/[slug]`
+   * is deliberately untouched — vendor pages keep the URL they have always
+   * had, and only the index moved.
+   */
+  async redirects() {
+    return [{ source: '/browse', destination: '/home', permanent: false }];
+  },
+
   async headers() {
     return [
       {

@@ -34,9 +34,9 @@ type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 
 const BUTTON_STYLES: Record<ButtonVariant, string> = {
   primary:
-    'bg-gold-400 text-graphite-900 hover:bg-gold-500 active:bg-gold-600 disabled:bg-graphite-200 disabled:text-graphite-400',
+    'bg-[var(--primary)] text-[var(--ink)] hover:bg-[var(--primary-hover)] active:bg-gold-600 disabled:bg-graphite-200 disabled:text-[var(--ink-muted)]',
   secondary:
-    'bg-graphite-900 text-white hover:bg-graphite-800 disabled:bg-graphite-200 disabled:text-graphite-400',
+    'bg-[var(--ink)] text-white hover:bg-graphite-800 disabled:bg-graphite-200 disabled:text-[var(--ink-muted)]',
   ghost:
     'bg-transparent border border-[var(--line)] text-[var(--ink)] hover:bg-[var(--surface-raised)]',
   danger: 'bg-coral-400 text-white hover:bg-coral-600 disabled:bg-graphite-200',
@@ -93,10 +93,10 @@ type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'gold';
 
 const BADGE_STYLES: Record<BadgeTone, string> = {
   neutral: 'bg-graphite-100 text-graphite-600',
-  success: 'bg-emerald-50 text-emerald-600',
-  warning: 'bg-gold-50 text-gold-600',
-  danger: 'bg-coral-50 text-coral-600',
-  gold: 'bg-gold-400 text-graphite-900',
+  success: 'bg-[var(--success-soft)] text-[var(--success)]',
+  warning: 'bg-[var(--primary-soft)] text-[var(--primary)]',
+  danger: 'bg-[var(--danger-soft)] text-[var(--danger)]',
+  gold: 'bg-[var(--primary)] text-[var(--ink)]',
 };
 
 export function Badge({
@@ -178,12 +178,12 @@ export function ErrorState({
   return (
     <div
       role="alert"
-      className="rounded-[var(--radius-card)] border border-coral-400/40 bg-coral-50 px-5 py-4"
+      className="rounded-[var(--radius-card)] border border-[var(--danger)]/40 bg-[var(--danger-soft)] px-5 py-4"
     >
-      <p className="font-semibold text-coral-600">{title}</p>
+      <p className="font-semibold text-[var(--danger)]">{title}</p>
       <p className="mt-1 text-sm text-graphite-600">{message}</p>
       {requestId ? (
-        <p className="mt-2 font-mono text-xs text-graphite-400">Reference: {requestId}</p>
+        <p className="mt-2 font-mono text-xs text-[var(--ink-muted)]">Reference: {requestId}</p>
       ) : null}
       {onRetry ? (
         <Button variant="ghost" size="sm" className="mt-3" onClick={onRetry}>
@@ -215,7 +215,7 @@ export function Field({
       {children}
       {hint && !error ? <p className="text-xs text-[var(--ink-muted)]">{hint}</p> : null}
       {error ? (
-        <p role="alert" className="text-xs font-medium text-coral-600">
+        <p role="alert" className="text-xs font-medium text-[var(--danger)]">
           {error}
         </p>
       ) : null}
@@ -229,7 +229,7 @@ export function Input({
 }: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
-      className={`w-full rounded-xl border bg-[var(--surface-raised)] px-3.5 py-2.5 text-[var(--ink)] placeholder:text-graphite-400 ${className}`}
+      className={`w-full rounded-xl border bg-[var(--surface-raised)] px-3.5 py-2.5 text-[var(--ink)] placeholder:text-[var(--ink-muted)] ${className}`}
       {...props}
     />
   );
