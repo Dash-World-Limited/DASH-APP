@@ -136,20 +136,42 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       // order that no rider was ever sent to, with nothing recording that one
       // was supposed to be. See events/outbox.ts.
       await prisma.$transaction(async (tx) => {
-        await tx.order.update({
-          where: { id: order.id },
+        // Claim the acceptance, rather than assume it.
+        //
+        // This is the button most likely to be pressed twice — a counter
+        // tablet on a slow connection, two staff working the same queue, a
+        // retried request — and `assertTransition` judged a status read from
+        // before this transaction opened. Both attempts could therefore find
+        // the order `placed`, both judge `accepted` legal, and both write it.
+        // The status converged, so nothing looked wrong; the record did not.
+        // Two status events, two revision bumps, two realtime notifications,
+        // and `acceptedAt` overwritten — the field a rider's billable waiting
+        // time is measured from.
+        //
+        // Naming the expected prior status makes this a compare-and-set: the
+        // first request to commit accepts the order, the second matches no row
+        // and rolls back everything it was about to write. The same pattern
+        // guards the `preparing` transition below and the rider's own
+        // transitions in routes/rider.ts.
+        const claimed = await tx.order.updateMany({
+          where: { id: order.id, status: order.status },
           data: {
             status: 'accepted',
             acceptedAt: new Date(),
             estimatedReadyAt: readyAt,
-            statusEvents: {
-              create: {
-                fromStatus: order.status,
-                toStatus: 'accepted',
-                actorType: actingAs,
-                actorId: actor.identityId,
-              },
-            },
+          },
+        });
+        if (claimed.count === 0) {
+          throw ApiError.conflict('That order has already been accepted.');
+        }
+
+        await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: 'accepted',
+            actorType: actingAs,
+            actorId: actor.identityId,
           },
         });
 

@@ -261,3 +261,147 @@ describe('rider transitions under concurrency', () => {
     expect(ledger[0]?.entries.reduce((sum, entry) => sum + entry.amount, 0)).toBe(0);
   });
 });
+
+/** Place an order and stop, so the accept itself can be raced. */
+async function placedOrder(): Promise<{ id: string }> {
+  const created = await context.app.inject({
+    method: 'POST',
+    url: '/v1/orders',
+    headers: { ...customerA.headers, 'idempotency-key': idempotencyKey('vacc') },
+    payload: {
+      branchId: world.vendorA.branchId,
+      items: [{ itemId: world.vendorA.itemId, quantity: 1, modifierIds: [world.vendorA.modifierId] }],
+      mode: 'delivery',
+      addressId: world.customerA.addressId,
+      paymentMethod: 'card',
+    },
+  });
+  if (created.statusCode !== 200) {
+    throw new Error(`order failed: ${created.statusCode} ${created.body}`);
+  }
+  return { id: created.json<{ order: { id: string } }>().order.id };
+}
+
+/** Outbox rows of one name whose payload names exactly this order. */
+async function outboxFor(name: string, orderId: string): Promise<string[]> {
+  const rows = await context.prisma.outboxEvent.findMany({
+    where: { name },
+    select: { idempotencyKey: true, payload: true },
+  });
+  return rows
+    .filter((row) => {
+      try {
+        const payload = JSON.parse(row.payload) as { orderId?: string; subject?: string };
+        return payload.orderId === orderId || payload.subject === `order:${orderId}`;
+      } catch {
+        return false;
+      }
+    })
+    .map((row) => row.idempotencyKey ?? '');
+}
+
+describe('vendor accept under concurrency', () => {
+  /**
+   * Accepting is the vendor's one irreversible commitment to make the food,
+   * and it is the button most likely to be pressed twice — a counter tablet
+   * with a slow connection, two staff working the same queue, a retried
+   * request. `assertTransition` judges a status read before the transaction
+   * opens, so both attempts could find the order `placed`, both judge
+   * `accepted` legal, and both write it.
+   *
+   * The status converged, so nothing looked wrong. What did not converge was
+   * the record: two `OrderStatusEvent` rows, two `revision` bumps, two
+   * realtime notifications, and `acceptedAt` overwritten — a field the rider's
+   * billable waiting time is measured from.
+   */
+  it('accepts once when two vendor accepts race', async () => {
+    const order = await placedOrder();
+    const before = await context.prisma.order.findUniqueOrThrow({
+      where: { id: order.id },
+      select: { revision: true },
+    });
+    const realtimeBefore = (await outboxFor('realtime.notify', order.id)).length;
+
+    const attempt = () =>
+      context.app.inject({
+        method: 'POST',
+        url: `/v1/vendor/orders/${order.id}/accept`,
+        headers: vendorA.headers,
+        payload: { prepMinutes: 20 },
+      });
+    const responses = await Promise.all([attempt(), attempt()]);
+
+    expect(responses.filter((response) => response.statusCode === 200)).toHaveLength(1);
+    expect(responses.find((response) => response.statusCode !== 200)?.statusCode).toBe(409);
+
+    const after = await context.prisma.order.findUniqueOrThrow({
+      where: { id: order.id },
+      select: { revision: true, status: true, acceptedAt: true, estimatedReadyAt: true },
+    });
+    expect(after.status).toBe('accepted');
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.acceptedAt).not.toBeNull();
+    expect(after.estimatedReadyAt).not.toBeNull();
+
+    expect(
+      await context.prisma.orderStatusEvent.findMany({
+        where: { orderId: order.id, toStatus: 'accepted' },
+      }),
+    ).toHaveLength(1);
+
+    expect(await outboxFor('realtime.notify', order.id)).toHaveLength(realtimeBefore + 1);
+  });
+
+  it('creates no dispatch job at all when accepts race', async () => {
+    // Preparing is the only normal dispatch trigger, and a race must not be a
+    // way around that. Zero, not "one" — accepting sends no rider.
+    const order = await placedOrder();
+
+    const attempt = () =>
+      context.app.inject({
+        method: 'POST',
+        url: `/v1/vendor/orders/${order.id}/accept`,
+        headers: vendorA.headers,
+        payload: { prepMinutes: 20 },
+      });
+    await Promise.all([attempt(), attempt()]);
+
+    expect(await outboxFor('dispatch.find_rider', order.id)).toEqual([]);
+  });
+
+  it('leaves the order untouched when the loser is refused', async () => {
+    // A second accept arriving after the first has settled is the sequential
+    // case, already covered by the state machine — asserted here too so the
+    // compare-and-set cannot regress it into a silent success.
+    const order = await placedOrder();
+
+    const accept = () =>
+      context.app.inject({
+        method: 'POST',
+        url: `/v1/vendor/orders/${order.id}/accept`,
+        headers: vendorA.headers,
+        payload: { prepMinutes: 20 },
+      });
+
+    expect((await accept()).statusCode).toBe(200);
+    const settled = await context.prisma.order.findUniqueOrThrow({
+      where: { id: order.id },
+      select: { revision: true, acceptedAt: true },
+    });
+
+    const second = await accept();
+    expect(second.statusCode).toBeGreaterThanOrEqual(400);
+
+    const after = await context.prisma.order.findUniqueOrThrow({
+      where: { id: order.id },
+      select: { revision: true, acceptedAt: true },
+    });
+    expect(after.revision).toBe(settled.revision);
+    expect(after.acceptedAt?.getTime()).toBe(settled.acceptedAt?.getTime());
+    expect(
+      await context.prisma.orderStatusEvent.findMany({
+        where: { orderId: order.id, toStatus: 'accepted' },
+      }),
+    ).toHaveLength(1);
+  });
+});
