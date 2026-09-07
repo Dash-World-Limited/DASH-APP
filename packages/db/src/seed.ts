@@ -310,6 +310,16 @@ async function main(): Promise<void> {
     price: number; // naira
     prepMinutes?: number;
     modifiers?: { group: string; min: number; max: number; options: [string, number][] }[];
+    /** Declutter listings only. Null on everything a kitchen makes to order. */
+    condition?: string;
+    /**
+     * A real HTTPS image URL for sample data.
+     *
+     * Stored in `imageKey`, which is named for its eventual life as a storage
+     * key. The client resolves either — see lib/images.ts — so seeded sample
+     * data does not need migrating on the day real uploads land.
+     */
+    imageUrl?: string;
   }
   interface SeedVendor {
     name: string;
@@ -325,6 +335,283 @@ async function main(): Promise<void> {
     prepMinutes: number;
     categories: { name: string; items: SeedItem[] }[];
   }
+
+  /**
+   * Declutter — curated resale, not a peer-to-peer marketplace.
+   *
+   * V1 deliberately reuses the vendor and catalogue models rather than growing
+   * a second commerce engine: a Declutter seller is an approved vendor whose
+   * category is `declutter`, its listings are ordinary menu items, and the
+   * basket, checkout, dispatch and delivery that carry a plate of jollof carry
+   * a second-hand laptop unchanged. What makes it Declutter is the category and
+   * the fact that each item carries a `condition`.
+   *
+   * "Curated" is not a flag either — it is what `status: 'approved'` on the
+   * vendor already means. There is no public listing form, no seller
+   * onboarding, no escrow and no bidding in this milestone, so nothing here
+   * needs a model that could express them.
+   *
+   * The images are real HTTPS URLs on `imageKey`. Sample data only; see
+   * lib/images.ts for how the client resolves either shape.
+   */
+  /**
+   * One seller for each remaining section, so a fresh seed produces a world
+   * where every front door opens onto something.
+   *
+   * DASH has five equal sections — Shops, Restaurants, Local Market, Pharmacy,
+   * Declutter — and the first two of those had no vendors at all: `retail` and
+   * `market` existed as categories with nothing in them. A section that opens
+   * onto an empty state reads as a broken app rather than as an honest "none
+   * near you yet", and makes the whole hierarchy untestable.
+   *
+   * Fictional, like every other seeded vendor. These are test fixtures, not a
+   * claim that any real trader has been onboarded.
+   */
+  const sectionVendors: SeedVendor[] = [
+    {
+      name: 'Lagos Home & Electronics',
+      slug: 'lagos-home-electronics',
+      category: 'retail',
+      description: 'Small appliances, gadgets and home basics.',
+      commission: 1500,
+      zone: viZone,
+      latitude: 6.4372,
+      longitude: 3.4246,
+      address: '3 Awolowo Road, Ikoyi',
+      minimumOrder: 0,
+      prepMinutes: 20,
+      categories: [
+        {
+          name: 'Electronics',
+          items: [
+            { name: 'Standing fan, 18 inch', description: 'Three speeds, oscillating.', price: 42_000 },
+            { name: 'LED bulb, 4-pack', description: 'Warm white, 9W each.', price: 6_500 },
+          ],
+        },
+        {
+          name: 'Home',
+          items: [
+            { name: 'Stainless cookware set', description: 'Five pieces with lids.', price: 58_000 },
+            { name: 'Cotton bed sheet set', description: 'Queen size, two pillowcases.', price: 24_000 },
+          ],
+        },
+        {
+          name: 'Beauty',
+          items: [
+            { name: 'Shea body butter, 250g', description: 'Unscented, locally made.', price: 7_500 },
+          ],
+        },
+        {
+          name: 'Fashion',
+          items: [
+            { name: 'Canvas tote bag', description: 'Heavy cotton, screen printed.', price: 9_000 },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'Mile 12 Fresh Produce',
+      slug: 'mile-12-fresh-produce',
+      category: 'market',
+      description: 'Produce bought the same morning.',
+      commission: 1500,
+      zone: viZone,
+      latitude: 6.4427,
+      longitude: 3.4246,
+      address: 'Stall 42, Mile 12 Market',
+      minimumOrder: 2_000,
+      prepMinutes: 20,
+      categories: [
+        {
+          name: 'Vegetables',
+          items: [
+            { name: 'Ugu (fluted pumpkin), bunch', description: 'Cut fresh this morning.', price: 1_200 },
+            { name: 'Tomatoes, basket', description: 'Ripe, for stew.', price: 9_500 },
+            { name: 'Scotch bonnet, cup', description: 'Hot. Sold by the cup.', price: 1_800 },
+          ],
+        },
+        {
+          name: 'Grains',
+          items: [
+            { name: 'Ofada rice, 5kg', description: 'Local, stone-picked.', price: 14_500 },
+            { name: 'Brown beans, 5kg', description: 'Oloyin variety.', price: 12_000 },
+          ],
+        },
+        {
+          name: 'Spices',
+          items: [
+            { name: 'Ground crayfish, 200g', description: 'Dried and milled.', price: 4_500 },
+            { name: 'Locust beans (iru), pack', description: 'Wrapped fresh.', price: 1_500 },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'Oyingbo Meat & Fish',
+      slug: 'oyingbo-meat-fish',
+      category: 'market',
+      description: 'Butchery and fresh fish, cut to order.',
+      commission: 1500,
+      zone: viZone,
+      latitude: 6.4482,
+      longitude: 3.4246,
+      address: 'Row C, Oyingbo Market',
+      minimumOrder: 3_000,
+      prepMinutes: 20,
+      categories: [
+        {
+          name: 'Meat',
+          items: [
+            { name: 'Goat meat, 1kg', description: 'Cut to order, bone in.', price: 8_500 },
+            { name: 'Beef shank, 1kg', description: 'Good for pepper soup.', price: 7_200 },
+          ],
+        },
+        {
+          name: 'Fish',
+          items: [
+            { name: 'Fresh tilapia, 1kg', description: 'Cleaned and scaled.', price: 6_800 },
+            { name: 'Smoked catfish, whole', description: 'Dried over firewood.', price: 5_200 },
+          ],
+        },
+        {
+          name: 'Spices',
+          items: [
+            { name: 'Uziza seeds, 100g', description: 'For pepper soup.', price: 2_200 },
+          ],
+        },
+      ],
+    },
+  ];
+
+  const declutterVendor: SeedVendor = {
+    name: 'DASH Declutter Lagos',
+    slug: 'dash-declutter-lagos',
+    category: 'declutter',
+    description: 'Checked, cleaned and photographed second-hand from trusted Lagos sellers.',
+    commission: 1200,
+    zone: viZone,
+    latitude: 6.4305,
+    longitude: 3.4246,
+    address: '14 Adeola Odeku Street, Victoria Island',
+    minimumOrder: 0,
+    prepMinutes: 20,
+    categories: [
+      {
+        name: 'Phones',
+        items: [
+          {
+            name: 'iPhone 12 Pro 128GB',
+            description: 'Battery health 89%. Screen flawless, light scuffs on the frame. Boxed.',
+            price: 385_000,
+            condition: 'good',
+            imageUrl: 'https://images.unsplash.com/photo-1603891128711-11b4b03bb138?w=800&q=80',
+          },
+          {
+            name: 'Samsung Galaxy S21',
+            description: 'Single owner, always cased. Includes charger and a spare case.',
+            price: 245_000,
+            condition: 'like_new',
+            imageUrl: 'https://images.unsplash.com/photo-1610945415295-d9bbf067e59c?w=800&q=80',
+          },
+        ],
+      },
+      {
+        name: 'Laptops & Electronics',
+        items: [
+          {
+            name: 'MacBook Air M1 256GB',
+            description: '112 charge cycles. Keyboard and trackpad perfect. Charger included.',
+            price: 620_000,
+            condition: 'like_new',
+            imageUrl: 'https://images.unsplash.com/photo-1611186871348-b1ce696e52c9?w=800&q=80',
+          },
+          {
+            name: 'Sony WH-1000XM4 Headphones',
+            description: 'Noise cancelling intact. Earpads replaced last month. Case included.',
+            price: 135_000,
+            condition: 'good',
+            imageUrl: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=800&q=80',
+          },
+        ],
+      },
+      {
+        name: 'Furniture',
+        items: [
+          {
+            name: 'Three-seater fabric sofa',
+            description: 'Charcoal grey, foam still firm. Small mark on the left arm, photographed.',
+            price: 180_000,
+            condition: 'good',
+            imageUrl: 'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=800&q=80',
+          },
+          {
+            name: 'Solid oak dining table',
+            description: 'Seats six. Refinished top, no wobble. Chairs not included.',
+            price: 145_000,
+            condition: 'good',
+            imageUrl: 'https://images.unsplash.com/photo-1533090161767-e6ffed986c88?w=800&q=80',
+          },
+        ],
+      },
+      {
+        name: 'Home Appliances',
+        items: [
+          {
+            name: 'LG 7kg washing machine',
+            description: 'Front loader, serviced in June. All cycles tested before listing.',
+            price: 210_000,
+            condition: 'good',
+            imageUrl: 'https://images.unsplash.com/photo-1626806787461-102c1bfaaea1?w=800&q=80',
+          },
+          {
+            name: 'Nespresso coffee machine',
+            description: 'Descaled and boxed. Barely used — a gift that never got going.',
+            price: 55_000,
+            condition: 'like_new',
+            imageUrl: 'https://images.unsplash.com/photo-1585515320310-259814833e62?w=800&q=80',
+          },
+        ],
+      },
+      {
+        name: 'Fashion',
+        items: [
+          {
+            name: 'Leather weekend bag',
+            description: 'Full grain, patina starting. Straps and zips sound.',
+            price: 48_000,
+            condition: 'good',
+            imageUrl: 'https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=800&q=80',
+          },
+          {
+            name: 'Wool overcoat, size 40',
+            description: 'Navy, dry cleaned. Worn for one Harmattan season.',
+            price: 62_000,
+            condition: 'like_new',
+            imageUrl: 'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=800&q=80',
+          },
+        ],
+      },
+      {
+        name: 'Other',
+        items: [
+          {
+            name: 'Yamaha acoustic guitar',
+            description: 'New strings fitted. Two small dings on the body, tone unaffected.',
+            price: 78_000,
+            condition: 'good',
+            imageUrl: 'https://images.unsplash.com/photo-1510915361894-db8b60106cb1?w=800&q=80',
+          },
+          {
+            name: 'Peloton-style exercise bike',
+            description: 'Resistance smooth, screen not included. Collected clean.',
+            price: 155_000,
+            condition: 'fair',
+            imageUrl: 'https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=800&q=80',
+          },
+        ],
+      },
+    ],
+  };
 
   const vendorDefinitions: SeedVendor[] = [
     {
@@ -499,6 +786,10 @@ async function main(): Promise<void> {
   ];
 
   const createdVendors = [];
+  // Declutter joins the same list, so it is created by the same loop and gets
+  // the same branch, hours, stock and modifiers as every other vendor.
+  vendorDefinitions.push(...sectionVendors, declutterVendor);
+
   for (const definition of vendorDefinitions) {
     const vendor = await prisma.vendor.create({
       data: {
@@ -587,6 +878,8 @@ async function main(): Promise<void> {
             prepMinutes: itemDefinition.prepMinutes ?? 15,
             sortOrder: itemIndex,
             requiresAgeCheck: false,
+            ...(itemDefinition.condition ? { condition: itemDefinition.condition } : {}),
+            ...(itemDefinition.imageUrl ? { imageKey: itemDefinition.imageUrl } : {}),
           },
         });
 

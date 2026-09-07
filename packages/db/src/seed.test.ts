@@ -142,7 +142,12 @@ describe('the rest of the seed stays deterministic', () => {
     // approved rider *is* a customer who can also work — see the capability
     // suite below. If this number drops back to three, the back-fill has
     // stopped running and rider accounts can no longer shop.
-    expect({ vendors, riders, customers }).toEqual({ vendors: 4, riders: 4, customers: 7 });
+    // Eight vendors: two restaurants, a grocer, a pharmacy, a retail shop, two
+    // market traders and one Declutter seller — one for each of the five
+    // customer-facing sections, so no section opens onto an empty state.
+    // Seven customers: three consumer accounts plus one for each of the four
+    // riders, because an approved rider is a customer who can also work.
+    expect({ vendors, riders, customers }).toEqual({ vendors: 8, riders: 4, customers: 7 });
   });
 });
 
