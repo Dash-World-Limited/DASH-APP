@@ -68,6 +68,18 @@ const schema = z
     SMS_PROVIDER: z.enum(['console', 'termii', 'twilio']).default('console'),
     EMAIL_PROVIDER: z.enum(['console', 'smtp']).default('console'),
     PUSH_PROVIDER: z.enum(['console', 'fcm']).default('console'),
+    /**
+     * Path to the service-account JSON, read by the Firebase SDK itself.
+     *
+     * Declared here rather than reached for from `process.env` at the point of
+     * use, so it is validated with everything else and a test can supply it.
+     * The value is a path and never the credential; nothing in this project
+     * opens the file.
+     *
+     * Optional because a Google-hosted runtime supplies its own service
+     * identity with no file at all.
+     */
+    GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),
 
     STORAGE_PROVIDER: z.enum(['local', 's3']).default('local'),
     STORAGE_LOCAL_DIR: z.string().default('./.storage'),
@@ -412,6 +424,16 @@ const schema = z
     }
     if (env.MAPS_PROVIDER === 'mapbox' && !env.MAPBOX_ACCESS_TOKEN) {
       fail('MAPBOX_ACCESS_TOKEN', 'Required when MAPS_PROVIDER is mapbox');
+    }
+
+    // Firebase resolves its credential from the environment, so a missing one
+    // surfaces as an opaque SDK error on the first send rather than at boot —
+    // by which time a rider has already missed an offer. Named here instead.
+    if (env.PUSH_PROVIDER === 'fcm' && !env.GOOGLE_APPLICATION_CREDENTIALS) {
+      fail(
+        'GOOGLE_APPLICATION_CREDENTIALS',
+        'Required when PUSH_PROVIDER is fcm, unless the host supplies its own service identity',
+      );
     }
 
     // --- Transport -----------------------------------------------------------

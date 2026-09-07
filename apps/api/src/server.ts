@@ -36,6 +36,7 @@ import {
 } from './realtime/broadcast.js';
 import { RealtimeHub } from './realtime/hub.js';
 import { registerRealtimeWorker } from './realtime/worker.js';
+import { createFcmAdapter } from './adapters/fcm.js';
 import { registerPushWorker } from './push/worker.js';
 import { registerRealtimeRoutes } from './routes/realtime.js';
 import { parseNotification } from '@dash/domain/realtime';
@@ -122,7 +123,11 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
         : new LocalGeoAdapter(prisma)),
     sms: overrides.sms ?? new ConsoleSmsAdapter(quiet),
     email: overrides.email ?? new ConsoleEmailAdapter(quiet),
-    push: overrides.push ?? new ConsolePushAdapter(quiet),
+    // Console unless a provider is configured, so tests and local development
+    // never need a Firebase credential and never send a real notification.
+    push:
+      overrides.push ??
+      (config.PUSH_PROVIDER === 'fcm' ? createFcmAdapter() : new ConsolePushAdapter(quiet)),
     storage: overrides.storage ?? new LocalStorageAdapter(config.STORAGE_LOCAL_DIR),
     exportArchive:
       overrides.exportArchive ?? new LocalExportArchiveAdapter(config.STORAGE_LOCAL_DIR),

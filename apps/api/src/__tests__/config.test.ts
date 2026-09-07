@@ -40,6 +40,8 @@ function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEn
     SMS_PROVIDER: 'termii',
     EMAIL_PROVIDER: 'smtp',
     PUSH_PROVIDER: 'fcm',
+    // A path, never a credential. Firebase reads the file; nothing here does.
+    GOOGLE_APPLICATION_CREDENTIALS: '/var/secrets/firebase-service-account.json',
     STORAGE_PROVIDER: 's3',
     QUEUE_PROVIDER: 'redis',
     REDIS_URL: 'redis://cache.internal:6379',
