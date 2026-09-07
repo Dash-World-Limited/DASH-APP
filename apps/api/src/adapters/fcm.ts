@@ -37,19 +37,66 @@ import { getMessaging } from 'firebase-admin/messaging';
 import type { PushPort, PushReceipt } from '@dash/domain/ports';
 
 /**
- * Errors that mean the token is dead rather than the send having failed.
+ * Errors that unambiguously mean the token is dead.
  *
- * A dead token is not a retryable condition — the app was uninstalled, the OS
- * reissued the token, the device was wiped — so these are reported back as
- * `invalidTokens` and the caller clears them. Everything else is a transient
- * failure and the token is left alone: treating a network blip as a dead
- * handset would silently unsubscribe working riders.
+ * A dead token is not retryable — the app was uninstalled, the OS reissued the
+ * token, the device was wiped — so these are reported as `invalidTokens` and
+ * the caller clears them. Everything else leaves the token alone: treating a
+ * network blip as a dead handset would silently unsubscribe working riders.
+ *
+ * Both of these name the registration token in the code itself, which is what
+ * makes them safe to act on without reading any further.
  */
 const DEAD_TOKEN_CODES = new Set([
   'messaging/registration-token-not-registered',
   'messaging/invalid-registration-token',
-  'messaging/invalid-argument',
 ]);
+
+/**
+ * `messaging/invalid-argument` is deliberately absent from that set.
+ *
+ * Firebase uses it for anything malformed in the request — a bad TTL, an
+ * oversized payload, an unacceptable notification option — as well as for a
+ * bad registration token. The code alone does not say which.
+ *
+ * Deleting on the code alone would mean a mistake in *our* message construction
+ * unregistering every rider it was sent to. A bad TTL constant, say, would be
+ * rejected for all tokens at once, and the system's response would be to
+ * quietly delete all of them — turning a one-line bug into a silent, total
+ * outage of rider notifications that looks like riders simply going quiet, with
+ * the evidence deleted as it happens. The failure is self-inflicted, total, and
+ * invisible, which is the worst combination.
+ *
+ * So a token is only condemned under this code when Firebase's own message
+ * names the registration token as the problem. If the wording ever changes, the
+ * check stops matching and the token survives — failing towards a rider who
+ * keeps getting work rather than one who is silently cut off.
+ */
+const TOKEN_BLAMED = /registration token|not a valid fcm registration/i;
+
+/**
+ * Whether this failure proves the token itself is dead.
+ *
+ * `payloadValidated` records that the outgoing message already passed the
+ * domain's payload rules before it was sent. It does not make an ambiguous
+ * error unambiguous — that is what `TOKEN_BLAMED` is for — but it is the
+ * precondition under which blaming the token is reasonable at all: an
+ * unvalidated payload would make our own message the likelier suspect.
+ */
+export function isDeadTokenError(
+  code: string | undefined,
+  message: string | undefined,
+  payloadValidated: boolean,
+): boolean {
+  if (!code) return false;
+  if (DEAD_TOKEN_CODES.has(code)) return true;
+
+  if (code === 'messaging/invalid-argument') {
+    return payloadValidated && Boolean(message && TOKEN_BLAMED.test(message));
+  }
+
+  return false;
+}
 
 /**
  * The slice of the Firebase SDK this adapter uses.
@@ -70,7 +117,7 @@ export interface MulticastSender {
   }): Promise<{
     successCount: number;
     failureCount: number;
-    responses: { success: boolean; error?: { code?: string } | undefined }[];
+    responses: { success: boolean; error?: { code?: string; message?: string } | undefined }[];
   }>;
 }
 
@@ -150,9 +197,14 @@ export class FcmPushAdapter implements PushPort {
     const invalidTokens: string[] = [];
     response.responses.forEach((result, index) => {
       if (result.success) return;
-      const code = (result.error as { code?: string } | undefined)?.code;
+      const error = result.error as { code?: string; message?: string } | undefined;
       const token = input.deviceTokens[index];
-      if (token && code && DEAD_TOKEN_CODES.has(code)) invalidTokens.push(token);
+      // `payloadValidated` is true because `sendToRider` runs the domain's
+      // payload rules immediately before calling this adapter, and this adapter
+      // adds nothing to what it was given.
+      if (token && isDeadTokenError(error?.code, error?.message, true)) {
+        invalidTokens.push(token);
+      }
     });
 
     return {

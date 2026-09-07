@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { FcmPushAdapter, type MulticastSender } from '../adapters/fcm.js';
+import { FcmPushAdapter, isDeadTokenError, type MulticastSender } from '../adapters/fcm.js';
 
 interface Captured {
   tokens: string[];
@@ -30,7 +30,7 @@ interface Captured {
 }
 
 /** A Firebase stand-in that records what it was asked to send. */
-function stub(outcomes: { success: boolean; code?: string }[]) {
+function stub(outcomes: { success: boolean; code?: string; message?: string }[]) {
   const sent: Captured[] = [];
   const sender: MulticastSender = {
     async sendEachForMulticast(message) {
@@ -40,7 +40,7 @@ function stub(outcomes: { success: boolean; code?: string }[]) {
         failureCount: outcomes.filter((outcome) => !outcome.success).length,
         responses: outcomes.map((outcome) => ({
           success: outcome.success,
-          error: outcome.code ? { code: outcome.code } : undefined,
+          error: outcome.code ? { code: outcome.code, message: outcome.message } : undefined,
         })),
       };
     },
@@ -48,7 +48,7 @@ function stub(outcomes: { success: boolean; code?: string }[]) {
   return { sender, sent };
 }
 
-const message = (data: Record<string, string>) => ({
+const message_ = (data: Record<string, string>) => ({
   deviceTokens: ['tok-a', 'tok-b'],
   title: 'New delivery offer',
   body: 'Open DASH to accept it before it expires.',
@@ -63,7 +63,7 @@ describe('dead tokens are reported, transient failures are not', () => {
     ]);
     const adapter = new FcmPushAdapter(undefined, sender);
 
-    const receipt = await adapter.send(message({ type: 'rider_offer', offerId: 'o1' }));
+    const receipt = await adapter.send(message_({ type: 'rider_offer', offerId: 'o1' }));
 
     expect(receipt.invalidTokens).toEqual(['tok-b']);
     // One handset took it, so the rider was reached.
@@ -84,7 +84,7 @@ describe('dead tokens are reported, transient failures are not', () => {
       const adapter = new FcmPushAdapter(undefined, sender);
 
       const receipt = await adapter.send({
-        ...message({ type: 'rider_offer' }),
+        ...message_({ type: 'rider_offer' }),
         deviceTokens: ['tok-a'],
       });
 
@@ -102,7 +102,7 @@ describe('dead tokens are reported, transient failures are not', () => {
     ]);
     const adapter = new FcmPushAdapter(undefined, sender);
 
-    const receipt = await adapter.send(message({ type: 'rider_offer' }));
+    const receipt = await adapter.send(message_({ type: 'rider_offer' }));
 
     expect(receipt.invalidTokens).toEqual(['tok-a']);
   });
@@ -113,7 +113,7 @@ describe('a retried push replaces rather than repeats', () => {
     const { sender, sent } = stub([{ success: true }, { success: true }]);
     const adapter = new FcmPushAdapter(undefined, sender);
 
-    await adapter.send(message({ type: 'rider_offer', offerId: 'offer_42' }));
+    await adapter.send(message_({ type: 'rider_offer', offerId: 'offer_42' }));
 
     // All three, because Android needs the tag to replace a notification that
     // is already showing and the collapse key to discard one still undelivered.
@@ -126,8 +126,8 @@ describe('a retried push replaces rather than repeats', () => {
     const { sender, sent } = stub([{ success: true }, { success: true }]);
     const adapter = new FcmPushAdapter(undefined, sender);
 
-    await adapter.send(message({ type: 'rider_offer', offerId: 'offer_1' }));
-    await adapter.send(message({ type: 'rider_offer', offerId: 'offer_2' }));
+    await adapter.send(message_({ type: 'rider_offer', offerId: 'offer_1' }));
+    await adapter.send(message_({ type: 'rider_offer', offerId: 'offer_2' }));
 
     expect(sent[0]?.android?.collapseKey).not.toBe(sent[1]?.android?.collapseKey);
   });
@@ -137,7 +137,7 @@ describe('a retried push replaces rather than repeats', () => {
     const { sender, sent } = stub([{ success: true }, { success: true }]);
     const adapter = new FcmPushAdapter(undefined, sender);
 
-    await adapter.send(message({ type: 'rider_offer', offerId: 'o1' }));
+    await adapter.send(message_({ type: 'rider_offer', offerId: 'o1' }));
 
     expect(sent[0]?.android?.ttl).toBe(30_000);
   });
@@ -151,7 +151,7 @@ describe('the adapter adds nothing to the payload', () => {
     const adapter = new FcmPushAdapter(undefined, sender);
 
     await adapter.send(
-      message({ type: 'rider_offer', offerId: 'o1', expiresAt: '2026-09-07T12:00:30.000Z' }),
+      message_({ type: 'rider_offer', offerId: 'o1', expiresAt: '2026-09-07T12:00:30.000Z' }),
     );
 
     expect(Object.keys(sent[0]?.data ?? {}).sort()).toEqual(['expiresAt', 'offerId', 'type']);
@@ -163,11 +163,91 @@ describe('the adapter adds nothing to the payload', () => {
     const adapter = new FcmPushAdapter(undefined, sender);
 
     const receipt = await adapter.send({
-      ...message({ type: 'rider_offer' }),
+      ...message_({ type: 'rider_offer' }),
       deviceTokens: [],
     });
 
     expect(sent).toHaveLength(0);
     expect(receipt.accepted).toBe(true);
+  });
+});
+
+describe('an ambiguous invalid-argument does not condemn a token', () => {
+  /**
+   * `messaging/invalid-argument` covers anything malformed in the request — a
+   * bad TTL, an oversized payload, an unacceptable notification option — as
+   * well as a bad registration token. The code alone does not say which.
+   *
+   * Deleting on the code alone would mean a mistake in *our* message
+   * construction unregistering every rider it reached. A bad TTL constant would
+   * be rejected for all tokens at once, and the response would be to delete all
+   * of them: a one-line bug becoming a silent, total outage of rider
+   * notifications, with the evidence removed as it happened.
+   */
+  it('keeps the token when the payload is what Firebase rejected', async () => {
+    for (const message of [
+      'Invalid JSON payload received.',
+      'ttl must be a non-negative duration',
+      'The value for android.notification.color is invalid',
+      'Request contains an invalid argument.',
+      undefined,
+    ]) {
+      const { sender } = stub([{ success: false, code: 'messaging/invalid-argument', message }]);
+      const adapter = new FcmPushAdapter(undefined, sender);
+
+      const receipt = await adapter.send({
+        ...message_({ type: 'rider_offer', offerId: 'o1' }),
+        deviceTokens: ['tok-a'],
+      });
+
+      expect(receipt.invalidTokens, String(message)).toEqual([]);
+    }
+  });
+
+  it('condemns the token only when Firebase names it', async () => {
+    const { sender } = stub([
+      {
+        success: false,
+        code: 'messaging/invalid-argument',
+        message: 'The registration token is not a valid FCM registration token',
+      },
+    ]);
+    const adapter = new FcmPushAdapter(undefined, sender);
+
+    const receipt = await adapter.send({
+      ...message_({ type: 'rider_offer', offerId: 'o1' }),
+      deviceTokens: ['tok-a'],
+    });
+
+    expect(receipt.invalidTokens).toEqual(['tok-a']);
+  });
+
+  it('fails towards keeping a rider when the wording is unfamiliar', () => {
+    // If Firebase rewords its message, the check stops matching and the token
+    // survives. A rider who keeps getting work is the safe side of that error.
+    expect(
+      isDeadTokenError('messaging/invalid-argument', 'some future wording', true),
+    ).toBe(false);
+  });
+
+  it('will not blame the token when the payload was never validated', () => {
+    // The precondition. An unvalidated payload makes our own message the
+    // likelier suspect, so the token is not condemned even on matching wording.
+    expect(
+      isDeadTokenError(
+        'messaging/invalid-argument',
+        'The registration token is not a valid FCM registration token',
+        false,
+      ),
+    ).toBe(false);
+  });
+
+  it('still condemns the two codes that name the token themselves', () => {
+    expect(isDeadTokenError('messaging/registration-token-not-registered', undefined, true)).toBe(true);
+    expect(isDeadTokenError('messaging/invalid-registration-token', undefined, true)).toBe(true);
+  });
+
+  it('ignores a missing code', () => {
+    expect(isDeadTokenError(undefined, 'anything', true)).toBe(false);
   });
 });
