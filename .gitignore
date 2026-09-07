@@ -95,6 +95,19 @@ apps/mobile/android/app/src/main/assets/public/
 apps/mobile/android/app/src/main/assets/capacitor.config.json
 apps/mobile/android/app/src/main/res/xml/network_security_config.xml
 apps/mobile/android/capacitor-cordova-android-plugins/
+
+# Firebase configuration for the Android shell.
+#
+# Not a server secret — the API key inside ships in every APK by design and is
+# restricted by package name and signing certificate — but it names a specific
+# Firebase project and is per-environment: the test package and a production
+# package need different files. Committing one would bake this project into
+# everybody's build the way a hardcoded LAN address would.
+#
+# The dangerous half is the service-account credential used to *send*. That is
+# never a file in this repository; it goes through the secret-management
+# contract as an environment value.
+apps/mobile/android/app/google-services.json
 # Written per build from DASH_MOBILE_HOST; committing one would bake one
 # developer's LAN address into everyone else's build.
 apps/mobile/capacitor.config.json

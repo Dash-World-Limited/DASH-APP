@@ -19,6 +19,7 @@ import {
 } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, useHasSession, useMe } from '@/lib/session';
+import { onNotificationTap, pushAvailable, registerForPush } from '@/lib/push';
 import { liveLabel, useLive } from '@/lib/useLive';
 import { describeBridge, ensurePermission, geolocationAvailability, getFix } from '@/lib/geolocation';
 import {
@@ -303,6 +304,41 @@ export default function RiderPage() {
       setBusy(false);
     }
   };
+
+  /**
+   * Register this handset for offer notifications, and act on a tap.
+   *
+   * Runs once a rider is signed in, not before: asking for notification
+   * permission is an interruption, and it should arrive while a rider is
+   * looking at their own screen rather than while they browse as a customer.
+   *
+   * Everything here no-ops without the native shell, so the web client and any
+   * build with no Firebase configuration behave exactly as before. The socket
+   * already reaches an app that is open; push only adds the case where it is
+   * not. A tap re-reads through `load`, so the screen shows what the server
+   * says rather than what the notification claimed — and an offer that expired
+   * or was taken simply does not come back.
+   */
+  useEffect(() => {
+    if (!signedIn || !pushAvailable()) return;
+
+    let stop: (() => void) | undefined;
+
+    void registerForPush(async ({ token, platform }) => {
+      await authedFetch('/v1/devices', {
+        method: 'POST',
+        body: { pushToken: token, platform },
+      });
+    }).catch(() => undefined);
+
+    void onNotificationTap(() => {
+      void load();
+    }).then((remove) => {
+      stop = remove;
+    });
+
+    return () => stop?.();
+  }, [signedIn, load]);
 
   /**
    * Report the rider's position.

@@ -53,6 +53,20 @@
       Coarse as well as fine: if a tester grants only approximate location,
       dispatch still gets a usable fix rather than none.
     -->
+    <!--
+      Android 13+ requires this before a notification can be shown at all.
+
+      Declared here rather than relied upon from the plugin: the push plugin's
+      Java asks for POST_NOTIFICATIONS at runtime via its @Permission
+      annotation, but its own manifest does not declare it. A runtime request
+      for a permission the merged manifest never declared is refused
+      immediately, without a prompt — so notifications would simply never
+      arrive, with nothing in the app or the logs saying why. That is the same
+      shape of silent failure as the geolocation secure-origin refusal, and it
+      cost a round of physical testing to find last time.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 </manifest>
