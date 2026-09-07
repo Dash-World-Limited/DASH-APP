@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppHeader } from '@/components/AppHeader';
 import { ModeSwitch } from '@/components/ModeSwitch';
+import { MenuButton, SideDrawer } from '@/components/SideDrawer';
 import {
   Badge,
   Button,
@@ -127,6 +128,7 @@ export default function RiderPage() {
   /** An expected, non-fatal outcome worth telling the rider about. */
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   /**
    * Whether the server actually accepted the last position report.
    *
@@ -542,6 +544,16 @@ export default function RiderPage() {
     <div data-surface="field" className="min-h-screen">
       <AppHeader variant="staff" />
       <main id="main" className="mx-auto max-w-2xl px-5 py-8">
+        {/*
+          Menu top-left, as a rider expects and as the map-first layout will
+          need: on a screen that becomes mostly map, account controls cannot
+          keep taking a card's worth of space in the flow.
+        */}
+        <div className="mb-4 flex items-center gap-2">
+          <MenuButton onClick={() => setMenuOpen(true)} label="Rider menu" />
+          <span className="text-sm font-semibold text-[var(--ink-muted)]">Rider</span>
+        </div>
+
         {/* --- Online toggle -------------------------------------------------- */}
         <Card className="p-6">
           <div className="flex items-center justify-between gap-4">
@@ -596,39 +608,23 @@ export default function RiderPage() {
             </dl>
           ) : null}
 
-          <div className="mt-5 flex gap-2">
-            {availability === 'idle' ? (
-              <>
-                <Button
-                  variant="ghost"
-                  size="lg"
-                  className="flex-1"
-                  disabled={busy}
-                  onClick={() => void setOnline('on_break')}
-                >
-                  Take a break
-                </Button>
-                <Button
-                  variant="danger"
-                  size="lg"
-                  className="flex-1"
-                  disabled={busy}
-                  onClick={() => void setOnline('offline')}
-                >
-                  Go offline
-                </Button>
-              </>
-            ) : (
-              <Button
-                size="lg"
-                className="w-full"
-                disabled={busy}
-                onClick={() => void setOnline('idle')}
-              >
-                Go online
-              </Button>
-            )}
-          </div>
+          {/*
+            One control, not three.
+            
+            Going online is the decision a rider makes constantly; taking a
+            break and going offline are rarer and were competing for the same
+            space and weight. The primary toggle stays on the screen where a
+            thumb can reach it, and the two secondary states move into the
+            menu with the rest of the account-level controls.
+          */}
+          <Button
+            size="lg"
+            className="mt-5 w-full"
+            disabled={busy}
+            onClick={() => void setOnline(availability === 'idle' ? 'offline' : 'idle')}
+          >
+            {availability === 'idle' ? 'Go offline' : 'Go online'}
+          </Button>
 
           {availability === 'idle' ? (
             <>
@@ -744,11 +740,6 @@ export default function RiderPage() {
           </section>
         ) : null}
 
-        {/* Back to the customer side of the same account. */}
-        <div className="mt-8">
-          <ModeSwitch to="customer" />
-        </div>
-
         {/* --- Offers --------------------------------------------------------- */}
         <section className="mt-8">
           <h2 className="text-lg font-bold">Delivery offers</h2>
@@ -827,6 +818,59 @@ export default function RiderPage() {
             )}
           </div>
         </section>
+
+        <SideDrawer open={menuOpen} onClose={() => setMenuOpen(false)} title="Rider">
+          <div className="rounded-[var(--radius-card)] bg-[var(--surface-sunken)] p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-muted)]">
+              Status
+            </p>
+            <p className="mt-1 font-bold">
+              {availability === 'idle'
+                ? 'Online — taking offers'
+                : availability === 'on_break'
+                  ? 'On a break'
+                  : 'Offline'}
+            </p>
+          </div>
+
+          {/*
+            The states the main screen no longer carries. A break is not the
+            same as going offline — it keeps the rider working but stops new
+            offers — and it belongs where it can be explained rather than
+            competing with the primary toggle for a thumb.
+          */}
+          <div className="mt-5 space-y-2">
+            <Button
+              variant="ghost"
+              size="lg"
+              className="w-full"
+              disabled={busy || availability === 'on_break'}
+              onClick={() => {
+                setMenuOpen(false);
+                void setOnline('on_break');
+              }}
+            >
+              Take a break
+            </Button>
+            <Button
+              variant="ghost"
+              size="lg"
+              className="w-full"
+              disabled={busy || availability === 'offline'}
+              onClick={() => {
+                setMenuOpen(false);
+                void setOnline('offline');
+              }}
+            >
+              Go offline
+            </Button>
+          </div>
+
+          {/* Back to the customer side of the same account. */}
+          <div className="mt-6">
+            <ModeSwitch to="customer" />
+          </div>
+        </SideDrawer>
 
         {/* --- Earnings ------------------------------------------------------- */}
         {earnings ? (
