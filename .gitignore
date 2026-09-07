@@ -11,6 +11,7 @@ packages/db/prisma/postgres/.client/
 dist/
 build/
 .next/
+.next-dev/
 out/
 *.tsbuildinfo
 

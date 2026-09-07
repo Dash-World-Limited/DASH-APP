@@ -1,3 +1,35 @@
+import { PHASE_DEVELOPMENT_SERVER } from 'next/constants.js';
+
+/**
+ * Development and production builds must not share an output directory.
+ *
+ * They did, and it cost a physical test round. `next dev` and `next build`
+ * both wrote to `.next`, so running a production build while the dev server
+ * was serving a handset replaced the manifests underneath it. The HTML kept
+ * rendering — the dev server still answered — but every asset URL it had
+ * already handed out stopped resolving, and the app appeared on the phone as
+ * unstyled raw HTML: default blue links, bulleted lists, the visually-hidden
+ * "Skip to content" link suddenly visible because the stylesheet carrying
+ * `sr-only` was a 404.
+ *
+ * What made it expensive is that nothing failed. The build reported success,
+ * the dev server reported 200s for pages, and the damage showed up only on a
+ * device, looking exactly like a CSS bug in whatever had been committed most
+ * recently.
+ *
+ * Splitting the directories makes the collision unrepresentable rather than
+ * merely discouraged, which is the same reasoning as the unique constraint on
+ * push tokens: a rule you have to remember is one you will eventually forget
+ * while concentrating on something else.
+ *
+ * Keyed on the phase Next itself reports, not on inspecting `argv` or
+ * `NODE_ENV`. `next dev`, `next build` and `next start` each announce which
+ * they are, so `next start` naturally reads the directory `next build` wrote —
+ * they share a phase-default and only the development server is moved aside.
+ */
+const DEV_DIST_DIR = '.next-dev';
+const PRODUCTION_DIST_DIR = '.next';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -57,4 +89,11 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;
+/**
+ * Next calls this with the phase it is running in, so the choice is made from
+ * what Next says it is doing rather than from a guess about the command line.
+ */
+export default (phase) => ({
+  ...nextConfig,
+  distDir: phase === PHASE_DEVELOPMENT_SERVER ? DEV_DIST_DIR : PRODUCTION_DIST_DIR,
+});

@@ -7,6 +7,7 @@ export default tseslint.config(
       '**/dist/**',
       '**/node_modules/**',
       '**/.next/**',
+      '**/.next-dev/**',
       '**/coverage/**',
       '**/*.d.ts',
       // The Android shell's Gradle output and the Capacitor runtime it copies

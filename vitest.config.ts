@@ -23,7 +23,7 @@ export default defineConfig({
     // notification" is a claim about rendering and cannot honestly be made
     // against a mock.
     include: ['packages/**/*.test.ts', 'apps/**/*.test.{ts,tsx}'],
-    exclude: ['**/node_modules/**', '**/dist/**', '**/.next/**'],
+    exclude: ['**/node_modules/**', '**/dist/**', '**/.next/**', '**/.next-dev/**'],
     // Node everywhere. The one suite that needs a DOM opts in with a
     // `@vitest-environment jsdom` docblock rather than making every other file
     // pay for one.
