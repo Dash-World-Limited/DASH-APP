@@ -182,12 +182,23 @@ export interface ScoreFactor {
   readonly explanation: string;
 }
 
+/**
+ * Which rule admitted a rider to the ranking.
+ *
+ * `fresh` — everything held, including the 120s position window.
+ * `grace` — the position was older than that but inside the grace window, so
+ * this rider is worth *waking* and nothing more. Acceptance will demand a
+ * fresh fix before any assignment (see acceptance.ts).
+ */
+export type EligibilityMode = 'fresh' | 'grace';
+
 export interface ScoredRider {
   readonly riderId: string;
   readonly score: number;
   readonly factors: readonly ScoreFactor[];
   readonly pickupEtaSeconds: number;
   readonly pickupDistanceMetres: number;
+  readonly eligibilityMode: EligibilityMode;
 }
 
 export interface ExcludedRider {
@@ -229,8 +240,14 @@ function excludeIfIneligible(
     };
   }
 
+  // Freshness is judged against the grace window here, not the assignment
+  // window. A position older than 120s is not good enough to *give* someone a
+  // delivery — acceptance enforces that, and enforces it for every offer — but
+  // it is good enough to decide who is worth waking with a push. Riders
+  // admitted this way are marked `grace` and ranked below every fresh rider, so
+  // they are only ever reached for when nobody live qualifies.
   const ageSeconds = (request.now.getTime() - rider.locationReportedAt.getTime()) / 1000;
-  if (ageSeconds > config.maximumLocationAgeSeconds || ageSeconds < 0) {
+  if (ageSeconds > config.offerGraceSeconds || ageSeconds < 0) {
     return {
       riderId: rider.riderId,
       reason: 'location_stale',
@@ -385,6 +402,7 @@ function scoreRider(
     factors,
     pickupEtaSeconds: Math.round(pickupEtaSeconds),
     pickupDistanceMetres: Math.round(pickupDistanceMetres),
+    eligibilityMode: ageSeconds > config.maximumLocationAgeSeconds ? 'grace' : 'fresh',
   };
 }
 
@@ -414,7 +432,22 @@ export function decideDispatch(
     ranked.push(scoreRider(rider, request, config, seconds, metres));
   }
 
-  ranked.sort((a, b) => b.score - a.score || a.riderId.localeCompare(b.riderId));
+  // Fresh riders always outrank grace riders, whatever the scores say.
+  //
+  // A grace rider is asleep: reaching them costs a push, a cold start and a GPS
+  // acquisition, and they may still turn out to be ineligible once they wake.
+  // A live rider can answer now. Sorting by score alone would let a sleeping
+  // rider two hundred metres away beat a working one a kilometre away, which
+  // trades a certain acceptance for a possible one — so mode is the primary
+  // key and score only breaks ties within a mode. Grace is reached for when
+  // nobody live qualifies, never in preference.
+  const MODE_RANK: Record<EligibilityMode, number> = { fresh: 0, grace: 1 };
+  ranked.sort(
+    (a, b) =>
+      MODE_RANK[a.eligibilityMode] - MODE_RANK[b.eligibilityMode] ||
+      b.score - a.score ||
+      a.riderId.localeCompare(b.riderId),
+  );
 
   return {
     ruleVersion: DISPATCH_RULE_VERSION,

@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 import {
   decideDispatch,
   DEFAULT_CONFIG,
-  OFFER_TIMEOUT_SECONDS,
+  type EligibilityMode,
   resolveOfferRound,
   type DispatchConfig,
   type RiderCandidate,
@@ -99,6 +99,16 @@ export function registerDispatchWorker(deps: {
         availability: { in: ['idle', 'on_delivery'] },
         lastLatitude: { not: null },
         lastLongitude: { not: null },
+        // A live Online lease.
+        //
+        // Availability alone is no longer sufficient. It is a flag the client
+        // set once, and a stale position used to be the thing that eventually
+        // stopped a dead app being offered work — the backstop the grace window
+        // deliberately removes. The lease is renewed on every position report,
+        // so a living app always passes and a killed one falls out when it
+        // lapses. Enforced in the query rather than left to the sweep, so
+        // correctness never depends on a scheduled job having run.
+        onlineUntil: { gt: now },
       },
       select: {
         id: true,
@@ -220,17 +230,29 @@ export function registerDispatchWorker(deps: {
     }
 
     // --- Create the offers ---------------------------------------------------
-    const expiresAt = new Date(now.getTime() + OFFER_TIMEOUT_SECONDS * 1000);
+    //
+    // How long a rider has to answer depends on what answering requires of
+    // them. A rider whose app is open replies in seconds. One who has to be
+    // woken must receive the push, notice it, tap it, cold-start the app and
+    // then acquire a GPS fix — measured at 8–48s on real hardware, most often
+    // 15–30s. Thirty seconds loses that race often, and loses it *after* waking
+    // the rider, which is the worst outcome: they are now awake, have spent a
+    // cold GPS acquisition, and are told the job has gone.
+    const ttlFor = (mode: EligibilityMode): number =>
+      mode === 'grace' ? config.graceOfferTtlSeconds : config.offerTtlSeconds;
 
     const offered: string[] = [];
     /** Parallel to `offered` — the offer each push will point at. */
     const createdOfferIds: string[] = [];
+    /** Parallel too: offers in one round no longer share an expiry. */
+    const createdOfferExpiries: Date[] = [];
 
     await prisma.$transaction(async (tx) => {
       for (const riderId of decision.offerTo) {
         const scored = decision.ranked.find((entry) => entry.riderId === riderId);
         if (!scored) continue;
 
+        const offerExpiresAt = new Date(now.getTime() + ttlFor(scored.eligibilityMode) * 1000);
         const createdOffer = await tx.dispatchOffer.create({
           select: { id: true },
           data: {
@@ -245,11 +267,17 @@ export function registerDispatchWorker(deps: {
             ruleVersion: decision.ruleVersion,
             pickupEtaSeconds: scored.pickupEtaSeconds,
             pickupDistanceMetres: scored.pickupDistanceMetres,
-            expiresAt,
+            // Recorded, not inferred. The acceptance path branches on nothing
+            // else to know whether this offer was made from a position too old
+            // to assign on, and it lets grace conversion be measured rather
+            // than guessed at.
+            eligibilityMode: scored.eligibilityMode,
+            expiresAt: offerExpiresAt,
           },
         });
         offered.push(riderId);
         createdOfferIds.push(createdOffer.id);
+        createdOfferExpiries.push(offerExpiresAt);
       }
 
       if (offered.length === 0) return;
@@ -291,7 +319,14 @@ export function registerDispatchWorker(deps: {
           name: PUSH_RIDER_OFFER,
           // Identifiers only. The handset re-reads the offer through an
           // authorized route; see packages/domain/src/push.
-          payload: { offerId, riderId, expiresAt: expiresAt.toISOString() },
+          payload: {
+            offerId,
+            riderId,
+            // This offer's own expiry. A grace offer runs for ninety seconds
+            // and a fresh one for thirty; telling the handset the wrong number
+            // would have it abandon a live offer or chase a dead one.
+            expiresAt: (createdOfferExpiries[index] ?? new Date()).toISOString(),
+          },
           idempotencyKey: `push_offer_${offerId}`,
           // An offer lives for thirty seconds. A push that arrives after the
           // third retry is an interruption about work that is already gone, so
@@ -306,10 +341,22 @@ export function registerDispatchWorker(deps: {
     // --- Schedule the timeout sweep -----------------------------------------
     // A round that nobody answers must move on by itself. Without this, a rider
     // who ignores their phone silently holds the order forever.
+    //
+    // The sweep has to outlast the longest offer in the round, not the default
+    // one. A round containing a grace offer runs for ninety seconds, and a
+    // thirty-second sweep would expire it while the rider was still waking up
+    // and acquiring a fix — cancelling the very thing the grace window exists
+    // to make possible.
+    const longestTtlSeconds = Math.max(
+      ...decision.ranked
+        .filter((entry) => offered.includes(entry.riderId))
+        .map((entry) => ttlFor(entry.eligibilityMode)),
+      config.offerTtlSeconds,
+    );
     await queue.enqueue<FindRiderJob>({
       name: 'dispatch.expire_round',
       payload: { orderId: order.id, round },
-      delayMs: (OFFER_TIMEOUT_SECONDS + 2) * 1000,
+      delayMs: (longestTtlSeconds + 2) * 1000,
       idempotencyKey: `expire_${order.id}_${round}_${randomUUID()}`,
     });
   });
