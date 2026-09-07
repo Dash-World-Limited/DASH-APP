@@ -33,8 +33,22 @@ const here = dirname(fileURLToPath(import.meta.url));
 const SQLITE_PATH = join(here, '../prisma/schema.prisma');
 const POSTGRES_PATH = join(here, '../prisma/postgres/schema.prisma');
 
-const sqliteSchema = readFileSync(SQLITE_PATH, 'utf8');
-const postgresSchema = readFileSync(POSTGRES_PATH, 'utf8');
+/**
+ * Line endings are not part of the schema.
+ *
+ * Git checks these files out with CRLF on Windows and LF elsewhere, while the
+ * transform always emits LF. Comparing raw bytes therefore made the suite pass
+ * or fail based on which machine ran it, which is noise rather than drift —
+ * and it masks the failure this file exists to catch. Both sides are
+ * normalised so the comparison is about content.
+ */
+const readSchema = (path: string): string =>
+  // Strip carriage returns rather than matching a literal escape, so the
+  // helper reads the same on every platform.
+  readFileSync(path, 'utf8').split(String.fromCharCode(13)).join('');
+
+const sqliteSchema = readSchema(SQLITE_PATH);
+const postgresSchema = readSchema(POSTGRES_PATH);
 
 describe('the two schemas stay in step', () => {
   it('regenerates the PostgreSQL schema byte-for-byte', () => {
