@@ -855,6 +855,19 @@ model Rider {
   lastLongitude     Float?
   locationReportedAt DateTime?
 
+  // When this rider's Online claim expires, unless renewed.
+  //
+  // "Online" used to be a flag the client set once and nothing ever revoked. A
+  // rider whose app was killed stayed `idle` for ever, so the only thing that
+  // eventually stopped them being offered work was their position going stale —
+  // and once a stale position may itself wake a rider (see the grace path in
+  // the dispatch worker), that backstop is gone.
+  //
+  // The lease makes Online a claim the server can verify. It is pushed forward
+  // on every accepted position report, so a living app never expires, and it is
+  // cleared outright when a rider goes Offline deliberately.
+  onlineUntil DateTime?
+
   qualityScore   Float     @default(80)
   lastAssignedAt DateTime?
 
@@ -1144,6 +1157,19 @@ model DispatchOffer {
   id      String @id @default(cuid())
   orderId String
   riderId String
+
+  // Which eligibility rule produced this offer.
+  //
+  // `fresh` — the rider's position was inside the normal 120s window, and every
+  // dispatch rule was satisfied at the moment of offering.
+  //
+  // `grace` — the position was older than 120s but inside the grace window, so
+  // the offer exists only to *wake* the rider. A grace offer may never be
+  // accepted on the strength of that stale position: the acceptance path
+  // demands a fresh fix and re-validates distance and zone against it. Recorded
+  // rather than inferred so the acceptance gate has something explicit to
+  // branch on, and so grace conversion can be measured rather than guessed at.
+  eligibilityMode String @default("fresh") // fresh | grace
 
   round  Int    @default(1)
   status String @default("pending") // pending | accepted | declined | expired | withdrawn

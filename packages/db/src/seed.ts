@@ -1069,6 +1069,10 @@ async function main(): Promise<void> {
         // a fresh seed. It reads as "dispatch is broken" rather than "the seed
         // is stale", which is what made it worth a comment this long.
         locationReportedAt: new Date(Date.now() - 15_000),
+        // Relative to the real clock for the same reason as the position
+        // above: a seeded rider described as online must hold a live Online
+        // lease, or acceptance refuses them as `not_online`.
+        onlineUntil: new Date(Date.now() + 900_000),
         qualityScore: 88,
         lastAssignedAt: new Date(SEED_NOW.getTime() - 900_000),
         canCarryCash: true,

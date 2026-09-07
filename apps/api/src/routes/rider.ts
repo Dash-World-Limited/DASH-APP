@@ -13,16 +13,23 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { verifyOtp } from '@dash/domain/crypto';
-import { checkLocationJump, coarsen } from '@dash/domain/geo';
+import { checkLocationJump, coarsen, haversineMetres } from '@dash/domain/geo';
 import { assertTransition, RIDER_HOLDING_STATUSES, type OrderStatus } from '@dash/domain/orders';
 import { kobo } from '@dash/domain/money';
 import { computeRiderPay, DEFAULT_RIDER_PAY_RULES } from '@dash/domain/pay';
 import { buildRiderAssignment } from '@dash/domain/ledger';
-import type { VehicleType } from '@dash/domain/dispatch';
-import { postLedgerTransaction, writeAudit, type PrismaClient } from '@dash/db';
+import {
+  DEFAULT_CONFIG,
+  judgeAcceptance,
+  shouldRedispatch,
+  VEHICLE_CAPACITY,
+  type AcceptanceRefusal,
+  type VehicleType,
+} from '@dash/domain/dispatch';
+import { parseJsonColumn, postLedgerTransaction, writeAudit, type PrismaClient } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission, requireScope } from '../http/context.js';
-import { flushOutbox } from '../events/outbox.js';
+import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import { recordOrderChange } from '../realtime/notify.js';
 
 /**
@@ -42,6 +49,28 @@ const MAX_PLAUSIBLE_SPEED_MPS = 25;
  * vendor is holding nothing yet, but the job is theirs and must stay on their
  * screen.
  */
+/**
+ * What a refused acceptance says to the rider.
+ *
+ * Written to be actionable and to avoid implying fault: a rider who was woken
+ * by a push and could not get a GPS fix in time has done nothing wrong, and
+ * telling them "you are too far" when their phone simply had not located them
+ * yet would be both wrong and infuriating.
+ */
+const ACCEPTANCE_REFUSAL_MESSAGES: Record<AcceptanceRefusal, string> = {
+  offer_not_pending: 'That offer is no longer available.',
+  offer_expired: 'That offer has expired.',
+  not_approved: 'Your rider account cannot take deliveries right now.',
+  not_online: 'Go online before accepting a delivery.',
+  lease_expired: 'You were signed out of work. Go online again to take deliveries.',
+  not_available: 'Go online before accepting a delivery.',
+  at_capacity: 'You are already carrying as many deliveries as you can.',
+  location_missing: 'DASH could not confirm your location. Check location is on and try again.',
+  location_stale: 'DASH needs a current location before you can accept. Try again in a moment.',
+  zone_not_permitted: 'That pickup is outside the area you are approved to work in.',
+  too_far: 'You are too far from the pickup to take this delivery.',
+};
+
 const ACTIVE_DELIVERY_STATUSES = [
   'rider_assigned',
   'rider_arrived',
@@ -127,6 +156,19 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
         where: { id: riderId },
         data: {
           availability: body.availability,
+          // The Online lease.
+          //
+          // Going online is a claim the server now has to be able to verify,
+          // because a stale position may itself wake a rider and can therefore
+          // no longer act as the backstop that eventually stopped a dead app
+          // being offered work. The lease is renewed on every accepted position
+          // report, so a living app never expires; going offline deliberately
+          // clears it outright, which is what makes an explicit sign-off take
+          // effect immediately rather than in fifteen minutes.
+          onlineUntil:
+            body.availability === 'offline'
+              ? null
+              : new Date(Date.now() + DEFAULT_CONFIG.onlineLeaseSeconds * 1000),
           // Going offline clears the location baseline.
           //
           // Two reasons, and both matter.
@@ -253,6 +295,10 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
             lastLatitude: body.latitude,
             lastLongitude: body.longitude,
             locationReportedAt: recordedAt,
+            // Renew the lease. A rider whose app is alive reports every twenty
+            // seconds and so never lapses; one whose app was killed stops
+            // renewing and falls out of dispatch when the lease runs down.
+            onlineUntil: new Date(Date.now() + DEFAULT_CONFIG.onlineLeaseSeconds * 1000),
           },
         }),
       ]);
@@ -348,7 +394,17 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
           riderId: true,
           status: true,
           expiresAt: true,
-          order: { select: { id: true, status: true } },
+          eligibilityMode: true,
+          // The pickup point, so acceptance can re-measure distance and zone
+          // against the rider's *fresh* position rather than trusting the one
+          // dispatch used — which, for a grace offer, was deliberately stale.
+          order: {
+            select: {
+              id: true,
+              status: true,
+              branch: { select: { latitude: true, longitude: true, zoneId: true } },
+            },
+          },
         },
       });
       if (!offer) throw ApiError.notFound();
@@ -375,6 +431,98 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
           },
         });
         return { accepted: false };
+      }
+
+      // --- Is this rider still allowed to take it? ----------------------------
+      //
+      // Dispatch decided who could be *offered* this order. This decides who
+      // may be *given* it, and since the grace path exists the two are no
+      // longer the same question: a grace offer was created from a position
+      // too old to assign on, purely so a sleeping rider could be woken by a
+      // push. If this were absent, that stale position would flow straight
+      // through to an assignment and the freshness rule would not have moved
+      // here — it would be gone.
+      //
+      // Read now, not remembered from dispatch. Every gate is re-applied
+      // against current state, including for a `fresh` offer: there is
+      // deliberately no branch on `eligibilityMode`, so no future change to how
+      // offers are made can route around the invariant.
+      const state = await prisma.rider.findUnique({
+        where: { id: riderId },
+        select: {
+          status: true,
+          availability: true,
+          onlineUntil: true,
+          locationReportedAt: true,
+          lastLatitude: true,
+          lastLongitude: true,
+          vehicleType: true,
+          allowedZoneIds: true,
+          orders: {
+            where: { status: { in: [...ACTIVE_DELIVERY_STATUSES] } },
+            select: { id: true },
+          },
+        },
+      });
+      if (!state) throw ApiError.notFound();
+
+      const branch = offer.order.branch;
+      const pickupDistanceMetres =
+        state.lastLatitude !== null && state.lastLongitude !== null
+          ? haversineMetres(
+              { latitude: state.lastLatitude, longitude: state.lastLongitude },
+              { latitude: branch.latitude, longitude: branch.longitude },
+            )
+          : null;
+
+      const verdict = judgeAcceptance(
+        {
+          riderStatus: state.status,
+          availability: state.availability,
+          onlineUntil: state.onlineUntil,
+          locationReportedAt: state.locationReportedAt,
+          activeDeliveryCount: state.orders.length,
+          capacity: VEHICLE_CAPACITY[state.vehicleType as VehicleType] ?? 1,
+          allowedZoneIds: parseJsonColumn<string[]>(state.allowedZoneIds, []),
+        },
+        {
+          now: new Date(),
+          offerStatus: offer.status,
+          offerExpiresAt: offer.expiresAt,
+          pickupDistanceMetres,
+          pickupZoneId: branch.zoneId,
+        },
+      );
+
+      if (!verdict.allowed) {
+        const refusal = verdict.refusal ?? 'location_stale';
+
+        // Withdrawn rather than declined. The rider did not refuse the work —
+        // they could not take it — and `countsAsDecline` exists to keep that
+        // distinction from being lost. Counting a slow GPS as a refusal would
+        // punish riders for their handset and push everyone towards leaving the
+        // app open and draining battery.
+        await prisma.dispatchOffer.updateMany({
+          where: { id: offer.id, status: 'pending' },
+          data: { status: 'withdrawn', respondedAt: new Date() },
+        });
+
+        // Send the order straight back to dispatch rather than letting it wait
+        // out an offer that has already been proven unanswerable — the ninety
+        // seconds of a grace offer were budgeted for waking someone, not for
+        // holding an order after they turned out to be ineligible.
+        if (shouldRedispatch(refusal) && offer.order.status === 'preparing') {
+          await prisma.$transaction(async (tx) => {
+            await enqueueViaOutbox(tx, {
+              name: 'dispatch.find_rider',
+              payload: { orderId: offer.order.id },
+              idempotencyKey: `dispatch_${offer.order.id}_requeue_${offer.id}`,
+            });
+          });
+          await flushOutbox(prisma, queue);
+        }
+
+        throw ApiError.conflict(ACCEPTANCE_REFUSAL_MESSAGES[refusal]);
       }
 
       // Claim the order atomically. `updateMany` with a riderId: null guard

@@ -9,7 +9,7 @@
  *      double-assignment bug, and it is cheap to get wrong.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, idempotencyKey, type Actor, type World } from './world.js';
 import { useIntegrationTimeouts } from './timeouts.js';
@@ -34,6 +34,54 @@ beforeAll(async () => {
   riderB = await actAs(context, world.riderB.email);
   dispatcher = await actAs(context, world.dispatcher.email);
 }, 180_000);
+
+/**
+ * Release deliveries left assigned by earlier tests.
+ *
+ * Acceptance now enforces vehicle capacity, which dispatch always enforced but
+ * the accept path never re-checked. These tests share one database and rarely
+ * complete the trips they start, so a fixture rider accumulated assignments
+ * until the fourth accept in the file was refused as `at_capacity` — a real
+ * rule, correctly applied, to a rider who in reality would have finished those
+ * deliveries hours ago.
+ *
+ * Cancelled rather than delivered: fabricating completed deliveries would move
+ * earnings and completion counts that other tests assert on, whereas a
+ * cancelled order is simply no longer active.
+ */
+beforeEach(async () => {
+  await context.prisma.order.updateMany({
+    where: {
+      riderId: { in: [world.riderA.riderId, world.riderB.riderId] },
+      status: { in: ['rider_assigned', 'rider_arrived', 'picked_up', 'en_route', 'arrived'] },
+    },
+    data: { status: 'cancelled' },
+  });
+  // And keep them reporting.
+  //
+  // `buildWorld` stamps a position once, but acceptance requires one no older
+  // than 120s and this file takes minutes to run — so by the later tests a
+  // fixture rider was `location_stale` and could not accept anything. A real
+  // online rider reports every twenty seconds; this is the fixture equivalent,
+  // and without it the suite would be asserting against a rider who has
+  // effectively gone dark.
+  await context.prisma.rider.updateMany({
+    where: { id: { in: [world.riderA.riderId, world.riderB.riderId] } },
+    data: {
+      availability: 'idle',
+      // Back to the fixture's own position, not just a fresh timestamp. The
+      // location-reporting tests deliberately move riders around — teleports,
+      // returns from elsewhere — and acceptance now re-measures distance to the
+      // pickup against wherever the rider actually is. Refreshing the clock
+      // without the coordinates leaves a rider who is provably present and
+      // provably in the wrong city.
+      lastLatitude: 6.5,
+      lastLongitude: 3.4,
+      locationReportedAt: new Date(),
+      onlineUntil: new Date(Date.now() + 900_000),
+    },
+  });
+});
 
 afterAll(async () => {
   await context?.close();

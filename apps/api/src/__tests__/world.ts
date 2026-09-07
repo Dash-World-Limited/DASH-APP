@@ -277,6 +277,10 @@ export async function buildWorld(prisma: PrismaClient): Promise<World> {
         lastLatitude: 6.5,
         lastLongitude: 3.4,
         locationReportedAt: new Date(),
+        // A fixture rider is described as available, so they must hold a valid
+        // Online lease too — acceptance now verifies the claim rather than
+        // trusting `availability` alone.
+        onlineUntil: new Date(Date.now() + 900_000),
         qualityScore: 90,
         canCarryCash: true,
         cashFloatCap: naira(20_000),
