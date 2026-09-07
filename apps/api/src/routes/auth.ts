@@ -38,6 +38,7 @@ import { writeAudit } from '@dash/db';
 import { requiresMfa } from '@dash/domain/mfa';
 import type { Role } from '@dash/domain/permissions';
 import { createChallenge, isMfaActive } from '../auth/mfa.js';
+import { revokeAllDeviceTokens, revokeDeviceToken } from '../push/registration.js';
 import { ApiError } from '../http/errors.js';
 import { actorOf, authenticate, requireAuth } from '../http/context.js';
 import { issueAccessFor as issueAccessForShared } from '../auth/issue.js';
@@ -405,6 +406,19 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   app.post('/v1/auth/logout', { preHandler: requireAuth }, async (request, reply) => {
     const actor = actorOf(request);
+
+    // Silence this installation before the session goes, while the link from
+    // session to device is still readable. Signing out on a shared handset is
+    // the case that matters: the next person to sign in must not keep
+    // receiving the last person's offers, and rebinding on their registration
+    // only helps once they actually register.
+    const session = await prisma.session.findUnique({
+      where: { id: actor.sessionId },
+      select: { device: { select: { pushToken: true } } },
+    });
+    const token = session?.device?.pushToken;
+    if (token) await revokeDeviceToken(prisma, token);
+
     await revokeSession(prisma, actor.sessionId, 'user_logout');
 
     // Clearing the cookies matters as much as revoking the session: a browser
@@ -428,13 +442,23 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   app.post('/v1/auth/logout-everywhere', { preHandler: requireAuth }, async (request, reply) => {
     const actor = actorOf(request);
     const count = await revokeAllSessions(prisma, actor.identityId, 'user_logout_all');
+
+    // Push tokens go with the sessions.
+    //
+    // Someone signing out everywhere has usually lost a device, and a session
+    // revocation that left notifications arriving on it would be a promise
+    // half kept — the phone in someone else's hand would keep buzzing with
+    // their work. The push path never consults the session, so it has to be
+    // told separately.
+    const devicesSilenced = await revokeAllDeviceTokens(prisma, actor.identityId);
+
     clearAuthCookies(reply, config);
     await writeAudit(prisma, {
       identityId: actor.identityId,
       action: 'auth.logout_all',
       resourceType: 'identity',
       resourceId: actor.identityId,
-      after: { sessionsRevoked: count },
+      after: { sessionsRevoked: count, devicesSilenced },
       ipAddress: request.ip,
       requestId: request.id,
     });

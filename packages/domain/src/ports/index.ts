@@ -151,6 +151,27 @@ export interface EmailPort {
   }): Promise<DeliveryReceipt>;
 }
 
+/**
+ * What a push provider tells us after a send.
+ *
+ * `invalidTokens` is the part that matters operationally. A push token dies
+ * without warning — the app is uninstalled, the OS reissues it, the user wipes
+ * the device — and the provider only tells you when you try to use it. Without
+ * somewhere to report that, a table of dead tokens grows for ever and every
+ * send wastes calls on handsets that no longer exist.
+ *
+ * Reporting them is not the same as deleting them: the port describes what the
+ * provider said, and the caller decides what to do about it.
+ */
+export interface PushReceipt extends DeliveryReceipt {
+  /**
+   * Tokens the provider refused as unregistered or malformed. These are dead
+   * for good and should be removed — unlike a transient failure, retrying will
+   * never make them work.
+   */
+  readonly invalidTokens?: readonly string[];
+}
+
 export interface PushPort {
   readonly providerName: string;
   readonly isLive: boolean;
@@ -159,7 +180,7 @@ export interface PushPort {
     title: string;
     body: string;
     data?: Readonly<Record<string, string>> | undefined;
-  }): Promise<DeliveryReceipt>;
+  }): Promise<PushReceipt>;
 }
 
 // ---------------------------------------------------------------------------

@@ -286,7 +286,20 @@ model Device {
   identityId String
 
   platform     String // ios | android | web
-  pushToken    String?
+
+  // Unique across the whole table, not per identity.
+  //
+  // An FCM token identifies a physical installation, and an installation
+  // belongs to whoever is signed into it *now*. If the same token were allowed
+  // on two identities, a phone that a rider borrowed and signed out of would
+  // keep receiving that rider's offers alongside its new owner's — the push
+  // would be delivered to the handset, not to the person. The constraint makes
+  // that state unrepresentable rather than merely discouraged, so registration
+  // has to rebind the token instead of adding a second claim on it.
+  //
+  // Nullable, and SQL permits many NULLs under a unique index, so a device row
+  // that has revoked its token does not collide with every other revoked one.
+  pushToken    String? @unique
   model        String?
   appVersion   String?
 

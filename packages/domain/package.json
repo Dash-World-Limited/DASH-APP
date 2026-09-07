@@ -15,6 +15,7 @@
     "./ledger": "./src/ledger/index.ts",
     "./permissions": "./src/permissions/index.ts",
     "./ports": "./src/ports/index.ts",
+    "./push": "./src/push/index.ts",
     "./envelope": "./src/envelope/index.ts",
     "./redaction": "./src/redaction/index.ts",
     "./realtime": "./src/realtime/index.ts",

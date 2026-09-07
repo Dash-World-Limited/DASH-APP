@@ -36,6 +36,7 @@ import {
 } from './realtime/broadcast.js';
 import { RealtimeHub } from './realtime/hub.js';
 import { registerRealtimeWorker } from './realtime/worker.js';
+import { registerPushWorker } from './push/worker.js';
 import { registerRealtimeRoutes } from './routes/realtime.js';
 import { parseNotification } from '@dash/domain/realtime';
 import { buildKeyring, isEncryptionConfigured, loadConfig, type Config } from './config.js';
@@ -63,6 +64,7 @@ import { registerRiderRoutes } from './routes/rider.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAccountRoutes } from './routes/account.js';
+import { registerDeviceRoutes } from './routes/devices.js';
 import { registerDispatchWorker } from './workers/dispatch.js';
 import { registerAccountExportWorker } from './workers/account-export.js';
 
@@ -364,6 +366,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerAdminRoutes(app);
   await registerWebhookRoutes(app);
   await registerAccountRoutes(app);
+  await registerDeviceRoutes(app);
 
   // --- Realtime --------------------------------------------------------------
   // The hub is per instance and holds only sockets, so it needs no shutdown
@@ -405,7 +408,11 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   // --- Background workers ----------------------------------------------------
   // Registered after routes so the queue handlers exist before the first job
   // can be enqueued by a request.
-  registerDispatchWorker({ prisma: services.prisma, queue: services.queue, log: app.log });
+  registerDispatchWorker({
+    prisma: services.prisma,
+    queue: services.queue,
+    log: app.log,
+  });
   registerAccountExportWorker({
     prisma: services.prisma,
     queue: services.queue,
@@ -419,6 +426,16 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   // would leave them to expire in the queue rather than be consumed and
   // harmlessly dropped by a hub with no sockets.
   registerRealtimeWorker({ queue: services.queue, broadcast: services.broadcast, log: app.log });
+
+  // Push complements the socket rather than replacing it. Both are published
+  // by the same transaction; this consumer delivers the half that reaches a
+  // rider whose app is closed.
+  registerPushWorker({
+    queue: services.queue,
+    prisma: services.prisma,
+    push: services.push,
+    logger: app.log,
+  });
 
   return app;
 }
