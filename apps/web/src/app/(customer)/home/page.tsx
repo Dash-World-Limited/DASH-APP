@@ -14,6 +14,7 @@ import {
   formatNairaCompact,
 } from '@/components/ui';
 import { apiFetch, ApiRequestError, type VendorSummary } from '@/lib/api';
+import { SECTIONS } from '@/lib/sections';
 import { authedFetch, useHasSession } from '@/lib/session';
 
 /**
@@ -27,6 +28,14 @@ import { authedFetch, useHasSession } from '@/lib/session';
  */
 const DEFAULT_POSITION = { latitude: 6.4281, longitude: 3.4219 };
 
+/**
+ * Quick filters over the vendor list below the sections.
+ *
+ * These are not the app's top-level structure — that is `SECTIONS`, rendered
+ * as five equal tiles. `grocery` and `retail` remain distinct backend
+ * categories and are still filterable here; they simply both live under Shops
+ * as far as a customer is concerned.
+ */
 const CATEGORIES = [
   { value: '', label: 'Everything' },
   { value: 'restaurant', label: 'Food' },
@@ -196,6 +205,37 @@ export default function BrowsePage() {
             placeholder="Search for jollof, groceries, a pharmacy…"
             className="w-full rounded-xl border bg-[var(--surface-raised)] px-4 py-3 text-base placeholder:text-graphite-400"
           />
+
+          {/*
+            The five things DASH sells, as equals.
+
+            One row, one weight, one treatment. DASH is a multi-service local
+            commerce app, and Home is where that has to be legible in a
+            glance: a hero for any one section would say that section is the
+            app and the rest are extras. Each tile opens that section's
+            sellers, and from there the pattern is the same everywhere —
+            seller, that seller's own categories, item, basket.
+
+            The vendor list below stays as it is. These are doors into the
+            catalogue, not a replacement for browsing it.
+          */}
+          <nav aria-label="Sections">
+            <ul className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+              {SECTIONS.map((section) => (
+                <li key={section.slug}>
+                  <Link
+                    href={`/${section.slug}`}
+                    className="flex h-full flex-col justify-between rounded-[var(--radius-card)] border border-[var(--line)] bg-[var(--surface-raised)] p-4 transition-colors hover:border-[var(--primary)]"
+                  >
+                    <span className="font-bold leading-tight">{section.label}</span>
+                    <span className="mt-1 text-xs leading-snug text-[var(--ink-muted)]">
+                      {section.blurb}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </nav>
 
           <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by category">
             {CATEGORIES.map((option) => (

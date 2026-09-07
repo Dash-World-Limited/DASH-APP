@@ -13,6 +13,8 @@ import {
   formatNairaCompact,
 } from '@/components/ui';
 import { Modal } from '@/components/Modal';
+import { imageUrl } from '@/lib/images';
+import { conditionLabel } from '@/lib/condition';
 import { apiFetch, ApiRequestError, type MenuItem, type VendorDetail } from '@/lib/api';
 import { useBasket } from '@/lib/basket';
 
@@ -150,21 +152,39 @@ export default function VendorPage() {
                       onClick={() => setSelected(item)}
                     >
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <h3 className="font-semibold">{item.name}</h3>
                           {!item.isAvailable ? <Badge tone="danger">Sold out</Badge> : null}
+                          {/*
+                            Only Declutter listings carry a condition, so this
+                            appears there and nowhere else — the same seller
+                            page serves every section, and differs only by the
+                            data each seller actually has.
+                          */}
+                          {conditionLabel(item.condition) ? (
+                            <Badge tone="neutral">{conditionLabel(item.condition)}</Badge>
+                          ) : null}
                         </div>
                         {item.description ? (
                           <p className="mt-1 text-sm text-graphite-600">{item.description}</p>
                         ) : null}
                         <p className="mt-2 font-semibold">{formatNaira(item.price)}</p>
                       </div>
-                      <span
-                        aria-hidden
-                        className="shrink-0 rounded-full border px-3 py-1 text-sm font-bold"
-                      >
-                        +
-                      </span>
+                      {imageUrl(item.imageKey) ? (
+                        <img
+                          src={imageUrl(item.imageKey) ?? ''}
+                          alt={item.name}
+                          loading="lazy"
+                          className="h-20 w-20 shrink-0 rounded-[var(--radius-control)] object-cover"
+                        />
+                      ) : (
+                        <span
+                          aria-hidden
+                          className="shrink-0 rounded-full border px-3 py-1 text-sm font-bold"
+                        >
+                          +
+                        </span>
+                      )}
                     </button>
                   </Card>
                 ))}
