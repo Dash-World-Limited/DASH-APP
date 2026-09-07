@@ -20,7 +20,13 @@ const coordinateSchema = z.object({
 const listQuerySchema = z.object({
   latitude: z.coerce.number().min(-90).max(90).optional(),
   longitude: z.coerce.number().min(-180).max(180).optional(),
-  category: z.enum(['restaurant', 'grocery', 'pharmacy', 'retail', 'market']).optional(),
+  // `declutter` is curated resale — an approved vendor whose listings carry a
+  // condition. Added to the existing set rather than given its own endpoint:
+  // the catalogue, basket, checkout and dispatch are all unchanged, and
+  // `retail` keeps the behaviour it already had.
+  category: z
+    .enum(['restaurant', 'grocery', 'pharmacy', 'retail', 'market', 'declutter'])
+    .optional(),
   // Bounded to keep a pathological query from scanning the table.
   search: z.string().trim().max(80).optional(),
   sort: z.enum(['nearest', 'rating', 'name']).default('nearest'),
@@ -256,6 +262,8 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
                 description: true,
                 price: true,
                 imageKey: true,
+                // Only ever set on Declutter listings; null elsewhere.
+                condition: true,
                 prepMinutes: true,
                 isAvailable: true,
                 requiresAgeCheck: true,

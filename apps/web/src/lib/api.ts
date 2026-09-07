@@ -205,6 +205,11 @@ export interface MenuItem {
   description: string | null;
   price: number;
   imageKey: string | null;
+  /**
+   * Second-hand condition. Set on Declutter listings, null everywhere else —
+   * a plate of jollof has no condition.
+   */
+  condition?: string | null;
   prepMinutes: number;
   isAvailable: boolean;
   requiresAgeCheck: boolean;

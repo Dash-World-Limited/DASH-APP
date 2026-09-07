@@ -721,6 +721,11 @@ model MenuItem {
   description String?
   imageKey    String?
 
+  // Second-hand condition, for Declutter listings. Null for everything else:
+  // a plate of jollof has no condition, and overloading `description` with it
+  // would make the field unqueryable and the data untrue.
+  condition   String? // new | like_new | good | fair
+
   // Menu price in kobo. The server always re-reads this at checkout; a price
   // sent by a client is never trusted.
   price Int
