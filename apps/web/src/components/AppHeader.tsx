@@ -3,13 +3,16 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useBasketCount } from '@/lib/basket';
-import { hasSession, loadMe, signOut, subscribeToSession } from '@/lib/session';
+import { hasSession, loadMe, subscribeToSession } from '@/lib/session';
+import { AccountDrawer } from './AccountDrawer';
+import { MenuButton } from './SideDrawer';
 import { Wordmark } from './ui';
 
 export function AppHeader({ variant = 'customer' }: { variant?: 'customer' | 'staff' }) {
   const count = useBasketCount();
   const [name, setName] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,27 +41,18 @@ export function AppHeader({ variant = 'customer' }: { variant?: 'customer' | 'st
 
   return (
     <header className="sticky top-0 z-40 border-b bg-[var(--surface)]/95 backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-5">
+      <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-5">
+        {/*
+          Account controls live behind this, not on the page — see
+          AccountDrawer. The bottom navigation already carries the
+          destinations, so a second row of links in the header would be the
+          same journey offered twice.
+        */}
+        {variant === 'customer' ? <MenuButton onClick={() => setMenuOpen(true)} /> : null}
+
         <Link href="/" className="shrink-0">
           <Wordmark className="text-xl" />
         </Link>
-
-        {variant === 'customer' ? (
-          <nav className="hidden gap-1 sm:flex" aria-label="Main">
-            <Link
-              href="/browse"
-              className="rounded-lg px-3 py-2 text-sm font-medium hover:bg-[var(--surface-raised)]"
-            >
-              Browse
-            </Link>
-            <Link
-              href="/orders"
-              className="rounded-lg px-3 py-2 text-sm font-medium hover:bg-[var(--surface-raised)]"
-            >
-              Orders
-            </Link>
-          </nav>
-        ) : null}
 
         <div className="ml-auto flex items-center gap-2">
           {variant === 'customer' ? (
@@ -79,15 +73,9 @@ export function AppHeader({ variant = 'customer' }: { variant?: 'customer' | 'st
           ) : null}
 
           {signedIn ? (
-            <div className="flex items-center gap-2">
-              <span className="hidden text-sm text-[var(--ink-muted)] sm:inline">{name}</span>
-              <button
-                onClick={() => void signOut()}
-                className="rounded-lg px-3 py-2 text-sm font-medium hover:bg-[var(--surface-raised)]"
-              >
-                Sign out
-              </button>
-            </div>
+            // Sign-out lives in the drawer with the rest of the account
+            // controls. The header shows who you are and nothing else.
+            <span className="hidden text-sm text-[var(--ink-muted)] sm:inline">{name}</span>
           ) : (
             <Link
               href="/signin"
@@ -98,6 +86,10 @@ export function AppHeader({ variant = 'customer' }: { variant?: 'customer' | 'st
           )}
         </div>
       </div>
+
+      {variant === 'customer' ? (
+        <AccountDrawer open={menuOpen} onClose={() => setMenuOpen(false)} />
+      ) : null}
     </header>
   );
 }

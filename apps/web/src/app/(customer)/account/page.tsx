@@ -12,7 +12,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 import { AppHeader } from '@/components/AppHeader';
-import { ModeSwitch } from '@/components/ModeSwitch';
 import { Button, Card, EmptyState, LoadingBlock } from '@/components/ui';
 import { signOut, useHasSession, useMe } from '@/lib/session';
 
@@ -56,9 +55,11 @@ export default function AccountPage() {
               ) : null}
             </Card>
 
-            {/* Only rendered for an approved rider. */}
-            <ModeSwitch to="rider" className="mt-4" />
-
+            {/*
+              The mode switch is in the account drawer, not here. It belongs
+              with the other account-level controls rather than being offered
+              in two places with two different treatments.
+            */}
             <div className="mt-4 space-y-2">
               {[
                 { href: '/orders', label: 'Your orders' },
