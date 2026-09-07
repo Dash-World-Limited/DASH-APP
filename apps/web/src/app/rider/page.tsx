@@ -23,6 +23,12 @@ import { onNotificationTap, pushAvailable, registerForPush } from '@/lib/push';
 import { liveLabel, useLive } from '@/lib/useLive';
 import { describeBridge, ensurePermission, geolocationAvailability, getFix } from '@/lib/geolocation';
 import {
+  canAccept,
+  needsFreshFix,
+  readiness,
+  type ConfirmationFailure,
+} from '@/lib/offer-readiness';
+import {
   diagnosticsEnabled,
   isOfferNoLongerAvailable,
   shouldReportLocation,
@@ -48,6 +54,15 @@ import {
  * in time usually finishes on the next try, and a refusal from the server is
  * measured against elapsed time and so resolves itself by waiting.
  */
+/**
+ * The server's freshness limit, mirrored so the button and the rule agree.
+ *
+ * `maximumLocationAgeSeconds` in the dispatch config. If it is ever tightened
+ * this must follow it, which is why it is named here rather than buried as a
+ * literal in a comparison.
+ */
+const SERVER_LOCATION_MAX_AGE_SECONDS = 120;
+
 const REPORT_INTERVAL_MS = 20_000;
 const RETRY_INTERVAL_MS = 10_000;
 const REJECTED_RETRY_MS = 5_000;
@@ -162,6 +177,25 @@ export default function RiderPage() {
     sent: '…',
     server: '…',
   });
+  /**
+   * When the server last *accepted* a position, and whether a confirmation is
+   * in flight.
+   *
+   * The accept button is gated on this rather than on anything the client
+   * merely believes: the server refuses to assign a delivery on a position over
+   * two minutes old, and a rider woken from a killed app has none at all. See
+   * lib/offer-readiness.ts.
+   */
+  const [locationAcceptedAt, setLocationAcceptedAt] = useState<number | null>(null);
+  const [confirmingLocation, setConfirmingLocation] = useState(false);
+  const [confirmFailure, setConfirmFailure] = useState<ConfirmationFailure | null>(null);
+  /**
+   * The reporting routine, exposed so an arriving offer can demand a position
+   * immediately rather than waiting up to twenty seconds for the next tick.
+   * Twenty seconds is a long time to hold a rider in front of a disabled
+   * button, and a grace offer only lives for ninety.
+   */
+  const reportNow = useRef<(() => Promise<void>) | null>(null);
   /** Timestamp of the reading already reported, so a repeat can be spotted. */
   const lastTakenAt = useRef<string | undefined>(undefined);
   const signedIn = useHasSession();
@@ -402,6 +436,7 @@ export default function RiderPage() {
 
       if (!permission.granted) {
         setLocationHealthy(false);
+        setConfirmFailure('permission_denied');
         setGeo((g) => ({ ...g, fix: 'not requested', sent: 'no', server: '—' }));
         // Not permanent: the rider may grant it in Settings and come back.
         scheduleNext(REPORT_INTERVAL_MS);
@@ -422,6 +457,7 @@ export default function RiderPage() {
 
       if (!result.ok || !result.fix) {
         setLocationHealthy(false);
+        setConfirmFailure('no_fix');
         setGeo((g) => ({
           ...g,
           fix: `FAILED (${result.source}): ${result.error ?? 'unknown'}`,
@@ -464,10 +500,15 @@ export default function RiderPage() {
         if (response?.accepted) {
           lastTakenAt.current = result.fix.takenAt;
           setLocationHealthy(true);
+          // What the accept button waits on. Recorded only when the *server*
+          // says yes, never when the handset merely produced a reading.
+          setLocationAcceptedAt(Date.now());
+          setConfirmFailure(null);
           setGeo((g) => ({ ...g, sent: 'yes', server: 'accepted' }));
           scheduleNext(REPORT_INTERVAL_MS);
           return;
         }
+        setConfirmFailure('rejected_by_server');
 
         setLocationHealthy(false);
         setGeo((g) => ({
@@ -488,12 +529,51 @@ export default function RiderPage() {
       }
     };
 
+    reportNow.current = report;
     void report();
     return () => {
       cancelled = true;
+      reportNow.current = null;
       if (timer) clearTimeout(timer);
     };
   }, [serverAvailability]);
+
+  /**
+   * Confirm the rider's position the moment an offer appears.
+   *
+   * A rider woken from a killed app arrives here with no position the server
+   * will accept — that is precisely why the push was allowed to reach them.
+   * Without this they would tap Accept, be refused for a stale location, and
+   * wait out a reporting tick before they could try again. Correct, and
+   * infuriating.
+   *
+   * Only when a fix is actually needed, so a rider whose app never stopped
+   * reporting sees no delay at all.
+   */
+  useEffect(() => {
+    if (!offers || offers.length === 0) return;
+    const ageSeconds =
+      locationAcceptedAt === null ? null : (Date.now() - locationAcceptedAt) / 1000;
+    if (!needsFreshFix(ageSeconds, SERVER_LOCATION_MAX_AGE_SECONDS)) return;
+    if (confirmingLocation) return;
+
+    let cancelled = false;
+    setConfirmingLocation(true);
+    void (async () => {
+      try {
+        await reportNow.current?.();
+        // Re-read the server's own view: the offer may have been taken or
+        // expired while the handset was waking up and finding itself.
+        await load();
+      } finally {
+        if (!cancelled) setConfirmingLocation(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [offers, locationAcceptedAt, confirmingLocation, load]);
 
   /**
    * The next step of the delivery, according to the server's own status.
@@ -556,6 +636,22 @@ export default function RiderPage() {
       setBusy(false);
     }
   };
+
+  /**
+   * Whether Accept may be pressed, and what to say if not.
+   *
+   * Derived rather than stored, so it cannot drift from the position the
+   * server has actually accepted. The server re-checks all of this at
+   * acceptance regardless — this exists so a rider is not sent to press a
+   * button that cannot work yet.
+   */
+  const offerReadiness = readiness({
+    locationAgeSeconds:
+      locationAcceptedAt === null ? null : (Date.now() - locationAcceptedAt) / 1000,
+    maxAgeSeconds: SERVER_LOCATION_MAX_AGE_SECONDS,
+    confirming: confirmingLocation,
+    failure: confirmFailure,
+  });
 
   if (!signedIn) {
     return (
@@ -831,6 +927,28 @@ export default function RiderPage() {
                       </div>
                     </dl>
 
+                    {/*
+                      Why Accept is not available yet.
+
+                      Deliberately not styled as an error while confirming: a
+                      rider woken by a push has no position the server will
+                      accept, which is the ordinary state of being woken, not a
+                      fault. Only a real failure — a denied permission, a GPS
+                      that will not fix — reads as something wrong.
+                    */}
+                    {offerReadiness.message ? (
+                      <p
+                        className={`mt-4 text-sm ${
+                          offerReadiness.state === 'blocked'
+                            ? 'text-coral-400'
+                            : 'text-[var(--ink-muted)]'
+                        }`}
+                        role="status"
+                      >
+                        {offerReadiness.message}
+                      </p>
+                    ) : null}
+
                     <div className="mt-5 flex gap-2">
                       <Button
                         variant="ghost"
@@ -843,9 +961,10 @@ export default function RiderPage() {
                       <Button
                         size="lg"
                         className="flex-[2]"
+                        disabled={!canAccept(offerReadiness.state)}
                         onClick={() => void respondToOffer(offer.id, true)}
                       >
-                        Accept
+                        {offerReadiness.state === 'confirming' ? 'Confirming…' : 'Accept'}
                       </Button>
                     </div>
                   </Card>
