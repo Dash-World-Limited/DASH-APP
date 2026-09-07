@@ -74,8 +74,12 @@ export function SideDrawer({
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className="absolute inset-y-0 left-0 flex w-[86%] max-w-sm flex-col overflow-y-auto bg-[var(--surface-raised)] shadow-[var(--shadow-raised)] outline-none"
-        style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+        // Full-height and overlaying the system bars, so its own header would
+        // otherwise sit under the clock exactly as the page header did. Shared
+        // tokens rather than inline `env()`: those read as zero unless the
+        // viewport opts into `viewport-fit=cover`, which is how this went
+        // unnoticed for so long.
+        className="safe-top safe-bottom absolute inset-y-0 left-0 flex w-[86%] max-w-sm flex-col overflow-y-auto bg-[var(--surface-raised)] shadow-[var(--shadow-raised)] outline-none"
       >
         <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
           <h2 className="text-lg font-bold">{title}</h2>

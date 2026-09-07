@@ -108,9 +108,11 @@ export function BottomNav() {
   return (
     <nav
       aria-label="Primary"
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--line)] bg-[var(--surface-raised)]"
-      // Sits above the home indicator on a modern handset rather than under it.
-      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+      // Sits above the gesture pill or button row rather than under it, and
+      // insets sideways for a landscape cutout. The shared classes replace an
+      // inline `env()` that read as zero, because the viewport had never opted
+      // into `viewport-fit=cover`.
+      className="safe-bottom safe-x fixed inset-x-0 bottom-0 z-40 border-t border-[var(--line)] bg-[var(--surface-raised)]"
     >
       <ul className="mx-auto flex max-w-lg items-stretch">
         {DESTINATIONS.map((destination) => {

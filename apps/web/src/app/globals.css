@@ -87,7 +87,30 @@
   --radius-card: 0.875rem;
 }
 
+/**
+ * The system's own edges, as numbers the layout can use.
+ *
+ * Named once here so no screen has to know what a notch is. Android 15 and
+ * above draw every app edge-to-edge, so the status bar, the gesture pill and —
+ * in landscape — a camera cutout all sit *over* the page unless something
+ * accounts for them. These are that something.
+ *
+ * The `0px` fallbacks matter as much as the values: on a desktop browser, or
+ * any device without insets, every one of these is zero and the layout is
+ * exactly what it was. Nothing is conditional on a device model, an OS version
+ * or a screen size — the platform reports its own geometry and the shell reads
+ * it, which is why one rule covers every handset, both orientations and any
+ * cutout shape yet to be invented.
+ */
 :root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  /** Height of the bottom navigation itself, before any system inset. */
+  --bottom-nav-height: 4rem;
+
   /* --- Semantic tokens -----------------------------------------------------
      What components actually use. Every screen reads from here. */
 
@@ -208,4 +231,38 @@ body {
 
 .dash-pulse {
   animation: dash-pulse 1.6s ease-in-out infinite;
+}
+
+/**
+ * Shell-level safe-area helpers.
+ *
+ * A handful of classes rather than padding applied per screen: the shell is
+ * the only thing that knows where the system bars are, and a per-page fix is
+ * one the next page forgets.
+ */
+
+/* A bar pinned to the top — its background fills the status bar while its
+   content sits below. Padding rather than margin, so the colour reaches the
+   edge instead of leaving a strip of page showing through above it. */
+.safe-top {
+  padding-top: var(--safe-top);
+}
+
+/* A bar pinned to the bottom, clearing the gesture pill or button row. */
+.safe-bottom {
+  padding-bottom: var(--safe-bottom);
+}
+
+/* Landscape, where a cutout moves to one side and the page insets with it.
+   Zero in portrait, so it costs nothing there. */
+.safe-x {
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+}
+
+/* Scrollable content above the fixed bottom navigation. Reserves the bar and
+   whatever the system puts under it, so the last row of a list stays
+   reachable. */
+.pad-for-bottom-nav {
+  padding-bottom: calc(var(--bottom-nav-height) + var(--safe-bottom) + 1.5rem);
 }

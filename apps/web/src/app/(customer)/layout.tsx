@@ -17,7 +17,9 @@ import { BottomNav } from '@/components/BottomNav';
 export default function CustomerLayout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-dvh bg-[var(--surface)]">
-      <div className="pb-24">{children}</div>
+      {/* Reserves the navigation *and* whatever the system draws below it, so
+          the last row of a list stays reachable on a gesture-navigation phone. */}
+      <div className="pad-for-bottom-nav">{children}</div>
       <BottomNav />
     </div>
   );

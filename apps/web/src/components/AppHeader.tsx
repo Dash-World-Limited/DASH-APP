@@ -40,7 +40,10 @@ export function AppHeader({ variant = 'customer' }: { variant?: 'customer' | 'st
   }, []);
 
   return (
-    <header className="sticky top-0 z-40 border-b bg-[var(--surface)]/95 backdrop-blur">
+    // `safe-top` pads the bar itself so its background reaches the top of the
+    // screen while the logo and menu button clear the status bar. `safe-x`
+    // handles a cutout that moves to the side in landscape.
+    <header className="safe-top safe-x sticky top-0 z-40 border-b bg-[var(--surface)]/95 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-6xl items-center gap-3 px-5">
         {/*
           Account controls live behind this, not on the page — see

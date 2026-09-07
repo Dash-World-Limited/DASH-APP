@@ -28,6 +28,18 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
+  /**
+   * Lets the page reach under the system bars — and, more to the point, makes
+   * `env(safe-area-inset-*)` report real numbers.
+   *
+   * Android 15 forces every app to draw edge-to-edge and the shell targets SDK
+   * 36, so the WebView already starts at y=0 underneath the status bar whether
+   * we ask for it or not. Without `cover`, though, the insets all resolve to
+   * `0px`, so the CSS written to avoid the status bar quietly does nothing and
+   * the header sits under the clock. That is the defect this fixes: the safe
+   * area was being read, but the browser was never told there was one.
+   */
+  viewportFit: 'cover',
   // Zoom is NOT disabled. Locking it out breaks the app for anyone who needs
   // to enlarge text, which is a real accessibility failure and not a
   // stylistic choice.
