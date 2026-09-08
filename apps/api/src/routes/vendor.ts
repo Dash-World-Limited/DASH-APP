@@ -99,7 +99,16 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
         take: query.limit,
       });
 
+      // The console's own section, read once rather than repeated on every
+      // order: this board belongs to one vendor, so the vocabulary it should
+      // speak is a property of the console, not of each row.
+      const vendor = await prisma.vendor.findUnique({
+        where: { id: actor.vendorId },
+        select: { category: true },
+      });
+
       return {
+        vendor: { category: vendor?.category ?? null },
         orders: orders.map((order) => ({
           ...order,
           customer: { name: order.customer.identity.displayName?.split(' ')[0] ?? 'Customer' },

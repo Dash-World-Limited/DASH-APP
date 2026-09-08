@@ -414,42 +414,20 @@ export function phaseOf(status: OrderStatus): OrderPhase {
   }
 }
 
-/** Short customer-facing label. Never exposes internal status names. */
-export function customerLabel(status: OrderStatus): string {
-  switch (status) {
-    case 'draft':
-      return 'Basket';
-    case 'payment_pending':
-      return 'Confirming payment';
-    case 'placed':
-      return 'Sent to vendor';
-    case 'vendor_reviewing':
-      return 'Vendor is reviewing';
-    case 'accepted':
-      return 'Order confirmed';
-    case 'preparing':
-      return 'Being prepared';
-    case 'ready':
-      return 'Ready for pickup';
-    case 'rider_assigned':
-      return 'Rider on the way to vendor';
-    case 'rider_arrived':
-      return 'Rider at the vendor';
-    case 'picked_up':
-      return 'Picked up';
-    case 'en_route':
-      return 'On the way to you';
-    case 'arrived':
-      return 'Rider has arrived';
-    case 'delivered':
-      return 'Delivered';
-    case 'cancelled':
-      return 'Cancelled';
-    case 'rejected':
-      return 'Could not be fulfilled';
-    case 'refunded':
-      return 'Refunded';
-    case 'disputed':
-      return 'Under review';
-  }
-}
+/**
+ * Order vocabulary, per section.
+ *
+ * `customerLabel` moved to vocabulary.ts when it became vertical-aware: one
+ * state machine, five ways of describing the same work. Re-exported here so the
+ * import site does not have to know which file the words live in.
+ */
+export {
+  customerLabel,
+  customerTimeline,
+  vendorStartActionLabel,
+  vendorStatusLabel,
+  verticalOf,
+  type Vertical,
+  type VendorCategory,
+} from './vocabulary.js';
+

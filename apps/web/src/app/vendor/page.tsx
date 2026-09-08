@@ -16,6 +16,11 @@ import { PickupDialog, RejectDialog } from '@/components/vendor-dialogs';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, useHasSession, useMe } from '@/lib/session';
 import { liveLabel, useLive } from '@/lib/useLive';
+import {
+  vendorStartActionLabel,
+  vendorStatusLabel,
+  type OrderStatus,
+} from '@dash/domain/orders';
 
 interface VendorOrder {
   id: string;
@@ -43,6 +48,8 @@ type Tab = 'incoming' | 'active' | 'completed';
 export default function VendorConsolePage() {
   const [tab, setTab] = useState<Tab>('incoming');
   const [orders, setOrders] = useState<VendorOrder[] | null>(null);
+  /** This console's section, so its wording matches the work being done. */
+  const [category, setCategory] = useState<string | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState<VendorOrder | null>(null);
@@ -56,10 +63,12 @@ export default function VendorConsolePage() {
       return;
     }
     try {
-      const result = await authedFetch<{ orders: VendorOrder[] }>(
-        `/v1/vendor/orders?status=${tab}`,
-      );
+      const result = await authedFetch<{
+        orders: VendorOrder[];
+        vendor: { category: string | null };
+      }>(`/v1/vendor/orders?status=${tab}`);
       setOrders(result.orders);
+      setCategory(result.vendor?.category ?? null);
       setError(null);
     } catch (caught) {
       setError(
@@ -191,7 +200,7 @@ export default function VendorConsolePage() {
                       <div className="flex items-center gap-2">
                         <h2 className="font-mono font-bold">{order.code}</h2>
                         <Badge tone={order.status === 'placed' ? 'gold' : 'neutral'}>
-                          {order.status.replace(/_/g, ' ')}
+                          {vendorStatusLabel(order.status as OrderStatus, category)}
                         </Badge>
                         {order.mode === 'pickup' ? <Badge>Pickup</Badge> : null}
                       </div>
@@ -287,7 +296,7 @@ export default function VendorConsolePage() {
                           )
                         }
                       >
-                        Start preparing
+                        {vendorStartActionLabel(category)}
                       </Button>
                     ) : null}
 

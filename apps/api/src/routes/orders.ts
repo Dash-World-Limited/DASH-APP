@@ -709,7 +709,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
         total: true,
         createdAt: true,
         deliveredAt: true,
-        vendor: { select: { id: true, name: true, slug: true } },
+        vendor: { select: { id: true, name: true, slug: true, category: true } },
         items: { select: { nameSnapshot: true, quantity: true } },
       },
       orderBy: { id: 'desc' },
@@ -722,7 +722,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
     return {
       orders: page.map((order) => ({
         ...order,
-        statusLabel: customerLabel(order.status as OrderStatus),
+        statusLabel: customerLabel(order.status as OrderStatus, order.vendor.category),
         phase: phaseOf(order.status as OrderStatus),
       })),
       nextCursor: hasMore ? page[page.length - 1]?.id ?? null : null,
@@ -768,7 +768,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
           estimatedReadyAt: true,
           estimatedDeliveryAt: true,
           cancellationReason: true,
-          vendor: { select: { id: true, name: true, slug: true } },
+          vendor: { select: { id: true, name: true, slug: true, category: true } },
           branch: { select: { id: true, name: true, address: true, latitude: true, longitude: true } },
           address: { select: { line1: true, landmark: true, instructions: true, latitude: true, longitude: true } },
           items: { select: { nameSnapshot: true, priceSnapshot: true, quantity: true, modifiers: true, lineTotal: true, instructions: true } },
@@ -798,7 +798,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
           ...order,
           // Never leak the customer id back out in the payload shape.
           customerId: undefined,
-          statusLabel: customerLabel(status),
+          statusLabel: customerLabel(status, order.vendor.category),
           phase: phaseOf(status),
           quoteBreakdown: JSON.parse(order.quoteBreakdown) as unknown,
           // The rider's position is only shared while they are actually

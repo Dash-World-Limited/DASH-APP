@@ -395,7 +395,7 @@ export default function BasketPage() {
                     <p className="text-sm text-graphite-600">
                       {mode === 'delivery' && !addressId
                         ? 'Choose a delivery address to see your total.'
-                        : 'Preparing your total…'}
+                        : 'Working out your total…'}
                     </p>
                   )}
                 </div>

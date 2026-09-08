@@ -15,6 +15,7 @@ import {
 } from '@/components/ui';
 import { Modal } from '@/components/Modal';
 import { ApiRequestError, type QuoteLine } from '@/lib/api';
+import { customerTimeline } from '@dash/domain/orders';
 import { authedFetch } from '@/lib/session';
 import { liveLabel, useLive } from '@/lib/useLive';
 
@@ -33,7 +34,7 @@ interface OrderDetail {
   estimatedReadyAt: string | null;
   deliveredAt: string | null;
   cancellationReason: string | null;
-  vendor: { id: string; name: string; slug: string };
+  vendor: { id: string; name: string; slug: string; category: string };
   branch: { name: string; address: string };
   address: { line1: string; landmark: string | null } | null;
   items: {
@@ -61,12 +62,12 @@ interface Cancellation {
   explanation: string;
 }
 
-const PHASES = [
-  { key: 'confirming', label: 'Confirming' },
-  { key: 'preparing', label: 'Preparing' },
-  { key: 'on_the_way', label: 'On the way' },
-  { key: 'complete', label: 'Delivered' },
-] as const;
+// The timeline's words come from the shared vocabulary, not from here.
+//
+// This file used to keep its own copy — a second vocabulary for the same
+// states, already saying "Preparing" while the server said "Being prepared",
+// and both of them wrong for a pharmacy. See @dash/domain/orders.
+
 
 export default function OrderTrackingPage() {
   const params = useParams<{ id: string }>();
@@ -158,7 +159,8 @@ export default function OrderTrackingPage() {
     );
   }
 
-  const activePhaseIndex = PHASES.findIndex((phase) => phase.key === order.phase);
+  const phases = customerTimeline(order.vendor.category);
+  const activePhaseIndex = phases.findIndex((phase) => phase.key === order.phase);
   const stopped = order.phase === 'stopped';
 
   return (
@@ -193,7 +195,7 @@ export default function OrderTrackingPage() {
         {/* --- Progress ------------------------------------------------------ */}
         {!stopped ? (
           <ol className="mt-8 flex gap-2" aria-label="Order progress">
-            {PHASES.map((phase, index) => {
+            {phases.map((phase, index) => {
               const done = index <= activePhaseIndex;
               const current = index === activePhaseIndex;
               return (
