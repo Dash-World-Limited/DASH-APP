@@ -28,6 +28,7 @@ import {
   readiness,
   type ConfirmationFailure,
 } from '@/lib/offer-readiness';
+import { useSingleFlight } from '@/lib/single-flight';
 import {
   diagnosticsEnabled,
   isOfferNoLongerAvailable,
@@ -187,7 +188,6 @@ export default function RiderPage() {
    * lib/offer-readiness.ts.
    */
   const [locationAcceptedAt, setLocationAcceptedAt] = useState<number | null>(null);
-  const [confirmingLocation, setConfirmingLocation] = useState(false);
   const [confirmFailure, setConfirmFailure] = useState<ConfirmationFailure | null>(null);
   /**
    * The reporting routine, exposed so an arriving offer can demand a position
@@ -545,36 +545,27 @@ export default function RiderPage() {
    * A rider woken from a killed app arrives here with no position the server
    * will accept — that is precisely why the push was allowed to reach them.
    * Without this they would tap Accept, be refused for a stale location, and
-   * wait out a reporting tick before they could try again. Correct, and
-   * infuriating.
+   * wait out a reporting tick before they could try again.
    *
    * Only when a fix is actually needed, so a rider whose app never stopped
-   * reporting sees no delay at all.
+   * reporting sees no delay at all. `useSingleFlight` owns the in-progress
+   * flag: the hand-rolled version of it left that flag stuck true for the life
+   * of the screen, which disabled the accept button permanently and cost a
+   * ninety-second offer on a handset.
    */
-  useEffect(() => {
-    if (!offers || offers.length === 0) return;
-    const ageSeconds =
-      locationAcceptedAt === null ? null : (Date.now() - locationAcceptedAt) / 1000;
-    if (!needsFreshFix(ageSeconds, SERVER_LOCATION_MAX_AGE_SECONDS)) return;
-    if (confirmingLocation) return;
-
-    let cancelled = false;
-    setConfirmingLocation(true);
-    void (async () => {
-      try {
-        await reportNow.current?.();
-        // Re-read the server's own view: the offer may have been taken or
-        // expired while the handset was waking up and finding itself.
-        await load();
-      } finally {
-        if (!cancelled) setConfirmingLocation(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [offers, locationAcceptedAt, confirmingLocation, load]);
+  const confirmingLocation = useSingleFlight(
+    Boolean(offers && offers.length > 0) &&
+      needsFreshFix(
+        locationAcceptedAt === null ? null : (Date.now() - locationAcceptedAt) / 1000,
+        SERVER_LOCATION_MAX_AGE_SECONDS,
+      ),
+    async () => {
+      await reportNow.current?.();
+      // Re-read the server's own view: the offer may have been taken or
+      // expired while the handset was waking up and finding itself.
+      await load();
+    },
+  );
 
   /**
    * The next step of the delivery, according to the server's own status.
