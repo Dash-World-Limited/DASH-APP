@@ -414,6 +414,12 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   // Registered after routes so the queue handlers exist before the first job
   // can be enqueued by a request.
   registerDispatchWorker({
+    // The hub is this instance's own socket registry, so this answers "is this
+    // rider connected *here*". In a multi-instance deployment a rider attached
+    // to another instance reads as not-live, which gives them the longer wake
+    // deadline — the safe direction, and the reason this needs no cross-node
+    // presence protocol to be correct.
+    isIdentityLive: (identityId) => hub.connectionsFor(identityId) > 0,
     prisma: services.prisma,
     queue: services.queue,
     log: app.log,

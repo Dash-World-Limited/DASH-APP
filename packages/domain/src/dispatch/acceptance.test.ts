@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_CONFIG } from './index.js';
+import { DEFAULT_CONFIG, offerTtlSecondsFor } from './index.js';
 import {
   countsAsDecline,
   judgeAcceptance,
@@ -219,5 +219,47 @@ describe('how a refusal is treated', () => {
     // Someone else already resolved it, or the worker is about to re-round.
     expect(shouldRedispatch('offer_not_pending')).toBe(false);
     expect(shouldRedispatch('offer_expired')).toBe(false);
+  });
+});
+
+describe('how long a rider has to answer', () => {
+  /**
+   * Proven on a handset: a rider swiped DASH away and dispatch ran seconds
+   * later. Their position was 82s old — well inside the freshness window — so
+   * the offer was treated as one an open app would answer and given thirty
+   * seconds. The process was already dead. The push arrived, the rider tapped
+   * it, the app cold-started, and the offer had expired while they were still
+   * signing in.
+   *
+   * Location freshness is a fact about where a phone was. It says nothing
+   * about whether anything is still running on it.
+   */
+  it('gives a live client the short deadline', () => {
+    expect(offerTtlSecondsFor('live')).toBe(DEFAULT_CONFIG.offerTtlSeconds);
+  });
+
+  it('gives a killed or swiped client the wake deadline', () => {
+    expect(offerTtlSecondsFor('unknown')).toBe(DEFAULT_CONFIG.graceOfferTtlSeconds);
+  });
+
+  it('does not shorten the deadline just because the position is fresh', () => {
+    // The exact regression. Freshness is not an input here at all — there is
+    // no argument for it — which is what makes the mistake unrepresentable
+    // rather than merely avoided.
+    expect(offerTtlSecondsFor('unknown')).toBeGreaterThan(offerTtlSecondsFor('live'));
+  });
+
+  it('resolves uncertainty towards the longer deadline', () => {
+    // Being wrong this way costs an order sixty seconds before it re-rounds.
+    // Being wrong the other way wakes a rider and takes the work away before
+    // they can reach it. A deployment that cannot determine liveness at all
+    // therefore degrades safely instead of reintroducing the bug.
+    expect(offerTtlSecondsFor('unknown')).toBe(DEFAULT_CONFIG.graceOfferTtlSeconds);
+  });
+
+  it('leaves the wake deadline long enough for the measured cold-start path', () => {
+    // FCM delivery, the rider noticing, a cold start, and a GPS acquisition
+    // measured at 8-48s on real hardware. Thirty seconds loses that race.
+    expect(DEFAULT_CONFIG.graceOfferTtlSeconds).toBeGreaterThanOrEqual(60);
   });
 });

@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 import {
   decideDispatch,
   DEFAULT_CONFIG,
-  type EligibilityMode,
+  offerTtlSecondsFor,
   resolveOfferRound,
   type DispatchConfig,
   type RiderCandidate,
@@ -43,8 +43,24 @@ export function registerDispatchWorker(deps: {
   queue: QueuePort;
   log: FastifyBaseLogger;
   config?: DispatchConfig;
+  /**
+   * Whether this identity currently holds a live realtime connection.
+   *
+   * The only evidence that a rider can answer an offer *now* rather than
+   * having to be woken by a push first. Location freshness cannot stand in for
+   * it — a rider who swiped the app away has a fresh position and a dead
+   * process — and getting that wrong expires an offer while the rider is still
+   * cold-starting.
+   *
+   * Optional, and absent means "cannot prove it", which resolves to the wake
+   * deadline. That is the safe direction and it is also what makes this
+   * degrade correctly: a deployment where liveness is unknowable gives
+   * everyone the longer deadline rather than silently reintroducing the bug.
+   */
+  isIdentityLive?: (identityId: string) => boolean;
 }): void {
   const { prisma, queue, log } = deps;
+  const isIdentityLive = deps.isIdentityLive ?? (() => false);
   const config = deps.config ?? DEFAULT_CONFIG;
 
   queue.process<FindRiderJob>('dispatch.find_rider', async (job) => {
@@ -112,6 +128,8 @@ export function registerDispatchWorker(deps: {
       },
       select: {
         id: true,
+        // Liveness is a property of the *identity's* socket, not the rider row.
+        identityId: true,
         lastLatitude: true,
         lastLongitude: true,
         locationReportedAt: true,
@@ -238,8 +256,15 @@ export function registerDispatchWorker(deps: {
     // 15–30s. Thirty seconds loses that race often, and loses it *after* waking
     // the rider, which is the worst outcome: they are now awake, have spent a
     // cold GPS acquisition, and are told the job has gone.
-    const ttlFor = (mode: EligibilityMode): number =>
-      mode === 'grace' ? config.graceOfferTtlSeconds : config.offerTtlSeconds;
+    // Keyed on whether the rider can answer now, never on how fresh their
+    // position is. See `offerTtlSecondsFor` for why those are different
+    // questions and why the unknown case takes the longer deadline.
+    const identityOf = new Map(riders.map((rider) => [rider.id, rider.identityId]));
+    const ttlFor = (riderId: string): number => {
+      const identityId = identityOf.get(riderId);
+      const live = identityId && isIdentityLive(identityId) ? 'live' : 'unknown';
+      return offerTtlSecondsFor(live, config);
+    };
 
     const offered: string[] = [];
     /** Parallel to `offered` — the offer each push will point at. */
@@ -252,7 +277,7 @@ export function registerDispatchWorker(deps: {
         const scored = decision.ranked.find((entry) => entry.riderId === riderId);
         if (!scored) continue;
 
-        const offerExpiresAt = new Date(now.getTime() + ttlFor(scored.eligibilityMode) * 1000);
+        const offerExpiresAt = new Date(now.getTime() + ttlFor(riderId) * 1000);
         const createdOffer = await tx.dispatchOffer.create({
           select: { id: true },
           data: {
@@ -350,7 +375,7 @@ export function registerDispatchWorker(deps: {
     const longestTtlSeconds = Math.max(
       ...decision.ranked
         .filter((entry) => offered.includes(entry.riderId))
-        .map((entry) => ttlFor(entry.eligibilityMode)),
+        .map((entry) => ttlFor(entry.riderId)),
       config.offerTtlSeconds,
     );
     await queue.enqueue<FindRiderJob>({

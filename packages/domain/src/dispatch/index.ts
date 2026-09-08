@@ -471,6 +471,41 @@ export const OFFER_TIMEOUT_SECONDS = 30;
 
 /** How many rounds of offers before escalating to a human dispatcher. */
 /**
+ * How long this rider has to answer, and why freshness cannot decide it.
+ *
+ * The first version keyed the deadline on `eligibilityMode` — a grace offer got
+ * ninety seconds, a fresh one thirty. That was wrong, and a handset proved it:
+ * a rider swiped DASH away and, seconds later, dispatch ran. Their position was
+ * eighty-two seconds old, comfortably inside the freshness window, so the offer
+ * was classified `fresh` and given thirty seconds. But the process was already
+ * dead. The push arrived, the rider tapped it, the app cold-started — and the
+ * offer had expired while they were still signing in.
+ *
+ * The error was using **location freshness as a proxy for app liveness.** They
+ * are unrelated: a position is a fact about where a phone was, not about
+ * whether anything is still running on it. A rider who swipes away has a fresh
+ * position and a dead app for the next two minutes.
+ *
+ * So the deadline asks a different question — *can this rider answer right
+ * now?* — and only a live connection can prove that. Anything else, including
+ * a perfectly fresh position, means assuming they must be woken first.
+ *
+ * The fallback direction matters. Being wrong towards the long deadline costs
+ * an order sixty extra seconds before it re-rounds. Being wrong towards the
+ * short one wakes a rider and then takes the work away before they can reach
+ * it, which is worse for them and worse for the customer. Uncertainty
+ * therefore resolves to the wake deadline, never the short one — which also
+ * means a deployment where liveness cannot be determined degrades safely
+ * rather than silently reintroducing this bug.
+ */
+export function offerTtlSecondsFor(
+  liveness: 'live' | 'unknown',
+  config: DispatchConfig = DEFAULT_CONFIG,
+): number {
+  return liveness === 'live' ? config.offerTtlSeconds : config.graceOfferTtlSeconds;
+}
+
+/**
  * Acceptance-time validation.
  *
  * Re-exported from the dispatch barrel so callers reach one module for both
