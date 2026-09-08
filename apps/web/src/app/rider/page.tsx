@@ -18,7 +18,7 @@ import {
   formatNaira,
 } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch, useHasSession, useMe } from '@/lib/session';
+import { authedFetch, useMe, useSessionState } from '@/lib/session';
 import { onNotificationTap, pushAvailable, registerForPush } from '@/lib/push';
 import { liveLabel, useLive } from '@/lib/useLive';
 import { describeBridge, ensurePermission, geolocationAvailability, getFix } from '@/lib/geolocation';
@@ -198,7 +198,8 @@ export default function RiderPage() {
   const reportNow = useRef<(() => Promise<void>) | null>(null);
   /** Timestamp of the reading already reported, so a repeat can be spotted. */
   const lastTakenAt = useRef<string | undefined>(undefined);
-  const signedIn = useHasSession();
+  const sessionState = useSessionState();
+  const signedIn = sessionState === 'authenticated';
   const { me } = useMe();
 
   const load = useCallback(async (): Promise<void> => {
@@ -652,6 +653,24 @@ export default function RiderPage() {
     confirming: confirmingLocation,
     failure: confirmFailure,
   });
+
+  // Restoring, not signed out.
+  //
+  // A rider woken from a killed process by a push has a refresh token on disk
+  // and a session that is about to come back. Rendering Sign In while that is
+  // in flight sends them to a login form instead of the delivery they were
+  // notified about — which is what happened on the handset, with the refresh
+  // succeeding moments later. Sign In waits for a definitive failure.
+  if (sessionState === 'restoring') {
+    return (
+      <div data-surface="field" className="min-h-screen">
+        <AppHeader variant="staff" />
+        <main id="main" className="mx-auto max-w-2xl px-5 py-12">
+          <LoadingBlock label="Getting you back on the road" />
+        </main>
+      </div>
+    );
+  }
 
   if (!signedIn) {
     return (

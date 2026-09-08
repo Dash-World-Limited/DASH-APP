@@ -170,16 +170,85 @@ function invalidateMe(): void {
  * reports as an error and recovers from by discarding the server HTML. This
  * returns false until an effect has run.
  */
-export function useHasSession(): boolean {
-  const [value, setValue] = useState(false);
+/**
+ * Whether the app knows yet who the user is.
+ *
+ * Three states, because there genuinely are three. The old boolean collapsed
+ * "we have not looked yet" into "signed out", and it began life as `false` — so
+ * on every cold start a screen gated on it rendered Sign In for at least one
+ * frame, before any refresh had been attempted.
+ *
+ * On a laptop that is an invisible flicker. On a handset woken from a killed
+ * process by a push notification it is the whole experience: the rider taps a
+ * notification about a delivery and lands on a login form. Device evidence
+ * showed exactly that — the refresh token was on disk, the refresh *succeeded*
+ * and rotated into a new session, and the rider had already typed their phone
+ * number in by then. Nothing was broken except what they were shown.
+ */
+export type SessionState = 'restoring' | 'authenticated' | 'unauthenticated';
+
+/**
+ * Restore the session, and report which of the three states we are in.
+ *
+ * `restoring` is entered only when there is something to restore — the CSRF
+ * cookie is readable and says a session plausibly exists — so a visitor who has
+ * never signed in still goes straight to `unauthenticated` with no request and
+ * no spinner.
+ *
+ * The refresh is *actively* driven here rather than waited for. Previously
+ * nothing triggered one until a screen happened to make an API call, which on
+ * a cold start is after it has already decided what to render.
+ */
+export function useSessionState(): SessionState {
+  const [state, setState] = useState<SessionState>(() =>
+    // Synchronous, so the first paint is already correct rather than a frame
+    // of the wrong answer. `hasSession()` is a cookie read, not a request.
+    hasSession() ? 'restoring' : 'unauthenticated',
+  );
 
   useEffect(() => {
-    const sync = (): void => setValue(hasSession());
-    sync();
-    return subscribeToSession(sync);
+    let cancelled = false;
+
+    const sync = (): void => {
+      if (cancelled) return;
+      // A token in hand is proof; anything else waits for the restore below.
+      setState((current) =>
+        accessToken !== null ? 'authenticated' : current === 'restoring' ? 'restoring' : current,
+      );
+    };
+
+    void (async () => {
+      if (!hasSession()) {
+        if (!cancelled) setState('unauthenticated');
+        return;
+      }
+      // The definitive answer: either a token comes back or the refresh has
+      // genuinely failed. Sign In is rendered only on the second.
+      const token = await getAccessToken();
+      if (cancelled) return;
+      setState(token ? 'authenticated' : 'unauthenticated');
+    })();
+
+    const unsubscribe = subscribeToSession(sync);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, []);
 
-  return value;
+  return state;
+}
+
+/**
+ * Whether a session exists, as a boolean.
+ *
+ * Kept for the screens that only branch two ways, and deliberately reports
+ * `false` while restoring — a caller that cannot express "not yet" must not be
+ * told "yes" on the strength of a cookie that has not been redeemed. Screens
+ * where the difference is visible to a user should use `useSessionState`.
+ */
+export function useHasSession(): boolean {
+  return useSessionState() === 'authenticated';
 }
 
 /**
