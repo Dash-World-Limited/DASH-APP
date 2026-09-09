@@ -139,14 +139,49 @@ know what an identity conflict is and who can resolve it.**
    approval is not instant.
 6. **Sending quota**: check the daily cap and per-second rate against the signup
    volume you expect.
-7. **Configuration set + SNS topic** for bounces and complaints, and something
-   that consumes it. A hard bounce that keeps being retried is what gets a
-   sending domain suspended.
+7. **Configuration set + SNS topic** for bounces and complaints. The consumer
+   exists: `POST /v1/webhooks/email-events`. Create the configuration set, an
+   SNS topic, and an HTTPS subscription pointing at that path, then set
+   `SES_EVENT_TOPIC_ARN` so notifications from any other topic are refused.
+   Confirming the subscription is automatic and happens only after the
+   signature proves AWS sent it. A hard bounce that keeps being retried is what
+   gets a sending domain suspended.
 8. **Monitor the complaint rate.** Above roughly 0.1% SES will intervene.
 
 ---
 
-## 6. Development and test behaviour
+## 6. Bounces and complaints
+
+`POST /v1/webhooks/email-events` receives SNS notifications and writes to
+`EmailSuppression`. Every send goes through a wrapper that consults it, so the
+list is enforced rather than merely recorded.
+
+Nothing is trusted before the SNS signature verifies: the signed string is
+rebuilt from the message's own fields, the certificate URL must be an Amazon SNS
+HTTPS endpoint (parsed, not pattern-matched), the signature is checked against
+that certificate, and stale messages are refused. Without the URL check a
+forgery would simply point at a certificate the attacker owns — the endpoint
+would be a public form for suppressing any address, which stops one named person
+receiving the code that opens their account.
+
+| Event | Effect |
+|---|---|
+| Permanent bounce | Nothing may be sent to that address again |
+| Complaint | Marketing stops; verification and sign-in codes continue |
+| Soft bounce | Nothing suppressed |
+
+A complaint deliberately does not stop transactional mail. Somebody who marked a
+newsletter as spam has not asked to be locked out of their own account.
+
+Suppression only ever tightens, notifications are idempotent on the SNS message
+id, and a cleared suppression is kept rather than deleted.
+
+**Not built:** there is no admin screen for the suppression list. Clearing an
+entry is a database update today.
+
+---
+
+## 7. Development and test behaviour
 
 Unchanged and deterministic.
 
