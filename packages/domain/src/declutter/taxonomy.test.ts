@@ -155,7 +155,12 @@ describe('categories', () => {
     const required = DECLUTTER_CATEGORIES.filter((c) => c.requiresOwnershipEvidence).map(
       (c) => c.key,
     );
-    expect(required).toEqual(['phones-tablets', 'computers-laptops', 'electronics']);
+    expect(required).toEqual([
+      'phones-tablets',
+      'computers-laptops',
+      'electronics',
+      'power-tools',
+    ]);
   });
 
   it('filters stored attributes down to an allowlist', () => {

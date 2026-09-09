@@ -24,7 +24,7 @@
  *
  * ## Categories
  *
- * Eight, chosen for what people in Lagos and Asaba actually resell rather than
+ * Nine, chosen for what people in Lagos and Asaba actually resell rather than
  * for completeness. Each carries its own attribute fields, because a phone has
  * a battery and storage and a sofa has neither, and a single shared attribute
  * list would put `batteryHealthPercent` on furniture.
@@ -200,7 +200,7 @@ const CONDITION_NOTE_FIELDS: readonly AttributeField[] = [
 ];
 
 /**
- * Eight categories.
+ * Nine categories.
  *
  * Vehicles is deliberately absent — see the note in the seed checkpoint. A car
  * cannot be carried by a DASH rider, needs title transfer rather than a
@@ -327,10 +327,54 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     ],
   },
   {
+    key: 'power-tools',
+    name: 'Power & Tools',
+    slug: 'power-tools',
+    sortOrder: 6,
+    // Generators are among the most stolen high-value goods in Nigeria, and a
+    // serial number is the only thing that distinguishes one from another.
+    requiresOwnershipEvidence: true,
+    attributes: [
+      ...CONDITION_NOTE_FIELDS,
+      {
+        key: 'type',
+        label: 'Type',
+        type: 'select',
+        options: [
+          'Generator',
+          'Inverter',
+          'Power station',
+          'Solar panel',
+          'Battery',
+          'Power tool',
+          'Hand tool',
+          'Workshop equipment',
+          'Other',
+        ],
+        required: true,
+        visibility: 'public',
+      },
+      { key: 'powerOutput', label: 'Power output', type: 'text', unit: 'kVA or W', visibility: 'public' },
+      {
+        key: 'fuelType',
+        label: 'Runs on',
+        type: 'select',
+        options: ['Petrol', 'Diesel', 'Gas', 'Mains electricity', 'Solar', 'Battery'],
+        visibility: 'public',
+      },
+      { key: 'capacity', label: 'Capacity', type: 'text', unit: 'Ah or kWh', visibility: 'public' },
+      // Hours run is to a generator what mileage is to a car, and it is the
+      // number a buyer most wants and most rarely gets.
+      { key: 'hoursUsed', label: 'Hours run', type: 'number', unit: 'hrs', visibility: 'public' },
+      { key: 'accessories', label: 'Included accessories', type: 'text', visibility: 'public' },
+      { key: 'serialNumber', label: 'Serial number', type: 'text', visibility: 'admin' },
+    ],
+  },
+  {
     key: 'fashion',
     name: 'Fashion',
     slug: 'fashion',
-    sortOrder: 6,
+    sortOrder: 7,
     requiresOwnershipEvidence: false,
     attributes: [
       { key: 'brand', label: 'Brand', type: 'text', visibility: 'public' },
@@ -351,7 +395,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     key: 'baby-kids',
     name: 'Baby & Kids',
     slug: 'baby-kids',
-    sortOrder: 7,
+    sortOrder: 8,
     requiresOwnershipEvidence: false,
     attributes: [
       { key: 'brand', label: 'Brand', type: 'text', visibility: 'public' },
@@ -370,7 +414,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     key: 'sports-outdoors',
     name: 'Sports & Outdoors',
     slug: 'sports-outdoors',
-    sortOrder: 8,
+    sortOrder: 9,
     requiresOwnershipEvidence: false,
     attributes: [
       { key: 'brand', label: 'Brand', type: 'text', visibility: 'public' },
