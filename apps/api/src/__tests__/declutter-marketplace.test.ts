@@ -777,6 +777,67 @@ describe('asking to be put in touch', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Serving the bytes
+// ---------------------------------------------------------------------------
+
+describe('a photograph reaches a browser, and only through its signed URL', () => {
+  let photoUrl: string;
+
+  beforeAll(async () => {
+    const category = await context.prisma.declutterCategory.findUniqueOrThrow({
+      where: { key: 'phones-tablets' },
+    });
+    const submission = await context.prisma.declutterSubmission.create({
+      data: {
+        code: `DCL-${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+        sellerId,
+        status: 'details_pending',
+        title: 'Camera for the file route',
+        categoryId: category.id,
+      },
+    });
+
+    const upload = await post(seller, `/v1/declutter/submissions/${submission.id}/photos`, {
+      contentType: 'image/png',
+      role: 'front',
+      data: PNG_TWO,
+    });
+    photoUrl = upload.json().photo.url;
+  });
+
+  it('serves the image, and tells the browser not to second-guess the type', async () => {
+    const response = await get(null, photoUrl);
+
+    expect(response.statusCode).toBe(200);
+    // Sniffed from the bytes rather than taken from the request, and the
+    // browser is told not to sniff again — that is how an image becomes a
+    // script.
+    expect(response.headers['content-type']).toBe('image/png');
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    // Signed and short-lived, so a shared cache must not keep it.
+    expect(String(response.headers['cache-control'])).toContain('private');
+  });
+
+  it('refuses an edited signature', async () => {
+    const tampered = photoUrl.replace(/signature=([0-9a-f])/, (_match, first: string) =>
+      `signature=${first === 'a' ? 'b' : 'a'}`,
+    );
+    expect((await get(null, tampered)).statusCode).toBe(404);
+  });
+
+  it('refuses a link whose expiry has been pushed out', async () => {
+    // The signature covers the expiry, so extending one invalidates the other.
+    const extended = photoUrl.replace(/expires=\d+/, 'expires=99999999999');
+    expect((await get(null, extended)).statusCode).toBe(404);
+  });
+
+  it('refuses a key that is not one we issued', async () => {
+    const forged = photoUrl.replace(/\/v1\/files\/[^?]+/, '/v1/files/..%2F..%2Fetc%2Fpasswd');
+    expect((await get(null, forged)).statusCode).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
 
 describe('the taxonomy a filter is built from', () => {
   it('is public, and offers areas without coordinates', async () => {

@@ -68,6 +68,7 @@ import { registerValueCheckRoutes } from './routes/valuecheck.js';
 import { registerDeclutterPricingRoutes } from './routes/declutter-pricing.js';
 import { registerDeclutterPhotoRoutes } from './routes/declutter-photos.js';
 import { registerDeclutterListingRoutes } from './routes/declutter-listings.js';
+import { registerFileRoutes } from './routes/files.js';
 import { DeterministicValuationAdapter } from '@dash/domain/valuecheck';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAccountRoutes } from './routes/account.js';
@@ -383,6 +384,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerDeclutterPricingRoutes(app);
   await registerDeclutterPhotoRoutes(app);
   await registerDeclutterListingRoutes(app);
+  await registerFileRoutes(app);
   await registerWebhookRoutes(app);
   await registerAccountRoutes(app);
   await registerDeviceRoutes(app);
