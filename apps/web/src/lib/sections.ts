@@ -17,9 +17,19 @@
  * grouping happens here and nowhere else.
  */
 
+/**
+ * The five front doors, as a closed set.
+ *
+ * A union rather than `string` so that anything keyed by section — a mark, a
+ * tint, a vocabulary — is exhaustive at compile time. Adding a sixth door
+ * becomes a type error everywhere it has to be accounted for, which is the
+ * moment to ask whether there should be one.
+ */
+export type SectionSlug = 'shops' | 'restaurants' | 'market' | 'pharmacy' | 'declutter';
+
 export interface Section {
   /** Route segment and lookup key. */
-  slug: string;
+  slug: SectionSlug;
   label: string;
   /** One line, shown under the heading on the section page. */
   blurb: string;

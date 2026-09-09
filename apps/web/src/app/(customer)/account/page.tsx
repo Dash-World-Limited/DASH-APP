@@ -11,7 +11,6 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-import { AppHeader } from '@/components/AppHeader';
 import { Button, Card, EmptyState, LoadingBlock } from '@/components/ui';
 import { signOut, useHasSession, useMe } from '@/lib/session';
 
@@ -23,7 +22,6 @@ export default function AccountPage() {
   if (!signedIn) {
     return (
       <div className="min-h-dvh">
-        <AppHeader />
         <main id="main" className="mx-auto max-w-lg px-4 py-10">
           <EmptyState
             title="You are not signed in"
@@ -37,7 +35,6 @@ export default function AccountPage() {
 
   return (
     <div className="min-h-dvh">
-      <AppHeader />
       <main id="main" className="mx-auto max-w-lg px-4 py-6">
         <h1 className="text-2xl font-bold tracking-tight">Account</h1>
 

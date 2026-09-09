@@ -20,7 +20,6 @@
 
 import Link from 'next/link';
 
-import { AppHeader } from '@/components/AppHeader';
 import { Button, Card, EmptyState } from '@/components/ui';
 import { useHasSession } from '@/lib/session';
 
@@ -29,7 +28,6 @@ export default function WalletPage() {
 
   return (
     <div className="min-h-dvh">
-      <AppHeader />
       <main id="main" className="mx-auto max-w-lg px-4 py-6">
         <h1 className="text-2xl font-bold tracking-tight">Wallet</h1>
         <p className="mt-1 text-sm text-[var(--ink-muted)]">

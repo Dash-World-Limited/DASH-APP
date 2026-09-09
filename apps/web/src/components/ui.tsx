@@ -32,14 +32,27 @@ export function formatDistance(metres: number | null): string {
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 
+/**
+ * `--on-primary`, not `--ink`.
+ *
+ * The primary was gold when these were written and dark ink on it was correct.
+ * The brand is electric blue now, and navy text on `#2f62f5` is 3.6:1 —
+ * under the 4.5:1 a button label needs, on the single most-pressed control in
+ * the app. The token exists precisely so this cannot drift again: whatever
+ * primary becomes, the ink that sits on it is declared beside it.
+ *
+ * The gold pressed state went with it. Gold is a Dash World brand mark — the
+ * wordmark and premium marks — not a button and not a press.
+ */
 const BUTTON_STYLES: Record<ButtonVariant, string> = {
   primary:
-    'bg-[var(--primary)] text-[var(--ink)] hover:bg-[var(--primary-hover)] active:bg-gold-600 disabled:bg-graphite-200 disabled:text-[var(--ink-muted)]',
+    'bg-[var(--primary)] text-[var(--on-primary)] hover:bg-[var(--primary-hover)] active:bg-[var(--primary-hover)] disabled:bg-[var(--line-strong)] disabled:text-[var(--ink-muted)]',
   secondary:
-    'bg-[var(--ink)] text-white hover:bg-graphite-800 disabled:bg-graphite-200 disabled:text-[var(--ink-muted)]',
+    'bg-[var(--ink)] text-[var(--ink-inverted)] hover:opacity-90 disabled:bg-[var(--line-strong)] disabled:text-[var(--ink-muted)]',
   ghost:
     'bg-transparent border border-[var(--line)] text-[var(--ink)] hover:bg-[var(--surface-raised)]',
-  danger: 'bg-coral-400 text-white hover:bg-coral-600 disabled:bg-graphite-200',
+  danger:
+    'bg-[var(--danger)] text-white hover:bg-coral-600 disabled:bg-[var(--line-strong)] disabled:text-[var(--ink-muted)]',
 };
 
 export function Button({
@@ -63,7 +76,11 @@ export function Button({
 
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${BUTTON_STYLES[variant]} ${sizes[size]} ${className}`}
+      // A press is a small action, so it gets a small response: a 2% squash on
+      // the way down and nothing else. Enough to feel like the surface took the
+      // touch, not enough to move anything the eye is tracking. The global
+      // reduced-motion rule removes it without this component knowing.
+      className={`inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-[background-color,color,transform,opacity] duration-[var(--duration-fast)] ease-[var(--ease-standard)] active:scale-[0.98] disabled:cursor-not-allowed disabled:active:scale-100 ${BUTTON_STYLES[variant]} ${sizes[size]} ${className}`}
       {...props}
     >
       {children}
@@ -92,11 +109,14 @@ export function Card({
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'gold';
 
 const BADGE_STYLES: Record<BadgeTone, string> = {
-  neutral: 'bg-graphite-100 text-graphite-600',
+  neutral: 'bg-[var(--surface-sunken)] text-[var(--ink-muted)]',
   success: 'bg-[var(--success-soft)] text-[var(--success)]',
   warning: 'bg-[var(--primary-soft)] text-[var(--primary)]',
   danger: 'bg-[var(--danger-soft)] text-[var(--danger)]',
-  gold: 'bg-[var(--primary)] text-[var(--ink)]',
+  // Emphasis, not brand gold — the name predates the palette change. Reads on
+  // the light customer surfaces and on the inverted rider board, because both
+  // halves of the pair are tokens that invert together.
+  gold: 'bg-[var(--primary)] text-[var(--on-primary)]',
 };
 
 export function Badge({

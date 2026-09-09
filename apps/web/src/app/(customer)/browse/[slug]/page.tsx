@@ -2,7 +2,6 @@
 
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { AppHeader } from '@/components/AppHeader';
 import {
   Badge,
   Button,
@@ -52,7 +51,6 @@ export default function VendorPage() {
   if (error) {
     return (
       <>
-        <AppHeader />
         <main id="main" className="mx-auto max-w-3xl px-5 py-12">
           <ErrorState
             title={error.status === 404 ? 'Vendor not found' : 'Could not load this vendor'}
@@ -74,7 +72,6 @@ export default function VendorPage() {
   if (!vendor) {
     return (
       <>
-        <AppHeader />
         <main id="main" className="mx-auto max-w-3xl px-5 py-12">
           <LoadingBlock label="Loading vendor" />
         </main>
@@ -87,7 +84,6 @@ export default function VendorPage() {
 
   return (
     <>
-      <AppHeader />
       <main id="main" className="mx-auto max-w-3xl px-5 py-8">
         <header>
           <div className="flex flex-wrap items-start justify-between gap-3">

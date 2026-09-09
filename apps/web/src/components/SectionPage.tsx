@@ -21,6 +21,7 @@ import { useEffect, useState } from 'react';
 
 import { Badge, Card, EmptyState, ErrorState, LoadingBlock, formatDistance, formatNaira } from '@/components/ui';
 import { apiFetch, ApiRequestError } from '@/lib/api';
+import { useDeliveryLocation } from '@/lib/delivery-location';
 import type { Section } from '@/lib/sections';
 
 interface SellerCard {
@@ -38,10 +39,12 @@ interface SellerCard {
   } | null;
 }
 
-/** Browsed from here until the customer's own address is known. */
-const DEFAULT_POSITION = { latitude: 6.4281, longitude: 3.4219 };
-
 export function SectionPage({ section }: { section: Section }) {
+  // The same delivery location the header shows, rather than a copy of the
+  // Victoria Island constant that used to live here. A section page that
+  // ignored the customer's own address showed them sellers near somewhere they
+  // are not, with distances to match.
+  const { position } = useDeliveryLocation();
   const [sellers, setSellers] = useState<SellerCard[] | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
 
@@ -54,7 +57,7 @@ export function SectionPage({ section }: { section: Section }) {
     void Promise.all(
       section.categories.map((category) =>
         apiFetch<{ vendors: SellerCard[] }>(
-          `/v1/vendors?latitude=${DEFAULT_POSITION.latitude}&longitude=${DEFAULT_POSITION.longitude}&category=${category}`,
+          `/v1/vendors?latitude=${position.latitude}&longitude=${position.longitude}&category=${category}`,
         ).catch(() => ({ vendors: [] as SellerCard[] })),
       ),
     )
@@ -83,7 +86,7 @@ export function SectionPage({ section }: { section: Section }) {
     return () => {
       cancelled = true;
     };
-  }, [section]);
+  }, [section, position]);
 
   return (
     <main id="main" className="mx-auto max-w-2xl px-4 py-6">

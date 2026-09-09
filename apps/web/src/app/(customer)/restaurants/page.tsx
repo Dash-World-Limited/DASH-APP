@@ -1,6 +1,5 @@
 'use client';
 
-import { AppHeader } from '@/components/AppHeader';
 import { SectionPage } from '@/components/SectionPage';
 import { sectionBySlug } from '@/lib/sections';
 
@@ -14,7 +13,6 @@ export default function Page() {
   if (!section) return null;
   return (
     <div className="min-h-dvh">
-      <AppHeader />
       <SectionPage section={section} />
     </div>
   );

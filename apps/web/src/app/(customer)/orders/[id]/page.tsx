@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
-import { AppHeader } from '@/components/AppHeader';
 import {
   Badge,
   Button,
@@ -126,7 +125,6 @@ export default function OrderTrackingPage() {
   if (error) {
     return (
       <>
-        <AppHeader />
         <main id="main" className="mx-auto max-w-2xl px-5 py-12">
           <ErrorState
             title={error.status === 404 ? 'Order not found' : 'Could not load this order'}
@@ -151,7 +149,6 @@ export default function OrderTrackingPage() {
   if (!order) {
     return (
       <>
-        <AppHeader />
         <main id="main" className="mx-auto max-w-2xl px-5 py-12">
           <LoadingBlock label="Loading your order" />
         </main>
@@ -165,7 +162,6 @@ export default function OrderTrackingPage() {
 
   return (
     <>
-      <AppHeader />
       <main id="main" className="mx-auto max-w-2xl px-5 py-10">
         <Link href="/orders" className="text-sm text-graphite-600 underline">
           ← Your orders

@@ -108,8 +108,15 @@
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
 
-  /** Height of the bottom navigation itself, before any system inset. */
-  --bottom-nav-height: 4rem;
+  /**
+   * The vertical space the bottom navigation occupies, before any system inset.
+   *
+   * The bar floats clear of the screen edge, so this is the capsule *and* the
+   * gap beneath it rather than the capsule alone. Folding the gap in here
+   * rather than adding a second term keeps one number to change and one
+   * reservation formula for every screen to trust.
+   */
+  --bottom-nav-height: 4.75rem;
 
   /* --- Semantic tokens -----------------------------------------------------
      What components actually use. Every screen reads from here. */
@@ -140,6 +147,29 @@
   /* Dash World brand mark. Not a UI colour. */
   --brand-gold: var(--color-gold-400);
 
+  /* --- Section marks -------------------------------------------------------
+     One tint per front door.
+
+     Five identically-coloured tiles are five things a customer has to read
+     before choosing; five differently-coloured *cards* are a rainbow. So the
+     tile stays one neutral surface everywhere and only the small mark inside it
+     carries the section's colour — enough that Pharmacy and Restaurants are
+     told apart in peripheral vision, not so much that Home looks like a toy.
+
+     They are declared here rather than picked in the component because they are
+     brand decisions, and because the next person to add a section should find
+     the list rather than invent a sixth colour. */
+  --door-shops: var(--color-blue-600);
+  --door-shops-soft: var(--color-blue-50);
+  --door-restaurants: var(--color-coral-600);
+  --door-restaurants-soft: var(--color-coral-50);
+  --door-market: var(--color-emerald-600);
+  --door-market-soft: var(--color-emerald-50);
+  --door-pharmacy: var(--color-teal-600);
+  --door-pharmacy-soft: var(--color-teal-50);
+  --door-declutter: var(--color-navy-600);
+  --door-declutter-soft: var(--color-navy-100);
+
   /* Status. */
   --success: var(--color-emerald-400);
   --success-soft: var(--color-emerald-50);
@@ -148,8 +178,49 @@
 
   /* Shape and depth. */
   --radius-control: 0.75rem;
+  --radius-pill: 999px;
   --shadow-card: 0 1px 2px rgb(11 20 36 / 0.04), 0 8px 24px -12px rgb(11 20 36 / 0.12);
   --shadow-raised: 0 2px 6px rgb(11 20 36 / 0.06), 0 16px 40px -20px rgb(11 20 36 / 0.2);
+  /* Something that floats above the page rather than sitting on it. */
+  --shadow-float: 0 4px 12px -4px rgb(11 20 36 / 0.16), 0 18px 44px -18px rgb(11 20 36 / 0.3);
+
+  /* --- Motion --------------------------------------------------------------
+     Durations and curves as tokens, so "how DASH moves" is one decision rather
+     than a number typed into each component.
+
+     The rule they encode: a small action gets a small response and a change of
+     state gets a richer one. `--ease-spring` overshoots slightly and belongs to
+     things that travel — a navigation indicator, a sheet arriving. Everything
+     else uses `--ease-standard`, which decelerates without overshoot, because a
+     bouncing colour change is noise.
+
+     None of these need a reduced-motion variant: the global preference rule
+     below collapses every animation and transition regardless of its duration
+     token, so honouring the preference is not something a component can forget
+     to do. */
+  --duration-fast: 120ms;
+  --duration-base: 220ms;
+  --duration-slow: 420ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(0.22, 1.2, 0.36, 1);
+
+  /* --- Glass ---------------------------------------------------------------
+     An interaction material, not a skin.
+
+     Glass belongs to things that float over content and must not hide it:
+     navigation, drawers, sheets, floating controls. It does not belong on a
+     product card, a price, a total or anything else whose job is to be read —
+     a translucent surface borrows whatever is behind it, and what is behind a
+     basket total is a scrolling list.
+
+     `--glass-bg` is deliberately opaque enough to carry text on its own. The
+     blur is an enhancement; the contrast does not depend on it, which is what
+     makes the `@supports` fallback below a downgrade in texture rather than in
+     legibility. */
+  --glass-bg: rgb(255 255 255 / 0.78);
+  --glass-border: rgb(255 255 255 / 0.7);
+  --glass-blur: 18px;
 }
 
 /**
@@ -169,10 +240,23 @@
   --line-strong: var(--color-navy-400);
   --primary: var(--color-blue-400);
   --primary-hover: var(--color-blue-500);
+  /*
+   * Dark surfaces lighten the primary so it reads against navy — which means
+   * white text on top of it no longer does. 12px semibold white on this blue is
+   * 3.7:1, below the 4.5:1 a badge or a filled button needs, so the ink on a
+   * primary fill inverts with the fill. "What goes on top of primary" has to
+   * follow primary rather than be a constant, or every filled control on the
+   * rider and ops screens quietly fails contrast.
+   */
+  --on-primary: var(--color-navy-900);
   --primary-soft: var(--color-navy-800);
   --accent-soft: var(--color-navy-800);
   --success-soft: var(--color-navy-800);
   --danger-soft: var(--color-navy-800);
+
+  /* Dark glass. The same material, inverted with the rest of the surface. */
+  --glass-bg: rgb(22 35 58 / 0.82);
+  --glass-border: rgb(107 127 158 / 0.32);
 
   /*
    * Re-declaring `color` and `background` here is NOT redundant.
@@ -265,4 +349,70 @@ body {
    reachable. */
 .pad-for-bottom-nav {
   padding-bottom: calc(var(--bottom-nav-height) + var(--safe-bottom) + 1.5rem);
+}
+
+/**
+ * The glass material.
+ *
+ * One class rather than a blur repeated per component, so the material is a
+ * single decision and a single place to weaken it if a low-end handset turns
+ * out to struggle. `backdrop-filter` is the expensive property here — it forces
+ * the compositor to re-read what is behind the element every frame — so it is
+ * applied to the two or three floating surfaces that earn it and nothing else.
+ *
+ * The fallback is not a nicety. Older Android WebViews ship without
+ * `backdrop-filter`, and a translucent bar with no blur behind it is a bar with
+ * body text showing through the labels. Falling back to the solid raised
+ * surface loses the texture and keeps the app usable.
+ */
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass {
+    background: var(--surface-raised);
+    border-color: var(--line);
+  }
+}
+
+/**
+ * Type steps.
+ *
+ * Three named sizes rather than a full scale, because three are what the shell
+ * actually needs and an unused step is a step that drifts. Everything else
+ * keeps using Tailwind's sizes; these exist where the *relationship* between
+ * size, weight and tracking is the point — a display line at 32px with default
+ * tracking looks loose, and correcting it per screen is how two headings on two
+ * pages end up subtly different.
+ *
+ * `--text-display` is fluid so a 360px handset and a desktop both get a heading
+ * in proportion to their column, with no breakpoint to maintain.
+ */
+.type-display {
+  font-size: clamp(1.75rem, 7vw, 2.375rem);
+  line-height: 1.06;
+  letter-spacing: -0.03em;
+  font-weight: 800;
+}
+
+.type-title {
+  font-size: 1.0625rem;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+  font-weight: 700;
+}
+
+/* A small label above a group. Uppercase and tracked out, so it reads as a
+   signpost rather than as content competing with the heading below it. */
+.type-eyebrow {
+  font-size: 0.6875rem;
+  line-height: 1;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--ink-muted);
 }

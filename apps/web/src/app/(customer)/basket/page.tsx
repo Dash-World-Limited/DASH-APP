@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
-import { AppHeader } from '@/components/AppHeader';
 import {
   Button,
   Card,
@@ -152,7 +151,6 @@ export default function BasketPage() {
   if (!hydrated) {
     return (
       <>
-        <AppHeader />
         <main id="main" className="mx-auto max-w-3xl px-5 py-10">
           <LoadingBlock label="Loading your basket" />
         </main>
@@ -163,7 +161,6 @@ export default function BasketPage() {
   if (itemCount === 0) {
     return (
       <>
-        <AppHeader />
         <main id="main" className="mx-auto max-w-3xl px-5 py-10">
           <h1 className="mb-6 text-3xl font-extrabold tracking-tight">Your basket</h1>
           <EmptyState
@@ -182,7 +179,6 @@ export default function BasketPage() {
 
   return (
     <>
-      <AppHeader />
       <main id="main" className="mx-auto max-w-3xl px-5 py-10">
         <h1 className="text-3xl font-extrabold tracking-tight">Your basket</h1>
         <p className="mt-1.5 text-sm text-graphite-600">

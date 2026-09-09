@@ -11,7 +11,6 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
-import { AppHeader } from '@/components/AppHeader';
 import { Card, EmptyState, Input, LoadingBlock } from '@/components/ui';
 import { apiFetch } from '@/lib/api';
 
@@ -62,7 +61,6 @@ export default function SearchPage() {
 
   return (
     <div className="min-h-dvh">
-      <AppHeader />
       <main id="main" className="mx-auto max-w-lg px-4 py-6">
         <h1 className="text-2xl font-bold tracking-tight">Search</h1>
         <Input

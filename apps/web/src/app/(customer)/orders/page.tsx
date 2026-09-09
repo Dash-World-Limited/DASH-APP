@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { AppHeader } from '@/components/AppHeader';
 import {
   Badge,
   Button,
@@ -56,7 +55,6 @@ export default function OrdersPage() {
 
   return (
     <>
-      <AppHeader />
       <main id="main" className="mx-auto max-w-3xl px-5 py-10">
         <h1 className="text-3xl font-extrabold tracking-tight">Your orders</h1>
 

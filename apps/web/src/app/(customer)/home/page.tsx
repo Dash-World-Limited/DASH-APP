@@ -1,11 +1,31 @@
 'use client';
 
+/**
+ * Customer Home.
+ *
+ * The job of this screen is to answer two questions in the first second:
+ * *what is DASH* and *what can I get where I am standing*. Everything on it
+ * serves one of those. The five front doors answer the first; the sellers below
+ * answer the second, and they are computed from the same delivery location the
+ * header shows, so the page cannot say one thing at the top and another
+ * underneath.
+ *
+ * ## What was removed
+ *
+ * A row of chips reading Everything · Food · Groceries · Essentials. That was
+ * the app's previous top-level structure, left sitting directly beneath its
+ * replacement — two competing answers to "how is DASH organised", one of which
+ * put Groceries and Essentials at the same level as the five sections that now
+ * contain them. The doors are the structure; a filter that quietly restates an
+ * older one is worse than no filter.
+ */
+
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { AppHeader } from '@/components/AppHeader';
+
+import { SectionDoors } from '@/components/SectionDoors';
 import {
   Badge,
-  Card,
   EmptyState,
   ErrorState,
   EstimateNote,
@@ -14,85 +34,54 @@ import {
   formatNairaCompact,
 } from '@/components/ui';
 import { apiFetch, ApiRequestError, type VendorSummary } from '@/lib/api';
-import { SECTIONS } from '@/lib/sections';
-import { authedFetch, useHasSession } from '@/lib/session';
+import { locateWithDevice, locationLabel, useDeliveryLocation } from '@/lib/delivery-location';
 
 /**
- * Where to look from before anything better is known.
+ * A seller's mark, until sellers have photographs.
  *
- * Only a starting guess. A signed-in customer's own default address replaces
- * it below, because answering "do you deliver here?" about a fixed point in
- * Victoria Island is answering a question nobody asked: a customer whose
- * address is anywhere else is told the service is unavailable while their
- * actual address is perfectly serviceable.
+ * `Vendor` carries no image field yet — merchant photography arrives with
+ * vendor catalogue management, where a real merchant uploads it — so this is
+ * the honest stand-in: the seller's own initials, tinted from their own name so
+ * the same shop is the same colour every time. It occupies exactly the space a
+ * photograph will, which is the point: the layout does not have to change when
+ * the images land, and nothing here pretends to be a picture of anything.
  */
-const DEFAULT_POSITION = { latitude: 6.4281, longitude: 3.4219 };
+function SellerMark({ name }: { name: string }) {
+  const initials = name
+    .split(/\s+/)
+    .filter((word) => /[a-z0-9]/i.test(word))
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? '')
+    .join('');
 
-/**
- * Quick filters over the vendor list below the sections.
- *
- * These are not the app's top-level structure — that is `SECTIONS`, rendered
- * as five equal tiles. `grocery` and `retail` remain distinct backend
- * categories and are still filterable here; they simply both live under Shops
- * as far as a customer is concerned.
- */
-const CATEGORIES = [
-  { value: '', label: 'Everything' },
-  { value: 'restaurant', label: 'Food' },
-  { value: 'grocery', label: 'Groceries' },
-  { value: 'pharmacy', label: 'Pharmacy' },
-  { value: 'retail', label: 'Essentials' },
-] as const;
+  // A stable hue per seller. Deterministic, so it never flickers between
+  // renders or differs between the list and the seller's own page.
+  let hash = 0;
+  for (const character of name) hash = (hash * 31 + character.charCodeAt(0)) % 360;
 
-interface Serviceability {
-  serviceable: boolean;
-  reason?: string;
-  message?: string;
-  city: { id: string; name: string; slug: string } | null;
-  zone?: { id: string; name: string } | null;
-  busy?: boolean;
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[var(--radius-control)] text-base font-extrabold tracking-tight"
+      style={{
+        backgroundColor: `oklch(0.94 0.045 ${hash})`,
+        color: `oklch(0.42 0.12 ${hash})`,
+      }}
+    >
+      {initials || '·'}
+    </span>
+  );
 }
 
-export default function BrowsePage() {
-  const [position, setPosition] = useState(DEFAULT_POSITION);
-  const [service, setService] = useState<Serviceability | null>(null);
+export default function HomePage() {
+  const location = useDeliveryLocation();
   const [vendors, setVendors] = useState<VendorSummary[] | null>(null);
-  const [category, setCategory] = useState('');
   const [search, setSearch] = useState('');
   const [error, setError] = useState<ApiRequestError | null>(null);
-  const [locating, setLocating] = useState(false);
-  const signedIn = useHasSession();
+  const [attempt, setAttempt] = useState(0);
 
-  /**
-   * Browse from the customer's own default address once it is known.
-   *
-   * Serviceability and the vendor list are both distance questions, so asking
-   * them about the constant above rather than about where the customer's order
-   * would actually go produces a confident, wrong answer.
-   */
-  useEffect(() => {
-    if (!signedIn) return;
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const result = await authedFetch<{
-          addresses: { latitude: number; longitude: number; isDefault: boolean }[];
-        }>('/v1/addresses');
-        if (cancelled) return;
-        const preferred = result.addresses.find((a) => a.isDefault) ?? result.addresses[0];
-        if (preferred) {
-          setPosition({ latitude: preferred.latitude, longitude: preferred.longitude });
-        }
-      } catch {
-        // Keep the default. A failure here is not worth interrupting browsing.
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [signedIn]);
+  const service = location.serviceability;
+  const place = locationLabel(location);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,17 +91,9 @@ export default function BrowsePage() {
       setVendors(null);
       try {
         const query = new URLSearchParams({
-          latitude: String(position.latitude),
-          longitude: String(position.longitude),
+          latitude: String(location.position.latitude),
+          longitude: String(location.position.longitude),
         });
-
-        const serviceability = await apiFetch<Serviceability>(
-          `/v1/serviceability?${query.toString()}`,
-        );
-        if (cancelled) return;
-        setService(serviceability);
-
-        if (category) query.set('category', category);
         if (search.trim().length > 1) query.set('search', search.trim());
 
         const result = await apiFetch<{ vendors: VendorSummary[] }>(
@@ -124,7 +105,7 @@ export default function BrowsePage() {
           setError(
             caught instanceof ApiRequestError
               ? caught
-              : new ApiRequestError(0, 'unknown', 'Could not load vendors.'),
+              : new ApiRequestError(0, 'unknown', 'Could not load sellers.'),
           );
           setVendors([]);
         }
@@ -137,212 +118,167 @@ export default function BrowsePage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [position, category, search]);
-
-  const useMyLocation = (): void => {
-    if (!navigator.geolocation) return;
-    setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (result) => {
-        setPosition({
-          latitude: result.coords.latitude,
-          longitude: result.coords.longitude,
-        });
-        setLocating(false);
-      },
-      () => {
-        // Permission refused or unavailable — keep the default and say nothing
-        // alarming. The customer can still browse.
-        setLocating(false);
-      },
-      { timeout: 8000 },
-    );
-  };
+  }, [location.position, search, attempt]);
 
   return (
-    <>
-      <AppHeader />
-      <main id="main" className="mx-auto max-w-6xl px-5 py-8">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-extrabold tracking-tight">Order in Lagos</h1>
-            {service?.serviceable ? (
-              <p className="mt-1.5 text-sm text-graphite-600">
-                Delivering to <strong>{service.zone?.name ?? service.city?.name}</strong>
-                {service.busy ? (
-                  <span className="ml-2">
-                    <Badge tone="warning">Busy right now</Badge>
-                  </span>
-                ) : null}
-              </p>
-            ) : null}
-          </div>
-          <button
-            onClick={useMyLocation}
-            disabled={locating}
-            className="rounded-xl border px-4 py-2 text-sm font-semibold hover:bg-[var(--surface-raised)]"
-          >
-            {locating ? 'Finding you…' : 'Use my location'}
-          </button>
-        </div>
-
-        {service && !service.serviceable ? (
-          <div className="mt-6 rounded-[var(--radius-card)] border border-coral-400/40 bg-coral-50 px-5 py-4">
-            <p className="font-semibold text-coral-600">Not delivering here yet</p>
-            <p className="mt-1 text-sm text-graphite-600">{service.message}</p>
-          </div>
-        ) : null}
-
-        <div className="mt-6 space-y-4">
-          <label className="sr-only" htmlFor="vendor-search">
-            Search vendors
-          </label>
-          <input
-            id="vendor-search"
-            type="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search for jollof, groceries, a pharmacy…"
-            className="w-full rounded-xl border bg-[var(--surface-raised)] px-4 py-3 text-base placeholder:text-graphite-400"
-          />
-
+    <main id="main" className="mx-auto max-w-3xl px-5 pt-6">
+      {/*
+        Text-led and left-aligned rather than a centred banner. The heading is
+        the only display-sized thing on the page, which is what makes it read as
+        the top of a hierarchy instead of one more card.
+      */}
+      <header>
+        <h1 className="type-display">
+          Order anything
+          <br />
+          in Lagos
+        </h1>
+        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--ink-muted)]">
           {/*
-            The five things DASH sells, as equals.
-
-            One row, one weight, one treatment. DASH is a multi-service local
-            commerce app, and Home is where that has to be legible in a
-            glance: a hero for any one section would say that section is the
-            app and the rest are extras. Each tile opens that section's
-            sellers, and from there the pattern is the same everywhere —
-            seller, that seller's own categories, item, basket.
-
-            The vendor list below stays as it is. These are doors into the
-            catalogue, not a replacement for browsing it.
+            Deliberately silent when the address is outside coverage. `place` is
+            "Outside our delivery area" in that case, and dropping it into this
+            sentence produced "Showing sellers near Outside our delivery area" —
+            with the panel immediately below saying the same thing properly.
           */}
-          <nav aria-label="Sections">
-            <ul className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-              {SECTIONS.map((section) => (
-                <li key={section.slug}>
-                  <Link
-                    href={`/${section.slug}`}
-                    className="flex h-full flex-col justify-between rounded-[var(--radius-card)] border border-[var(--line)] bg-[var(--surface-raised)] p-4 transition-colors hover:border-[var(--primary)]"
-                  >
-                    <span className="font-bold leading-tight">{section.label}</span>
-                    <span className="mt-1 text-xs leading-snug text-[var(--ink-muted)]">
-                      {section.blurb}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </nav>
+          {service && !service.serviceable ? null : place ? (
+            <>
+              <span>
+                Showing sellers near <strong className="text-[var(--ink)]">{place}</strong>
+              </span>
+              {service?.busy ? <Badge tone="warning">Busy right now</Badge> : null}
+            </>
+          ) : (
+            <span>Finding sellers near you…</span>
+          )}
+          {location.source !== 'device' ? (
+            <button
+              type="button"
+              onClick={locateWithDevice}
+              disabled={location.locating}
+              className="font-semibold text-[var(--primary)] underline-offset-4 hover:underline disabled:opacity-60"
+            >
+              {location.locating ? 'Finding you…' : 'Use my location'}
+            </button>
+          ) : null}
+        </p>
+      </header>
 
-          <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by category">
-            {CATEGORIES.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => setCategory(option.value)}
-                aria-pressed={category === option.value}
-                className={`rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
-                  category === option.value
-                    ? 'bg-graphite-900 text-white'
-                    : 'border hover:bg-[var(--surface-raised)]'
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+      {service && !service.serviceable ? (
+        <div className="mt-5 rounded-[var(--radius-card)] border border-[var(--danger)]/40 bg-[var(--danger-soft)] px-5 py-4">
+          <p className="font-semibold text-[var(--danger)]">Not delivering here yet</p>
+          <p className="mt-1 text-sm text-[var(--ink-muted)]">{service.message}</p>
         </div>
+      ) : null}
 
-        <div className="mt-8">
+      <div className="mt-6">
+        <label className="sr-only" htmlFor="vendor-search">
+          Search sellers
+        </label>
+        <input
+          id="vendor-search"
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search for jollof, groceries, a pharmacy…"
+          className="w-full rounded-[var(--radius-control)] border border-[var(--line)] bg-[var(--surface-raised)] px-4 py-3 text-base shadow-[var(--shadow-card)] placeholder:text-[var(--ink-muted)]"
+        />
+      </div>
+
+      <section className="mt-7">
+        <h2 className="type-eyebrow">Shop by section</h2>
+        <div className="mt-3">
+          <SectionDoors />
+        </div>
+      </section>
+
+      <section className="mt-8">
+        <h2 className="type-eyebrow">
+          {search.trim().length > 1 ? 'Matching sellers' : 'Sellers near you'}
+        </h2>
+
+        <div className="mt-3">
           {error ? (
             <ErrorState
               message={error.message}
               requestId={error.requestId}
-              onRetry={() => setPosition({ ...position })}
+              onRetry={() => setAttempt((n) => n + 1)}
             />
           ) : vendors === null ? (
-            <LoadingBlock label="Loading vendors" />
+            <LoadingBlock label="Loading sellers" />
           ) : vendors.length === 0 ? (
             <EmptyState
               title="Nothing matches that"
               description={
                 search
-                  ? `No vendors matched “${search}”. Try a different search or clear the filters.`
-                  : 'There are no vendors in this category yet.'
+                  ? `No sellers matched “${search}”. Try a different search, or pick a section above.`
+                  : 'There are no sellers near this location yet. Try moving your delivery location.'
               }
             />
           ) : (
-            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <ul className="space-y-2.5">
               {vendors.map((vendor) => {
                 const closed = vendor.branch?.state === 'closed';
                 return (
-                  <Card
-                    as="li"
-                    key={vendor.id}
-                    className="overflow-hidden transition-shadow hover:shadow-lg"
-                  >
+                  <li key={vendor.id}>
                     <Link
                       href={`/browse/${vendor.slug}`}
-                      className={`block p-5 ${closed ? 'opacity-60' : ''}`}
+                      className={`flex items-start gap-3.5 rounded-[var(--radius-card)] border border-[var(--line)] bg-[var(--surface-raised)] p-3.5 shadow-[var(--shadow-card)] transition-[transform,border-color] duration-[var(--duration-base)] ease-[var(--ease-spring)] hover:border-[var(--line-strong)] active:scale-[0.99] ${
+                        closed ? 'opacity-65' : ''
+                      }`}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <h2 className="text-lg font-bold leading-tight">{vendor.name}</h2>
-                        {closed ? (
-                          <Badge tone="danger">Closed</Badge>
-                        ) : vendor.branch?.state === 'busy' ? (
-                          <Badge tone="warning">Busy</Badge>
-                        ) : (
-                          <Badge tone="success">Open</Badge>
-                        )}
-                      </div>
+                      <SellerMark name={vendor.name} />
 
-                      <p className="mt-1.5 line-clamp-2 text-sm text-graphite-600">
-                        {vendor.description}
-                      </p>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-start justify-between gap-3">
+                          <span className="type-title truncate">{vendor.name}</span>
+                          {closed ? (
+                            <Badge tone="danger">Closed</Badge>
+                          ) : vendor.branch?.state === 'busy' ? (
+                            <Badge tone="warning">Busy</Badge>
+                          ) : (
+                            <Badge tone="success">Open</Badge>
+                          )}
+                        </span>
 
-                      <dl className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-                        <div className="flex items-center gap-1">
-                          <dt className="sr-only">Rating</dt>
-                          <dd className="font-semibold">
-                            {vendor.rating.average.toFixed(1)}
-                            <span className="ml-1 font-normal text-graphite-400">
-                              ({vendor.rating.count})
+                        {vendor.description ? (
+                          // No `block` alongside the clamp: `line-clamp-*` sets
+                          // `display: -webkit-box` itself, and a `block` next to
+                          // it wins in the generated order and silently disables
+                          // the clamping. Observed in the browser — two-line
+                          // descriptions in a row meant to hold one.
+                          <span className="mt-0.5 line-clamp-2 text-sm text-[var(--ink-muted)]">
+                            {vendor.description}
+                          </span>
+                        ) : null}
+
+                        <span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--ink-muted)]">
+                          {vendor.rating.count > 0 ? (
+                            <span className="font-semibold text-[var(--ink)]">
+                              ★ {vendor.rating.average.toFixed(1)}
+                              <span className="ml-1 font-normal text-[var(--ink-muted)]">
+                                ({vendor.rating.count})
+                              </span>
                             </span>
-                          </dd>
-                        </div>
-                        {vendor.distanceMetres !== null ? (
-                          <div>
-                            <dt className="sr-only">Distance</dt>
-                            <dd className="text-graphite-600">
-                              {formatDistance(vendor.distanceMetres)}
-                            </dd>
-                          </div>
-                        ) : null}
-                        {vendor.branch ? (
-                          <div>
-                            <dt className="sr-only">Estimated time</dt>
-                            <dd className="text-graphite-600">
-                              ~{vendor.branch.estimatedMinutes} min
-                            </dd>
-                          </div>
-                        ) : null}
-                      </dl>
-
-                      {vendor.branch && vendor.branch.minimumOrder > 0 ? (
-                        <EstimateNote>
-                          {formatNairaCompact(vendor.branch.minimumOrder)} minimum
-                        </EstimateNote>
-                      ) : null}
+                          ) : null}
+                          {vendor.distanceMetres !== null ? (
+                            <span>{formatDistance(vendor.distanceMetres)}</span>
+                          ) : null}
+                          {vendor.branch ? (
+                            <EstimateNote>~{vendor.branch.estimatedMinutes} min</EstimateNote>
+                          ) : null}
+                          {vendor.branch && vendor.branch.minimumOrder > 0 ? (
+                            <span>{formatNairaCompact(vendor.branch.minimumOrder)} minimum</span>
+                          ) : null}
+                        </span>
+                      </span>
                     </Link>
-                  </Card>
+                  </li>
                 );
               })}
             </ul>
           )}
         </div>
-      </main>
-    </>
+      </section>
+    </main>
   );
 }
