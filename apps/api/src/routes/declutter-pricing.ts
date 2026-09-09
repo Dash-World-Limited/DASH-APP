@@ -42,6 +42,7 @@ import {
   escalationReasons,
   isAcceptanceValid,
   looksInconsistent,
+  PHOTO_ROLES,
   PILOT_POLICY,
   PricingDecisionError,
   reconcileConfidence,
@@ -773,7 +774,7 @@ interface SubmissionForValuation {
     observedAt: Date;
     note: string | null;
   }[];
-  photos: { id: string }[];
+  photos: { id: string; role: string }[];
 }
 
 /**
@@ -828,9 +829,14 @@ function buildValuationRequest(submission: SubmissionForValuation): ValuationReq
     ...(row.note ? { note: row.note } : {}),
   }));
 
+  // The role the seller chose at upload. Before the upload path asked for one,
+  // every photograph arrived as `other`, which meant `assessEvidence` could
+  // never see a label or screen shot and capped confidence on every item.
   const photos: ValuationPhoto[] = submission.photos.map((photo) => ({
     id: photo.id,
-    role: 'other' as const,
+    role: (PHOTO_ROLES as readonly string[]).includes(photo.role)
+      ? (photo.role as ValuationPhoto['role'])
+      : 'other',
     contentType: 'image/jpeg',
   }));
 

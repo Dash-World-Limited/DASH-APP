@@ -25,7 +25,7 @@
  * tomorrow cannot appear in a public response by accident.
  */
 
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { writeAudit } from '@dash/db';
 import { encrypt } from '@dash/domain/envelope';
@@ -43,52 +43,13 @@ import {
   verificationGaps,
   VERIFICATION_GAP_LABELS,
   DeclutterTransitionError,
-  type DeclutterActor,
   type KycState,
   type SubmissionState,
 } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
+import { auditContext, customerIdOf, declutterActorFor } from './declutter-shared.js';
 import type { Actor } from '@dash/domain/permissions';
-
-// ---------------------------------------------------------------------------
-// Who is acting
-// ---------------------------------------------------------------------------
-
-/**
- * Map a DASH actor onto the Declutter state machines' vocabulary.
- *
- * The distinction matters for the audit trail as much as for the check. A
- * super admin holds every permission, so nothing stops them acting on a
- * seller's behalf — that is the intended escape hatch — but the event must not
- * then claim the seller did it. Seniority is read from roles, and the most
- * senior wins.
- */
-function declutterActorFor(actor: Actor): DeclutterActor {
-  if (actor.roles.includes('super_admin')) return 'super_admin';
-  if (actor.roles.includes('declutter_admin')) return 'admin';
-  if (actor.roles.includes('declutter_moderator')) return 'staff';
-  return 'seller';
-}
-
-function customerIdOf(actor: Actor): string {
-  if (!actor.customerId) {
-    throw ApiError.forbidden('This account cannot sell on Declutters.');
-  }
-  return actor.customerId;
-}
-
-function auditContext(request: FastifyRequest): {
-  ipAddress?: string;
-  userAgent?: string;
-  requestId?: string;
-} {
-  return {
-    ipAddress: request.ip,
-    userAgent: request.headers['user-agent'],
-    requestId: request.id,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
