@@ -222,3 +222,6 @@ export function parseJsonColumn<T>(value: string | null, fallback: T): T {
 export function stringifyJsonColumn(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
 }
+
+/** Declutter reference data. Idempotent; safe against a live database. */
+export { seedDeclutterTaxonomy, type DeclutterSeedResult } from './seed-declutter.js';

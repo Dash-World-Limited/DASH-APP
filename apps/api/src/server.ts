@@ -63,6 +63,7 @@ import { registerOrderRoutes } from './routes/orders.js';
 import { registerVendorRoutes } from './routes/vendor.js';
 import { registerRiderRoutes } from './routes/rider.js';
 import { registerAdminRoutes } from './routes/admin.js';
+import { registerDeclutterRoutes } from './routes/declutter.js';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAccountRoutes } from './routes/account.js';
 import { registerDeviceRoutes } from './routes/devices.js';
@@ -369,6 +370,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerVendorRoutes(app);
   await registerRiderRoutes(app);
   await registerAdminRoutes(app);
+  await registerDeclutterRoutes(app);
   await registerWebhookRoutes(app);
   await registerAccountRoutes(app);
   await registerDeviceRoutes(app);
