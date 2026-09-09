@@ -13,6 +13,7 @@ import { PrismaClient } from '@prisma/client';
 import { hashPassword, hashOtp, generateReference, generatePin } from '@dash/domain/crypto';
 import { ensureRidersAreCustomers } from './rider-customer.js';
 import { seedDeclutterTaxonomy } from './seed-declutter.js';
+import { seedLegalDocuments } from './seed-legal.js';
 import { naira } from '@dash/domain/money';
 import { boundingBoxOf, parsePolygon } from '@dash/domain/geo';
 import { buildOrderCapture } from '@dash/domain/ledger';
@@ -1432,11 +1433,17 @@ async function main(): Promise<void> {
   // habit that breaks the first time it meets production.
   const declutter = await seedDeclutterTaxonomy(prisma);
 
+  // Reference data, upserted for the same reason the taxonomy is: a
+  // LegalAcceptance points at a specific document version, and that record is
+  // the evidence of what a person agreed to.
+  const legal = await seedLegalDocuments(prisma);
+
   console.warn('Seed complete.\n');
   console.warn(`  ${counts.cities} city, ${counts.zones} zones`);
   console.warn(
     `  Declutter: ${declutter.locations} locations, ${declutter.categories} categories`,
   );
+  console.warn(`  ${legal.documents} legal documents`);
   console.warn(`  ${counts.vendors} vendors, ${counts.items} catalogue items`);
   console.warn(`  ${counts.customers} customers, ${counts.riders} riders`);
   console.warn(`  ${counts.orders} orders, ${counts.ledgerTransactions} ledger transactions (all balanced)`);

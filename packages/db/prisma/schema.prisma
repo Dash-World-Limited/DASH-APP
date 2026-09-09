@@ -528,7 +528,65 @@ model Customer {
   referredByCode   String?
   dietaryPreferences String? // JSON array
 
+  // --- Signup profile ------------------------------------------------------
+  //
+  // Where the person is, how they plan to use DASH, and how they found it.
+  // Deliberately on Customer rather than Identity: `Identity` answers "who is
+  // authenticating", and stuffing a marketing attribution into it because
+  // signup happens to create one is how an auth table becomes a CRM table
+  // nobody dares change.
+  //
+  // Every one of these is nullable. Signup requires them, but the customers
+  // already in the database were created before the form existed, and a
+  // backfill inventing a state for them would be inventing data.
+  //
+  // **None of them grants anything.** `usageIntent` is a plan a person typed
+  // into an open form, not a permission: somebody choosing `regular_seller`
+  // has said how they intend to use DASH, and selling still requires the KYC
+  // and admin approval no form can reach. `acquisitionSource` is attribution,
+  // never a credential.
+
+  /// A Nigerian state name. Not `DeclutterLocation`, which lists only where the
+  /// marketplace can currently serve an item — refusing an account to somebody
+  /// in Kano because DASH does not deliver there yet would turn away the demand
+  /// that decides where DASH expands next.
+  state String?
+
+  /// City, town or area, as the person wrote it. Free text on purpose: no
+  /// controlled vocabulary covers every settlement in Nigeria, and a dropdown
+  /// that does not contain somebody's town teaches them their home does not
+  /// count.
+  cityArea String?
+
+  /// mainly_buying | occasional_seller | regular_seller | buying_and_selling
+  usageIntent String?
+
+  /// referral | dash_staff | social_media | search | partner | other
+  acquisitionSource String?
+  /// The follow-up answer, where the source asks for one — who referred them,
+  /// which partner, who they spoke to. An empty one is worse than none, because
+  /// it looks like data.
+  acquisitionDetail String?
+
+  /// When the person confirmed they are 18 or older.
+  ///
+  /// An attestation with a timestamp, not a date of birth. DASH has no reason
+  /// to hold the birthday of somebody who wants to buy a sofa, and a date
+  /// collected "just in case" is one that must then be protected, retained and
+  /// eventually deleted. A seller's real DOB, if ever needed, belongs in KYC
+  /// evidence behind step-up with the rest of their identity documents.
+  ageConfirmedAt DateTime?
+
   marketingOptIn Boolean @default(false)
+
+  /// When marketing consent was last given, and from where.
+  ///
+  /// A boolean alone cannot answer "when did they agree, and to what", which is
+  /// the only question that matters if consent is ever challenged. Null while
+  /// `marketingOptIn` is false. Consent is never a condition of holding a DASH
+  /// account: nothing anywhere refuses service on this column.
+  marketingOptInAt DateTime?
+  marketingOptInIp String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

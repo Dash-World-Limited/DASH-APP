@@ -225,3 +225,11 @@ export function stringifyJsonColumn(value: unknown): string | null {
 
 /** Declutter reference data. Idempotent; safe against a live database. */
 export { seedDeclutterTaxonomy, type DeclutterSeedResult } from './seed-declutter.js';
+export {
+  seedLegalDocuments,
+  TERMS_SLUG,
+  PRIVACY_SLUG,
+  CURRENT_TERMS_VERSION,
+  CURRENT_PRIVACY_VERSION,
+  type LegalSeedResult,
+} from './seed-legal.js';

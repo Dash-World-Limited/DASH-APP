@@ -23,7 +23,8 @@
     "./realtime": "./src/realtime/index.ts",
     "./mfa": "./src/mfa/index.ts",
     "./retention": "./src/retention/index.ts",
-    "./account": "./src/account/index.ts"
+    "./account": "./src/account/index.ts",
+    "./signup": "./src/signup/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
