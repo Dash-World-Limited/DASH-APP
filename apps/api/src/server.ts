@@ -64,6 +64,9 @@ import { registerVendorRoutes } from './routes/vendor.js';
 import { registerRiderRoutes } from './routes/rider.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerDeclutterRoutes } from './routes/declutter.js';
+import { registerValueCheckRoutes } from './routes/valuecheck.js';
+import { registerDeclutterPricingRoutes } from './routes/declutter-pricing.js';
+import { DeterministicValuationAdapter } from '@dash/domain/valuecheck';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAccountRoutes } from './routes/account.js';
 import { registerDeviceRoutes } from './routes/devices.js';
@@ -130,6 +133,9 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
       overrides.push ??
       (config.PUSH_PROVIDER === 'fcm' ? createFcmAdapter() : new ConsolePushAdapter(quiet)),
     storage: overrides.storage ?? new LocalStorageAdapter(config.STORAGE_LOCAL_DIR),
+    // ValueCheck. One value today; a live provider is a new branch and a new
+    // adapter, and no marketplace code changes when one arrives.
+    valuation: overrides.valuation ?? new DeterministicValuationAdapter(),
     exportArchive:
       overrides.exportArchive ?? new LocalExportArchiveAdapter(config.STORAGE_LOCAL_DIR),
     queue:
@@ -371,6 +377,8 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerRiderRoutes(app);
   await registerAdminRoutes(app);
   await registerDeclutterRoutes(app);
+  await registerValueCheckRoutes(app);
+  await registerDeclutterPricingRoutes(app);
   await registerWebhookRoutes(app);
   await registerAccountRoutes(app);
   await registerDeviceRoutes(app);

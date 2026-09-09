@@ -147,6 +147,16 @@ export const PERMISSIONS = [
   // commercial relationship, not an operational setting, and it must never be
   // reachable by whoever happens to be working the queue.
   'declutter:partner:write',
+
+  // --- DASH ValueCheck -----------------------------------------------------
+  // Its own family, because ValueCheck is a product rather than a Declutters
+  // feature: a standalone caller may hold `valuecheck:run` and nothing else.
+  'valuecheck:run',
+  /// Recording an admin's pricing decision on a submission.
+  'declutter:pricing:decide',
+  /// Authorising a final price when policy demands a super admin. Held by no
+  /// role but super_admin, and step-up gated.
+  'declutter:pricing:authorize',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -190,6 +200,9 @@ export const STEP_UP_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>(
   'declutter:contact:disclose:direct',
   'declutter:fraud:override',
   'declutter:partner:write',
+  // Authorising the price a stranger will pay. Consequential enough to want a
+  // live elevation behind it — and a single step-up covers a whole queue.
+  'declutter:pricing:authorize',
 ]);
 
 /** A step-up is valid for 15 minutes. After that, re-authenticate. */
@@ -352,6 +365,7 @@ const DECLUTTER_MODERATOR_PERMISSIONS: readonly Permission[] = [
   'declutter:submission:read',
   'declutter:submission:write',
   'declutter:valuation:run',
+  'valuecheck:run',
   'declutter:listing:read',
   'declutter:listing:write',
   'declutter:contact:review',
@@ -364,6 +378,7 @@ const DECLUTTER_ADMIN_PERMISSIONS: readonly Permission[] = [
   'declutter:seller:write',
   'declutter:kyc:review',
   'declutter:price:decide',
+  'declutter:pricing:decide',
   'declutter:listing:publish',
   'declutter:listing:suspend',
   'declutter:contact:disclose:direct',

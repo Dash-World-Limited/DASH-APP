@@ -27,6 +27,7 @@ import type {
   StoragePort,
 } from '@dash/domain/ports';
 import type { Keyring } from '@dash/domain/envelope';
+import type { ValuationPort } from '@dash/domain/valuecheck';
 import type { ErrorReportPort, MetricsPort } from '../observability/index.js';
 import type { Config } from '../config.js';
 import { bearerFrom, verifyAccessToken } from '../auth/tokens.js';
@@ -51,6 +52,8 @@ export interface Services {
   email: EmailPort;
   push: PushPort;
   storage: StoragePort;
+  /** DASH ValueCheck. The local deterministic adapter unless configured. */
+  valuation: ValuationPort;
   /** Where built personal-data export archives are held until download. */
   exportArchive: ExportArchivePort;
   queue: QueuePort;

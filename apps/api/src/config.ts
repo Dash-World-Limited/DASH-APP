@@ -69,6 +69,21 @@ const schema = z
     EMAIL_PROVIDER: z.enum(['console', 'smtp']).default('console'),
     PUSH_PROVIDER: z.enum(['console', 'fcm']).default('console'),
     /**
+     * Which engine answers a DASH ValueCheck.
+     *
+     * Only `local` exists today — the deterministic adapter, which is
+     * arithmetic over declared evidence and says so in every result it
+     * returns. The enum is here so a live provider is a new value plus an
+     * adapter rather than a change to any marketplace code.
+     *
+     * Deliberately *not* in the production boot guards below yet. Those refuse
+     * to start when a development-only adapter is configured, and adding
+     * ValueCheck to them today would block a production deploy over a feature
+     * that has not launched. The guard belongs in the commit that adds the
+     * first live provider, alongside the credential it needs.
+     */
+    VALUECHECK_PROVIDER: z.enum(['local']).default('local'),
+    /**
      * Path to the service-account JSON, read by the Firebase SDK itself.
      *
      * Declared here rather than reached for from `process.env` at the point of
