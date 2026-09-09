@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  advise,
   assessSellerIdentity,
   availabilityMachine,
   AVAILABILITY_STATES,
@@ -14,14 +13,11 @@ import {
   MODERATION_STATES,
   moderationMachine,
   normaliseName,
-  PricingDecisionError,
   reasonRequired,
   requiresRemoderation,
-  resolvePricingDecision,
   SUBMISSION_STATES,
   SUBMISSION_TERMINAL,
   submissionMachine,
-  validateValuationResult,
   canVerifySeller,
   isIdentityDocumentKind,
   verificationGaps,
@@ -34,8 +30,6 @@ import {
   requiresApprovalReason,
   requiresSellerConsent,
   type DeclutterActor,
-  type ValuationRequest,
-  type ValuationResult,
 } from './index.js';
 import {
   PERMISSIONS,
@@ -290,152 +284,6 @@ describe('seller name matching', () => {
       bankAccountName: 'Chinedu E Okonkwo',
     });
     expect(assessment.verdict).toBe('match');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ValueCheck
-// ---------------------------------------------------------------------------
-
-const goodResult: ValuationResult = {
-  estimatedMinKobo: 42_000_000,
-  estimatedMaxKobo: 45_500_000,
-  recommendedPriceKobo: 44_500_000,
-  confidenceBasisPoints: 8_400,
-  factors: [{ label: 'Battery health', direction: 'lowers', weight: 'medium' }],
-  reasoning: 'Comparable Lagos listings cluster just under ₦450,000.',
-  providerName: 'test',
-  modelVersion: 'v1',
-  algorithmVersion: 'valuecheck-1',
-};
-
-const request: ValuationRequest = {
-  submissionId: 'sub_1',
-  categoryKey: 'phones',
-  brand: 'Apple',
-  model: 'iPhone 13 Pro',
-  condition: 'good',
-  attributes: { storageGb: 128, batteryHealth: 86 },
-  visibleDefects: [],
-  includedAccessories: ['charger'],
-  locationKey: 'lagos-lekki',
-  sellerExpectedPriceKobo: 47_000_000,
-  comparables: [],
-};
-
-describe('valuation validation fails closed', () => {
-  it('accepts a well-formed result', () => {
-    expect(validateValuationResult(goodResult).ok).toBe(true);
-  });
-
-  it('rejects a recommendation outside its own range', () => {
-    const result = { ...goodResult, recommendedPriceKobo: 60_000_000 };
-    expect(validateValuationResult(result).rejections).toContain('recommendation_outside_range');
-  });
-
-  it('rejects an inverted range', () => {
-    const result = { ...goodResult, estimatedMinKobo: 99_000_000 };
-    expect(validateValuationResult(result).ok).toBe(false);
-  });
-
-  it('rejects fractional kobo', () => {
-    const result = { ...goodResult, recommendedPriceKobo: 44_500_000.5 };
-    expect(validateValuationResult(result).rejections).toContain('non_integer_kobo');
-  });
-
-  it('rejects a range so wide it says nothing', () => {
-    const result = {
-      ...goodResult,
-      estimatedMinKobo: 1_000_000,
-      estimatedMaxKobo: 200_000_000,
-      recommendedPriceKobo: 44_500_000,
-    };
-    expect(validateValuationResult(result).rejections).toContain('range_implausibly_wide');
-  });
-
-  it('rejects impossible confidence', () => {
-    expect(
-      validateValuationResult({ ...goodResult, confidenceBasisPoints: 12_000 }).rejections,
-    ).toContain('confidence_out_of_range');
-  });
-
-  it('rejects a result with no factors or no reasoning', () => {
-    expect(validateValuationResult({ ...goodResult, factors: [] }).rejections).toContain(
-      'no_factors',
-    );
-    expect(validateValuationResult({ ...goodResult, reasoning: '  ' }).rejections).toContain(
-      'empty_reasoning',
-    );
-  });
-
-  it('rejects a result that cannot say which model produced it', () => {
-    expect(validateValuationResult({ ...goodResult, modelVersion: '' }).rejections).toContain(
-      'missing_provenance',
-    );
-  });
-});
-
-describe('valuation advisories', () => {
-  it('flags a seller asking above the estimated range', () => {
-    expect(advise(request, goodResult).sellerExpectationHigh).toBe(true);
-  });
-
-  it('flags a seller asking suspiciously below the range', () => {
-    const cheap = { ...request, sellerExpectedPriceKobo: 10_000_000 };
-    expect(advise(cheap, goodResult).sellerExpectationLow).toBe(true);
-  });
-
-  it('flags thin comparable evidence', () => {
-    expect(advise(request, goodResult).thinComparables).toBe(true);
-  });
-});
-
-describe('the human decision', () => {
-  it('approves the recommendation without a reason', () => {
-    const decision = resolvePricingDecision({
-      kind: 'approved',
-      recommendedPriceKobo: 44_500_000,
-    });
-    expect(decision.finalPriceKobo).toBe(44_500_000);
-    expect(decision.reason).toBeNull();
-  });
-
-  it('refuses an adjustment with no reason', () => {
-    expect(() =>
-      resolvePricingDecision({
-        kind: 'adjusted',
-        recommendedPriceKobo: 44_500_000,
-        adminPriceKobo: 43_000_000,
-      }),
-    ).toThrow(PricingDecisionError);
-  });
-
-  it('records an adjustment with its reason', () => {
-    const decision = resolvePricingDecision({
-      kind: 'adjusted',
-      recommendedPriceKobo: 44_500_000,
-      adminPriceKobo: 43_000_000,
-      reason: 'Two comparable Lagos listings are currently under ₦440,000.',
-    });
-    expect(decision.finalPriceKobo).toBe(43_000_000);
-    expect(decision.reason).toContain('Lagos');
-  });
-
-  it('refuses an adjustment that adjusts nothing', () => {
-    expect(() =>
-      resolvePricingDecision({
-        kind: 'adjusted',
-        recommendedPriceKobo: 44_500_000,
-        adminPriceKobo: 44_500_000,
-        reason: 'no change',
-      }),
-    ).toThrow(PricingDecisionError);
-  });
-
-  it('refuses a rejection with no reason the seller can be told', () => {
-    expect(() =>
-      resolvePricingDecision({ kind: 'rejected', recommendedPriceKobo: 44_500_000 }),
-    ).toThrow(PricingDecisionError);
   });
 });
 

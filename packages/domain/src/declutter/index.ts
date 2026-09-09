@@ -11,14 +11,14 @@
  *   * `lifecycle` — the submission, listing and contact-request state machines.
  *   * `identity`  — seller KYC name matching, which is a people problem rather
  *                   than a string problem.
- *   * `valuation` — the DASH ValueCheck boundary: structured request, validated
- *                   result, human decision.
+ *
+ * Valuation is deliberately absent: DASH ValueCheck is its own product, lives
+ * in `@dash/domain/valuecheck`, and knows nothing about listings or sellers.
  *
  * Nothing here touches a database, a network or a clock it was not handed.
  */
 
 export * from './lifecycle.js';
 export * from './identity.js';
-export * from './valuation.js';
 export * from './taxonomy.js';
 export * from './seller.js';

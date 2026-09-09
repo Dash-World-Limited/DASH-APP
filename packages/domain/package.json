@@ -13,6 +13,7 @@
     "./pay": "./src/pay/index.ts",
     "./orders": "./src/orders/index.ts",
     "./declutter": "./src/declutter/index.ts",
+    "./valuecheck": "./src/valuecheck/index.ts",
     "./ledger": "./src/ledger/index.ts",
     "./permissions": "./src/permissions/index.ts",
     "./ports": "./src/ports/index.ts",
