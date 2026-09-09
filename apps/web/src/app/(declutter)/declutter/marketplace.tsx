@@ -11,32 +11,30 @@
  * before seeing what they were selling would be a worse product wearing a
  * consistent shape.
  *
- * Everything below the search box is driven by the server. Prices, badges,
- * availability and which listings exist at all are decided by the API; nothing
- * here computes a price, hides a listing or awards a badge.
+ * Category discovery is the row of pills, not a separate page. A directory that
+ * only re-lists the same categories is a click between a visitor and what they
+ * came for.
+ *
+ * **Every category here comes from the taxonomy.** There is no list of category
+ * names in this file, no per-category label map and no screen that knows one
+ * category from another. A category carries its own attribute schema, its own
+ * public/admin visibility rules and its own handover rule; a component that
+ * knew about "Cars" by name would eventually get one of those wrong, and the
+ * dangerous one is visibility — that is what keeps a VIN off a public page.
+ *
+ * Everything below the search box is decided by the server. Prices, badges,
+ * availability and which listings exist at all come from the API; nothing here
+ * computes a price, hides a listing or awards a badge.
  */
 
-import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import {
-  Badge,
-  Button,
-  Card,
-  EmptyState,
-  ErrorState,
-  Input,
-  Skeleton,
-  formatNaira,
-} from '@/components/ui';
+import { ListingTile } from '@/components/declutter/ListingTile';
 import { apiFetch, ApiRequestError } from '@/lib/api';
 import { track } from '@/lib/analytics';
 import {
-  AVAILABILITY_LABELS,
-  BADGE_LABELS,
   CONDITION_LABELS,
   SORT_OPTIONS,
-  photoSrc,
   type ListingCard,
   type Taxonomy,
 } from '@/lib/declutter';
@@ -49,10 +47,7 @@ interface Filters {
   sort: string;
 }
 
-const EMPTY_FILTERS: Filters = { q: '', category: '', location: '', condition: '', sort: 'newest' };
-
-/** Badges worth the space on a card. The rest belong on the detail page. */
-const CARD_BADGES = new Set(['dash_reviewed', 'verified_listing', 'trusted_partner']);
+const EMPTY: Filters = { q: '', category: '', location: '', condition: '', sort: 'newest' };
 
 function buildQuery(filters: Filters, cursor: string | null): string {
   const params = new URLSearchParams();
@@ -65,40 +60,50 @@ function buildQuery(filters: Filters, cursor: string | null): string {
   return params.toString();
 }
 
-export function Marketplace() {
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [listings, setListings] = useState<ListingCard[] | null>(null);
-  const [taxonomy, setTaxonomy] = useState<Taxonomy | null>(null);
+export function Marketplace({
+  initialListings,
+  initialCategories,
+}: {
+  initialListings: ListingCard[];
+  initialCategories: Taxonomy['categories'];
+}) {
+  const [typed, setTyped] = useState<Filters>(EMPTY);
+  const [applied, setApplied] = useState<Filters>(EMPTY);
+
+  // Seeded from the server render, so the first screen has real items in it
+  // before any JavaScript has fetched anything.
+  const [listings, setListings] = useState<ListingCard[] | null>(initialListings);
+  const [categories, setCategories] = useState(initialCategories);
+  const [areas, setAreas] = useState<Taxonomy['locations']>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [page, setPage] = useState(1);
 
-  // The search box is typed into; the request is not made on every keystroke.
-  // `applied` is what has actually been asked for.
-  const [applied, setApplied] = useState<Filters>(EMPTY_FILTERS);
-
-  const firstLoad = useRef(true);
+  // The server already delivered page one of the unfiltered feed. Refetching it
+  // on mount would blank a rendered grid to re-request what is already on it.
+  const skipFirstLoad = useRef(initialListings.length > 0);
 
   useEffect(() => {
     void apiFetch<Taxonomy>('/v1/declutter/taxonomy')
-      .then(setTaxonomy)
+      .then((taxonomy) => {
+        setAreas(taxonomy.locations);
+        if (taxonomy.categories.length > 0) setCategories(taxonomy.categories);
+      })
       // A filter bar that cannot load is a missing convenience, not a broken
-      // page. The feed below it still works.
-      .catch(() => setTaxonomy({ categories: [], locations: [] }));
+      // page. The grid below it still works.
+      .catch(() => undefined);
   }, []);
 
   const load = useCallback(async (active: Filters) => {
     setError(null);
-    setListings(null);
-    setPage(1);
+    setBusy(true);
     try {
       const data = await apiFetch<{ listings: ListingCard[]; nextCursor: string | null }>(
         `/v1/declutter/listings?${buildQuery(active, null)}`,
       );
       setListings(data.listings);
       setCursor(data.nextCursor);
-
       track('declutter_feed_viewed', {
         resultCount: data.listings.length,
         hasQuery: active.q.trim().length > 0,
@@ -110,19 +115,20 @@ export function Marketplace() {
       setError(
         caught instanceof ApiRequestError
           ? caught.message
-          : 'We could not load the marketplace. Check your connection and try again.',
+          : 'We could not reach the marketplace. Check your connection and try again.',
       );
       setListings([]);
+    } finally {
+      setBusy(false);
     }
   }, []);
 
   useEffect(() => {
-    void load(applied);
-    if (firstLoad.current) {
-      firstLoad.current = false;
+    if (skipFirstLoad.current) {
+      skipFirstLoad.current = false;
       return;
     }
-    if (applied.q.trim()) track('declutter_search_used', { hasQuery: true });
+    void load(applied);
   }, [applied, load]);
 
   async function loadMore() {
@@ -134,8 +140,6 @@ export function Marketplace() {
       );
       setListings((current) => [...(current ?? []), ...data.listings]);
       setCursor(data.nextCursor);
-      setPage((current) => current + 1);
-      track('declutter_feed_viewed', { resultCount: data.listings.length, page: page + 1 });
     } catch {
       setError('We could not load more items.');
     } finally {
@@ -143,9 +147,9 @@ export function Marketplace() {
     }
   }
 
-  function applyFilter(patch: Partial<Filters>) {
-    const next = { ...filters, ...patch };
-    setFilters(next);
+  function apply(patch: Partial<Filters>) {
+    const next = { ...typed, ...patch };
+    setTyped(next);
     setApplied(next);
     track('declutter_filter_applied', {
       ...(next.category ? { category: next.category } : {}),
@@ -155,150 +159,184 @@ export function Marketplace() {
     });
   }
 
-  const hasFilters =
-    applied.q.trim() !== '' || applied.category !== '' || applied.location !== '' || applied.condition !== '';
+  const filtered =
+    applied.q.trim() !== '' ||
+    applied.category !== '' ||
+    applied.location !== '' ||
+    applied.condition !== '';
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-6">
-      <header className="mb-6 space-y-2">
-        <h1 className="text-2xl font-bold sm:text-3xl">DASH World Declutters</h1>
-        <p className="max-w-2xl text-sm text-[var(--ink-muted)]">
-          Second-hand items in Lagos and Asaba, checked by the DASH team and sold at a fixed price.
-          No haggling, no strangers with your phone number.
-        </p>
-        <div className="flex flex-wrap gap-2 pt-1">
-          <Badge tone="gold">Fixed Price</Badge>
-          <Badge tone="success">DASH Reviewed</Badge>
-          <Badge tone="neutral">Verified sellers</Badge>
+    <section
+      id="browse"
+      className="mx-auto w-full max-w-[1240px] scroll-mt-24 px-5 py-16 sm:px-8 sm:py-20"
+    >
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="dcl-eyebrow">The marketplace</p>
+          <h2 className="dcl-display mt-3 text-3xl sm:text-4xl">
+            {filtered ? 'Matching items' : 'Available now'}
+          </h2>
         </div>
-      </header>
 
+        <label className="relative text-xs font-medium text-[var(--ink-muted)]">
+          <span className="sr-only">Sort by</span>
+          <select
+            className="dcl-glass min-h-11 rounded-full px-4 text-sm font-semibold text-[var(--ink)]"
+            value={typed.sort}
+            onChange={(event) => apply({ sort: event.target.value })}
+          >
+            {SORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value} className="bg-[var(--surface-raised)]">
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {/* --- Category discovery, straight from the taxonomy ----------------- */}
+      <nav aria-label="Categories" className="mt-8">
+        <ul className="flex snap-x gap-2 overflow-x-auto pb-2">
+          <li className="snap-start">
+            <CategoryPill
+              label="Everything"
+              active={typed.category === ''}
+              onClick={() => apply({ category: '' })}
+            />
+          </li>
+          {categories.map((category) => (
+            <li key={category.key} className="snap-start">
+              <CategoryPill
+                label={category.name}
+                active={typed.category === category.key}
+                onClick={() => apply({ category: category.key })}
+              />
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      {/* --- Search and filters --------------------------------------------- */}
       <form
-        className="mb-5 space-y-3"
         role="search"
+        className="mt-5 grid gap-3 lg:grid-cols-[1fr_auto]"
         onSubmit={(event) => {
           event.preventDefault();
-          setApplied(filters);
+          setApplied(typed);
+          if (typed.q.trim()) track('declutter_search_used', { hasQuery: true });
         }}
       >
-        <div className="flex gap-2">
+        <div className="dcl-glass flex min-w-0 items-center gap-3 rounded-full px-5">
+          <span aria-hidden className="text-lg leading-none text-[var(--ink-muted)]">
+            ⌕
+          </span>
           <label className="sr-only" htmlFor="declutter-search">
             Search items
           </label>
-          <Input
+          <input
             id="declutter-search"
             type="search"
-            placeholder="Search for a phone, a sofa, a generator…"
-            value={filters.q}
-            onChange={(event) => setFilters({ ...filters, q: event.target.value })}
-            className="flex-1"
+            placeholder="Search a phone, a sofa, a car…"
+            value={typed.q}
+            onChange={(event) => setTyped({ ...typed, q: event.target.value })}
+            className="min-h-12 w-full min-w-0 bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]"
           />
-          <Button type="submit">Search</Button>
         </div>
 
-        {/* Scrolls sideways on a handset rather than wrapping into four rows
-            that push the first listing off the screen.
-
-            `min-w-0` is load-bearing, not tidiness: a flex item defaults to
-            `min-width: auto`, which is its content size, so without it this row
-            refuses to shrink below the width of all four selects and drags a
-            horizontal scrollbar onto the whole page. An earlier version also
-            bled to the screen edge with negative margins; that made the same
-            overflow harder to see and is not worth the 16px. */}
-        <div id="filters" className="flex w-full min-w-0 gap-2 overflow-x-auto pb-1 sm:flex-wrap">
-          <FilterSelect
-            label="Category"
-            value={filters.category}
-            onChange={(value) => applyFilter({ category: value })}
-            options={[
-              { value: '', label: 'All categories' },
-              ...(taxonomy?.categories.map((category) => ({
-                value: category.key,
-                label: category.name,
-              })) ?? []),
-            ]}
-          />
+        <div className="flex min-w-0 gap-2">
           <FilterSelect
             label="Area"
-            value={filters.location}
-            onChange={(value) => applyFilter({ location: value })}
+            value={typed.location}
+            onChange={(value) => apply({ location: value })}
             options={[
-              { value: '', label: 'Lagos & Asaba' },
-              ...(taxonomy?.locations.map((location) => ({
-                value: location.slug,
-                label: location.label,
-              })) ?? []),
+              { value: '', label: 'All areas' },
+              ...areas.map((area) => ({ value: area.slug, label: area.label })),
             ]}
           />
           <FilterSelect
             label="Condition"
-            value={filters.condition}
-            onChange={(value) => applyFilter({ condition: value })}
+            value={typed.condition}
+            onChange={(value) => apply({ condition: value })}
             options={[
               { value: '', label: 'Any condition' },
               ...Object.entries(CONDITION_LABELS).map(([value, label]) => ({ value, label })),
             ]}
           />
-          <FilterSelect
-            label="Sort"
-            value={filters.sort}
-            onChange={(value) => applyFilter({ sort: value })}
-            options={SORT_OPTIONS}
-          />
+          <button
+            type="submit"
+            className="min-h-12 shrink-0 rounded-full bg-[var(--primary)] px-6 text-sm font-bold text-[var(--on-primary)] transition-colors hover:bg-[var(--primary-hover)]"
+          >
+            Search
+          </button>
         </div>
       </form>
 
-      {error ? (
-        <ErrorState title="Could not load items" message={error} onRetry={() => void load(applied)} />
-      ) : null}
+      {/* --- Results --------------------------------------------------------- */}
+      <div className="mt-12">
+        {error ? (
+          <ErrorPanel message={error} onRetry={() => void load(applied)} />
+        ) : listings === null || (busy && listings.length === 0) ? (
+          <GridSkeleton />
+        ) : listings.length === 0 ? (
+          <EmptyPanel
+            filtered={filtered}
+            onClear={() => {
+              setTyped(EMPTY);
+              setApplied(EMPTY);
+            }}
+          />
+        ) : (
+          <>
+            <p className="sr-only" aria-live="polite">
+              {listings.length} items shown
+            </p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4">
+              {listings.map((listing, index) => (
+                <ListingTile key={listing.slug} listing={listing} priority={index < 4} />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
 
-      {listings === null && !error ? <FeedSkeleton /> : null}
-
-      {listings !== null && listings.length === 0 && !error ? (
-        <EmptyState
-          title={hasFilters ? 'Nothing matches that' : 'Nothing listed yet'}
-          description={
-            hasFilters
-              ? 'Try a wider search, or clear the filters to see everything available.'
-              : 'New items are added as the DASH team checks them. Check back shortly.'
-          }
-          action={
-            hasFilters ? (
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setFilters(EMPTY_FILTERS);
-                  setApplied(EMPTY_FILTERS);
-                }}
-              >
-                Clear filters
-              </Button>
-            ) : undefined
-          }
-        />
-      ) : null}
-
-      {listings && listings.length > 0 ? (
-        <>
-          <p className="sr-only" aria-live="polite">
-            {listings.length} items shown
-          </p>
-          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {listings.map((listing) => (
-              <ListingTile key={listing.slug} listing={listing} />
-            ))}
-          </ul>
-        </>
-      ) : null}
-
-      {cursor ? (
-        <div className="mt-6 flex justify-center">
-          <Button variant="secondary" onClick={() => void loadMore()} disabled={loadingMore}>
-            {loadingMore ? 'Loading…' : 'Show more'}
-          </Button>
+      {cursor && !error ? (
+        <div className="mt-14 flex justify-center">
+          <button
+            type="button"
+            onClick={() => void loadMore()}
+            disabled={loadingMore}
+            className="dcl-glass min-h-12 rounded-full px-8 text-sm font-bold transition-colors hover:bg-[var(--dcl-glass-strong)] disabled:opacity-60"
+          >
+            {loadingMore ? 'Loading…' : 'Show more items'}
+          </button>
         </div>
       ) : null}
-    </div>
+    </section>
+  );
+}
+
+function CategoryPill({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`min-h-10 shrink-0 whitespace-nowrap rounded-full border px-4 text-sm font-semibold transition-colors ${
+        active
+          ? 'border-transparent bg-[var(--ink)] text-[var(--ink-inverted)]'
+          : 'border-[var(--line)] bg-[var(--dcl-glass)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -314,21 +352,20 @@ function FilterSelect({
   options: { value: string; label: string }[];
 }) {
   return (
-    // `relative` matters. The visually-hidden span below is
-    // `position: absolute`, and with no positioned ancestor its containing
-    // block is the page rather than this row — so it laid itself out at the
-    // far end of the row's *scrolled* content, escaped the overflow container
-    // that was supposed to clip it, and pulled a horizontal scrollbar across
-    // the whole site. One word, and the page stopped scrolling sideways.
-    <label className="relative shrink-0 text-xs font-medium text-[var(--ink-muted)]">
+    // `relative` matters. The visually-hidden span below is `position:
+    // absolute`, and with no positioned ancestor its containing block is the
+    // page rather than this row — so it lays itself out at the far end of the
+    // row's content, escapes whatever was meant to clip it, and drags a
+    // horizontal scrollbar across the whole site.
+    <label className="relative min-w-0 flex-1 text-xs font-medium text-[var(--ink-muted)] lg:flex-none">
       <span className="sr-only">{label}</span>
       <select
-        className="min-h-11 rounded-xl border bg-[var(--surface-raised)] px-3 text-sm font-semibold text-[var(--ink)]"
+        className="dcl-glass min-h-12 w-full min-w-0 rounded-full px-4 text-sm font-semibold text-[var(--ink)]"
         value={value}
         onChange={(event) => onChange(event.target.value)}
       >
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <option key={option.value} value={option.value} className="bg-[var(--surface-raised)]">
             {option.label}
           </option>
         ))}
@@ -337,86 +374,64 @@ function FilterSelect({
   );
 }
 
-function ListingTile({ listing }: { listing: ListingCard }) {
-  const badges = listing.badges.filter((badge) => CARD_BADGES.has(badge));
-
-  return (
-    <Card as="li" className="overflow-hidden">
-      <Link
-        href={`/declutter/${listing.slug}`}
-        className="block focus-visible:outline focus-visible:outline-2"
-        onClick={() =>
-          track('declutter_listing_viewed', {
-            slug: listing.slug,
-            category: listing.categoryKey,
-            priceKobo: listing.priceKobo,
-          })
-        }
-      >
-        <div className="relative aspect-square bg-graphite-100">
-          {listing.photo ? (
-            // A plain <img>: the bytes come from our own storage through a
-            // signed URL, and routing those through the Next optimiser would
-            // mean re-fetching a short-lived link on the server.
-            <img
-              src={photoSrc(listing.photo.url)}
-              alt={listing.photo.alt}
-              loading="lazy"
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center text-xs text-[var(--ink-muted)]">
-              No photograph
-            </div>
-          )}
-
-          {listing.availability !== 'available' ? (
-            <span className="absolute left-2 top-2 rounded-full bg-[var(--ink)] px-2 py-1 text-xs font-semibold text-[var(--ink-inverted)]">
-              {AVAILABILITY_LABELS[listing.availability] ?? listing.availability}
-            </span>
-          ) : null}
-        </div>
-
-        <div className="space-y-1 p-3">
-          <p className="line-clamp-2 text-sm font-semibold">{listing.title}</p>
-          <p className="text-base font-bold">{formatNaira(listing.priceKobo)}</p>
-          <p className="text-xs text-[var(--ink-muted)]">
-            {CONDITION_LABELS[listing.condition] ?? listing.condition} · {listing.location.label}
-          </p>
-          {badges.length > 0 ? (
-            <div className="flex flex-wrap gap-1 pt-1">
-              {badges.map((badge) => (
-                <Badge key={badge} tone={badge === 'trusted_partner' ? 'gold' : 'success'}>
-                  {BADGE_LABELS[badge] ?? badge}
-                </Badge>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </Link>
-    </Card>
-  );
-}
-
-function FeedSkeleton() {
+function GridSkeleton() {
   return (
     <>
       <p className="sr-only" aria-live="polite">
         Loading items
       </p>
-      <ul aria-hidden className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+      <div aria-hidden className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4">
         {Array.from({ length: 8 }, (_, index) => (
-          <li key={index}>
-            <Card className="overflow-hidden">
-              <Skeleton className="aspect-square rounded-none" />
-              <div className="space-y-2 p-3">
-                <Skeleton className="h-4 w-4/5" />
-                <Skeleton className="h-4 w-1/2" />
-              </div>
-            </Card>
-          </li>
+          <div key={index}>
+            <div className="dash-pulse aspect-[4/5] rounded-[var(--radius-card)] bg-[var(--dcl-glass)]" />
+            <div className="dash-pulse mt-3 h-3.5 w-4/5 rounded bg-[var(--dcl-glass)]" />
+            <div className="dash-pulse mt-2 h-3 w-1/2 rounded bg-[var(--dcl-glass)]" />
+          </div>
         ))}
-      </ul>
+      </div>
     </>
+  );
+}
+
+function EmptyPanel({ filtered, onClear }: { filtered: boolean; onClear: () => void }) {
+  return (
+    <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--line-strong)] px-6 py-20 text-center">
+      <p className="dcl-display text-2xl">
+        {filtered ? 'Nothing matches that yet' : 'Nothing listed yet'}
+      </p>
+      <p className="mx-auto mt-3 max-w-sm text-sm text-[var(--ink-muted)]">
+        {filtered
+          ? 'Try a wider search, or clear the filters to see everything available.'
+          : 'Items appear here as the DASH team finishes checking them. It is worth coming back.'}
+      </p>
+      {filtered ? (
+        <button
+          type="button"
+          onClick={onClear}
+          className="dcl-glass mt-7 min-h-11 rounded-full px-6 text-sm font-bold"
+        >
+          Clear filters
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ErrorPanel({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div
+      role="alert"
+      className="rounded-[var(--radius-card)] border border-[var(--danger)] bg-[var(--danger-soft)] px-6 py-12 text-center"
+    >
+      <p className="text-base font-bold text-[var(--danger)]">We could not load the marketplace</p>
+      <p className="mx-auto mt-2 max-w-sm text-sm text-[var(--ink-muted)]">{message}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="dcl-glass mt-7 min-h-11 rounded-full px-6 text-sm font-bold"
+      >
+        Try again
+      </button>
+    </div>
   );
 }

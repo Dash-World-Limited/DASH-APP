@@ -105,6 +105,45 @@ export const AVAILABILITY_LABELS: Record<string, string> = {
   sold: 'Sold',
 };
 
+/**
+ * The four things this marketplace promises, in the words it is allowed to use.
+ *
+ * `No Negotiation` is deliberately messaging rather than a badge. A badge is
+ * derived from a recorded fact about one listing; this is true of the whole
+ * product, and dressing a universal truth up as a per-item award would cheapen
+ * the badges that are actually earned.
+ *
+ * `DASH ValueChecked` is absent, and will stay absent until a live valuation
+ * provider has genuinely run and a human has authorised the price. The domain
+ * refuses to emit it; this file does not offer the words either.
+ */
+export const TRUST_PROMISES: { title: string; body: string }[] = [
+  {
+    title: 'DASH Reviewed',
+    body: 'A DASH team member inspects the item and approves what the listing says about it.',
+  },
+  {
+    title: 'Verified Listing',
+    body: 'The seller’s identity is checked against government ID before anything goes live.',
+  },
+  {
+    title: 'Fixed Price',
+    body: 'DASH sets one price from real market evidence. It is the price you pay.',
+  },
+  {
+    title: 'No Negotiation',
+    body: 'Nobody haggles, nobody is talked up, and nobody misses out for answering slowly.',
+  },
+];
+
+/**
+ * Where the parent brand lives.
+ *
+ * Declutters is a Dash World product, and a visitor who landed on a shared
+ * listing has no other way to learn that.
+ */
+export const DASH_WORLD_URL = 'https://dashworldng.com';
+
 export const SORT_OPTIONS: { value: string; label: string }[] = [
   { value: 'newest', label: 'Newest first' },
   { value: 'price_low', label: 'Price: low to high' },
@@ -133,6 +172,44 @@ export async function fetchListingOnServer(slug: string): Promise<ListingDetail 
     return null;
   }
 }
+
+/**
+ * The first page of listings and the taxonomy, fetched on the server.
+ *
+ * The landing page is image-led, and an image-led page whose images arrive
+ * after a round trip is a grey page. Fetching here puts real photographs into
+ * the first HTML the browser receives, which matters most on the connection a
+ * Lagos handset actually has.
+ *
+ * Failures degrade rather than throw. If the API is briefly unreachable the
+ * hero renders without its collage and the feed below it — which fetches
+ * client-side anyway — shows its own error state with a retry. A marketplace
+ * that 500s because a decorative image could not be found is worse than one
+ * that opens slightly plainer.
+ */
+export async function fetchLandingOnServer(): Promise<{
+  listings: ListingCard[];
+  categories: Taxonomy['categories'];
+}> {
+  const [listings, taxonomy] = await Promise.all([
+    fetch(`${API_BASE}/v1/declutter/listings?limit=12`, { cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() : { listings: [] }))
+      .then((body: { listings?: ListingCard[] }) => body.listings ?? [])
+      .catch(() => [] as ListingCard[]),
+    fetch(`${API_BASE}/v1/declutter/taxonomy`, { cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() : { categories: [] }))
+      .then((body: { categories?: Taxonomy['categories'] }) => body.categories ?? [])
+      .catch(() => [] as Taxonomy['categories']),
+  ]);
+
+  return { listings, categories: taxonomy };
+}
+
+/** Naira, without the trailing kobo nobody reads on a price tag. */
+export function formatPrice(kobo: number): string {
+  return `₦${Math.round(kobo / 100).toLocaleString('en-NG')}`;
+}
+
 
 /**
  * The canonical public origin, used for share links and structured data.

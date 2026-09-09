@@ -11,13 +11,14 @@
  * after each step is how people abandon a marketplace.
  *
  * So the page reads the caller's actual state and shows them the step they are
- * on, rather than a generic funnel.
+ * on, rather than a generic funnel. Verification is the long pole, it involves
+ * a document review by a human, and finding that out after typing a description
+ * is exactly the wasted effort this avoids.
  */
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
-import { Badge, Button, Card, ErrorState, Field, Input, LoadingBlock } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, useHasSession } from '@/lib/session';
 import { track } from '@/lib/analytics';
@@ -32,6 +33,8 @@ interface SellerSelf {
   canSubmit: boolean;
 }
 
+const WHATSAPP = 'https://wa.me/2349112496182';
+
 const STEPS = [
   {
     title: 'Tell us who you are',
@@ -39,19 +42,19 @@ const STEPS = [
   },
   {
     title: 'Get verified once',
-    body: 'Government ID, checked by a DASH team member. This happens once, not per item.',
+    body: 'Government ID, reviewed by a DASH team member. Once, not per item.',
   },
   {
-    title: 'Describe the item',
+    title: 'Show us the item',
     body: 'Photographs, condition and specifications. The more you show, the better the valuation.',
   },
   {
-    title: 'DASH sets a price, you accept it',
-    body: 'We value it and put one fixed price to you. Nothing is published until you agree.',
+    title: 'We price it, you accept it',
+    body: 'DASH values it against real market evidence and puts one fixed price to you. Nothing is published until you agree.',
   },
   {
     title: 'We handle the buyer',
-    body: 'Enquiries come to DASH. Your phone number is not published to anyone.',
+    body: 'Enquiries come to DASH. Your phone number is never published to anyone.',
   },
 ];
 
@@ -72,7 +75,7 @@ export function SellEntry() {
       setSeller(data.seller);
     } catch (caught) {
       // A 404 is the ordinary case: signed in, has never sold anything. It is
-      // not an error worth showing.
+      // not an error worth showing anybody.
       if (caught instanceof ApiRequestError && caught.status === 404) {
         setSeller(null);
       } else {
@@ -96,43 +99,86 @@ export function SellEntry() {
   }, []);
 
   return (
-    <main id="main" className="mx-auto w-full max-w-3xl px-4 py-6">
-      <h1 className="text-2xl font-bold sm:text-3xl">Sell an item</h1>
-      <p className="mt-2 text-sm text-[var(--ink-muted)]">
-        DASH values it, verifies you once, and handles the buyer. You agree the price before
-        anything is published.
-      </p>
+    <main id="main">
+      <section className="relative overflow-hidden border-b border-[var(--line)]">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -right-40 -top-40 h-[32rem] w-[32rem] rounded-full opacity-30 blur-[120px]"
+          style={{ background: 'radial-gradient(circle, rgba(23,179,166,0.55), transparent 65%)' }}
+        />
+        <div className="relative mx-auto w-full max-w-[1240px] px-5 py-16 sm:px-8 sm:py-20">
+          <p className="dcl-eyebrow">Selling on Declutters</p>
+          <h1 className="dcl-display mt-5 max-w-3xl text-[2.4rem] sm:text-5xl lg:text-6xl">
+            Find out what your things are actually worth.
+          </h1>
+          <p className="mt-6 max-w-xl text-base leading-relaxed text-[var(--ink-muted)] sm:text-lg">
+            DASH values the item, verifies you once, and handles every buyer. You agree the price
+            before anything is published — and your phone number never is.
+          </p>
+        </div>
+      </section>
 
-      <ol className="mt-6 space-y-3">
-        {STEPS.map((step, index) => (
-          <li key={step.title}>
-            <Card className="flex gap-3 p-4">
-              <span
-                aria-hidden
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-sm font-bold text-[var(--ink)]"
+      <div className="mx-auto grid w-full max-w-[1240px] gap-12 px-5 py-16 sm:px-8 lg:grid-cols-[1fr_minmax(0,26rem)] lg:gap-16">
+        <section aria-label="How selling works">
+          <h2 className="dcl-eyebrow">How it works</h2>
+          <ol className="mt-6 space-y-px overflow-hidden rounded-[var(--radius-card)] border border-[var(--line)] bg-[var(--line)]">
+            {STEPS.map((step, index) => (
+              <li key={step.title} className="flex gap-5 bg-[var(--surface)] p-6">
+                <span
+                  aria-hidden
+                  className="dcl-display shrink-0 text-2xl text-[var(--dcl-gold)]"
+                >
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <div>
+                  <h3 className="text-base font-bold">{step.title}</h3>
+                  <p className="mt-1.5 text-sm leading-relaxed text-[var(--ink-muted)]">
+                    {step.body}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        <aside className="lg:sticky lg:top-24 lg:self-start">
+          {error ? (
+            <div
+              role="alert"
+              className="rounded-[var(--radius-card)] border border-[var(--danger)] bg-[var(--danger-soft)] p-5"
+            >
+              <p className="text-sm font-bold text-[var(--danger)]">Could not load your account</p>
+              <p className="mt-2 text-sm text-[var(--ink-muted)]">{error}</p>
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="dcl-glass mt-5 min-h-11 rounded-full px-5 text-sm font-bold"
               >
-                {index + 1}
-              </span>
-              <div>
-                <p className="text-sm font-semibold">{step.title}</p>
-                <p className="mt-0.5 text-sm text-[var(--ink-muted)]">{step.body}</p>
+                Try again
+              </button>
+            </div>
+          ) : !loaded ? (
+            <div className="dcl-glass rounded-[var(--radius-card)] p-6">
+              <p className="sr-only" aria-live="polite">
+                Checking your account
+              </p>
+              <div aria-hidden className="space-y-3">
+                <div className="dash-pulse h-4 w-2/3 rounded bg-[var(--dcl-glass)]" />
+                <div className="dash-pulse h-3 w-full rounded bg-[var(--dcl-glass)]" />
+                <div className="dash-pulse h-11 w-40 rounded-full bg-[var(--dcl-glass)]" />
               </div>
-            </Card>
-          </li>
-        ))}
-      </ol>
-
-      <div className="mt-6">
-        {error ? (
-          <ErrorState title="Could not load" message={error} onRetry={() => void load()} />
-        ) : !loaded ? (
-          <LoadingBlock label="Checking your account" />
-        ) : (
-          <NextStep hasSession={hasSession} seller={seller} onChanged={() => void load()} />
-        )}
+            </div>
+          ) : (
+            <NextStep hasSession={hasSession} seller={seller} onChanged={() => void load()} />
+          )}
+        </aside>
       </div>
     </main>
   );
+}
+
+function Panel({ children }: { children: React.ReactNode }) {
+  return <div className="dcl-glass rounded-[var(--radius-card)] p-6">{children}</div>;
 }
 
 function NextStep({
@@ -146,15 +192,18 @@ function NextStep({
 }) {
   if (!hasSession) {
     return (
-      <Card className="p-4">
-        <p className="font-semibold">Sign in to start</p>
-        <p className="mt-1 text-sm text-[var(--ink-muted)]">
+      <Panel>
+        <p className="text-base font-bold">Sign in to start</p>
+        <p className="mt-2 text-sm text-[var(--ink-muted)]">
           You need a DASH account. If you already order on DASH, that is the same account.
         </p>
-        <Link href="/signin" className="mt-4 inline-block">
-          <Button>Sign in</Button>
+        <Link
+          href="/signin"
+          className="mt-6 inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
+        >
+          Sign in
         </Link>
-      </Card>
+      </Panel>
     );
   }
 
@@ -162,77 +211,75 @@ function NextStep({
 
   if (seller.kycStatus === 'verified') {
     return (
-      <Card className="p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="font-semibold">You are verified</p>
-          <Badge tone="success">Verified seller</Badge>
-        </div>
-        <p className="mt-1 text-sm text-[var(--ink-muted)]">
+      <Panel>
+        <p className="flex flex-wrap items-center gap-2 text-base font-bold">
+          You are verified
+          <span className="rounded-full bg-[var(--success-soft)] px-2.5 py-1 text-xs font-bold text-[var(--success)]">
+            Verified seller
+          </span>
+        </p>
+        <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
           Send the item to the Declutters team and we will value it. Photographs, the condition and
           anything that is not perfect about it all help — an item described honestly is valued
           faster and sells sooner.
         </p>
         <a
-          className="mt-4 inline-block"
-          href="https://wa.me/2349112496182"
+          href={WHATSAPP}
           target="_blank"
           rel="noopener noreferrer"
+          className="mt-6 inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
         >
-          <Button>Send an item on WhatsApp</Button>
+          Send an item on WhatsApp
         </a>
-      </Card>
+      </Panel>
     );
   }
 
   if (seller.kycStatus === 'pending') {
     return (
-      <Card className="p-4">
-        <p className="font-semibold">Your verification is with us</p>
-        <p className="mt-1 text-sm text-[var(--ink-muted)]">
+      <Panel>
+        <p className="text-base font-bold">Your verification is with us</p>
+        <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
           A DASH team member is checking your details. You will be able to submit items as soon as
           that is done.
         </p>
-      </Card>
+      </Panel>
     );
   }
 
   if (seller.kycStatus === 'suspended') {
     return (
-      <Card className="p-4">
-        <p className="font-semibold">Selling is paused on this account</p>
-        <p className="mt-1 text-sm text-[var(--ink-muted)]">
+      <Panel>
+        <p className="text-base font-bold">Selling is paused on this account</p>
+        <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
           Contact DASH support and we will explain what happened.
         </p>
-      </Card>
+      </Panel>
     );
   }
 
   return (
-    <Card className="p-4">
-      <p className="font-semibold">
+    <Panel>
+      <p className="text-base font-bold">
         {seller.kycStatus === 'rejected' ? 'Your verification was not accepted' : 'Get verified'}
       </p>
-      {seller.rejectionReason ? (
-        <p className="mt-1 text-sm text-[var(--ink-muted)]">{seller.rejectionReason}</p>
-      ) : (
-        <p className="mt-1 text-sm text-[var(--ink-muted)]">
-          One government ID and a phone number. This happens once, and it is why buyers can trust
-          the marketplace.
-        </p>
-      )}
-      <p className="mt-3 text-sm text-[var(--ink-muted)]">
+      <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
+        {seller.rejectionReason ??
+          'One government ID and a phone number. This happens once, and it is the reason buyers trust the marketplace.'}
+      </p>
+      <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
         Verification is completed with the Declutters team directly while the seller portal is being
         finished.
       </p>
       <a
-        className="mt-4 inline-block"
-        href="https://wa.me/2349112496182"
+        href={WHATSAPP}
         target="_blank"
         rel="noopener noreferrer"
+        className="mt-6 inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
       >
-        <Button>Continue on WhatsApp</Button>
+        Continue on WhatsApp
       </a>
-    </Card>
+    </Panel>
   );
 }
 
@@ -264,46 +311,59 @@ function BecomeSeller({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <Card className="space-y-3 p-4">
-      <p className="font-semibold">Start selling</p>
+    <Panel>
+      <p className="text-base font-bold">Start selling</p>
 
-      <Field
-        label="Display name"
-        htmlFor="seller-display-name"
-        hint="What buyers see. Your legal name is never published."
-      >
-        <Input
-          id="seller-display-name"
-          value={displayName}
-          maxLength={80}
-          onChange={(event) => setDisplayName(event.target.value)}
-          placeholder="e.g. Chinedu"
-        />
-      </Field>
+      <div className="mt-5 space-y-4">
+        <div>
+          <label htmlFor="seller-display-name" className="block text-sm font-semibold">
+            Display name
+          </label>
+          <input
+            id="seller-display-name"
+            value={displayName}
+            maxLength={80}
+            onChange={(event) => setDisplayName(event.target.value)}
+            placeholder="e.g. Chinedu"
+            className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--primary)]"
+          />
+          <p className="mt-1.5 text-xs text-[var(--ink-muted)]">
+            What buyers see. Your legal name is never published.
+          </p>
+        </div>
 
-      <Field
-        label="Area (optional)"
-        htmlFor="seller-area"
-        hint="A general area only — never a street address."
-      >
-        <Input
-          id="seller-area"
-          value={publicArea}
-          maxLength={80}
-          onChange={(event) => setPublicArea(event.target.value)}
-          placeholder="e.g. Lekki, Lagos"
-        />
-      </Field>
+        <div>
+          <label htmlFor="seller-area" className="block text-sm font-semibold">
+            Area <span className="font-normal text-[var(--ink-muted)]">(optional)</span>
+          </label>
+          <input
+            id="seller-area"
+            value={publicArea}
+            maxLength={80}
+            onChange={(event) => setPublicArea(event.target.value)}
+            placeholder="e.g. Lekki, Lagos"
+            className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--primary)]"
+          />
+          <p className="mt-1.5 text-xs text-[var(--ink-muted)]">
+            A general area only — never a street address.
+          </p>
+        </div>
+      </div>
 
       {error ? (
-        <p role="alert" className="text-sm font-medium text-[var(--danger)]">
+        <p role="alert" className="mt-4 text-sm font-semibold text-[var(--danger)]">
           {error}
         </p>
       ) : null}
 
-      <Button onClick={() => void submit()} disabled={busy || displayName.trim().length < 2}>
+      <button
+        type="button"
+        onClick={() => void submit()}
+        disabled={busy || displayName.trim().length < 2}
+        className="mt-6 min-h-12 w-full rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)] transition-colors hover:bg-[var(--primary-hover)] disabled:opacity-50"
+      >
         {busy ? 'Setting up…' : 'Continue'}
-      </Button>
-    </Card>
+      </button>
+    </Panel>
   );
 }
