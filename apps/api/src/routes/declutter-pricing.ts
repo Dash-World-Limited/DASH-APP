@@ -17,10 +17,20 @@
  * ## What reaches a provider
  *
  * A `ValuationRequest` and nothing else. It describes an item and has no field
- * for a person, so no name, identifier, phone, address, bank detail, admin note
- * or KYC document can travel with it — not because this file filters them out,
- * but because there is nowhere to put them. Seller documents are never read on
- * this path at all; only the submission's own item photographs are.
+ * for a person, so no name, phone, address, bank detail, admin note or KYC
+ * document can travel with it — not because this file filters them out, but
+ * because there is nowhere to put them. Seller documents are never read on this
+ * path at all; only the submission's own item photographs are.
+ *
+ * The one exception is `attributes`, which is an open bag by design: a category
+ * decides what it collects, and several of them collect an IMEI or a serial
+ * number. Those are ownership evidence, gathered so DASH can check that a
+ * handset is not stolen, and they are exactly the identifiers that must never
+ * reach a third party. So the bag is filtered through the taxonomy's own
+ * `publicAttributes` allowlist in `buildValuationRequest` before it goes
+ * anywhere — an allowlist, so a key nobody declared is dropped rather than
+ * forwarded, and a category that adds a sensitive field later is safe by
+ * default rather than safe if somebody remembers.
  */
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -45,6 +55,7 @@ import {
   type ValueCheckActor,
   type ValueCheckState,
 } from '@dash/domain/valuecheck';
+import { publicAttributes } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import type { Actor } from '@dash/domain/permissions';
@@ -779,10 +790,28 @@ interface SubmissionForValuation {
  * know.
  */
 function buildValuationRequest(submission: SubmissionForValuation): ValuationRequest {
-  const attributes =
+  const stored =
     submission.attributes === null
       ? {}
       : (JSON.parse(submission.attributes) as Record<string, string | number | boolean | null>);
+
+  // Allowlisted against the category's own schema. This is what drops `imei`
+  // and `serialNumber`, which the taxonomy marks `visibility: 'admin'`, and it
+  // also drops any key an import or an older version of the form wrote that
+  // nobody declared.
+  const categoryKey = submission.category?.key ?? 'unknown';
+  const attributes = publicAttributes(categoryKey, stored) as Record<
+    string,
+    string | number | boolean | null
+  >;
+
+  // Brand and model are ordinary public attributes, but ValueCheck has typed
+  // fields for them because its evidence assessment counts them: without both,
+  // confidence is capped and the valuation escalates. They stay in the bag as
+  // well — emptying it would trip the separate `missing_specifications`
+  // ceiling for a category whose only attributes are these two.
+  const brand = typeof attributes.brand === 'string' ? attributes.brand.trim() : '';
+  const model = typeof attributes.model === 'string' ? attributes.model.trim() : '';
 
   const comparables: Comparable[] = submission.comparables.map((row) => ({
     id: row.id,
@@ -807,7 +836,9 @@ function buildValuationRequest(submission: SubmissionForValuation): ValuationReq
 
   return {
     reference: submission.id,
-    categoryKey: submission.category?.key ?? 'unknown',
+    categoryKey,
+    ...(brand ? { brand } : {}),
+    ...(model ? { model } : {}),
     condition: (submission.condition ?? 'good') as ValuationRequest['condition'],
     attributes,
     declaredDefects: [],

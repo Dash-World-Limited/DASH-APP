@@ -298,6 +298,57 @@ describe('what is sent to the engine', () => {
       expect(payload, secret).not.toContain(secret);
     }
   });
+
+  it('leaves an IMEI and a serial number behind', async () => {
+    // These are collected deliberately, so DASH can check a handset is not
+    // stolen. They are also the two attributes a receiver of stolen goods
+    // would most like to have, so they must not travel to a valuation
+    // provider. The taxonomy already marks them `visibility: 'admin'`; this
+    // asserts the pricing path actually honours that.
+    const id = await makeSubmission(4_000_000, 3_500_000);
+    await context.prisma.declutterSubmission.update({
+      where: { id },
+      data: {
+        attributes: JSON.stringify({
+          brand: 'Apple',
+          model: 'iPhone 13 Pro',
+          storageGb: 128,
+          imei: '356938035643809',
+          serialNumber: 'F17GQ2Y9Q1GC',
+          smuggledNote: 'seller says call him on 08031112222',
+        }),
+      },
+    });
+
+    provider.mode = 'ok';
+    expect((await post(admin, `/v1/admin/declutter/submissions/${id}/valuecheck`)).statusCode).toBe(
+      200,
+    );
+
+    const run = await context.prisma.declutterValuation.findFirstOrThrow({
+      where: { submissionId: id, status: 'succeeded' },
+    });
+
+    expect(run.requestPayload).not.toContain('356938035643809');
+    expect(run.requestPayload).not.toContain('F17GQ2Y9Q1GC');
+    // An allowlist, not a blocklist: a key nobody declared is dropped too, so
+    // a stray field written by an import or an older form cannot ride along.
+    expect(run.requestPayload).not.toContain('08031112222');
+
+    // And the declared, public specifications are still there — this is a
+    // filter, not a gag.
+    const sent = JSON.parse(run.requestPayload) as {
+      brand?: string;
+      model?: string;
+      attributes: Record<string, unknown>;
+    };
+    expect(sent.attributes.storageGb).toBe(128);
+    // Brand and model are lifted into the typed fields the evidence
+    // assessment counts, so a fully described item is not capped as an
+    // unidentified one.
+    expect(sent.brand).toBe('Apple');
+    expect(sent.model).toBe('iPhone 13 Pro');
+  });
 });
 
 // ---------------------------------------------------------------------------
