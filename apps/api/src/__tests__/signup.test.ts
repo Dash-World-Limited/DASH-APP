@@ -22,6 +22,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestContext, type TestContext } from './harness.js';
 import { useIntegrationTimeouts } from './timeouts.js';
+import { seedLegalDocuments, PRIVACY_SLUG, TERMS_SLUG } from '@dash/db';
 import type { DeliveryReceipt, EmailPort } from '@dash/domain/ports';
 
 useIntegrationTimeouts();
@@ -59,6 +60,8 @@ let context: TestContext;
 
 beforeAll(async () => {
   context = await createTestContext({}, { email: mailbox });
+  // Acceptance points at a document version, so the versions have to exist.
+  await seedLegalDocuments(context.prisma);
 }, 180_000);
 
 afterAll(async () => {
@@ -70,13 +73,28 @@ async function post(url: string, payload: Record<string, unknown>) {
 }
 
 let counter = 0;
-function freshPerson() {
+
+/**
+ * A complete, valid signup body.
+ *
+ * The profile fields are all required, so every test that is not about them
+ * needs them present — which is exactly the shape a real form submits.
+ */
+function freshPerson(overrides: Record<string, unknown> = {}) {
   counter += 1;
   return {
     name: `Person ${counter}`,
     email: `person${counter}.${Date.now()}@example.com`,
     // A distinct, well-formed Nigerian mobile number per person.
     phone: `+23480${String(10_000_000 + counter).slice(0, 8)}`,
+    state: 'Lagos',
+    cityArea: 'Yaba',
+    usageIntent: 'mainly_buying',
+    acquisitionSource: 'search',
+    confirmedAdult: true,
+    acceptedTerms: true,
+    marketingOptIn: false,
+    ...overrides,
   };
 }
 
@@ -167,6 +185,265 @@ describe('creating an account', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The profile
+// ---------------------------------------------------------------------------
+
+describe('the signup profile', () => {
+  it('is stored on the customer, not on the identity', async () => {
+    const person = freshPerson({
+      state: 'Rivers',
+      cityArea: 'Port Harcourt',
+      usageIntent: 'buying_and_selling',
+      acquisitionSource: 'referral',
+      acquisitionDetail: 'Amaka from work',
+    });
+    await post('/v1/auth/signup', person);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+      include: { customer: true },
+    });
+
+    // Identity answers "who is authenticating" and nothing else.
+    expect(identity.displayName).toBe(person.name);
+    expect(Object.keys(identity)).not.toContain('state');
+    expect(Object.keys(identity)).not.toContain('usageIntent');
+
+    expect(identity.customer?.state).toBe('Rivers');
+    expect(identity.customer?.cityArea).toBe('Port Harcourt');
+    expect(identity.customer?.usageIntent).toBe('buying_and_selling');
+    expect(identity.customer?.acquisitionSource).toBe('referral');
+    expect(identity.customer?.acquisitionDetail).toBe('Amaka from work');
+  });
+
+  it('exists before the address is verified, and grants nothing', async () => {
+    const person = freshPerson({ usageIntent: 'regular_seller' });
+    await post('/v1/auth/signup', person);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+      include: { roles: true, customer: { include: { declutterSeller: true } } },
+    });
+
+    // The profile is here; the account is not yet real.
+    expect(identity.customer).not.toBeNull();
+    expect(identity.emailVerifiedAt).toBeNull();
+
+    // Saying "I sell regularly" on a form is a plan, not a permission.
+    expect(identity.roles).toEqual([]);
+    expect(identity.customer?.declutterSeller).toBeNull();
+  });
+
+  it('still grants nothing after verification', async () => {
+    const person = freshPerson({ usageIntent: 'regular_seller', acquisitionSource: 'dash_staff', acquisitionDetail: 'David' });
+    const { devCode } = (await post('/v1/auth/signup', person)).json();
+    await post('/v1/auth/email/verify', { email: person.email, code: devCode });
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+      include: { roles: true, customer: { include: { declutterSeller: true } } },
+    });
+    // "A DASH World staff member told me about it" is attribution, not a
+    // credential. Selling still requires KYC and an admin.
+    expect(identity.roles).toEqual([]);
+    expect(identity.customer?.declutterSeller).toBeNull();
+  });
+
+  it('refuses a state that is not a Nigerian state', async () => {
+    const response = await post('/v1/auth/signup', freshPerson({ state: 'Californiaa' }));
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('accepts a state DASH does not serve, because that is where demand comes from', async () => {
+    // The marketplace covers Lagos and Delta. Refusing an account to somebody
+    // in Kano would turn away the demand that decides where DASH expands.
+    const person = freshPerson({ state: 'Kano', cityArea: 'Nassarawa GRA' });
+    expect((await post('/v1/auth/signup', person)).statusCode).toBe(200);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+      include: { customer: true },
+    });
+    expect(identity.customer?.state).toBe('Kano');
+  });
+
+  it('refuses an unknown usage intent or acquisition source', async () => {
+    expect(
+      (await post('/v1/auth/signup', freshPerson({ usageIntent: 'wholesaler' }))).statusCode,
+    ).toBe(400);
+    expect(
+      (await post('/v1/auth/signup', freshPerson({ acquisitionSource: 'billboard' }))).statusCode,
+    ).toBe(400);
+  });
+
+  it('requires the follow-up answer where one is asked for', async () => {
+    // An empty "who referred you?" is worse than not asking, because it looks
+    // like data.
+    for (const source of ['referral', 'dash_staff', 'partner', 'other']) {
+      const response = await post('/v1/auth/signup', freshPerson({ acquisitionSource: source }));
+      expect(response.statusCode, source).toBe(400);
+    }
+  });
+
+  it('does not ask for a follow-up where none is needed', async () => {
+    for (const source of ['search', 'social_media']) {
+      const response = await post('/v1/auth/signup', freshPerson({ acquisitionSource: source }));
+      expect(response.statusCode, source).toBe(200);
+    }
+  });
+
+  it('requires a city or area', async () => {
+    expect((await post('/v1/auth/signup', freshPerson({ cityArea: '' }))).statusCode).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Age and consent
+// ---------------------------------------------------------------------------
+
+describe('age and consent', () => {
+  it('refuses signup without the 18-or-older confirmation', async () => {
+    expect(
+      (await post('/v1/auth/signup', freshPerson({ confirmedAdult: false }))).statusCode,
+    ).toBe(400);
+  });
+
+  it('records the confirmation as a timestamp and never as a date of birth', async () => {
+    const person = freshPerson();
+    await post('/v1/auth/signup', person);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+      include: { customer: true },
+    });
+    expect(identity.customer?.ageConfirmedAt).not.toBeNull();
+    // DASH has no reason to hold the birthday of somebody buying a sofa. A DOB
+    // collected "just in case" is one that has to be protected and deleted.
+    expect(Object.keys(identity.customer ?? {})).not.toContain('dateOfBirth');
+  });
+
+  it('refuses signup without accepting the terms', async () => {
+    expect(
+      (await post('/v1/auth/signup', freshPerson({ acceptedTerms: false }))).statusCode,
+    ).toBe(400);
+  });
+
+  it('records acceptance against a specific document version', async () => {
+    const person = freshPerson();
+    await post('/v1/auth/signup', person);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+    });
+    const acceptances = await context.prisma.legalAcceptance.findMany({
+      where: { identityId: identity.id },
+      include: { document: true },
+    });
+
+    // Two agreements, not one: the contract and what happens to their data.
+    const slugs = acceptances.map((a) => a.document.slug).sort();
+    expect(slugs).toEqual([PRIVACY_SLUG, TERMS_SLUG].sort());
+
+    for (const acceptance of acceptances) {
+      // The version is the evidence. "They accepted the terms" without it
+      // answers nothing when the terms change.
+      expect(acceptance.document.version).toBeTruthy();
+      expect(acceptance.createdAt).toBeInstanceOf(Date);
+      expect(acceptance.ipAddress).toBeTruthy();
+    }
+  });
+
+  it('does not move the original acceptance timestamp on a retry', async () => {
+    const person = freshPerson();
+    await post('/v1/auth/signup', person);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+    });
+    const before = await context.prisma.legalAcceptance.findMany({
+      where: { identityId: identity.id },
+      orderBy: { documentId: 'asc' },
+    });
+
+    await post('/v1/auth/signup', { ...person, name: 'Renamed' });
+
+    const after = await context.prisma.legalAcceptance.findMany({
+      where: { identityId: identity.id },
+      orderBy: { documentId: 'asc' },
+    });
+    expect(after).toHaveLength(before.length);
+    // The first acceptance is the evidence; a retry must not rewrite when it
+    // happened.
+    expect(after.map((a) => a.createdAt.toISOString())).toEqual(
+      before.map((a) => a.createdAt.toISOString()),
+    );
+  });
+
+  it('treats marketing consent as optional and off by default', async () => {
+    const person = freshPerson();
+    // Sent with no `marketingOptIn` key at all.
+    const body = { ...person } as Record<string, unknown>;
+    delete body['marketingOptIn'];
+    expect((await post('/v1/auth/signup', body)).statusCode).toBe(200);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+      include: { customer: true },
+    });
+    expect(identity.customer?.marketingOptIn).toBe(false);
+    expect(identity.customer?.marketingOptInAt).toBeNull();
+  });
+
+  it('never makes marketing consent a condition of having an account', async () => {
+    const declined = freshPerson({ marketingOptIn: false });
+    const accepted = freshPerson({ marketingOptIn: true });
+
+    const a = await post('/v1/auth/signup', declined);
+    const b = await post('/v1/auth/signup', accepted);
+    expect(a.statusCode).toBe(b.statusCode);
+
+    // Both accounts verify and sign in identically.
+    for (const person of [declined, accepted]) {
+      const code = (await post('/v1/auth/email/resend', { email: person.email })).json().devCode;
+      const used = code ?? null;
+      if (used) {
+        const verified = await post('/v1/auth/email/verify', { email: person.email, code: used });
+        expect(verified.statusCode, person.email).toBe(200);
+      }
+    }
+  });
+
+  it('timestamps marketing consent when it is given', async () => {
+    const person = freshPerson({ marketingOptIn: true });
+    await post('/v1/auth/signup', person);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+      include: { customer: true },
+    });
+    expect(identity.customer?.marketingOptIn).toBe(true);
+    // A boolean alone cannot answer "when did they agree", which is the only
+    // question that matters if consent is challenged.
+    expect(identity.customer?.marketingOptInAt).not.toBeNull();
+    expect(identity.customer?.marketingOptInIp).toBeTruthy();
+  });
+
+  it('clears the consent timestamp when consent is withdrawn on a retry', async () => {
+    const person = freshPerson({ marketingOptIn: true });
+    await post('/v1/auth/signup', person);
+    await post('/v1/auth/signup', { ...person, marketingOptIn: false });
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: person.email },
+      include: { customer: true },
+    });
+    expect(identity.customer?.marketingOptIn).toBe(false);
+    // A stale timestamp must not outlive the agreement it recorded.
+    expect(identity.customer?.marketingOptInAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Enumeration
 // ---------------------------------------------------------------------------
 
@@ -176,11 +453,10 @@ describe('signup does not reveal who already has an account', () => {
     const { devCode } = (await post('/v1/auth/signup', person)).json();
     await post('/v1/auth/email/verify', { email: person.email, code: devCode });
 
-    const again = await post('/v1/auth/signup', {
-      name: 'Someone Else',
-      email: person.email,
-      phone: '+2348099999001',
-    });
+    const again = await post(
+      '/v1/auth/signup',
+      freshPerson({ name: 'Someone Else', email: person.email }),
+    );
     const fresh = await post('/v1/auth/signup', freshPerson());
 
     expect(again.statusCode).toBe(fresh.statusCode);
@@ -197,11 +473,7 @@ describe('signup does not reveal who already has an account', () => {
     const { devCode } = (await post('/v1/auth/signup', person)).json();
     await post('/v1/auth/email/verify', { email: person.email, code: devCode });
 
-    await post('/v1/auth/signup', {
-      name: 'Someone Else',
-      email: person.email,
-      phone: '+2348099999002',
-    });
+    await post('/v1/auth/signup', freshPerson({ name: 'Someone Else', email: person.email }));
 
     const message = mailbox.lastTo(person.email);
     expect(message?.subject).toBe('You already have a DASH account');
@@ -217,11 +489,7 @@ describe('signup does not reveal who already has an account', () => {
       where: { email: person.email },
     });
 
-    await post('/v1/auth/signup', {
-      name: 'Attacker',
-      email: person.email,
-      phone: '+2348099999003',
-    });
+    await post('/v1/auth/signup', freshPerson({ name: 'Attacker', email: person.email }));
 
     const after = await context.prisma.identity.findUniqueOrThrow({
       where: { email: person.email },
@@ -478,7 +746,7 @@ describe('signing in with the email that was verified', () => {
 // ---------------------------------------------------------------------------
 
 describe('input it must refuse', () => {
-  it('rejects a malformed email, a bad phone and a missing name', async () => {
+  it('rejects a malformed email, a bad phone and a name too short', async () => {
     const person = freshPerson();
     expect((await post('/v1/auth/signup', { ...person, email: 'not-an-email' })).statusCode).toBe(400);
     expect((await post('/v1/auth/signup', { ...person, phone: '08031112222' })).statusCode).toBe(400);

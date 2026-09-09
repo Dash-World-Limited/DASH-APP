@@ -445,11 +445,23 @@ export async function verifyOtp(destination: OtpDestination, code: string): Prom
  * deliberately does not say which, and neither does this: the caller's next
  * step is the same in every case, which is to go and read their email.
  */
-export async function signUp(input: {
+export interface SignUpInput {
   name: string;
   email: string;
   phone: string;
-}): Promise<OtpRequestResult> {
+  state: string;
+  cityArea: string;
+  usageIntent: string;
+  acquisitionSource: string;
+  acquisitionDetail?: string;
+  /** Both are required by the server; the form cannot submit without them. */
+  confirmedAdult: true;
+  acceptedTerms: true;
+  /** Optional, always. Never a condition of holding a DASH account. */
+  marketingOptIn: boolean;
+}
+
+export async function signUp(input: SignUpInput): Promise<OtpRequestResult> {
   return apiFetch('/v1/auth/signup', { method: 'POST', body: input });
 }
 

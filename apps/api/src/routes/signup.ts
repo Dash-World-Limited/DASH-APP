@@ -43,7 +43,20 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { generateOtp, generateReference, hashOtp, verifyOtp } from '@dash/domain/crypto';
-import { writeAudit } from '@dash/db';
+import {
+  writeAudit,
+  CURRENT_PRIVACY_VERSION,
+  CURRENT_TERMS_VERSION,
+  PRIVACY_SLUG,
+  TERMS_SLUG,
+} from '@dash/db';
+import {
+  ACQUISITION_SOURCES,
+  NIGERIAN_STATES,
+  requiresAcquisitionDetail,
+  USAGE_INTENTS,
+  type AcquisitionSource,
+} from '@dash/domain/signup';
 import { ApiError } from '../http/errors.js';
 import { createSession } from '../auth/sessions.js';
 import { issueAccessFor } from '../auth/issue.js';
@@ -57,11 +70,51 @@ const phoneSchema = z
 
 const emailSchema = z.string().trim().toLowerCase().email('Enter a valid email address');
 
-const signupSchema = z.object({
-  name: z.string().trim().min(2, 'Enter your name').max(80),
-  email: emailSchema,
-  phone: phoneSchema,
-});
+/**
+ * What the signup form sends.
+ *
+ * The profile fields are required here and nullable in the database. Signup
+ * demands them; the customers created before this form existed do not have
+ * them, and a backfill inventing a state for somebody would be inventing data.
+ *
+ * `usageIntent` and `acquisitionSource` are validated against the domain's
+ * vocabularies so a typo cannot become a category nothing knows about — but
+ * validating them grants nothing. They are self-reported answers on an open
+ * form, and no decision anywhere may depend on them.
+ */
+const signupSchema = z
+  .object({
+    name: z.string().trim().min(2, 'Enter your full name').max(80),
+    email: emailSchema,
+    phone: phoneSchema,
+    state: z.enum(NIGERIAN_STATES),
+    cityArea: z.string().trim().min(2, 'Enter your city, town or area').max(80),
+    usageIntent: z.enum(USAGE_INTENTS),
+    acquisitionSource: z.enum(ACQUISITION_SOURCES),
+    acquisitionDetail: z.string().trim().max(120).optional(),
+    // An attestation with a timestamp, never a date of birth. DASH has no
+    // reason to hold the birthday of somebody who wants to buy a sofa.
+    confirmedAdult: z.literal(true, {
+      errorMap: () => ({ message: 'You must confirm you are 18 or older' }),
+    }),
+    acceptedTerms: z.literal(true, {
+      errorMap: () => ({ message: 'You must accept the terms to create an account' }),
+    }),
+    // Optional, always. Marketing consent is never a condition of holding a
+    // DASH account, so there is no value of this that can fail validation.
+    marketingOptIn: z.boolean().default(false),
+  })
+  .refine(
+    (value) =>
+      !requiresAcquisitionDetail(value.acquisitionSource as AcquisitionSource) ||
+      (value.acquisitionDetail ?? '').trim().length >= 2,
+    {
+      path: ['acquisitionDetail'],
+      // An empty "who referred you?" is worse than not asking, because it looks
+      // like data.
+      message: 'Tell us a little more',
+    },
+  );
 
 const verifySchema = z.object({
   email: emailSchema,
@@ -86,6 +139,76 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
   const { prisma, config, email } = app.services;
 
   const expiresInMinutes = Math.round(config.OTP_TTL_SECONDS / 60);
+
+  /**
+   * Write the profile, the age attestation and both consents.
+   *
+   * The customer row is created at signup rather than at verification, because
+   * the profile arrives with the form and has to live somewhere until the
+   * address is proved. An unverified identity holds no session, so a customer
+   * row attached to one can never act.
+   *
+   * Terms and privacy acceptance go to `LegalAcceptance`, which points at a
+   * specific `LegalDocument` version — that record is the evidence, and it
+   * answers "which text, in which version, did this person agree to, and when".
+   * Recording a boolean instead would answer none of that.
+   */
+  async function writeProfile(
+    identityId: string,
+    body: z.infer<typeof signupSchema>,
+    ipAddress: string,
+  ) {
+    const now = new Date();
+
+    await prisma.customer.upsert({
+      where: { identityId },
+      create: {
+        identityId,
+        referralCode: generateReference('DW'),
+        state: body.state,
+        cityArea: body.cityArea,
+        usageIntent: body.usageIntent,
+        acquisitionSource: body.acquisitionSource,
+        acquisitionDetail: body.acquisitionDetail ?? null,
+        ageConfirmedAt: now,
+        marketingOptIn: body.marketingOptIn,
+        ...(body.marketingOptIn ? { marketingOptInAt: now, marketingOptInIp: ipAddress } : {}),
+      },
+      update: {
+        state: body.state,
+        cityArea: body.cityArea,
+        usageIntent: body.usageIntent,
+        acquisitionSource: body.acquisitionSource,
+        acquisitionDetail: body.acquisitionDetail ?? null,
+        ageConfirmedAt: now,
+        marketingOptIn: body.marketingOptIn,
+        // Cleared when consent is withdrawn, so a stale timestamp cannot
+        // outlive the agreement it recorded.
+        marketingOptInAt: body.marketingOptIn ? now : null,
+        marketingOptInIp: body.marketingOptIn ? ipAddress : null,
+      },
+    });
+
+    const documents = await prisma.legalDocument.findMany({
+      where: {
+        OR: [
+          { slug: TERMS_SLUG, version: CURRENT_TERMS_VERSION },
+          { slug: PRIVACY_SLUG, version: CURRENT_PRIVACY_VERSION },
+        ],
+      },
+      select: { id: true },
+    });
+
+    for (const document of documents) {
+      await prisma.legalAcceptance.upsert({
+        where: { identityId_documentId: { identityId, documentId: document.id } },
+        create: { identityId, documentId: document.id, ipAddress },
+        // Already accepted this exact version. The original timestamp is the
+        // evidence and must not be moved by a retry.
+        update: {},
+      });
+    }
+  }
 
   /** The single place a verification code is minted, stored and sent. */
   async function issueCode(identityId: string, address: string, name: string | null) {
@@ -234,6 +357,7 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
           data: { displayName: body.name, phone: body.phone },
           select: { id: true, displayName: true },
         });
+        await writeProfile(updated.id, body, request.ip);
         const code = await issueCode(updated.id, body.email, updated.displayName);
         return accepted(code);
       }
@@ -251,6 +375,8 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         select: { id: true, displayName: true },
       });
 
+      await writeProfile(identity.id, body, request.ip);
+
       await writeAudit(prisma, {
         identityId: identity.id,
         action: 'auth.signup.started',
@@ -265,6 +391,38 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
       return accepted(code);
     },
   );
+
+  // ==========================================================================
+  // GET /v1/legal/:slug
+  //
+  // The current text of a policy, so the checkbox that asks somebody to accept
+  // it can link to what they are accepting. Public and unauthenticated: a
+  // policy nobody can read before agreeing to it is not a policy.
+  //
+  // Serves the newest effective version, which is by definition the one signup
+  // records acceptance of. Older versions stay in the table because acceptances
+  // point at them, and are deliberately not addressable here — a URL that
+  // served superseded terms would eventually be quoted as current.
+  // ==========================================================================
+  app.get('/v1/legal/:slug', async (request) => {
+    const { slug } = z
+      .object({ slug: z.enum([TERMS_SLUG, PRIVACY_SLUG]) })
+      .parse(request.params);
+
+    const document = await prisma.legalDocument.findFirst({
+      where: { slug, effectiveFrom: { lte: new Date() } },
+      orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
+      select: { slug: true, version: true, title: true, body: true, effectiveFrom: true },
+    });
+    if (!document) throw ApiError.notFound();
+
+    return {
+      document: {
+        ...document,
+        effectiveFrom: document.effectiveFrom.toISOString(),
+      },
+    };
+  });
 
   // ==========================================================================
   // POST /v1/auth/email/resend
@@ -366,9 +524,10 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         throw ApiError.unauthorized('This account is not available.');
       }
 
-      // Verification and the customer profile land together. An identity that
-      // is verified but has no customer row would be an account that exists and
-      // cannot do anything, discovered later by whichever screen breaks first.
+      // The customer row normally arrives with the signup form. The fallback
+      // is for an identity created some other way — seeded staff, an account
+      // made before this form existed — which must not end up verified with no
+      // profile to act through.
       await prisma.$transaction(async (tx) => {
         if (identity.emailVerifiedAt === null) {
           await tx.identity.update({
