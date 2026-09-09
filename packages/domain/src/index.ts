@@ -12,6 +12,7 @@ export * from './crypto/index.js';
 export * from './geo/index.js';
 export * from './permissions/index.js';
 export * from './orders/index.js';
+export * from './declutter/index.js';
 export * from './pricing/index.js';
 export * from './dispatch/index.js';
 export * from './pay/index.js';
