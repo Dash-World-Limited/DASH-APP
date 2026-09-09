@@ -1887,6 +1887,40 @@ model DeclutterSubmission {
   rejectionReason String?
   adminNotes      String?
 
+  // --- DASH ValueCheck -----------------------------------------------------
+  /// Where this submission sits in the controlled pricing process. A raw model
+  /// run is `valuation_completed` and nothing more; "DASH ValueChecked" means
+  /// this reached `seller_accepted`.
+  valueCheckStatus String @default("valuation_pending")
+
+  /// Why a super admin is required, as a JSON array of reason codes. Empty
+  /// when nothing escalated it. Recorded rather than recomputed so an approver
+  /// sees what was true when it was escalated.
+  escalationReasons String?
+
+  /// The authoritative final price, once every required approval has happened.
+  /// Integer kobo, and null until authority is complete.
+  authorizedPriceKobo  Int?
+  /// Incremented on every authorisation. A seller's acceptance names this, so
+  /// a re-authorisation at the same figure still needs a fresh answer.
+  authorizationVersion Int       @default(0)
+  authorizedAt         DateTime?
+  authorizedBy         String?
+
+  /// What the seller actually agreed to, copied here so validity is a
+  /// comparison rather than a join through history.
+  sellerAcceptedPriceKobo   Int?
+  sellerAcceptedVersion     Int?
+  sellerDeclinedAt          DateTime?
+  sellerDeclineReason       String?
+
+  /// Optional source-business confirmation, for partner-sourced items. Never a
+  /// substitute for DASH approval — an extra gate when policy asks for one.
+  partnerApprovalRequired Boolean   @default(false)
+  partnerApprovedAt       DateTime?
+  partnerApprovedBy       String?
+  partnerApprovalNote     String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1895,10 +1929,13 @@ model DeclutterSubmission {
   photos     DeclutterSubmissionPhoto[]
   valuations DeclutterValuation[]
   listing    DeclutterListing?
-  events     DeclutterSubmissionEvent[]
-  fraudFlags DeclutterFraudFlag[]
+  events      DeclutterSubmissionEvent[]
+  fraudFlags  DeclutterFraudFlag[]
+  comparables DeclutterComparable[]
+  decisions   DeclutterPricingDecision[]
 
   @@index([status, createdAt])
+  @@index([valueCheckStatus, updatedAt])
   @@index([sellerId, status])
 }
 
@@ -1972,6 +2009,18 @@ model DeclutterValuation {
   factors   String?
   reasoning String?
 
+  /// JSON ValuationWarning[] — what the valuation could not establish. Stored
+  /// because "we could not tell whether it had been repaired" is part of the
+  /// answer, not a footnote to it.
+  warnings        String?
+  /// One line describing what evidence actually existed.
+  evidenceSummary String?
+
+  /// False when the deterministic local adapter produced this. Persisted so a
+  /// screen can never present development arithmetic as live AI.
+  isLive     Boolean   @default(false)
+  producedAt DateTime?
+
   /// Why a result was refused before it was ever shown. One of the codes from
   /// validateValuationResult, or a provider/transport failure.
   failureReason String?
@@ -1984,7 +2033,8 @@ model DeclutterValuation {
 
   createdAt DateTime @default(now())
 
-  submission DeclutterSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  submission DeclutterSubmission        @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  decisions  DeclutterPricingDecision[]
 
   @@index([submissionId, createdAt])
   @@index([status])
@@ -2273,4 +2323,79 @@ model DeclutterFraudFlag {
 
   @@index([status, severity, createdAt])
   @@index([sellerId, status])
+}
+
+/// A comparable observed in the market, kept as evidence in its own right.
+///
+/// Its own table rather than a JSON blob on the valuation because comparables
+/// outlive the run that used them: a re-run should reuse the evidence an admin
+/// gathered, and the eventual proprietary model will want every comparable DASH
+/// ever recorded, not the subset that happened to be attached to one attempt.
+///
+/// `askingPriceKobo` and `soldPriceKobo` are separate columns on purpose. An
+/// asking price is what somebody hoped for and a sold price is what somebody
+/// paid; collapsing them into one "price" is the most common way a valuation
+/// ends up above the market.
+model DeclutterComparable {
+  id           String @id @default(cuid())
+  submissionId String
+
+  /// Where it came from: an admin typed it, DASH's own history produced it, or
+  /// a future market connector did.
+  provenance String @default("admin") // admin | dash_history | partner | connector
+  /// Names the source — a marketplace, a retailer, a reference.
+  source      String
+  description String
+  variant     String?
+  condition   String? // new | like_new | good | fair
+  /// A general market such as "Lagos". Never an address.
+  market      String?
+
+  currency        String @default("NGN")
+  askingPriceKobo Int?
+  soldPriceKobo   Int?
+
+  observedAt DateTime
+  note       String?
+
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  submission DeclutterSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, observedAt])
+}
+
+/// One human decision about a price. Append-only.
+///
+/// Separate from the valuation row so that an admin's number never overwrites
+/// the model's. Both are kept, in order, with who made each and why — so the
+/// record can never imply that ValueCheck recommended a figure a person chose.
+model DeclutterPricingDecision {
+  id           String @id @default(cuid())
+  submissionId String
+  /// Which run this decision was made against. Null if the valuation was
+  /// discarded and the decision is a bare rejection.
+  valuationId  String?
+
+  /// `admin` or `super_admin`. The seller never appears here.
+  actorRole String
+  actorId   String
+
+  kind String // approved | adjusted | rejected | returned_for_review
+
+  /// What the model recommended when this decision was taken, copied so the
+  /// pair can be read together years later.
+  recommendedPriceKobo Int?
+  /// What the person decided. Null for a rejection.
+  proposedPriceKobo    Int?
+  /// Mandatory for an adjustment and for a rejection.
+  reason               String?
+
+  createdAt DateTime @default(now())
+
+  submission DeclutterSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  valuation  DeclutterValuation? @relation(fields: [valuationId], references: [id])
+
+  @@index([submissionId, createdAt])
 }
