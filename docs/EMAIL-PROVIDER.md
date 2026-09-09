@@ -1,7 +1,8 @@
-# Transactional email: what exists, and what SES needs
+# Transactional email: SES
 
-Written before any SES work, so the decision is made with the real picture. No
-AWS SDK has been added and no SES adapter has been written.
+**Status: the adapter is written and tested against a stub. No real message has
+ever been sent, and no AWS account has been configured.** Section 5 is the list
+of things only you can do.
 
 ---
 
@@ -28,63 +29,71 @@ rest of the codebase uses to distinguish an adapter from an integration, and
 `reference` is a caller-supplied tag (`email_verify_<identityId>`,
 `signup_phone_conflict`) that a provider's message metadata can carry.
 
-**The only implementation** is `ConsoleEmailAdapter` — logs the subject and text,
-returns an accepted receipt, `isLive = false`. Nothing is delivered.
+**Two implementations now.** `ConsoleEmailAdapter` — logs the subject and text,
+`isLive = false`, nothing delivered, development only — and `SesEmailAdapter`,
+described in section 2.
 
-**A defect found and fixed during this milestone.** `EMAIL_PROVIDER` was
-declared as `z.enum(['console', 'smtp'])`, classified as production-required,
-and refused in production when set to `console` — and then *never read*. The
-service constructed `ConsoleEmailAdapter` unconditionally. A production
-deployment could set `EMAIL_PROVIDER=smtp`, satisfy every guard, boot cleanly,
-and write every verification code to stdout while believing it was sending
-email. Nobody would find out until a user said the code never arrived.
+**A defect found and fixed on the way here.** `EMAIL_PROVIDER` was declared as
+`z.enum(['console', 'smtp'])`, classified as production-required, and refused in
+production when set to `console` — and then *never read*. The service
+constructed `ConsoleEmailAdapter` unconditionally. A production deployment could
+set `EMAIL_PROVIDER=smtp`, satisfy every guard, boot cleanly, and write every
+verification code to stdout while believing it was sending email. Nobody would
+find out until a user said the code never arrived.
 
 The wiring now reads the value and **throws at startup** for any provider it has
-no adapter for. Since there is no SMTP adapter and no SES adapter, both values
-currently refuse to start. That is deliberate: a service that cannot send email
-should fail loudly, not quietly log.
-
-**The consequence for this milestone:** email verification works in development
-and cannot work in production until an adapter exists. That is the single
-largest blocker to real signups.
+no adapter for. That is deliberate: a service that cannot send email should fail
+loudly, not quietly log.
 
 ---
 
-## 2. What SES will require in code
+## 2. The adapter, as built
 
-- **Dependency:** `@aws-sdk/client-sesv2`. v2 rather than v1 — it carries the
-  suppression-list and account-level APIs that matter for reputation, and v1 is
-  effectively frozen.
-- **Adapter:** `SesEmailAdapter implements EmailPort`, `isLive = true`,
-  `providerName = 'ses'`, mapping `send()` onto `SendEmailCommand` with both the
-  text and HTML bodies already supplied by every call site.
-- **Config:** add `'ses'` to the `EMAIL_PROVIDER` enum and a branch in
-  `createEmailAdapter`.
-- **Classification:** every new variable needs a row in
-  `apps/api/src/secrets/classification.ts`, or the boot-time secret audit fails.
+`apps/api/src/adapters/ses.ts` — `SesEmailAdapter implements EmailPort`,
+`providerName = 'ses'`, `isLive = true`, using `@aws-sdk/client-sesv2`.
 
-Roughly a day, most of it the failure paths: a throttle, a rejected address, a
-suppressed recipient, and a bounce that must not be retried.
+Three decisions in it are worth knowing, because they are the ones that would be
+tempting to undo:
 
----
+- **It never falls back.** A rejected message throws `EmailDeliveryError`. There
+  is no downgrade to a console log, because that is exactly the failure this
+  milestone had to fix elsewhere — a service believing it sends email while
+  writing codes to stdout is worse than one that is plainly broken.
+- **It never carries the body or the address.** The body of a verification email
+  *is* the one-time code, so an error containing it hands every account to
+  anyone who can read the logs. The error carries the recipient's *domain* only,
+  which is what answers "is their mail provider rejecting us".
+- **It says whether a retry could help.** A rejected message, a suspended
+  account or paused sending fails identically forever; a throttle does not.
+
+Credentials come from the SDK's default chain, so an instance role works and no
+key need exist in the environment.
+
+`EMAIL_PROVIDER` is now `console | ses`. **`smtp` was removed from the enum**
+rather than left in place: it was never implemented, and a value that validates
+with no adapter behind it is how a deployment boots believing it sends email.
+
+10 tests cover the command shape and every failure path, with a stub client. No
+test touches AWS.
 
 ## 3. Environment variables
 
 | Variable | Example | Notes |
 |---|---|---|
-| `EMAIL_PROVIDER` | `ses` | |
-| `AWS_REGION` | `eu-west-1` | SES is regional; the identity must be verified in *this* region |
-| `AWS_ACCESS_KEY_ID` | — | Prefer an instance role and omit both keys |
-| `AWS_SECRET_ACCESS_KEY` | — | Secret. Classify as such |
+| `EMAIL_PROVIDER` | `ses` | `console` is refused in production |
+| `SES_REGION` | `eu-west-1` | SES is regional; the identity must be verified in **this** region |
 | `EMAIL_FROM_ADDRESS` | `no-reply@notify.dashworldng.com` | Must be a verified identity |
-| `EMAIL_FROM_NAME` | `DASH World` | What the recipient sees |
-| `EMAIL_REPLY_TO` | `admin@dashworldng.com` | **Must be a real monitored inbox** — see below |
-| `SES_CONFIGURATION_SET` | `dash-transactional` | Optional, strongly recommended: how bounces and complaints get back to you |
+| `EMAIL_FROM_NAME` | `DASH World` | Defaults to `DASH World` |
+| `EMAIL_REPLY_TO` | `admin@dashworldng.com` | **Must be monitored** — see below |
+| `SES_CONFIGURATION_SET` | `dash-transactional` | Optional, strongly recommended |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | — | Only if not using an instance role |
 
-IAM needs only `ses:SendEmail` on the identity, plus
-`ses:GetAccountSendingEnabled` if you want a startup check.
+The first three plus `EMAIL_REPLY_TO` are checked **at boot** when
+`EMAIL_PROVIDER=ses`. A missing sender is otherwise not discovered until
+somebody tries to create an account, and by then it looks like a broken signup
+form. All five are classified in `apps/api/src/secrets/classification.ts`.
 
----
+IAM needs `ses:SendEmail` on the identity, and nothing else.
 
 ## 4. Which domain should send
 

@@ -66,7 +66,33 @@ const schema = z
     MAPBOX_ACCESS_TOKEN: z.string().optional(),
 
     SMS_PROVIDER: z.enum(['console', 'termii', 'twilio']).default('console'),
-    EMAIL_PROVIDER: z.enum(['console', 'smtp']).default('console'),
+    EMAIL_PROVIDER: z.enum(['console', 'ses']).default('console'),
+
+    /**
+     * Amazon SES, for transactional email.
+     *
+     * `smtp` was removed from the enum above rather than left in place. It was
+     * never implemented, and a value that passes validation while having no
+     * adapter behind it is how a deployment boots believing it sends email.
+     *
+     * The credential is deliberately absent: the SDK resolves it through its own
+     * default chain, so an instance role works and no key need exist in the
+     * environment at all.
+     */
+    SES_REGION: z.string().trim().min(1).optional(),
+    /** Must be a verified identity in `SES_REGION`. SES rejects anything else. */
+    EMAIL_FROM_ADDRESS: z.string().trim().email().optional(),
+    EMAIL_FROM_NAME: z.string().trim().min(1).max(60).default('DASH World'),
+    /**
+     * Where replies go, and it must be a monitored mailbox.
+     *
+     * The identity-conflict email tells a genuine user to reply to it. That is
+     * their only route through the one case the system deliberately refuses to
+     * resolve automatically.
+     */
+    EMAIL_REPLY_TO: z.string().trim().email().optional(),
+    /** Groups messages so bounce and complaint events can be attributed. */
+    SES_CONFIGURATION_SET: z.string().trim().min(1).optional(),
     PUSH_PROVIDER: z.enum(['console', 'fcm']).default('console'),
     /**
      * Which engine answers a DASH ValueCheck.
@@ -389,6 +415,23 @@ const schema = z
     }
     if (env.EMAIL_PROVIDER === 'console') {
       fail('EMAIL_PROVIDER', 'The console email adapter only logs — nothing is delivered');
+    }
+    if (env.EMAIL_PROVIDER === 'ses') {
+      // Checked at boot rather than at the first send. A missing sender is not
+      // discovered until somebody tries to create an account, and by then the
+      // failure looks like a broken signup form.
+      if (!env.SES_REGION) {
+        fail('SES_REGION', 'SES is regional, and the sending identity is verified per region');
+      }
+      if (!env.EMAIL_FROM_ADDRESS) {
+        fail('EMAIL_FROM_ADDRESS', 'SES refuses any sender that is not a verified identity');
+      }
+      if (!env.EMAIL_REPLY_TO) {
+        fail(
+          'EMAIL_REPLY_TO',
+          'The identity-conflict email tells people to reply to it; an unset address leaves them nowhere to go',
+        );
+      }
     }
     if (env.PUSH_PROVIDER === 'console') {
       fail('PUSH_PROVIDER', 'The console push adapter only logs — no device is notified');

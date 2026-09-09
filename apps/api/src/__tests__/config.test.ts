@@ -38,7 +38,10 @@ function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEn
     MAPS_PROVIDER: 'google',
     GOOGLE_MAPS_API_KEY: 'not-a-real-key',
     SMS_PROVIDER: 'termii',
-    EMAIL_PROVIDER: 'smtp',
+    EMAIL_PROVIDER: 'ses',
+    SES_REGION: 'eu-west-1',
+    EMAIL_FROM_ADDRESS: 'no-reply@notify.dashworldng.com',
+    EMAIL_REPLY_TO: 'admin@dashworldng.com',
     PUSH_PROVIDER: 'fcm',
     // A path, never a credential. Firebase reads the file; nothing here does.
     GOOGLE_APPLICATION_CREDENTIALS: '/var/secrets/firebase-service-account.json',

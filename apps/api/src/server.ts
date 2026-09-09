@@ -24,6 +24,7 @@ import {
   MockPaymentAdapter,
 } from './adapters/index.js';
 import { PostgisGeoAdapter } from './adapters/postgis.js';
+import { SesEmailAdapter } from './adapters/ses.js';
 import { RedisQueueAdapter } from './adapters/redis-queue.js';
 import {
   createBroadcastRedis,
@@ -131,7 +132,7 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
         ? new PostgisGeoAdapter(prisma, new LocalGeoAdapter(prisma))
         : new LocalGeoAdapter(prisma)),
     sms: overrides.sms ?? new ConsoleSmsAdapter(quiet),
-    email: overrides.email ?? createEmailAdapter(config.EMAIL_PROVIDER, quiet),
+    email: overrides.email ?? createEmailAdapter(config, quiet),
     // Console unless a provider is configured, so tests and local development
     // never need a Firebase credential and never send a real notification.
     push:
@@ -185,13 +186,31 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
  * request for delivery this process cannot perform, and refusing to start is
  * the only answer that does not quietly lie about it.
  */
-function createEmailAdapter(provider: string, quiet: boolean): EmailPort {
-  if (provider === 'console') return new ConsoleEmailAdapter(quiet);
+function createEmailAdapter(config: Config, quiet: boolean): EmailPort {
+  if (config.EMAIL_PROVIDER === 'console') return new ConsoleEmailAdapter(quiet);
+
+  if (config.EMAIL_PROVIDER === 'ses') {
+    // The config guards already refused to start without these in production.
+    // Re-checked here because `buildServer` can also be called by a test or a
+    // script that did not go through them, and a partially configured SES
+    // client fails at the first send rather than at boot.
+    if (!config.SES_REGION || !config.EMAIL_FROM_ADDRESS || !config.EMAIL_REPLY_TO) {
+      throw new Error(
+        'EMAIL_PROVIDER=ses needs SES_REGION, EMAIL_FROM_ADDRESS and EMAIL_REPLY_TO.',
+      );
+    }
+    return new SesEmailAdapter({
+      region: config.SES_REGION,
+      fromAddress: config.EMAIL_FROM_ADDRESS,
+      fromName: config.EMAIL_FROM_NAME,
+      replyTo: config.EMAIL_REPLY_TO,
+      configurationSet: config.SES_CONFIGURATION_SET,
+    });
+  }
 
   throw new Error(
-    `EMAIL_PROVIDER is "${provider}", but no adapter for it is built into this service. ` +
-      'Email would silently go nowhere. Add the adapter, or set EMAIL_PROVIDER=console ' +
-      'for development only.',
+    `EMAIL_PROVIDER is "${config.EMAIL_PROVIDER}", but no adapter for it is built into this ` +
+      'service. Email would silently go nowhere.',
   );
 }
 

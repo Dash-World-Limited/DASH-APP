@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1129.0",
     "@dash/db": "*",
     "@dash/domain": "*",
     "@fastify/cookie": "^11.1.2",
