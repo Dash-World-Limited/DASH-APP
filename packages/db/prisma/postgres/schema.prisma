@@ -2519,3 +2519,48 @@ model DeclutterPricingDecision {
 
   @@index([submissionId, createdAt])
 }
+
+/// An email address we must stop sending to, and why.
+///
+/// Written from SES bounce and complaint notifications. It exists because a
+/// provider that keeps delivering to an address which hard-bounces, or to
+/// somebody who pressed "this is spam", loses its sending reputation — and when
+/// that happens verification codes stop arriving for *everyone*, which reads as
+/// a broken product rather than a mail problem.
+///
+/// Keyed on the address rather than on an identity, deliberately. A bounce is a
+/// fact about a mailbox, and the mailbox may belong to somebody who never had
+/// an account, or to nobody at all.
+model EmailSuppression {
+  id String @id @default(cuid())
+
+  /// Lowercased. One row per address; a repeat notification updates it.
+  address String @unique
+
+  /// hard_bounce | complaint | manual
+  reason String
+
+  /// Whether *anything* may still be sent.
+  ///
+  /// A complaint suppresses marketing but not a verification code: somebody who
+  /// marked a newsletter as spam has not asked to be locked out of their own
+  /// account, and refusing to send them a sign-in code would do exactly that.
+  /// A hard bounce suppresses everything, because the address does not exist.
+  transactionalAllowed Boolean @default(false)
+
+  /// SES bounce subtype or complaint feedback type, as reported. Kept raw: it
+  /// is the provider's vocabulary and translating it would lose detail.
+  detail String?
+
+  /// The SNS message id, so a notification is only ever applied once.
+  lastNotificationId String?
+
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  /// Set when a person is deliberately un-suppressed. Kept rather than deleted:
+  /// "this address bounced once and was cleared" is worth being able to say.
+  clearedAt   DateTime?
+  clearedBy   String?
+
+  @@index([reason, lastSeenAt])
+}

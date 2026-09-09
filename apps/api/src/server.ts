@@ -25,6 +25,7 @@ import {
 } from './adapters/index.js';
 import { PostgisGeoAdapter } from './adapters/postgis.js';
 import { SesEmailAdapter } from './adapters/ses.js';
+import { SuppressionAwareEmailAdapter } from './adapters/suppressed-email.js';
 import { RedisQueueAdapter } from './adapters/redis-queue.js';
 import {
   createBroadcastRedis,
@@ -72,6 +73,7 @@ import { registerDeclutterPhotoRoutes } from './routes/declutter-photos.js';
 import { registerDeclutterListingRoutes } from './routes/declutter-listings.js';
 import { registerFileRoutes } from './routes/files.js';
 import { registerSignupRoutes } from './routes/signup.js';
+import { registerEmailEventRoutes } from './routes/email-events.js';
 import { DeterministicValuationAdapter } from '@dash/domain/valuecheck';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAccountRoutes } from './routes/account.js';
@@ -132,7 +134,13 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
         ? new PostgisGeoAdapter(prisma, new LocalGeoAdapter(prisma))
         : new LocalGeoAdapter(prisma)),
     sms: overrides.sms ?? new ConsoleSmsAdapter(quiet),
-    email: overrides.email ?? createEmailAdapter(config, quiet),
+    // Wrapped, always, and including the override a test supplies: the
+    // suppression list is a policy about who may be written to, and a policy
+    // that only applies to one adapter is one the next adapter forgets.
+    email: new SuppressionAwareEmailAdapter(
+      overrides.email ?? createEmailAdapter(config, quiet),
+      prisma,
+    ),
     // Console unless a provider is configured, so tests and local development
     // never need a Firebase credential and never send a real notification.
     push:
@@ -433,6 +441,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerDeclutterListingRoutes(app);
   await registerFileRoutes(app);
   await registerSignupRoutes(app);
+  await registerEmailEventRoutes(app);
   await registerWebhookRoutes(app);
   await registerAccountRoutes(app);
   await registerDeviceRoutes(app);

@@ -93,6 +93,14 @@ const schema = z
     EMAIL_REPLY_TO: z.string().trim().email().optional(),
     /** Groups messages so bounce and complaint events can be attributed. */
     SES_CONFIGURATION_SET: z.string().trim().min(1).optional(),
+    /**
+     * The SNS topic bounce and complaint notifications arrive on.
+     *
+     * When set, a message from any other topic is refused even if its signature
+     * is perfect — a valid signature from a topic we never subscribed to is
+     * still somebody else's traffic.
+     */
+    SES_EVENT_TOPIC_ARN: z.string().trim().min(1).optional(),
     PUSH_PROVIDER: z.enum(['console', 'fcm']).default('console'),
     /**
      * Which engine answers a DASH ValueCheck.

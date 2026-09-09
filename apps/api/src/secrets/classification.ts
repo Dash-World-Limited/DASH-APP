@@ -107,6 +107,7 @@ export const PUBLIC_VARIABLES: readonly ConfigVariable[] = [
   { name: 'EMAIL_FROM_NAME', sensitivity: 'public', production: 'optional', purpose: 'Display name on transactional email' },
   { name: 'EMAIL_REPLY_TO', sensitivity: 'public', production: 'optional', purpose: 'Monitored mailbox; the identity-conflict email tells people to reply to it' },
   { name: 'SES_CONFIGURATION_SET', sensitivity: 'public', production: 'optional', purpose: 'Groups messages so bounce and complaint events can be attributed' },
+  { name: 'SES_EVENT_TOPIC_ARN', sensitivity: 'public', production: 'optional', purpose: 'Only bounce/complaint notifications from this topic are accepted' },
   { name: 'STORAGE_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `local` is refused in production' },
   { name: 'STORAGE_LOCAL_DIR', sensitivity: 'public', production: 'optional', purpose: 'Local storage directory in development' },
   { name: 'QUEUE_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `memory` is refused in production' },
