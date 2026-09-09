@@ -308,6 +308,80 @@ export async function registerDeclutterPricingRoutes(app: FastifyInstance): Prom
     },
   );
 
+  /**
+   * GET /v1/admin/declutter/submissions/:id/valuecheck
+   *
+   * Everything a reviewer needs on one screen: the item, its structured
+   * answers, the comparables gathered so far, the latest run with its range,
+   * confidence, factors, reasoning and warnings, and the decisions taken.
+   *
+   * The AI recommendation and every human decision are returned side by side
+   * rather than merged, so a screen cannot accidentally present an adjusted
+   * figure as the model's own.
+   */
+  app.get(
+    '/v1/admin/declutter/submissions/:id/valuecheck',
+    { preHandler: requirePermission('declutter:submission:read') },
+    async (request) => {
+      const { id } = z.object({ id: z.string().min(1).max(40) }).parse(request.params);
+      const submission = await submissionOr404(id);
+
+      const valuations = await prisma.declutterValuation.findMany({
+        where: { submissionId: id },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+      });
+      const decisions = await prisma.declutterPricingDecision.findMany({
+        where: { submissionId: id },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const latest = valuations.find((row) => row.status === 'succeeded') ?? null;
+
+      return {
+        submission: {
+          id: submission.id,
+          code: submission.code,
+          title: submission.title,
+          description: submission.description,
+          condition: submission.condition,
+          categoryKey: submission.category?.key ?? null,
+          expectedPriceKobo: submission.expectedPriceKobo,
+          attributes: submission.attributes ? JSON.parse(submission.attributes) : {},
+          photoCount: submission.photos.length,
+          valueCheckStatus: submission.valueCheckStatus,
+          escalationReasons: submission.escalationReasons
+            ? (JSON.parse(submission.escalationReasons) as string[])
+            : [],
+          authorizedPriceKobo: submission.authorizedPriceKobo,
+          authorizationVersion: submission.authorizationVersion,
+          sellerAcceptedPriceKobo: submission.sellerAcceptedPriceKobo,
+          acceptanceValid: isEligible(submission),
+          seller: {
+            displayName: submission.seller.displayName,
+            kycStatus: submission.seller.kycStatus,
+            sellerType: submission.seller.sellerType,
+          },
+          openFraudFlags: submission.fraudFlags.length,
+        },
+        comparables: submission.comparables,
+        valuation: latest
+          ? {
+              ...valuationView(latest),
+              estimatedLowKobo: latest.estimatedMinKobo,
+              estimatedHighKobo: latest.estimatedMaxKobo,
+              factors: latest.factors ? JSON.parse(latest.factors) : [],
+              warnings: parseWarnings(latest.warnings),
+              reasoning: latest.reasoning,
+              evidenceSummary: latest.evidenceSummary,
+            }
+          : null,
+        runs: valuations.map(valuationView),
+        decisions,
+      };
+    },
+  );
+
   // =========================================================================
   // Admin pricing decision
   // =========================================================================
