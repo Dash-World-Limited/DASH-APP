@@ -601,6 +601,155 @@ describe('an address nobody has proved', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Correcting a mistyped address
+// ---------------------------------------------------------------------------
+
+describe('somebody who mistyped their email and never verified', () => {
+  it('can start again with the correct address and the same phone', async () => {
+    // The trap this exists to close: without a release, the typo holds the
+    // phone number hostage and the person is locked out of DASH by their own
+    // spelling mistake, with no route through but emailing support.
+    const typo = freshPerson({ email: `ada.typo.${Date.now()}@gmial.com` });
+    await post('/v1/auth/signup', typo);
+
+    const corrected = freshPerson({
+      email: `ada.correct.${Date.now()}@gmail.com`,
+      phone: typo.phone,
+    });
+    const retry = await post('/v1/auth/signup', corrected);
+
+    // A real code, not the silent refusal a conflict would produce.
+    expect(retry.json().devCode).toMatch(/^\d{6}$/);
+
+    const verified = await post('/v1/auth/email/verify', {
+      email: corrected.email,
+      code: retry.json().devCode,
+    });
+    expect(verified.statusCode).toBe(200);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: corrected.email },
+    });
+    expect(identity.phone).toBe(corrected.phone);
+    expect(identity.emailVerifiedAt).not.toBeNull();
+  });
+
+  it('leaves the abandoned identity in place, without the phone', async () => {
+    const typo = freshPerson({ email: `left.${Date.now()}@gmial.com` });
+    await post('/v1/auth/signup', typo);
+    await post('/v1/auth/signup', freshPerson({ phone: typo.phone }));
+
+    const abandoned = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: typo.email },
+    });
+    // Released rather than deleted: whoever genuinely owns that mistyped
+    // mailbox can still claim it, and the record of it having existed survives.
+    expect(abandoned.phone).toBeNull();
+    expect(abandoned.emailVerifiedAt).toBeNull();
+  });
+
+  it('copies nothing from the abandoned identity to the new one', async () => {
+    const typo = freshPerson({
+      email: `nocopy.${Date.now()}@gmial.com`,
+      name: 'Wrong Name',
+      state: 'Kano',
+      cityArea: 'Nassarawa GRA',
+    });
+    await post('/v1/auth/signup', typo);
+
+    const corrected = freshPerson({
+      email: `right.${Date.now()}@gmail.com`,
+      phone: typo.phone,
+      name: 'Right Name',
+      state: 'Lagos',
+      cityArea: 'Surulere',
+    });
+    await post('/v1/auth/signup', corrected);
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: corrected.email },
+      include: { customer: true },
+    });
+    // Not a merge. The new identity is built from what was typed this time.
+    expect(identity.displayName).toBe('Right Name');
+    expect(identity.customer?.state).toBe('Lagos');
+    expect(identity.customer?.cityArea).toBe('Surulere');
+  });
+
+  it('records the release so it can be found afterwards', async () => {
+    const typo = freshPerson({ email: `audit.${Date.now()}@gmial.com` });
+    await post('/v1/auth/signup', typo);
+    const abandoned = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: typo.email },
+    });
+
+    await post('/v1/auth/signup', freshPerson({ phone: typo.phone }));
+
+    const audit = await context.prisma.auditLog.findFirst({
+      where: { identityId: abandoned.id, action: 'auth.signup.phone_released' },
+    });
+    expect(audit).not.toBeNull();
+  });
+});
+
+describe('a phone on a verified account is never released', () => {
+  it('refuses even though the caller supplies everything correctly', async () => {
+    const owner = freshPerson();
+    const { devCode } = (await post('/v1/auth/signup', owner)).json();
+    await post('/v1/auth/email/verify', { email: owner.email, code: devCode });
+
+    const attacker = freshPerson({ phone: owner.phone });
+    const response = await post('/v1/auth/signup', attacker);
+
+    // Same body as everything else; the caller learns nothing either way.
+    expect(response.statusCode).toBe(200);
+    expect(response.json().devCode).toBeUndefined();
+
+    // The phone is exactly the credential nothing here verifies, so proving
+    // nothing must move nothing.
+    const still = await context.prisma.identity.findUniqueOrThrow({
+      where: { phone: owner.phone },
+    });
+    expect(still.email).toBe(owner.email);
+    expect(
+      await context.prisma.identity.findUnique({ where: { email: attacker.email } }),
+    ).toBeNull();
+  });
+
+  it('refuses when the holder has signed in, even unverified', async () => {
+    // Belt and braces on the release conditions: a session means somebody has
+    // actually used the account, whatever the verification column says.
+    const holder = freshPerson();
+    const { devCode } = (await post('/v1/auth/signup', holder)).json();
+    await post('/v1/auth/email/verify', { email: holder.email, code: devCode });
+
+    const identity = await context.prisma.identity.findUniqueOrThrow({
+      where: { email: holder.email },
+    });
+    const sessions = await context.prisma.session.count({ where: { identityId: identity.id } });
+    expect(sessions).toBeGreaterThan(0);
+
+    const other = freshPerson({ phone: holder.phone });
+    await post('/v1/auth/signup', other);
+    expect(
+      await context.prisma.identity.findUnique({ where: { email: other.email } }),
+    ).toBeNull();
+  });
+
+  it('still answers a genuine conflict identically to everything else', async () => {
+    const owner = freshPerson();
+    const { devCode } = (await post('/v1/auth/signup', owner)).json();
+    await post('/v1/auth/email/verify', { email: owner.email, code: devCode });
+
+    const blocked = await post('/v1/auth/signup', freshPerson({ phone: owner.phone }));
+    const fresh = await post('/v1/auth/signup', freshPerson());
+
+    expect(blocked.statusCode).toBe(fresh.statusCode);
+    expect(blocked.json().message).toBe(fresh.json().message);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Codes
 // ---------------------------------------------------------------------------
 

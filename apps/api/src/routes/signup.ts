@@ -38,6 +38,19 @@
  * account by guessing it, and the phone is exactly the credential SMS
  * verification is not currently checking. The conflict is audited and explained
  * by email to the address supplied; resolving it is a human decision.
+ *
+ * ## Except when nobody has proved anything
+ *
+ * There is one narrow release, and it exists because of a real trap: somebody
+ * mistypes their address, never receives a code, never verifies — and their
+ * phone number is now held by an identity that has proved nothing. Without a
+ * release they are locked out of DASH by their own spelling mistake.
+ *
+ * So a phone is taken back from an identity that has verified no address, holds
+ * no session, has no role and has no orders. That is not a merge and not a
+ * verification; it is recognising that an unproven claim has no standing.
+ * Nothing crosses from the old identity to the new one. A verified identity is
+ * never touched.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -58,6 +71,7 @@ import {
   type AcquisitionSource,
 } from '@dash/domain/signup';
 import { ApiError } from '../http/errors.js';
+import { auditContext } from './declutter-shared.js';
 import { createSession } from '../auth/sessions.js';
 import { issueAccessFor } from '../auth/issue.js';
 import { issueAuthCookies } from '../auth/cookies.js';
@@ -284,7 +298,17 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         }),
         prisma.identity.findUnique({
           where: { phone: body.phone },
-          select: { id: true, status: true },
+          select: {
+            id: true,
+            status: true,
+            // Everything the reclaim decision below needs. An identity that has
+            // proved nothing and done nothing is not somebody's account yet.
+            emailVerifiedAt: true,
+            email: true,
+            customer: { select: { id: true, orders: { select: { id: true }, take: 1 } } },
+            sessions: { select: { id: true }, take: 1 },
+            roles: { select: { role: true }, take: 1 },
+          },
         }),
       ]);
 
@@ -319,7 +343,64 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
       // credential nothing is currently verifying, so treating it as proof of
       // sameness would let anyone join themselves to a stranger's account by
       // typing their number.
-      const phoneConflict = byPhone !== null && (byEmail === null || byPhone.id !== byEmail.id);
+      /**
+       * The typo case.
+       *
+       * Somebody enters `ada@gmial.com`, never receives a code, and never
+       * verifies. Their phone number is now attached to an identity nobody has
+       * proved anything about. When they come back and type the address
+       * correctly, the phone-conflict rule below would refuse them — and they
+       * would be locked out of DASH by their own spelling mistake, with no way
+       * through except emailing support.
+       *
+       * So a phone number is released from an identity that has proved nothing
+       * and done nothing. This is **not** an identity merge and not a
+       * verification: it is recognising that an unproven claim has no standing.
+       * Nothing is copied from the old identity to the new one, and the person
+       * still has to prove the new address before anything works.
+       *
+       * The conditions are deliberately narrow, and each one has to hold:
+       *
+       *   * the email on it was never verified, so nobody ever proved it;
+       *   * it holds no session, so nobody has ever signed in as it;
+       *   * it has no roles, so it is not staff;
+       *   * its customer profile has no orders, so it has no history.
+       *
+       * A verified identity is never touched, whatever else is true, because
+       * the phone number is exactly the credential nothing here is checking.
+       */
+      const reclaimable =
+        byPhone !== null &&
+        (byEmail === null || byPhone.id !== byEmail.id) &&
+        byPhone.emailVerifiedAt === null &&
+        byPhone.sessions.length === 0 &&
+        byPhone.roles.length === 0 &&
+        (byPhone.customer?.orders.length ?? 0) === 0;
+
+      if (byPhone && reclaimable) {
+        // Released, not deleted. The abandoned identity keeps its mistyped
+        // address so that whoever genuinely owns *that* mailbox can still claim
+        // it later, and keeps its own record of having existed.
+        await prisma.identity.update({
+          where: { id: byPhone.id },
+          data: { phone: null },
+        });
+
+        await writeAudit(prisma, {
+          identityId: byPhone.id,
+          action: 'auth.signup.phone_released',
+          resourceType: 'identity',
+          resourceId: byPhone.id,
+          before: { phone: '[redacted]', emailVerifiedAt: null },
+          after: { reason: 'unverified_identity_reclaimed' },
+          ...auditContext(request),
+        });
+      }
+
+      const phoneConflict =
+        byPhone !== null &&
+        !reclaimable &&
+        (byEmail === null || byPhone.id !== byEmail.id);
       if (phoneConflict) {
         await email.send({
           to: body.email,
