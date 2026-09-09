@@ -160,6 +160,7 @@ describe('categories', () => {
       'computers-laptops',
       'electronics',
       'power-tools',
+      'cars-vehicles',
     ]);
   });
 
@@ -178,9 +179,9 @@ describe('categories', () => {
   });
 
   it('returns nothing for a category it does not know', () => {
-    expect(categoryByKey('vehicles')).toBeNull();
-    expect(publicAttributesFor('vehicles')).toEqual([]);
-    expect(publicAttributes('vehicles', { anything: 1 })).toEqual({});
+    expect(categoryByKey('yachts')).toBeNull();
+    expect(publicAttributesFor('yachts')).toEqual([]);
+    expect(publicAttributes('yachts', { anything: 1 })).toEqual({});
   });
 
   it('serialises an attribute schema that round-trips', () => {
@@ -197,5 +198,92 @@ describe('categories', () => {
         }
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cars & Vehicles
+// ---------------------------------------------------------------------------
+
+describe('cars are a marketplace category, not a delivery one', () => {
+  const cars = categoryByKey('cars-vehicles')!;
+
+  it('exists as a top-level category', () => {
+    expect(cars).not.toBeNull();
+    expect(cars.name).toBe('Cars & Vehicles');
+  });
+
+  it('is never eligible for DASH logistics', () => {
+    // The load-bearing test of this category. A car cannot be put on a
+    // motorcycle, and its ownership moves by title transfer at an agreed place
+    // rather than by a handover at a door. Anything that later decides what to
+    // dispatch has to read this field, which is what stops a Toyota entering a
+    // rider queue.
+    expect(cars.handover).toBe('direct_only');
+  });
+
+  it('leaves every other category eligible, so this is a property of cars', () => {
+    for (const category of DECLUTTER_CATEGORIES) {
+      if (category.key === 'cars-vehicles') continue;
+      expect(category.handover, category.key).toBe('dash_logistics_eligible');
+    }
+  });
+
+  it('never publishes a VIN, an engine number, a plate or a title document', () => {
+    // Exactly the reasoning behind hiding an IMEI, and higher stakes. A
+    // published VIN is what somebody needs to clone plates, forge papers or
+    // contest a stolen-vehicle report.
+    const published = publicAttributesFor('cars-vehicles').map((a) => a.key);
+    for (const secret of ['vin', 'engineNumber', 'plateNumber', 'titleDocument', 'customsDocument']) {
+      expect(published, secret).not.toContain(secret);
+    }
+  });
+
+  it('drops those identifiers from stored attributes too', () => {
+    const published = publicAttributes('cars-vehicles', {
+      make: 'Toyota',
+      model: 'Corolla',
+      year: 2016,
+      vin: 'JTDBR32E160123456',
+      plateNumber: 'LSD123XY',
+      titleDocument: 'CoO/2016/44120',
+    });
+    expect(published).toEqual({ make: 'Toyota', model: 'Corolla', year: 2016 });
+  });
+
+  it('publishes what a buyer needs to decide whether to travel to see it', () => {
+    const published = publicAttributesFor('cars-vehicles').map((a) => a.key);
+    for (const field of [
+      'make',
+      'model',
+      'year',
+      'mileageKm',
+      'transmission',
+      'fuelType',
+      'accidentHistory',
+      'mechanicalCondition',
+    ]) {
+      expect(published, field).toContain(field);
+    }
+  });
+
+  it('requires the facts a car cannot be listed honestly without', () => {
+    const required = cars.attributes.filter((a) => a.required).map((a) => a.key);
+    expect(required).toEqual(
+      expect.arrayContaining([
+        'make',
+        'model',
+        'year',
+        'mileageKm',
+        'transmission',
+        'fuelType',
+        'accidentHistory',
+        'mechanicalCondition',
+      ]),
+    );
+  });
+
+  it('needs ownership evidence before it can be published', () => {
+    expect(cars.requiresOwnershipEvidence).toBe(true);
   });
 });

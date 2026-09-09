@@ -191,6 +191,24 @@ export interface CategoryDefinition {
    * True for the categories that are worth stealing and easy to move.
    */
   readonly requiresOwnershipEvidence: boolean;
+
+  /**
+   * How the item can ever change hands.
+   *
+   * `dash_logistics_eligible` does **not** mean DASH delivers it today — no
+   * Declutters item is delivered by anyone yet. It means the item is the kind
+   * of thing a rider could carry, so a future logistics integration may include
+   * it.
+   *
+   * `direct_only` is a permanent property of the goods rather than a temporary
+   * state. A car cannot be put on a motorcycle, and its ownership moves by
+   * title transfer at an agreed place, not by a handover at a door. Recording
+   * it on the category means a delivery integration has to read this field
+   * rather than assume every listing is dispatchable — which is precisely
+   * the assumption that would otherwise put a Toyota into a rider queue.
+   */
+  readonly handover: 'dash_logistics_eligible' | 'direct_only';
+
   readonly attributes: readonly AttributeField[];
 }
 
@@ -200,13 +218,26 @@ const CONDITION_NOTE_FIELDS: readonly AttributeField[] = [
 ];
 
 /**
- * Nine categories.
+ * Ten categories.
  *
- * Vehicles is deliberately absent — see the note in the seed checkpoint. A car
- * cannot be carried by a DASH rider, needs title transfer rather than a
- * handover, and its inspection is a different product. Adding it later is a
- * row in this table plus a decision about fulfilment, and pretending otherwise
- * now would put listings in the marketplace that nothing downstream can serve.
+ * Vehicles was deliberately absent at first, on the grounds that a car cannot
+ * be carried by a DASH rider, moves by title transfer rather than by a
+ * handover, and needs an inspection that is a different product. That note said
+ * adding it would be a row in this table plus a decision about fulfilment.
+ *
+ * The decision has now been made: Cars & Vehicles is in V1 as a
+ * **marketplace-only** category. It is never dispatched, never given a delivery
+ * estimate and never assigned to a rider — `handover: 'direct_only'` is the
+ * field that says so, and a test asserts it. A buyer contacts DASH, inspects
+ * the car, test drives it, and ownership transfers directly between the two
+ * people with the paperwork that requires. The fixed price and the absence of
+ * negotiation are unchanged: a car is priced once, like everything else here.
+ *
+ * The heavier vehicle workflow — a mechanical inspection report, a title
+ * check — is deliberately not modelled yet. The attributes below record what
+ * a seller declares and what an admin verifies, which is enough to publish
+ * honestly, and leaves that workflow room to attach to the same submission
+ * later rather than replace it.
  */
 export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
   {
@@ -215,6 +246,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     slug: 'phones-tablets',
     sortOrder: 1,
     requiresOwnershipEvidence: true,
+    handover: 'dash_logistics_eligible',
     attributes: [
       ...CONDITION_NOTE_FIELDS,
       { key: 'storageGb', label: 'Storage', type: 'number', unit: 'GB', required: true, visibility: 'public' },
@@ -238,6 +270,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     slug: 'computers-laptops',
     sortOrder: 2,
     requiresOwnershipEvidence: true,
+    handover: 'dash_logistics_eligible',
     attributes: [
       ...CONDITION_NOTE_FIELDS,
       { key: 'processor', label: 'Processor', type: 'text', visibility: 'public' },
@@ -262,6 +295,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     slug: 'electronics',
     sortOrder: 3,
     requiresOwnershipEvidence: true,
+    handover: 'dash_logistics_eligible',
     attributes: [
       ...CONDITION_NOTE_FIELDS,
       {
@@ -283,6 +317,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     slug: 'home-furniture',
     sortOrder: 4,
     requiresOwnershipEvidence: false,
+    handover: 'dash_logistics_eligible',
     attributes: [
       {
         key: 'type',
@@ -304,6 +339,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     slug: 'appliances',
     sortOrder: 5,
     requiresOwnershipEvidence: false,
+    handover: 'dash_logistics_eligible',
     attributes: [
       ...CONDITION_NOTE_FIELDS,
       {
@@ -334,6 +370,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     // Generators are among the most stolen high-value goods in Nigeria, and a
     // serial number is the only thing that distinguishes one from another.
     requiresOwnershipEvidence: true,
+    handover: 'dash_logistics_eligible',
     attributes: [
       ...CONDITION_NOTE_FIELDS,
       {
@@ -376,6 +413,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     slug: 'fashion',
     sortOrder: 7,
     requiresOwnershipEvidence: false,
+    handover: 'dash_logistics_eligible',
     attributes: [
       { key: 'brand', label: 'Brand', type: 'text', visibility: 'public' },
       {
@@ -397,6 +435,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     slug: 'baby-kids',
     sortOrder: 8,
     requiresOwnershipEvidence: false,
+    handover: 'dash_logistics_eligible',
     attributes: [
       { key: 'brand', label: 'Brand', type: 'text', visibility: 'public' },
       {
@@ -416,6 +455,7 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
     slug: 'sports-outdoors',
     sortOrder: 9,
     requiresOwnershipEvidence: false,
+    handover: 'dash_logistics_eligible',
     attributes: [
       { key: 'brand', label: 'Brand', type: 'text', visibility: 'public' },
       {
@@ -427,6 +467,126 @@ export const DECLUTTER_CATEGORIES: readonly CategoryDefinition[] = [
         visibility: 'public',
       },
       { key: 'size', label: 'Size', type: 'text', visibility: 'public' },
+    ],
+  },
+  {
+    key: 'cars-vehicles',
+    name: 'Cars & Vehicles',
+    slug: 'cars-vehicles',
+    sortOrder: 10,
+    // The highest-value thing on the marketplace by an order of magnitude, and
+    // the one where a stolen item does the most damage to whoever buys it.
+    requiresOwnershipEvidence: true,
+    handover: 'direct_only',
+    attributes: [
+      { key: 'make', label: 'Make', type: 'text', required: true, visibility: 'public' },
+      { key: 'model', label: 'Model', type: 'text', required: true, visibility: 'public' },
+      { key: 'year', label: 'Year', type: 'number', required: true, visibility: 'public' },
+      { key: 'trim', label: 'Trim', type: 'text', visibility: 'public' },
+      {
+        key: 'mileageKm',
+        label: 'Mileage',
+        type: 'number',
+        unit: 'km',
+        required: true,
+        visibility: 'public',
+      },
+      {
+        key: 'transmission',
+        label: 'Transmission',
+        type: 'select',
+        options: ['Automatic', 'Manual'],
+        required: true,
+        visibility: 'public',
+      },
+      {
+        key: 'fuelType',
+        label: 'Fuel',
+        type: 'select',
+        options: ['Petrol', 'Diesel', 'Hybrid', 'Electric', 'CNG'],
+        required: true,
+        visibility: 'public',
+      },
+      { key: 'engineSize', label: 'Engine', type: 'text', unit: 'L or cc', visibility: 'public' },
+      { key: 'cylinders', label: 'Cylinders', type: 'number', visibility: 'public' },
+      {
+        key: 'driveType',
+        label: 'Drive',
+        type: 'select',
+        options: ['FWD', 'RWD', 'AWD', '4WD'],
+        visibility: 'public',
+      },
+      { key: 'colour', label: 'Colour', type: 'text', visibility: 'public' },
+      { key: 'registrationState', label: 'Registered in', type: 'text', visibility: 'public' },
+      // Declared by the seller and shown. A buyer who discovers this after
+      // travelling across Lagos for an inspection has been wasted, and a
+      // marketplace that hides it is one accident away from being the reason.
+      {
+        key: 'accidentHistory',
+        label: 'Accident history',
+        type: 'select',
+        options: ['None declared', 'Minor, repaired', 'Major, repaired'],
+        required: true,
+        visibility: 'public',
+      },
+      {
+        key: 'serviceHistory',
+        label: 'Service history',
+        type: 'select',
+        options: ['Full', 'Partial', 'None'],
+        visibility: 'public',
+      },
+      { key: 'repairNotes', label: 'Repairs and replacements', type: 'text', visibility: 'public' },
+      {
+        key: 'mechanicalCondition',
+        label: 'Mechanical condition',
+        type: 'select',
+        options: ['Excellent', 'Good', 'Fair', 'Needs work'],
+        required: true,
+        visibility: 'public',
+      },
+      {
+        key: 'bodyCondition',
+        label: 'Body condition',
+        type: 'select',
+        options: ['Excellent', 'Good', 'Fair', 'Needs work'],
+        visibility: 'public',
+      },
+      {
+        key: 'interiorCondition',
+        label: 'Interior condition',
+        type: 'select',
+        options: ['Excellent', 'Good', 'Fair', 'Needs work'],
+        visibility: 'public',
+      },
+      {
+        key: 'customsStatus',
+        label: 'Customs',
+        type: 'select',
+        options: ['Duty paid', 'Not cleared'],
+        visibility: 'public',
+      },
+
+      // Admin-only, for exactly the reason an IMEI is. A VIN identifies one
+      // specific vehicle: published, it is what somebody needs to clone plates,
+      // forge papers, or contest a stolen-vehicle report. These are collected
+      // so DASH can check the car is what the seller says it is, and for no
+      // other reason.
+      { key: 'vin', label: 'VIN / chassis number', type: 'text', visibility: 'admin' },
+      { key: 'engineNumber', label: 'Engine number', type: 'text', visibility: 'admin' },
+      { key: 'plateNumber', label: 'Plate number', type: 'text', visibility: 'admin' },
+      {
+        key: 'titleDocument',
+        label: 'Title / ownership document reference',
+        type: 'text',
+        visibility: 'admin',
+      },
+      {
+        key: 'customsDocument',
+        label: 'Customs document reference',
+        type: 'text',
+        visibility: 'admin',
+      },
     ],
   },
 ];
