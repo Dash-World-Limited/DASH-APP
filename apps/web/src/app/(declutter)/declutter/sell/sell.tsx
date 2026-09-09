@@ -22,6 +22,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, useHasSession } from '@/lib/session';
 import { track } from '@/lib/analytics';
+import { signInHref } from '@/lib/return-to';
 
 interface SellerSelf {
   id: string;
@@ -198,7 +199,7 @@ function NextStep({
           You need a DASH account. If you already order on DASH, that is the same account.
         </p>
         <Link
-          href="/signin"
+          href={signInHref('/declutter/sell')}
           className="mt-6 inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
         >
           Sign in

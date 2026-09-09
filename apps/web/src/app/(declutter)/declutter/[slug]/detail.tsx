@@ -25,6 +25,7 @@ import { useState } from 'react';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, useHasSession } from '@/lib/session';
 import { track } from '@/lib/analytics';
+import { signInHref } from '@/lib/return-to';
 import {
   AVAILABILITY_LABELS,
   BADGE_LABELS,
@@ -240,8 +241,10 @@ function ContactRequest({ listing }: { listing: ListingDetail }) {
         <p className="mt-2 text-sm text-[var(--ink-muted)]">
           An introduction is arranged between two real people, so DASH needs to know who is asking.
         </p>
+        {/* Comes back to this listing, with the enquiry still the thing
+            they were trying to do. */}
         <Link
-          href="/signin"
+          href={signInHref(`/declutter/${listing.slug}`)}
           className="mt-5 inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
         >
           Sign in to continue

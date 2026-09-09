@@ -29,6 +29,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
 import { useHasSession } from '@/lib/session';
+import { signInHref } from '@/lib/return-to';
 import { DeclutterWordmark } from './DeclutterWordmark';
 
 const LINKS = [
@@ -85,7 +86,9 @@ export function DeclutterHeader() {
             </Link>
           ))}
           <Link
-            href={hasSession ? '/account' : '/signin'}
+            // Signing in from the header returns you to the page you were on,
+            // not to the front of the marketplace.
+            href={hasSession ? '/account' : signInHref(pathname)}
             className="ml-2 rounded-full border border-[var(--line-strong)] px-4 py-2 text-sm font-semibold transition-colors hover:bg-[var(--dcl-glass)]"
           >
             {hasSession ? 'Account' : 'Sign in'}
@@ -126,7 +129,7 @@ export function DeclutterHeader() {
             ))}
           </ul>
           <Link
-            href={hasSession ? '/account' : '/signin'}
+            href={hasSession ? '/account' : signInHref(pathname)}
             className="mt-4 block rounded-full border border-[var(--line-strong)] px-4 py-3 text-center text-sm font-semibold"
           >
             {hasSession ? 'Account' : 'Sign in'}

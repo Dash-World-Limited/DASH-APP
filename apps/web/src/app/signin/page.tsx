@@ -93,7 +93,7 @@ function SignInForm() {
               onSubmit={(event) => {
                 event.preventDefault();
                 void run(async () => {
-                  const result = await requestOtp(phone);
+                  const result = await requestOtp({ phone });
                   setDevCode(result.devCode ?? null);
                   setStage('verify');
                 });
@@ -124,7 +124,7 @@ function SignInForm() {
               onSubmit={(event) => {
                 event.preventDefault();
                 void run(async () => {
-                  await verifyOtp(phone, code);
+                  await verifyOtp({ phone }, code);
                   router.push(next);
                 });
               }}

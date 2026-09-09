@@ -408,16 +408,60 @@ export async function verifyMfa(challengeToken: string, code: string): Promise<S
   return session;
 }
 
-export async function requestOtp(
-  phone: string,
-): Promise<{ sent: boolean; expiresInSeconds: number; devCode?: string }> {
-  return apiFetch('/v1/auth/otp/request', { method: 'POST', body: { phone } });
+/**
+ * Where a code should be sent: a phone number, or an email address.
+ *
+ * Exactly one, mirroring the API. The Declutters website signs people in by
+ * email because that is the address they proved at signup; the app signs them
+ * in by phone. One shape covers both, so neither grows its own sign-in client.
+ */
+export type OtpDestination = { phone: string } | { email: string };
+
+export interface OtpRequestResult {
+  sent: boolean;
+  expiresInSeconds: number;
+  message?: string;
+  devCode?: string;
 }
 
-export async function verifyOtp(phone: string, code: string): Promise<Session> {
+export async function requestOtp(destination: OtpDestination): Promise<OtpRequestResult> {
+  return apiFetch('/v1/auth/otp/request', { method: 'POST', body: destination });
+}
+
+export async function verifyOtp(destination: OtpDestination, code: string): Promise<Session> {
   const session = await apiFetch<Session>('/v1/auth/otp/verify', {
     method: 'POST',
-    body: { phone, code },
+    body: { ...destination, code },
+  });
+  storeAccess(session);
+  return session;
+}
+
+/**
+ * Create an account.
+ *
+ * Returns the same shape whatever happened — created, already registered, or
+ * refused because the phone number belongs to somebody else. The server
+ * deliberately does not say which, and neither does this: the caller's next
+ * step is the same in every case, which is to go and read their email.
+ */
+export async function signUp(input: {
+  name: string;
+  email: string;
+  phone: string;
+}): Promise<OtpRequestResult> {
+  return apiFetch('/v1/auth/signup', { method: 'POST', body: input });
+}
+
+export async function resendVerification(email: string): Promise<OtpRequestResult> {
+  return apiFetch('/v1/auth/email/resend', { method: 'POST', body: { email } });
+}
+
+/** Redeem a verification code. Proving the address also signs the person in. */
+export async function verifyEmail(email: string, code: string): Promise<Session> {
+  const session = await apiFetch<Session>('/v1/auth/email/verify', {
+    method: 'POST',
+    body: { email, code },
   });
   storeAccess(session);
   return session;
