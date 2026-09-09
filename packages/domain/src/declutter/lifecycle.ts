@@ -491,3 +491,100 @@ export const SUBMISSION_REJECTION_REASONS = [
 ] as const;
 
 export type SubmissionRejectionReason = (typeof SUBMISSION_REJECTION_REASONS)[number];
+
+// ---------------------------------------------------------------------------
+// Contact methods — and the honesty about what "revoke" can mean
+// ---------------------------------------------------------------------------
+
+/**
+ * How an approved buyer actually reaches a seller.
+ *
+ * Modelled as a typed method rather than a `sellerPhoneReleased` boolean
+ * because the choice has consequences the boolean cannot carry, and because a
+ * future masked-relay or WhatsApp Business integration must be an added method
+ * rather than a schema replacement.
+ */
+export const CONTACT_METHODS = [
+  /** DASH World Declutters coordinates the introduction. V1 default. */
+  'dash_relay',
+  /** A proxy number or thread. Neither party sees the other's real details. */
+  'masked_relay',
+  /** The seller's real WhatsApp number is shown to the buyer. */
+  'whatsapp_direct',
+  /** The seller's real phone number is shown to the buyer. */
+  'phone_direct',
+] as const;
+
+export type ContactMethod = (typeof CONTACT_METHODS)[number];
+
+/**
+ * V1 default: DASH mediates and no seller detail leaves the platform.
+ *
+ * The buyer asks to arrange an inspection, an admin approves, and the buyer is
+ * given "Contact Seller Through DASH" — the Declutters WhatsApp handles the
+ * introduction. The seller's own number is never part of that exchange.
+ */
+export const DEFAULT_CONTACT_METHOD: ContactMethod = 'dash_relay';
+
+/** Methods where DASH stands between the two people. */
+export const MEDIATED_CONTACT_METHODS: ReadonlySet<ContactMethod> = new Set<ContactMethod>([
+  'dash_relay',
+  'masked_relay',
+]);
+
+/** Methods that hand a real, permanent contact detail to a stranger. */
+export const DIRECT_CONTACT_METHODS: ReadonlySet<ContactMethod> = new Set<ContactMethod>([
+  'whatsapp_direct',
+  'phone_direct',
+]);
+
+export function isMediatedContact(method: ContactMethod): boolean {
+  return MEDIATED_CONTACT_METHODS.has(method);
+}
+
+/**
+ * Can withdrawing this grant actually withdraw anything?
+ *
+ * This is the one place in the system where the answer is allowed to be "no",
+ * and saying so plainly matters more than the code that reads it.
+ *
+ * Revoking a mediated grant genuinely works: DASH stops relaying, and the buyer
+ * has nothing but a listing page. Revoking a *direct* grant closes the app's
+ * door and nothing else — the buyer wrote the number down, or their phone
+ * saved it, or they messaged it to someone else. A product that shows a
+ * "revoked" badge over a disclosed phone number is lying to the seller about
+ * the protection they have.
+ *
+ * So the schema keeps two separate records: a grant, which may expire and be
+ * revoked, and a disclosure, which is append-only and has no revoked column,
+ * because there is no such thing.
+ */
+export function accessIsRevocable(method: ContactMethod): boolean {
+  return isMediatedContact(method);
+}
+
+/**
+ * Handing out a seller's real number is the seller's decision, not only an
+ * admin's, and it needs a reason on the record from whoever approved it.
+ */
+export function requiresSellerConsent(method: ContactMethod): boolean {
+  return DIRECT_CONTACT_METHODS.has(method);
+}
+
+export function requiresApprovalReason(method: ContactMethod): boolean {
+  return DIRECT_CONTACT_METHODS.has(method);
+}
+
+/** What a disclosure of this method actually reveals. Stored on the record. */
+export function disclosedFieldsFor(method: ContactMethod): readonly string[] {
+  switch (method) {
+    case 'dash_relay':
+      return [];
+    case 'masked_relay':
+      return ['proxy_channel'];
+    case 'whatsapp_direct':
+      return ['seller_whatsapp'];
+    case 'phone_direct':
+      return ['seller_phone'];
+  }
+}

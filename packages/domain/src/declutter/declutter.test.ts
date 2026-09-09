@@ -22,10 +22,23 @@ import {
   SUBMISSION_TERMINAL,
   submissionMachine,
   validateValuationResult,
+  accessIsRevocable,
+  CONTACT_METHODS,
+  DEFAULT_CONTACT_METHOD,
+  disclosedFieldsFor,
+  isMediatedContact,
+  requiresApprovalReason,
+  requiresSellerConsent,
   type DeclutterActor,
   type ValuationRequest,
   type ValuationResult,
 } from './index.js';
+import {
+  PERMISSIONS,
+  permissionsForRoles,
+  STAFF_ROLES,
+  STEP_UP_PERMISSIONS,
+} from '../permissions/index.js';
 
 const ALL_ACTORS: readonly DeclutterActor[] = [
   'seller',
@@ -396,5 +409,102 @@ describe('the human decision', () => {
     expect(() =>
       resolvePricingDecision({ kind: 'rejected', recommendedPriceKobo: 44_500_000 }),
     ).toThrow(PricingDecisionError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contact: what a grant can and cannot take back
+// ---------------------------------------------------------------------------
+
+describe('contact access is honest about revocation', () => {
+  it('treats mediated access as genuinely revocable', () => {
+    expect(accessIsRevocable('dash_relay')).toBe(true);
+    expect(accessIsRevocable('masked_relay')).toBe(true);
+  });
+
+  it('refuses to claim a disclosed number can be un-disclosed', () => {
+    // Revoking a direct grant closes the app's door and nothing else. The
+    // buyer's phone still has the number.
+    expect(accessIsRevocable('whatsapp_direct')).toBe(false);
+    expect(accessIsRevocable('phone_direct')).toBe(false);
+  });
+
+  it('defaults V1 to DASH mediating, so nothing leaves the platform', () => {
+    expect(DEFAULT_CONTACT_METHOD).toBe('dash_relay');
+    expect(isMediatedContact(DEFAULT_CONTACT_METHOD)).toBe(true);
+    expect(disclosedFieldsFor(DEFAULT_CONTACT_METHOD)).toEqual([]);
+  });
+
+  it('demands seller consent and a reason only where something real is handed over', () => {
+    for (const method of CONTACT_METHODS) {
+      const direct = !isMediatedContact(method);
+      expect(requiresSellerConsent(method)).toBe(direct);
+      expect(requiresApprovalReason(method)).toBe(direct);
+    }
+  });
+
+  it('names exactly what each method reveals', () => {
+    expect(disclosedFieldsFor('whatsapp_direct')).toEqual(['seller_whatsapp']);
+    expect(disclosedFieldsFor('phone_direct')).toEqual(['seller_phone']);
+    expect(disclosedFieldsFor('masked_relay')).toEqual(['proxy_channel']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Roles: preparing work and deciding it are different jobs
+// ---------------------------------------------------------------------------
+
+describe('declutter roles', () => {
+  const moderator = permissionsForRoles(['declutter_moderator']);
+  const admin = permissionsForRoles(['declutter_admin']);
+
+  it('lets a moderator prepare work', () => {
+    expect(moderator.has('declutter:submission:write')).toBe(true);
+    expect(moderator.has('declutter:valuation:run')).toBe(true);
+    expect(moderator.has('declutter:listing:write')).toBe(true);
+  });
+
+  it('stops a moderator doing anything a member of the public would feel', () => {
+    expect(moderator.has('declutter:listing:publish')).toBe(false);
+    expect(moderator.has('declutter:price:decide')).toBe(false);
+    expect(moderator.has('declutter:kyc:review')).toBe(false);
+    expect(moderator.has('declutter:contact:disclose:direct')).toBe(false);
+    expect(moderator.has('declutter:fraud:override')).toBe(false);
+  });
+
+  it('gives an admin everything a moderator has, and the decisions too', () => {
+    for (const permission of moderator) {
+      expect(admin.has(permission)).toBe(true);
+    }
+    expect(admin.has('declutter:listing:publish')).toBe(true);
+    expect(admin.has('declutter:price:decide')).toBe(true);
+  });
+
+  it('keeps the marketplace out of platform_admin by default', () => {
+    // Least privilege: running a second-hand marketplace is not implied by
+    // administering DASH. An identity may hold both roles when that is the job.
+    const platform = permissionsForRoles(['platform_admin']);
+    expect(platform.has('declutter:listing:publish')).toBe(false);
+    expect(platform.has('declutter:contact:disclose:direct')).toBe(false);
+  });
+
+  it('still gives super_admin every declutter permission', () => {
+    const superAdmin = permissionsForRoles(['super_admin']);
+    for (const permission of PERMISSIONS.filter((p) => p.startsWith('declutter:'))) {
+      expect(superAdmin.has(permission)).toBe(true);
+    }
+  });
+
+  it('step-up gates the three irreversible or personal actions', () => {
+    expect(STEP_UP_PERMISSIONS.has('declutter:kyc:review')).toBe(true);
+    expect(STEP_UP_PERMISSIONS.has('declutter:contact:disclose:direct')).toBe(true);
+    expect(STEP_UP_PERMISSIONS.has('declutter:fraud:override')).toBe(true);
+    // Ordinary preparation is not gated — moderation would stop being done.
+    expect(STEP_UP_PERMISSIONS.has('declutter:submission:write')).toBe(false);
+  });
+
+  it('requires both declutter roles to sign in as staff, with MFA', () => {
+    expect(STAFF_ROLES.has('declutter_moderator')).toBe(true);
+    expect(STAFF_ROLES.has('declutter_admin')).toBe(true);
   });
 });

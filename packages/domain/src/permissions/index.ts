@@ -111,6 +111,39 @@ export const PERMISSIONS = [
   // `account:delete:own` so it can never be exercised silently: it demands
   // its own permission, a mandatory reason, and an on-behalf-of audit entry.
   'admin:account:delete',
+
+  // --- DASH World Declutters ----------------------------------------------
+  // A curated marketplace where nothing reaches the public without a named
+  // human deciding it should. The split between moderator and admin below is
+  // the whole point: preparing a submission and setting the price a stranger
+  // will pay are different jobs with different consequences.
+  'declutter:seller:read',
+  'declutter:seller:write',
+  // Reading a seller's NIN, bank details and identity documents. Step-up
+  // gated: this is the most personal data in the marketplace.
+  'declutter:kyc:review',
+  'declutter:submission:read',
+  'declutter:submission:write',
+  // Running a ValueCheck. Deliberately separate from deciding a price —
+  // the model advises, a person decides.
+  'declutter:valuation:run',
+  // Setting the final fixed price a buyer will pay. Admin only.
+  'declutter:price:decide',
+  'declutter:listing:read',
+  'declutter:listing:write',
+  // Making a listing public, and taking it down again.
+  'declutter:listing:publish',
+  'declutter:listing:suspend',
+  // Approving a buyer's request to be introduced to a seller.
+  'declutter:contact:review',
+  // Releasing a seller's real phone or WhatsApp number to a buyer. Step-up
+  // gated because it is the one action in this product that cannot be undone:
+  // once a number has been seen, no revocation reaches the buyer's phone.
+  'declutter:contact:disclose:direct',
+  'declutter:fraud:read',
+  // Overriding a duplicate-image block. Step-up gated, reason mandatory.
+  'declutter:fraud:override',
+  'declutter:partner:write',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -146,6 +179,13 @@ export const STEP_UP_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>(
   'account:delete:own',
   'account:export:own',
   'admin:account:delete',
+  // Declutter. KYC review exposes a seller's identity documents and bank
+  // details; a direct contact disclosure hands a real personal number to a
+  // stranger and can never be taken back; a fraud override waves through a
+  // block that a rule raised for a reason.
+  'declutter:kyc:review',
+  'declutter:contact:disclose:direct',
+  'declutter:fraud:override',
 ]);
 
 /** A step-up is valid for 15 minutes. After that, re-authenticate. */
@@ -174,6 +214,11 @@ export const ROLES = [
   'finance_analyst',
   'marketing_manager',
   'city_manager',
+  // Declutters marketplace. `declutter_moderator` prepares work and cannot
+  // publish or price; `declutter_admin` decides. §29's Staff/Admin split,
+  // expressed as permissions rather than hidden buttons.
+  'declutter_moderator',
+  'declutter_admin',
   'platform_admin',
   'super_admin',
 ] as const;
@@ -291,6 +336,38 @@ const PLATFORM_ADMIN_PERMISSIONS: readonly Permission[] = [
 ];
 
 /**
+ * Prepares Declutter work; decides none of it.
+ *
+ * A moderator can build a submission, upload photos, run a ValueCheck and see
+ * a fraud flag. They cannot read a seller's bank details, set a price, publish
+ * a listing, or release anybody's phone number. Those four are exactly the
+ * actions where a mistake reaches a member of the public.
+ */
+const DECLUTTER_MODERATOR_PERMISSIONS: readonly Permission[] = [
+  'declutter:seller:read',
+  'declutter:submission:read',
+  'declutter:submission:write',
+  'declutter:valuation:run',
+  'declutter:listing:read',
+  'declutter:listing:write',
+  'declutter:contact:review',
+  'declutter:fraud:read',
+];
+
+/** Decides. Everything a moderator may do, plus the consequential half. */
+const DECLUTTER_ADMIN_PERMISSIONS: readonly Permission[] = [
+  ...DECLUTTER_MODERATOR_PERMISSIONS,
+  'declutter:seller:write',
+  'declutter:kyc:review',
+  'declutter:price:decide',
+  'declutter:listing:publish',
+  'declutter:listing:suspend',
+  'declutter:contact:disclose:direct',
+  'declutter:fraud:override',
+  'declutter:partner:write',
+];
+
+/**
  * Role → permissions. Super admin is defined as "every permission" rather than a
  * hand-maintained list, so a newly added permission is never accidentally
  * unreachable. Every other role is an explicit allowlist.
@@ -306,6 +383,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
   finance_analyst: FINANCE_PERMISSIONS,
   marketing_manager: MARKETING_PERMISSIONS,
   city_manager: CITY_MANAGER_PERMISSIONS,
+  declutter_moderator: DECLUTTER_MODERATOR_PERMISSIONS,
+  declutter_admin: DECLUTTER_ADMIN_PERMISSIONS,
   platform_admin: PLATFORM_ADMIN_PERMISSIONS,
   super_admin: PERMISSIONS,
 };
@@ -327,6 +406,8 @@ export const STAFF_ROLES: ReadonlySet<Role> = new Set<Role>([
   'finance_analyst',
   'marketing_manager',
   'city_manager',
+  'declutter_moderator',
+  'declutter_admin',
   'platform_admin',
   'super_admin',
 ]);

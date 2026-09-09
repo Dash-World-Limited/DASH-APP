@@ -548,6 +548,11 @@ model Customer {
   subscriptions Subscription[]
   redemptions   PromotionRedemption[]
 
+  // Declutter. Back-relations only — the foreign keys live on the Declutter
+  // side, so the customers table itself is unchanged.
+  declutterSeller          DeclutterSeller?
+  declutterContactRequests DeclutterContactRequest[]
+
   @@index([referralCode])
 }
 
@@ -1695,4 +1700,599 @@ model MaintenanceLease {
   updatedAt DateTime @updatedAt
 
   @@index([expiresAt])
+}
+
+// ===========================================================================
+// DASH World Declutters
+//
+// A curated, admin-controlled, fixed-price second-hand marketplace. Everything
+// below is additive: no existing model gains a column, and the Order, dispatch
+// and auth tables are untouched. Customer gains two back-relations, which cost
+// nothing physically — the foreign keys live on the Declutter side.
+//
+// Three ideas shape this section.
+//
+//   * Submission and listing are different objects. A submission is a private
+//     conversation about whether an item should be listed at all. A listing is
+//     the public result. Someone asking DASH to consider an item is not DASH
+//     endorsing it, and one table could not say both things.
+//
+//   * Moderation and availability are two columns, not one. A suspended
+//     listing and a sold one are both absent from the marketplace for entirely
+//     different reasons.
+//
+//   * A grant is revocable; a disclosure is not. See the comment on
+//     DeclutterContactDisclosure. That is the one place this schema is shaped
+//     by an admission about what software cannot do.
+// ===========================================================================
+
+/// Where things are, as a hierarchy DASH can extend without a migration.
+///
+/// state -> city -> lga -> area, self-referential. V1 seeds Lagos State and
+/// Asaba only; adding Port Harcourt later is rows, not DDL, which is the point.
+model DeclutterLocation {
+  id       String  @id @default(cuid())
+  kind     String // state | city | lga | area
+  name     String
+  slug     String  @unique
+  parentId String?
+
+  /// Optional bridge to the delivery City, set once a location is served by
+  /// DASH logistics. Null means "we list here but do not deliver here yet".
+  cityId String?
+
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  parent   DeclutterLocation?  @relation("DeclutterLocationTree", fields: [parentId], references: [id])
+  children DeclutterLocation[] @relation("DeclutterLocationTree")
+  listings DeclutterListing[]
+
+  @@index([kind, isActive])
+  @@index([parentId])
+}
+
+/// What kind of thing is being sold, and what facts that kind needs.
+///
+/// `attributeSchema` is JSON describing the category's own fields — storage and
+/// battery health for a phone, mileage for a car, nothing of the sort for a
+/// sofa. Held as data rather than columns because forcing `batteryHealth` onto
+/// furniture is how a schema stops telling the truth.
+model DeclutterCategory {
+  id       String  @id @default(cuid())
+  key      String  @unique
+  name     String
+  slug     String  @unique
+  parentId String?
+
+  /// JSON: [{ key, label, type, unit, required, options }]
+  attributeSchema String?
+
+  /// Categories where ownership evidence is expected before publication —
+  /// phones, laptops, vehicles. Read by the admin checklist, never public.
+  requiresOwnershipEvidence Boolean @default(false)
+
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  parent      DeclutterCategory?    @relation("DeclutterCategoryTree", fields: [parentId], references: [id])
+  children    DeclutterCategory[]   @relation("DeclutterCategoryTree")
+  submissions DeclutterSubmission[]
+  listings    DeclutterListing[]
+
+  @@index([isActive, sortOrder])
+  @@index([parentId])
+}
+
+/// A person or business permitted to sell through DASH Declutters.
+///
+/// Separate from Vendor deliberately: a Vendor is a trading business with KYB,
+/// commission and branches. A declutter seller is usually one person with one
+/// sofa. `trusted_partner` covers vetted operators, and is the hook for reduced
+/// intake friction later — never for reduced verification.
+model DeclutterSeller {
+  id         String  @id @default(cuid())
+  customerId String? @unique
+
+  displayName String
+  sellerType  String @default("individual") // individual | trusted_partner
+
+  /// What the marketplace may show. Never a street address, never a number.
+  publicArea String?
+
+  kycStatus String @default("unverified") // unverified | pending | verified | rejected | suspended
+
+  /// Encrypted at rest by the application layer, exactly as Vendor bank
+  /// details are. The raw values never appear in a log, an export, or any
+  /// response that leaves the API.
+  legalName        String?
+  nationalIdCipher String?
+  nationalIdLast4  String?
+  phoneE164        String?
+  phoneVerifiedAt  DateTime?
+  addressLine      String?
+
+  bankName          String?
+  bankAccountLast4  String?
+  bankAccountCipher String?
+  bankAccountName   String?
+
+  /// Result of comparing declared name, identity record and bank account
+  /// holder, from packages/domain/src/declutter/identity. Stored so an admin
+  /// sees why a seller was queued for review, and so the thresholds can be
+  /// retuned later against real decisions rather than guesses.
+  nameMatchScore   Int?
+  nameMatchVerdict String? // match | review | mismatch
+  nameMatchDetail  String? // JSON: the three pairings and their factors
+
+  verifiedAt      DateTime?
+  verifiedBy      String?
+  rejectionReason String?
+  adminNotes      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer    Customer?                 @relation(fields: [customerId], references: [id])
+  documents   DeclutterSellerDocument[]
+  submissions DeclutterSubmission[]
+  listings    DeclutterListing[]
+  imageUsages DeclutterImageUsage[]
+  fraudFlags  DeclutterFraudFlag[]
+
+  @@index([kycStatus])
+  @@index([sellerType])
+}
+
+/// Verification evidence. Private, always.
+///
+/// `storageKey` addresses a private bucket object with a random key — the same
+/// StoragePort contract vendor documents use, so a KYC document is never
+/// reachable by guessing a URL.
+model DeclutterSellerDocument {
+  id       String @id @default(cuid())
+  sellerId String
+
+  kind       String // national_id | id_card | proof_of_address | bank_statement | selfie
+  storageKey String
+  status     String  @default("pending") // pending | accepted | rejected
+  note       String?
+
+  reviewedBy String?
+  reviewedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  seller DeclutterSeller @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+
+  @@index([sellerId, status])
+}
+
+/// Someone asking DASH to consider an item. Private, never public.
+model DeclutterSubmission {
+  id       String @id @default(cuid())
+  code     String @unique
+  sellerId String
+
+  /// Where it came from. V1 is overwhelmingly `whatsapp`; the column exists so
+  /// a seller portal can be added later without anyone having to guess which
+  /// records predate it.
+  intakeChannel String @default("whatsapp") // whatsapp | admin | portal
+
+  status String @default("draft")
+
+  title       String?
+  description String?
+  categoryId  String?
+  condition   String? // new | like_new | good | fair
+
+  /// JSON, shaped by the category's attributeSchema.
+  attributes String?
+
+  /// What the seller hopes for, in kobo. Never shown publicly, and never the
+  /// price — it is an input to valuation and a signal in its own right.
+  expectedPriceKobo Int?
+
+  locationId String?
+
+  /// The final DASH price, in kobo. Written only by an admin decision.
+  finalPriceKobo Int?
+
+  /// Seller acceptance of that price. Written together or not at all: a price
+  /// nobody accepted must never look accepted.
+  sellerAcceptedAt     DateTime?
+  sellerAcceptanceBy   String?
+  sellerAcceptanceNote String?
+
+  rejectionReason String?
+  adminNotes      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  seller     DeclutterSeller            @relation(fields: [sellerId], references: [id])
+  category   DeclutterCategory?         @relation(fields: [categoryId], references: [id])
+  photos     DeclutterSubmissionPhoto[]
+  valuations DeclutterValuation[]
+  listing    DeclutterListing?
+  events     DeclutterSubmissionEvent[]
+  fraudFlags DeclutterFraudFlag[]
+
+  @@index([status, createdAt])
+  @@index([sellerId, status])
+}
+
+model DeclutterSubmissionEvent {
+  id           String  @id @default(cuid())
+  submissionId String
+  fromStatus   String?
+  toStatus     String
+
+  actorType  String // seller | staff | admin | super_admin | system
+  actorId    String?
+  reasonCode String?
+  note       String?
+
+  createdAt DateTime @default(now())
+
+  submission DeclutterSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+}
+
+model DeclutterSubmissionPhoto {
+  id            String @id @default(cuid())
+  submissionId  String
+  fingerprintId String
+
+  storageKey String
+  position   Int
+  width      Int?
+  height     Int?
+  bytes      Int?
+
+  createdAt DateTime @default(now())
+
+  submission  DeclutterSubmission       @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  fingerprint DeclutterImageFingerprint @relation(fields: [fingerprintId], references: [id])
+
+  @@unique([submissionId, position])
+  @@index([fingerprintId])
+}
+
+/// One DASH ValueCheck run.
+///
+/// Its own table rather than columns on the submission because a submission may
+/// be valued more than once — a re-run after better photos, or after an admin
+/// supplied comparables — and the history is the asset. Every row records which
+/// provider and which prompt version produced it, so a result stays
+/// interpretable after the model behind it has been replaced.
+model DeclutterValuation {
+  id           String @id @default(cuid())
+  submissionId String
+
+  status String @default("pending") // pending | succeeded | failed | rejected
+
+  /// The full ValuationRequest as sent, so a recommendation can be replayed.
+  requestPayload String
+
+  providerName     String?
+  modelVersion     String?
+  algorithmVersion String?
+
+  estimatedMinKobo     Int?
+  estimatedMaxKobo     Int?
+  recommendedPriceKobo Int?
+
+  /// 0-10000. Integer basis points, like commission — proportions in DASH are
+  /// not floats.
+  confidenceBasisPoints Int?
+
+  /// JSON ValuationFactor[], and the prose an admin reads.
+  factors   String?
+  reasoning String?
+
+  /// Why a result was refused before it was ever shown. One of the codes from
+  /// validateValuationResult, or a provider/transport failure.
+  failureReason String?
+
+  adminDecision  String? // approved | adjusted | rejected
+  adminPriceKobo Int?
+  adminReason    String?
+  decidedBy      String?
+  decidedAt      DateTime?
+
+  createdAt DateTime @default(now())
+
+  submission DeclutterSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId, createdAt])
+  @@index([status])
+}
+
+/// The public marketplace object.
+model DeclutterListing {
+  id           String  @id @default(cuid())
+  slug         String  @unique
+  submissionId String? @unique
+  sellerId     String
+  categoryId   String
+  locationId   String
+
+  title       String
+  description String
+  condition   String // new | like_new | good | fair
+
+  /// The approved DASH fixed price, in kobo. There is no negotiation, so there
+  /// is exactly one price column and no offer table anywhere in this schema.
+  priceKobo Int
+
+  /// JSON, shaped by the category's attributeSchema.
+  attributes String?
+
+  moderationStatus String @default("draft") // draft | pending_review | approved | rejected | suspended
+  availability     String @default("available") // available | reserved | unavailable | sold | archived
+
+  publishedAt DateTime?
+  soldAt      DateTime?
+  suspendedAt DateTime?
+
+  rejectionReason  String?
+  suspensionReason String?
+
+  /// Monotonic, incremented with every change worth telling a client about.
+  /// Same reasoning as Order.revision: wall clocks order nothing.
+  revision  Int @default(0)
+  viewCount Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  seller          DeclutterSeller              @relation(fields: [sellerId], references: [id])
+  submission      DeclutterSubmission?         @relation(fields: [submissionId], references: [id])
+  category        DeclutterCategory            @relation(fields: [categoryId], references: [id])
+  location        DeclutterLocation            @relation(fields: [locationId], references: [id])
+  photos          DeclutterListingPhoto[]
+  events          DeclutterListingEvent[]
+  contactRequests DeclutterContactRequest[]
+  disclosures     DeclutterContactDisclosure[]
+  fraudFlags      DeclutterFraudFlag[]
+
+  @@index([moderationStatus, availability, publishedAt])
+  @@index([categoryId, availability])
+  @@index([locationId, availability])
+  @@index([sellerId])
+  @@index([priceKobo])
+}
+
+model DeclutterListingPhoto {
+  id            String @id @default(cuid())
+  listingId     String
+  fingerprintId String
+
+  storageKey String
+  position   Int
+  width      Int?
+  height     Int?
+
+  createdAt DateTime @default(now())
+
+  listing     DeclutterListing          @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  fingerprint DeclutterImageFingerprint @relation(fields: [fingerprintId], references: [id])
+
+  @@unique([listingId, position])
+  @@index([fingerprintId])
+}
+
+/// Moderation and availability history.
+///
+/// Current state lives on the listing because a public feed filters on it, and
+/// you cannot filter a feed by walking a history table. History lives here
+/// because "why was this rejected" and "who approved it" must survive the next
+/// edit. Neither alone is sufficient — the same pairing as Order and
+/// OrderStatusEvent.
+model DeclutterListingEvent {
+  id        String @id @default(cuid())
+  listingId String
+
+  /// Which axis moved: moderation | availability.
+  axis       String
+  fromStatus String?
+  toStatus   String
+
+  actorType  String
+  actorId    String?
+  reasonCode String?
+  note       String?
+
+  /// JSON array of the material fields that triggered a return to moderation.
+  changedFields String?
+
+  createdAt DateTime @default(now())
+
+  listing DeclutterListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId, createdAt])
+}
+
+/// A buyer asking to be put in touch, and an admin's decision.
+///
+/// The grant is revocable. What was revealed under it may not be, which is why
+/// disclosure is a separate table.
+model DeclutterContactRequest {
+  id              String @id @default(cuid())
+  listingId       String
+  buyerCustomerId String
+
+  status String @default("pending") // pending | approved | rejected | expired | revoked
+
+  /// What the buyer said when asking. Inspection questions, never offers —
+  /// there is no negotiation in this marketplace.
+  message String?
+
+  /// How the buyer is permitted to reach the seller. V1 default is
+  /// `dash_relay`: DASH World Declutters coordinates the introduction and no
+  /// seller detail leaves the platform.
+  grantedMethod String? // dash_relay | masked_relay | whatsapp_direct | phone_direct
+
+  decidedBy       String?
+  decidedAt       DateTime?
+  decisionNote    String?
+  rejectionReason String?
+
+  /// Application access may lapse. See the disclosure table for what cannot.
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  revokedBy        String?
+  revocationReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listing     DeclutterListing             @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  buyer       Customer                     @relation(fields: [buyerCustomerId], references: [id])
+  disclosures DeclutterContactDisclosure[]
+
+  @@index([status, createdAt])
+  @@index([listingId, status])
+  @@index([buyerCustomerId, createdAt])
+}
+
+/// A record that something was actually revealed. Append-only, and there is no
+/// `revokedAt` column here on purpose.
+///
+/// Revoking a mediated grant genuinely works: DASH stops relaying and the buyer
+/// is left with a listing page. Revoking a direct disclosure closes the app's
+/// door and nothing else — the number is in their phone, in their notes, or
+/// forwarded to someone else. A `revoked` flag on this table would let the
+/// product tell a seller their number had been un-shared, which is not a thing
+/// anyone can do.
+///
+/// So this table answers one question honestly and permanently: who was given
+/// what, about whom, when, on whose authority, and with what consent. It holds
+/// the buyer as a plain id rather than a relation, because the record of a
+/// disclosure must outlive the account it was made to.
+model DeclutterContactDisclosure {
+  id               String @id @default(cuid())
+  contactRequestId String
+  listingId        String
+  sellerId         String
+
+  buyerCustomerId String
+
+  method String // dash_relay | masked_relay | whatsapp_direct | phone_direct
+
+  /// JSON array naming exactly what was revealed, e.g. ["seller_whatsapp"].
+  /// Empty for a mediated introduction, because nothing was.
+  disclosedFields String
+
+  approvedBy     String
+  approvalReason String?
+
+  /// Required before a direct method may be used. Consent to DASH mediating is
+  /// implied by listing; consent to handing over a personal number is not.
+  sellerConsentAt       DateTime?
+  sellerConsentEvidence String?
+
+  disclosedAt DateTime @default(now())
+
+  contactRequest DeclutterContactRequest @relation(fields: [contactRequestId], references: [id])
+  listing        DeclutterListing        @relation(fields: [listingId], references: [id])
+
+  @@index([listingId, disclosedAt])
+  @@index([buyerCustomerId, disclosedAt])
+  @@index([sellerId, disclosedAt])
+}
+
+/// One image, known by its bytes, across the whole marketplace.
+///
+/// The point is cross-account detection. A seller re-uploading their own photo
+/// is untidy; a second account uploading the first account's photo is the
+/// oldest fraud in second-hand selling, and it is invisible unless fingerprints
+/// are global rather than per-seller. `sha256` is unique for exactly that
+/// reason.
+///
+/// `perceptualHash` is nullable and unused in V1. Recompression, resizing,
+/// cropping and mirroring all defeat a byte hash, and catching those needs a
+/// perceptual comparison worth doing properly rather than quickly. The column
+/// exists now so backfilling later is a job, not a migration.
+model DeclutterImageFingerprint {
+  id     String @id @default(cuid())
+  sha256 String @unique
+
+  perceptualHash String?
+
+  /// Where it was first seen, for the fraud narrative.
+  firstSellerId String?
+  firstSeenAt   DateTime @default(now())
+
+  usages           DeclutterImageUsage[]
+  submissionPhotos DeclutterSubmissionPhoto[]
+  listingPhotos    DeclutterListingPhoto[]
+  fraudFlags       DeclutterFraudFlag[]
+
+  @@index([perceptualHash])
+}
+
+/// Every time an image was offered, by whom, and what happened.
+///
+/// Recorded even when the upload was refused: a blocked attempt to reuse
+/// another seller's photograph is exactly the signal worth keeping.
+model DeclutterImageUsage {
+  id            String @id @default(cuid())
+  fingerprintId String
+  sellerId      String
+
+  submissionId String?
+  outcome      String // accepted | blocked_duplicate | flagged_review | admin_override
+
+  /// Required when outcome is admin_override.
+  overrideBy     String?
+  overrideReason String?
+
+  createdAt DateTime @default(now())
+
+  fingerprint DeclutterImageFingerprint @relation(fields: [fingerprintId], references: [id], onDelete: Cascade)
+  seller      DeclutterSeller           @relation(fields: [sellerId], references: [id])
+
+  @@index([fingerprintId, createdAt])
+  @@index([sellerId, createdAt])
+}
+
+/// A suspicion, raised by a rule or a person, resolved by a person.
+///
+/// Deliberately not an automatic rejection. A duplicate image may be a fraud,
+/// or a seller who photographed two identical chairs; a low asking price may be
+/// a hurry, or a stolen item. High-confidence signals block and wait for a
+/// human. Lower-confidence ones flag. Neither accuses anyone by itself.
+model DeclutterFraudFlag {
+  id String @id @default(cuid())
+
+  kind     String // exact_duplicate_cross_account | duplicate_same_seller | perceptual_similar | price_far_below_valuation | rapid_listing | identity_mismatch
+  severity String @default("medium") // low | medium | high
+
+  sellerId      String?
+  submissionId  String?
+  listingId     String?
+  fingerprintId String?
+
+  /// JSON: whatever the rule saw, so a reviewer does not have to re-derive it.
+  detail String?
+
+  status           String @default("open") // open | reviewing | dismissed | upheld
+  resolvedBy       String?
+  resolvedAt       DateTime?
+  resolutionReason String?
+
+  createdAt DateTime @default(now())
+
+  seller      DeclutterSeller?           @relation(fields: [sellerId], references: [id])
+  submission  DeclutterSubmission?       @relation(fields: [submissionId], references: [id])
+  listing     DeclutterListing?          @relation(fields: [listingId], references: [id])
+  fingerprint DeclutterImageFingerprint? @relation(fields: [fingerprintId], references: [id])
+
+  @@index([status, severity, createdAt])
+  @@index([sellerId, status])
 }
