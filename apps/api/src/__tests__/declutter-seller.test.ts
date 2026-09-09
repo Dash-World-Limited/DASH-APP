@@ -26,6 +26,8 @@ let customerA: Actor;
 let customerB: Actor;
 let admin: Actor;
 let moderator: Actor;
+let declutterAdmin: Actor;
+let documentId: string;
 
 /** A seller record for customer A, reused across the reads. */
 let sellerAId: string;
@@ -46,10 +48,17 @@ beforeAll(async () => {
     data: { identityId: world.support.identityId, role: 'declutter_moderator' },
   });
 
+  // A Declutters admin: decides verification, and still cannot confer a
+  // commercial relationship.
+  await context.prisma.identityRole.create({
+    data: { identityId: world.finance.identityId, role: 'declutter_admin' },
+  });
+
   customerA = await actAs(context, world.customerA.email);
   customerB = await actAs(context, world.customerB.email);
   admin = await actAs(context, world.admin.email);
   moderator = await actAs(context, world.support.email);
+  declutterAdmin = await actAs(context, world.finance.email);
 }, 180_000);
 
 afterAll(async () => {
@@ -216,53 +225,58 @@ describe('a seller cannot act as an administrator', () => {
 // ---------------------------------------------------------------------------
 
 describe('an administrator decides', () => {
-  it('refuses a rejection with no reason the seller can be told', async () => {
-    const response = await post(
-      admin,
-      `/v1/admin/declutter/sellers/${sellerAId}/decision`,
-      { to: 'rejected' },
-    );
-    expect(response.statusCode).toBe(400);
-  });
-
-  it('refuses a transition the machine does not allow', async () => {
-    const response = await post(
-      admin,
-      `/v1/admin/declutter/sellers/${sellerAId}/decision`,
-      { to: 'suspended', reason: 'not from pending' },
-    );
-    expect(response.statusCode).toBe(409);
-  });
-
-  it('verifies the seller, and records who did it', async () => {
-    const response = await post(
-      admin,
-      `/v1/admin/declutter/sellers/${sellerAId}/decision`,
-      { to: 'verified' },
-    );
-    expect(response.statusCode).toBe(200);
-    expect(response.json().seller.kycStatus).toBe('verified');
-
-    const audit = await context.prisma.auditLog.findFirst({
-      where: { resourceType: 'DeclutterSeller', resourceId: sellerAId, action: 'declutter.seller.verified' },
+  it('refuses a verification decision without a fresh step-up', async () => {
+    // Holding the permission is not enough. `steppedUpAt` lives on the session
+    // and is valid for fifteen minutes, so one elevation covers a whole queue —
+    // but there has to be one.
+    const response = await post(admin, `/v1/admin/declutter/sellers/${sellerAId}/decision`, {
+      to: 'verified',
     });
-    expect(audit).not.toBeNull();
-    expect(audit!.identityId).toBe(world.admin.identityId);
+    expect(response.statusCode).toBe(403);
   });
 
   it('refuses the private record without a fresh step-up', async () => {
-    // Holding the permission is not enough. Identity documents and bank
-    // details are bulk personal data, so the session must have re-confirmed
-    // who is holding it.
     const response = await get(admin, `/v1/admin/declutter/sellers/${sellerAId}`);
     expect(response.statusCode).toBe(403);
   });
 
-  it('audits a reviewer opening the private record', async () => {
+  it('opens an elevated window that covers more than one decision', async () => {
     await stepUp(world.admin.email);
+
+    // Two gated calls, one elevation. This is the behaviour the design relies
+    // on: an admin steps up once, then works the queue.
+    const read = await get(admin, `/v1/admin/declutter/sellers/${sellerAId}`);
+    const decide = await post(admin, `/v1/admin/declutter/sellers/${sellerAId}/decision`, {
+      to: 'rejected',
+    });
+
+    expect(read.statusCode).toBe(200);
+    // 400 for the missing reason, not 403. The elevation held across both.
+    expect(decide.statusCode).toBe(400);
+  });
+
+  it('refuses a transition the machine does not allow', async () => {
+    const response = await post(admin, `/v1/admin/declutter/sellers/${sellerAId}/decision`, {
+      to: 'suspended',
+      reason: 'not reachable from pending',
+    });
+    expect(response.statusCode).toBe(409);
+  });
+
+  it('refuses to verify a seller with no accepted identity document', async () => {
+    // The rule this milestone adds. Typed details are a claim; a government
+    // document a reviewer opened and accepted is evidence.
+    const response = await post(admin, `/v1/admin/declutter/sellers/${sellerAId}/decision`, {
+      to: 'verified',
+    });
+    expect(response.statusCode).toBe(422);
+    expect(JSON.stringify(response.json())).toContain('accepted_identity_document');
+  });
+
+  it('audits a reviewer opening the private record', async () => {
     const response = await get(admin, `/v1/admin/declutter/sellers/${sellerAId}`);
     expect(response.statusCode).toBe(200);
-    // The reviewer sees enough to decide — and still not the raw identifier.
+
     const serialised = JSON.stringify(response.json());
     expect(serialised).toContain('6789'); // last four of the account number
     expect(serialised).not.toContain('0123456789');
@@ -271,6 +285,184 @@ describe('an administrator decides', () => {
       where: { resourceId: sellerAId, action: 'declutter.seller.kyc_viewed' },
     });
     expect(audit).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Documents
+// ---------------------------------------------------------------------------
+
+describe('seller documents', () => {
+  /** A one-pixel PNG. Real bytes, so the adapter's checks actually run. */
+  const PNG =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('accepts a government identity document from its owner', async () => {
+    const response = await post(customerA, '/v1/declutter/seller/me/documents', {
+      kind: 'national_id',
+      contentType: 'image/png',
+      data: PNG,
+    });
+
+    expect(response.statusCode).toBe(201);
+    const document = response.json().document;
+    expect(document.status).toBe('pending');
+    expect(document.isIdentityDocument).toBe(true);
+    documentId = document.id;
+  });
+
+  it('never returns a storage key or any bytes to the seller', async () => {
+    const body = (await get(customerA, '/v1/declutter/seller/me/documents')).json();
+    const serialised = JSON.stringify(body);
+    expect(serialised).not.toContain('declutter-kyc');
+    expect(body.documents[0]).not.toHaveProperty('storageKey');
+    expect(body.documents[0]).not.toHaveProperty('data');
+  });
+
+  it('refuses a file type outside the allowlist', async () => {
+    const response = await post(customerA, '/v1/declutter/seller/me/documents', {
+      kind: 'national_id',
+      contentType: 'application/zip',
+      data: PNG,
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('will not hand a moderator a link to the bytes', async () => {
+    const response = await get(
+      moderator,
+      `/v1/admin/declutter/sellers/${sellerAId}/documents/${documentId}/link`,
+    );
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('will not hand the seller a link either', async () => {
+    const response = await get(
+      customerA,
+      `/v1/admin/declutter/sellers/${sellerAId}/documents/${documentId}/link`,
+    );
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('gives a reviewer a short-lived link, and records that it did', async () => {
+    const response = await get(
+      admin,
+      `/v1/admin/declutter/sellers/${sellerAId}/documents/${documentId}/link`,
+    );
+    expect(response.statusCode).toBe(200);
+
+    const body = response.json();
+    expect(body.expiresInSeconds).toBeLessThanOrEqual(300);
+    expect(body.url).toContain('signature=');
+
+    const audit = await context.prisma.auditLog.findFirst({
+      where: { resourceId: documentId, action: 'declutter.seller.document_link_issued' },
+    });
+    expect(audit).not.toBeNull();
+  });
+
+  it('does not let a document be reached through another seller', async () => {
+    // A seller with no linked account — the shape an admin-created record
+    // takes, and enough to prove the scoping.
+    const other = await context.prisma.declutterSeller.create({
+      data: { displayName: 'Another seller', kycStatus: 'unverified' },
+    });
+    const response = await get(
+      admin,
+      `/v1/admin/declutter/sellers/${other.id}/documents/${documentId}/link`,
+    );
+    // Scoped by seller as well as by id, so a document id cannot be walked
+    // from one review screen onto another.
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('requires a note when a document is rejected', async () => {
+    const response = await post(
+      admin,
+      `/v1/admin/declutter/sellers/${sellerAId}/documents/${documentId}/review`,
+      { status: 'rejected' },
+    );
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('accepts the document, which unblocks verification', async () => {
+    const review = await post(
+      admin,
+      `/v1/admin/declutter/sellers/${sellerAId}/documents/${documentId}/review`,
+      { status: 'accepted' },
+    );
+    expect(review.statusCode).toBe(200);
+
+    const verify = await post(admin, `/v1/admin/declutter/sellers/${sellerAId}/decision`, {
+      to: 'verified',
+    });
+    expect(verify.statusCode).toBe(200);
+    expect(verify.json().seller.kycStatus).toBe('verified');
+
+    const audit = await context.prisma.auditLog.findFirst({
+      where: { resourceId: sellerAId, action: 'declutter.seller.verified' },
+    });
+    expect(audit).not.toBeNull();
+    expect(audit!.identityId).toBe(world.admin.identityId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Trusted Partner
+// ---------------------------------------------------------------------------
+
+describe('trusted partner is a super admin grant', () => {
+  it('is out of reach of a declutter admin', async () => {
+    await stepUp(world.finance.email);
+    const response = await post(
+      declutterAdmin,
+      `/v1/admin/declutter/sellers/${sellerAId}/partner`,
+      { trusted: true, reason: 'they asked nicely' },
+    );
+    // They may decide verification all day. Conferring a commercial
+    // relationship is not theirs to do.
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('is out of reach of a seller', async () => {
+    const response = await post(customerA, `/v1/admin/declutter/sellers/${sellerAId}/partner`, {
+      trusted: true,
+      reason: 'promoting myself',
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('demands a reason', async () => {
+    const response = await post(admin, `/v1/admin/declutter/sellers/${sellerAId}/partner`, {
+      trusted: true,
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('is granted by a super admin, with the reason on the record', async () => {
+    const response = await post(admin, `/v1/admin/declutter/sellers/${sellerAId}/partner`, {
+      trusted: true,
+      reason: 'Signed operator agreement, business identity verified',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().seller.sellerType).toBe('trusted_partner');
+
+    const audit = await context.prisma.auditLog.findFirst({
+      where: { resourceId: sellerAId, action: 'declutter.seller.partner_granted' },
+    });
+    expect(audit).not.toBeNull();
+    expect(audit!.after).toContain('Signed operator agreement');
+  });
+
+  it('never lets a partner grant stand in for verification', async () => {
+    const unverified = await context.prisma.declutterSeller.create({
+      data: { displayName: 'Unverified partner hopeful', kycStatus: 'pending' },
+    });
+    const response = await post(admin, `/v1/admin/declutter/sellers/${unverified.id}/partner`, {
+      trusted: true,
+      reason: 'a partner we have not verified',
+    });
+    expect(response.statusCode).toBe(422);
   });
 });
 

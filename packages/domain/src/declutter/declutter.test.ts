@@ -22,6 +22,10 @@ import {
   SUBMISSION_TERMINAL,
   submissionMachine,
   validateValuationResult,
+  canVerifySeller,
+  isIdentityDocumentKind,
+  verificationGaps,
+  VERIFICATION_GAP_LABELS,
   accessIsRevocable,
   CONTACT_METHODS,
   DEFAULT_CONTACT_METHOD,
@@ -254,6 +258,29 @@ describe('seller name matching', () => {
     });
     expect(assessment.verdict).not.toBe('match');
     expect(assessment.weakestPair).not.toBe('declared_vs_identity');
+  });
+
+  it('compares only the names it was given when there is no bank account', () => {
+    // A bank account exists to be paid into, and nobody has been paid yet.
+    // Verification must not stall on evidence the product has not asked for.
+    const assessment = assessSellerIdentity({
+      declaredName: 'Chinedu Emeka Okonkwo',
+      identityName: 'OKONKWO CHINEDU EMEKA',
+    });
+    expect(assessment.bankChecked).toBe(false);
+    expect(assessment.verdict).toBe('match');
+    expect(assessment.weakestPair).toBe('declared_vs_identity');
+    expect(assessment.pairs.declaredVsBank).toBeNull();
+  });
+
+  it('still refuses a bank account in an unrelated name when one is given', () => {
+    const assessment = assessSellerIdentity({
+      declaredName: 'Chinedu Emeka Okonkwo',
+      identityName: 'OKONKWO CHINEDU EMEKA',
+      bankAccountName: 'Musa Ibrahim Bello',
+    });
+    expect(assessment.bankChecked).toBe(true);
+    expect(assessment.verdict).not.toBe('match');
   });
 
   it('passes a consistent three-way identity', () => {
@@ -506,5 +533,50 @@ describe('declutter roles', () => {
   it('requires both declutter roles to sign in as staff, with MFA', () => {
     expect(STAFF_ROLES.has('declutter_moderator')).toBe(true);
     expect(STAFF_ROLES.has('declutter_admin')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// What verification requires
+// ---------------------------------------------------------------------------
+
+describe('verification needs evidence, not a filled form', () => {
+  const complete = {
+    legalName: 'Chinedu Okonkwo',
+    nationalIdOnFile: true,
+    phoneOnFile: true,
+    acceptedIdentityDocuments: 1,
+  };
+
+  it('clears a seller with a name, an identifier, a phone and an accepted document', () => {
+    expect(verificationGaps(complete)).toEqual([]);
+    expect(canVerifySeller(complete)).toBe(true);
+  });
+
+  it('refuses a seller who typed everything but produced no document', () => {
+    const gaps = verificationGaps({ ...complete, acceptedIdentityDocuments: 0 });
+    expect(gaps).toEqual(['accepted_identity_document']);
+    expect(canVerifySeller({ ...complete, acceptedIdentityDocuments: 0 })).toBe(false);
+  });
+
+  it('names every gap so a screen can say what is outstanding', () => {
+    const gaps = verificationGaps({
+      legalName: '   ',
+      nationalIdOnFile: false,
+      phoneOnFile: false,
+      acceptedIdentityDocuments: 0,
+    });
+    expect(gaps).toEqual(['legal_name', 'national_id', 'phone', 'accepted_identity_document']);
+    for (const gap of gaps) {
+      expect(VERIFICATION_GAP_LABELS[gap]).toBeTruthy();
+    }
+  });
+
+  it('accepts only government photo identity as an identity document', () => {
+    expect(isIdentityDocumentKind('passport')).toBe(true);
+    expect(isIdentityDocumentKind('national_id')).toBe(true);
+    // A utility bill proves an address, not a person.
+    expect(isIdentityDocumentKind('proof_of_address')).toBe(false);
+    expect(isIdentityDocumentKind('selfie')).toBe(false);
   });
 });

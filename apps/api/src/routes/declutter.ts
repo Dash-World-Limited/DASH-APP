@@ -36,8 +36,12 @@ import {
   canSellerSubmit,
   KycTransitionError,
   kycReasonRequired,
+  IDENTITY_DOCUMENT_KINDS,
+  isIdentityDocumentKind,
   publicSellerProfile,
   submissionMachine,
+  verificationGaps,
+  VERIFICATION_GAP_LABELS,
   DeclutterTransitionError,
   type DeclutterActor,
   type KycState,
@@ -101,9 +105,17 @@ const verificationSchema = z.object({
   nationalId: z.string().trim().min(6).max(32),
   phoneE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/, 'Use international format, e.g. +234…'),
   addressLine: z.string().trim().min(4).max(200),
-  bankName: z.string().trim().min(2).max(80),
-  bankAccountNumber: z.string().trim().regex(/^\d{10}$/, 'A Nigerian account number is 10 digits.'),
-  bankAccountName: z.string().trim().min(2).max(120),
+  // Optional. A bank account exists to be paid into, and nobody has been paid
+  // yet — collecting an account number so somebody can list a sofa asks for
+  // the most sensitive thing they have in exchange for nothing. Settlement
+  // will ask for it when settlement is real.
+  bankName: z.string().trim().min(2).max(80).optional(),
+  bankAccountNumber: z
+    .string()
+    .trim()
+    .regex(/^\d{10}$/, 'A Nigerian account number is 10 digits.')
+    .optional(),
+  bankAccountName: z.string().trim().min(2).max(120).optional(),
   /**
    * What the identity record says the person is called. In production this
    * comes from a verification provider; until that adapter exists an admin
@@ -126,6 +138,34 @@ const sellerDecisionSchema = z.object({
   to: z.enum(['verified', 'rejected', 'suspended', 'pending']),
   reason: z.string().trim().max(500).optional(),
   note: z.string().trim().max(2000).optional(),
+});
+
+/** How long an admin's document link lives. Long enough to open, no longer. */
+const DOCUMENT_LINK_SECONDS = 120;
+
+const documentUploadSchema = z.object({
+  kind: z.enum([
+    'national_id',
+    'drivers_licence',
+    'passport',
+    'voters_card',
+    'proof_of_address',
+    'selfie',
+  ]),
+  contentType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']),
+  /** Base64. The storage adapter enforces the real type and size limits. */
+  data: z.string().min(16).max(14_000_000),
+});
+
+const documentReviewSchema = z.object({
+  status: z.enum(['accepted', 'rejected']),
+  note: z.string().trim().max(500).optional(),
+});
+
+const partnerSchema = z.object({
+  trusted: z.boolean(),
+  /** Always required. A partner grant with no recorded reason is not a record. */
+  reason: z.string().trim().min(4).max(500),
 });
 
 const submissionTransitionSchema = z.object({
@@ -251,7 +291,7 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
       const assessment = assessSellerIdentity({
         declaredName: body.legalName,
         identityName: body.identityName,
-        bankAccountName: body.bankAccountName,
+        bankAccountName: body.bankAccountName ?? null,
       });
 
       const context = { purpose: 'declutter_seller_kyc', subjectId: seller.id };
@@ -265,10 +305,12 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
           nationalIdLast4: body.nationalId.slice(-4),
           phoneE164: body.phoneE164,
           addressLine: body.addressLine,
-          bankName: body.bankName,
-          bankAccountCipher: encrypt(body.bankAccountNumber, keyring, context),
-          bankAccountLast4: body.bankAccountNumber.slice(-4),
-          bankAccountName: body.bankAccountName,
+          bankName: body.bankName ?? null,
+          bankAccountCipher: body.bankAccountNumber
+            ? encrypt(body.bankAccountNumber, keyring, context)
+            : null,
+          bankAccountLast4: body.bankAccountNumber ? body.bankAccountNumber.slice(-4) : null,
+          bankAccountName: body.bankAccountName ?? null,
           nameMatchScore: assessment.score,
           nameMatchVerdict: assessment.verdict,
           nameMatchDetail: JSON.stringify({
@@ -469,14 +511,18 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
    */
   app.post(
     '/v1/admin/declutter/sellers/:id/decision',
-    // `declutter:seller:write`, not `declutter:kyc:review`. Reading somebody's
-    // identity documents and bank details is bulk personal data and is step-up
-    // gated; recording a decision about them is neither, and it is reversible
-    // — a suspension can be lifted. Making an admin re-authenticate for every
-    // row in a queue of twenty would not buy security, it would buy a habit of
-    // stepping up on autopilot. `declutter_admin` holds both permissions, so
-    // this widens nothing; `declutter_moderator` holds neither.
-    { preHandler: requirePermission('declutter:seller:write') },
+    // Step-up gated, via `declutter:kyc:review`.
+    //
+    // An earlier version moved this to an ungated permission on the grounds
+    // that re-authenticating for every row in a queue would be friction. That
+    // was wrong about how step-up works here: `steppedUpAt` lives on the
+    // *session*, is set once by a step-up challenge, and is valid for
+    // STEP_UP_MAX_AGE_SECONDS — fifteen minutes — for every gated permission.
+    // So the real behaviour is one elevation, then a bounded window in which an
+    // admin can work a whole queue. That is exactly the shape a consequential
+    // decision should have, and there was never a queue-convenience argument to
+    // make.
+    { preHandler: requirePermission('declutter:kyc:review') },
     async (request) => {
       const actor = actorOf(request);
       const { id } = z.object({ id: z.string().min(1).max(40) }).parse(request.params);
@@ -500,6 +546,26 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
 
       if (kycReasonRequired(to) && !body.reason) {
         throw ApiError.badRequest('This decision needs a reason the seller can be told.');
+      }
+
+      // Verification is evidence, not paperwork. Typed details are a claim; a
+      // government document an admin opened and accepted is proof, and without
+      // one the "verified" badge would mean only that somebody filled a form.
+      if (to === 'verified') {
+        const accepted = await prisma.declutterSellerDocument.count({
+          where: { sellerId: seller.id, status: 'accepted', kind: { in: [...IDENTITY_DOCUMENT_KINDS] } },
+        });
+        const gaps = verificationGaps({
+          legalName: seller.legalName,
+          nationalIdOnFile: Boolean(seller.nationalIdCipher),
+          phoneOnFile: Boolean(seller.phoneE164),
+          acceptedIdentityDocuments: accepted,
+        });
+        if (gaps.length > 0) {
+          throw ApiError.unprocessable('This seller cannot be verified yet.', {
+            gaps: gaps.map((gap) => ({ code: gap, label: VERIFICATION_GAP_LABELS[gap] })),
+          });
+        }
       }
 
       const updated = await prisma.declutterSeller.update({
@@ -630,6 +696,242 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
       return { submission: submissionView(updated) };
     },
   );
+
+  // =========================================================================
+  // Documents
+  //
+  // Evidence, not attachments. Every object goes to private storage under a
+  // random key, is never addressable by a public URL, and its bytes leave the
+  // system through exactly one route — a short-lived signed link, behind a
+  // step-up, written to the audit log every time it is issued.
+  // =========================================================================
+
+  /**
+   * POST /v1/declutter/seller/me/documents
+   *
+   * Base64 in JSON rather than multipart, because the API registers no
+   * multipart parser and one upload endpoint does not justify adding a body
+   * parser to every route in the service. The adapter is what actually
+   * enforces safety: it rejects anything outside the image/PDF allowlist,
+   * refuses an empty file, caps the object at 8 MB, and names it with 24 random
+   * bytes rather than anything the caller supplied — so a filename cannot
+   * traverse a path or collide with someone else's object.
+   */
+  app.post(
+    '/v1/declutter/seller/me/documents',
+    {
+      preHandler: requireAuth,
+      // Base64 inflates by about a third, so the 8 MB object limit needs
+      // headroom here. Scoped to this route: nothing else in the API should
+      // accept a body this large.
+      bodyLimit: 12 * 1024 * 1024,
+    },
+    async (request, reply) => {
+      const actor = actorOf(request);
+      const seller = await sellerForCaller(actor);
+      const body = documentUploadSchema.parse(request.body);
+
+      let bytes: Buffer;
+      try {
+        bytes = Buffer.from(body.data, 'base64');
+      } catch {
+        throw ApiError.badRequest('That file could not be read.');
+      }
+      if (bytes.length === 0) throw ApiError.badRequest('That file is empty.');
+
+      let stored;
+      try {
+        stored = await app.services.storage.put({
+          body: bytes,
+          contentType: body.contentType,
+          // Its own prefix, so KYC evidence is never mixed in with delivery
+          // photos or vendor documents in the bucket.
+          prefix: 'declutter-kyc',
+        });
+      } catch {
+        // The adapter's message names limits and types; it is safe to be
+        // general here rather than echo internals back to a client.
+        throw ApiError.badRequest('That file was rejected. Use a JPEG, PNG, WebP or PDF under 8 MB.');
+      }
+
+      const document = await prisma.declutterSellerDocument.create({
+        data: {
+          sellerId: seller.id,
+          kind: body.kind,
+          storageKey: stored.key,
+          status: 'pending',
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'declutter.seller.document_uploaded',
+        resourceType: 'DeclutterSellerDocument',
+        resourceId: document.id,
+        // The kind and the size, never the key and never the bytes. An audit
+        // row that carried the storage key would be a second place to find the
+        // object.
+        after: { kind: document.kind, sizeBytes: stored.sizeBytes, contentType: stored.contentType },
+        ...auditContext(request),
+      });
+
+      reply.code(201);
+      return { document: documentView(document) };
+    },
+  );
+
+  /** GET /v1/declutter/seller/me/documents — metadata only, never a key. */
+  app.get('/v1/declutter/seller/me/documents', { preHandler: requireAuth }, async (request) => {
+    const seller = await sellerForCaller(actorOf(request));
+    const documents = await prisma.declutterSellerDocument.findMany({
+      where: { sellerId: seller.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    return { documents: documents.map(documentView) };
+  });
+
+  /**
+   * GET /v1/admin/declutter/sellers/:id/documents/:documentId/link
+   *
+   * The only way document bytes ever leave. Behind `declutter:kyc:review`, so
+   * it needs a live step-up; the link lasts two minutes, which is long enough
+   * to open and too short to pass on usefully; and issuing one is audited
+   * whether or not the reviewer then looks.
+   */
+  app.get(
+    '/v1/admin/declutter/sellers/:id/documents/:documentId/link',
+    { preHandler: requirePermission('declutter:kyc:review') },
+    async (request) => {
+      const actor = actorOf(request);
+      const params = z
+        .object({ id: z.string().min(1).max(40), documentId: z.string().min(1).max(40) })
+        .parse(request.params);
+
+      // Scoped by seller as well as by id, so a document id cannot be walked
+      // from one seller's review screen onto another's.
+      const document = await prisma.declutterSellerDocument.findFirst({
+        where: { id: params.documentId, sellerId: params.id },
+      });
+      if (!document) throw ApiError.notFound();
+
+      const url = await app.services.storage.signedUrl(document.storageKey, DOCUMENT_LINK_SECONDS);
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'declutter.seller.document_link_issued',
+        resourceType: 'DeclutterSellerDocument',
+        resourceId: document.id,
+        after: { sellerId: params.id, kind: document.kind, expiresInSeconds: DOCUMENT_LINK_SECONDS },
+        ...auditContext(request),
+      });
+
+      return { url, expiresInSeconds: DOCUMENT_LINK_SECONDS };
+    },
+  );
+
+  /**
+   * POST /v1/admin/declutter/sellers/:id/documents/:documentId/review
+   *
+   * Accepting a document is a separate act from verifying the seller, and
+   * deliberately so: the audit trail then records which document a reviewer
+   * accepted, rather than only that somebody was cleared.
+   */
+  app.post(
+    '/v1/admin/declutter/sellers/:id/documents/:documentId/review',
+    { preHandler: requirePermission('declutter:kyc:review') },
+    async (request) => {
+      const actor = actorOf(request);
+      const params = z
+        .object({ id: z.string().min(1).max(40), documentId: z.string().min(1).max(40) })
+        .parse(request.params);
+      const body = documentReviewSchema.parse(request.body);
+
+      const document = await prisma.declutterSellerDocument.findFirst({
+        where: { id: params.documentId, sellerId: params.id },
+      });
+      if (!document) throw ApiError.notFound();
+
+      if (body.status === 'rejected' && !body.note) {
+        throw ApiError.badRequest('Say why the document was rejected, so the seller can fix it.');
+      }
+
+      const updated = await prisma.declutterSellerDocument.update({
+        where: { id: document.id },
+        data: {
+          status: body.status,
+          note: body.note ?? null,
+          reviewedBy: actor.identityId,
+          reviewedAt: new Date(),
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: `declutter.seller.document_${body.status}`,
+        resourceType: 'DeclutterSellerDocument',
+        resourceId: document.id,
+        before: { status: document.status },
+        after: { status: body.status, kind: document.kind, sellerId: params.id },
+        ...auditContext(request),
+      });
+
+      return { document: documentView(updated) };
+    },
+  );
+
+  /**
+   * POST /v1/admin/declutter/sellers/:id/partner — grant or revoke Trusted Partner.
+   *
+   * Super admin only, by way of `declutter:partner:write`, which no other role
+   * holds and which is step-up gated. This is a commercial relationship rather
+   * than an operational setting: it says DASH has an agreement with a business
+   * and has verified who they are. Whoever is working the queue today must not
+   * be able to confer it, and nobody may confer it on themselves.
+   *
+   * It changes intake friction later. It never bypasses seller verification —
+   * a trusted partner still has to be a verified seller, which is why this
+   * route refuses to promote one who is not.
+   */
+  app.post(
+    '/v1/admin/declutter/sellers/:id/partner',
+    { preHandler: requirePermission('declutter:partner:write') },
+    async (request) => {
+      const actor = actorOf(request);
+      const { id } = z.object({ id: z.string().min(1).max(40) }).parse(request.params);
+      const body = partnerSchema.parse(request.body);
+
+      const seller = await prisma.declutterSeller.findUnique({ where: { id } });
+      if (!seller) throw ApiError.notFound();
+
+      if (body.trusted && seller.kycStatus !== 'verified') {
+        throw ApiError.unprocessable(
+          'Only a verified seller can be made a Trusted Partner. Verify them first.',
+        );
+      }
+
+      const to = body.trusted ? 'trusted_partner' : 'individual';
+      const updated = await prisma.declutterSeller.update({
+        where: { id: seller.id },
+        data: {
+          sellerType: to,
+          adminNotes: seller.adminNotes,
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: body.trusted ? 'declutter.seller.partner_granted' : 'declutter.seller.partner_revoked',
+        resourceType: 'DeclutterSeller',
+        resourceId: seller.id,
+        before: { sellerType: seller.sellerType },
+        after: { sellerType: to, reason: body.reason },
+        ...auditContext(request),
+      });
+
+      return { seller: queueView(updated) };
+    },
+  );
+
 }
 
 // ---------------------------------------------------------------------------
@@ -710,6 +1012,26 @@ function adminView(seller: SellerRow & { documents: { id: string; kind: string; 
       kind: document.kind,
       status: document.status,
     })),
+  };
+}
+
+/** Document metadata. Never the storage key, never the bytes. */
+function documentView(document: {
+  id: string;
+  kind: string;
+  status: string;
+  note: string | null;
+  reviewedAt: Date | null;
+  createdAt: Date;
+}) {
+  return {
+    id: document.id,
+    kind: document.kind,
+    isIdentityDocument: isIdentityDocumentKind(document.kind),
+    status: document.status,
+    note: document.note,
+    reviewedAt: document.reviewedAt,
+    createdAt: document.createdAt,
   };
 }
 

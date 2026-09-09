@@ -283,9 +283,16 @@ export default function OpsPage() {
       <main id="main" className="mx-auto max-w-5xl px-5 py-8">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-3xl font-extrabold tracking-tight">Live operations</h1>
-          <Button variant="ghost" size="sm" onClick={() => void load()}>
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Link href="/ops/declutter">
+              <Button variant="ghost" size="sm">
+                Declutters
+              </Button>
+            </Link>
+            <Button variant="ghost" size="sm" onClick={() => void load()}>
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* --- Summary -------------------------------------------------------- */}

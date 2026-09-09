@@ -143,6 +143,9 @@ export const PERMISSIONS = [
   'declutter:fraud:read',
   // Overriding a duplicate-image block. Step-up gated, reason mandatory.
   'declutter:fraud:override',
+  // Granting or revoking Trusted Partner. Super admin only — it is a
+  // commercial relationship, not an operational setting, and it must never be
+  // reachable by whoever happens to be working the queue.
   'declutter:partner:write',
 ] as const;
 
@@ -186,6 +189,7 @@ export const STEP_UP_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>(
   'declutter:kyc:review',
   'declutter:contact:disclose:direct',
   'declutter:fraud:override',
+  'declutter:partner:write',
 ]);
 
 /** A step-up is valid for 15 minutes. After that, re-authenticate. */
@@ -364,7 +368,6 @@ const DECLUTTER_ADMIN_PERMISSIONS: readonly Permission[] = [
   'declutter:listing:suspend',
   'declutter:contact:disclose:direct',
   'declutter:fraud:override',
-  'declutter:partner:write',
 ];
 
 /**

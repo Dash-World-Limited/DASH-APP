@@ -219,3 +219,75 @@ export const PRIVATE_SELLER_FIELDS: readonly string[] = [
   'rejectionReason',
   'verifiedBy',
 ];
+
+// ---------------------------------------------------------------------------
+// What verification actually requires
+// ---------------------------------------------------------------------------
+
+/**
+ * Document kinds DASH accepts as proof of identity.
+ *
+ * A government-issued photo document, and nothing else. A utility bill proves
+ * an address, not a person, and accepting one as identity evidence is how a
+ * verification process becomes decorative.
+ */
+export const IDENTITY_DOCUMENT_KINDS = ['national_id', 'drivers_licence', 'passport', 'voters_card'] as const;
+
+export type IdentityDocumentKind = (typeof IDENTITY_DOCUMENT_KINDS)[number];
+
+/** Kinds a seller may upload at all, identity documents plus supporting ones. */
+export const SELLER_DOCUMENT_KINDS = [...IDENTITY_DOCUMENT_KINDS, 'proof_of_address', 'selfie'] as const;
+
+export type SellerDocumentKind = (typeof SELLER_DOCUMENT_KINDS)[number];
+
+export function isIdentityDocumentKind(kind: string): kind is IdentityDocumentKind {
+  return (IDENTITY_DOCUMENT_KINDS as readonly string[]).includes(kind);
+}
+
+/** What DASH holds about a seller, as far as verification is concerned. */
+export interface VerificationEvidence {
+  readonly legalName: string | null;
+  readonly nationalIdOnFile: boolean;
+  readonly phoneOnFile: boolean;
+  /** Identity documents an admin has looked at and accepted. */
+  readonly acceptedIdentityDocuments: number;
+}
+
+export type VerificationGap =
+  | 'legal_name'
+  | 'national_id'
+  | 'phone'
+  | 'accepted_identity_document';
+
+/**
+ * What is still missing before this seller could be verified.
+ *
+ * Returned as a list rather than a boolean so the admin screen can say *what*
+ * is outstanding instead of greying out a button for reasons nobody can see.
+ *
+ * The document requirement is the one that matters. Typed identity details are
+ * a claim; a government document an admin has opened and accepted is evidence.
+ * Verification that never looks at a document is a form, not a check — which
+ * is exactly the failure mode that makes a marketplace's "verified" badge
+ * worthless.
+ */
+export function verificationGaps(evidence: VerificationEvidence): readonly VerificationGap[] {
+  const gaps: VerificationGap[] = [];
+  if (!evidence.legalName || evidence.legalName.trim().length === 0) gaps.push('legal_name');
+  if (!evidence.nationalIdOnFile) gaps.push('national_id');
+  if (!evidence.phoneOnFile) gaps.push('phone');
+  if (evidence.acceptedIdentityDocuments < 1) gaps.push('accepted_identity_document');
+  return gaps;
+}
+
+export function canVerifySeller(evidence: VerificationEvidence): boolean {
+  return verificationGaps(evidence).length === 0;
+}
+
+/** Wording an admin screen can show directly. */
+export const VERIFICATION_GAP_LABELS: Readonly<Record<VerificationGap, string>> = {
+  legal_name: 'No legal name on file',
+  national_id: 'No identity number on file',
+  phone: 'No phone number on file',
+  accepted_identity_document: 'No accepted government identity document',
+};

@@ -235,19 +235,28 @@ export interface SellerIdentityInput {
   readonly declaredName: string;
   /** The name returned by the identity record. */
   readonly identityName: string;
-  /** The account holder name returned by the bank. */
-  readonly bankAccountName: string;
+  /**
+   * The account holder name returned by the bank, when there is one.
+   *
+   * Optional because a bank account exists to be *paid into*, and somebody
+   * listing a sofa has not been paid yet. Asking for an account number in
+   * exchange for nothing is asking for the most sensitive thing a person has,
+   * so the pairings that involve it do not run until settlement needs them.
+   */
+  readonly bankAccountName?: string | null;
 }
 
 export interface SellerIdentityAssessment {
   readonly verdict: NameMatchVerdict;
-  /** The weakest of the three pairings — the one an admin should look at. */
+  /** The weakest pairing that ran — the one an admin should look at. */
   readonly weakestPair: 'declared_vs_identity' | 'declared_vs_bank' | 'identity_vs_bank';
   readonly score: number;
+  /** Whether a bank account name was available to compare at all. */
+  readonly bankChecked: boolean;
   readonly pairs: {
     readonly declaredVsIdentity: NameMatchResult;
-    readonly declaredVsBank: NameMatchResult;
-    readonly identityVsBank: NameMatchResult;
+    readonly declaredVsBank: NameMatchResult | null;
+    readonly identityVsBank: NameMatchResult | null;
   };
 }
 
@@ -261,13 +270,16 @@ export interface SellerIdentityAssessment {
  */
 export function assessSellerIdentity(input: SellerIdentityInput): SellerIdentityAssessment {
   const declaredVsIdentity = compareNames(input.declaredName, input.identityName);
-  const declaredVsBank = compareNames(input.declaredName, input.bankAccountName);
-  const identityVsBank = compareNames(input.identityName, input.bankAccountName);
+  const bankName = input.bankAccountName?.trim();
+  const bankChecked = Boolean(bankName);
+
+  const declaredVsBank = bankName ? compareNames(input.declaredName, bankName) : null;
+  const identityVsBank = bankName ? compareNames(input.identityName, bankName) : null;
 
   const candidates = [
     { key: 'declared_vs_identity' as const, result: declaredVsIdentity },
-    { key: 'declared_vs_bank' as const, result: declaredVsBank },
-    { key: 'identity_vs_bank' as const, result: identityVsBank },
+    ...(declaredVsBank ? [{ key: 'declared_vs_bank' as const, result: declaredVsBank }] : []),
+    ...(identityVsBank ? [{ key: 'identity_vs_bank' as const, result: identityVsBank }] : []),
   ];
 
   const weakest = candidates.reduce((worst, candidate) =>
@@ -278,6 +290,7 @@ export function assessSellerIdentity(input: SellerIdentityInput): SellerIdentity
     verdict: weakest.result.verdict,
     weakestPair: weakest.key,
     score: weakest.result.score,
+    bankChecked,
     pairs: { declaredVsIdentity, declaredVsBank, identityVsBank },
   };
 }
