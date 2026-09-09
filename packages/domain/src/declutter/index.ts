@@ -20,3 +20,4 @@
 export * from './lifecycle.js';
 export * from './identity.js';
 export * from './valuation.js';
+export * from './taxonomy.js';

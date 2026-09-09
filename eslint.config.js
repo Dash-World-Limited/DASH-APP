@@ -67,6 +67,9 @@ export default tseslint.config(
       // not reading application configuration, which is what the rule guards
       // against — the same reason the API's own test directory is listed.
       'packages/db/src/seed.test.ts',
+      // Same reason: it pushes the schema into a throwaway SQLite file and
+      // hands the child process a `DATABASE_URL` for it.
+      'packages/db/src/seed-declutter.test.ts',
     ],
     rules: {
       'no-restricted-properties': [

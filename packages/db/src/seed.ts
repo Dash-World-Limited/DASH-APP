@@ -12,6 +12,7 @@
 import { PrismaClient } from '@prisma/client';
 import { hashPassword, hashOtp, generateReference, generatePin } from '@dash/domain/crypto';
 import { ensureRidersAreCustomers } from './rider-customer.js';
+import { seedDeclutterTaxonomy } from './seed-declutter.js';
 import { naira } from '@dash/domain/money';
 import { boundingBoxOf, parsePolygon } from '@dash/domain/geo';
 import { buildOrderCapture } from '@dash/domain/ledger';
@@ -1425,8 +1426,17 @@ async function main(): Promise<void> {
     promotions: await prisma.promotion.count(),
   };
 
+  // Declutter geography and categories. Reference data, upserted rather than
+  // recreated, and deliberately absent from the wipe above: it is keyed by
+  // slug, listings will point at it, and losing it on every reseed would be a
+  // habit that breaks the first time it meets production.
+  const declutter = await seedDeclutterTaxonomy(prisma);
+
   console.warn('Seed complete.\n');
   console.warn(`  ${counts.cities} city, ${counts.zones} zones`);
+  console.warn(
+    `  Declutter: ${declutter.locations} locations, ${declutter.categories} categories`,
+  );
   console.warn(`  ${counts.vendors} vendors, ${counts.items} catalogue items`);
   console.warn(`  ${counts.customers} customers, ${counts.riders} riders`);
   console.warn(`  ${counts.orders} orders, ${counts.ledgerTransactions} ledger transactions (all balanced)`);
