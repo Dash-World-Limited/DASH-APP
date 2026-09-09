@@ -266,3 +266,182 @@ body {
 .pad-for-bottom-nav {
   padding-bottom: calc(var(--bottom-nav-height) + var(--safe-bottom) + 1.5rem);
 }
+
+/* ============================================================================
+   DASH World Declutters — the public marketplace surface.
+   ============================================================================
+
+   A third surface alongside the bright customer screens and the utilitarian
+   dark of `field`. It exists because the public website has a different job
+   from either: it is the first thing a stranger sees of DASH, it is where
+   somebody decides whether a second-hand phone is worth ₦45,000 of their
+   money, and it competes for attention with classifieds boards that look
+   exactly like every other classifieds board.
+
+   So it is dark, and image-led. A near-black navy ground makes a photograph of
+   a real object the brightest thing on the screen, which is the whole point of
+   a second-hand marketplace — the item is the product, the interface is not.
+   `field` is dark for legibility in sun; this is dark so the photographs carry
+   the page.
+
+   The palette is the same one the rest of DASH uses: navy foundation, electric
+   blue for action, teal in support, gold restrained to the wordmark and the
+   marks that matter. Nothing new is invented here — the tokens are re-pointed,
+   which is exactly what the two-layer structure at the top of this file exists
+   for. */
+[data-surface='declutter'] {
+  --surface: #060a13;
+  --surface-raised: #0d1526;
+  --surface-sunken: #04070d;
+
+  --ink: #f4f7fc;
+  --ink-muted: #8fa0bd;
+  --ink-inverted: var(--color-navy-900);
+
+  /* Hairlines rather than borders. On a dark ground a solid line reads as a
+     box; a translucent one reads as an edge, which is what separates a premium
+     surface from a wireframe. */
+  --line: rgb(255 255 255 / 0.09);
+  --line-strong: rgb(255 255 255 / 0.18);
+
+  /* The brighter blue: `blue-500` is tuned for white and goes muddy here. */
+  --primary: var(--color-blue-400);
+  --primary-hover: #6b93ff;
+  --primary-soft: rgb(77 124 255 / 0.14);
+  --on-primary: #06101f;
+
+  --accent: var(--color-teal-400);
+  --accent-soft: rgb(23 179 166 / 0.14);
+
+  --success: #2fd39a;
+  --success-soft: rgb(47 211 154 / 0.14);
+  --danger: #ff7a7a;
+  --danger-soft: rgb(255 122 122 / 0.14);
+
+  --radius-card: 1rem;
+  --shadow-card: 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 24px 60px -32px rgb(0 0 0 / 0.9);
+  --shadow-raised: 0 1px 0 rgb(255 255 255 / 0.06) inset, 0 40px 90px -40px rgb(0 0 0 / 1);
+
+  /* Declutters-only. Not semantic tokens for the rest of the app. */
+  --dcl-glass: rgb(255 255 255 / 0.055);
+  --dcl-glass-strong: rgb(255 255 255 / 0.09);
+  --dcl-gold: var(--color-gold-400);
+  --dcl-gold-soft: rgb(212 175 55 / 0.16);
+
+  color: var(--ink);
+  background: var(--surface);
+}
+
+/**
+ * Liquid glass.
+ *
+ * Used selectively — the header, the price panel, a badge over a photograph —
+ * and never as a general card style. Glass everywhere is a texture; glass on
+ * the two or three things that float above the page is a hierarchy.
+ *
+ * `backdrop-filter` is progressive: where it is unsupported the panel is still
+ * a legible translucent surface over a dark ground, because the background
+ * colour is set independently rather than relying on the blur to create
+ * contrast.
+ */
+.dcl-glass {
+  background: var(--dcl-glass);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+}
+
+.dcl-glass-strong {
+  background: var(--dcl-glass-strong);
+  border: 1px solid var(--line-strong);
+  backdrop-filter: blur(28px) saturate(1.6);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6);
+}
+
+/**
+ * The display face.
+ *
+ * Archivo, tightened and set heavy. It is the same family the Dash World site
+ * uses for its headlines, so arriving at Declutters from dashworldng.com feels
+ * like the same company rather than a different product that happens to share
+ * a name.
+ */
+.dcl-display {
+  font-family: var(--font-archivo), var(--font-sans);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 0.98;
+  text-wrap: balance;
+}
+
+/** Small caps-ish eyebrow text. Sparingly — one per section at most. */
+.dcl-eyebrow {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+/**
+ * The image treatment.
+ *
+ * A photograph of a used object taken on a phone is rarely well lit. A slight
+ * scale on hover and a gradient scrim along the bottom edge do two jobs: they
+ * make an ordinary snapshot look deliberate, and they guarantee that white
+ * text laid over the image stays readable whatever the photograph turns out to
+ * be — which a fixed overlay colour cannot promise.
+ */
+.dcl-media {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(160deg, #101a2e, #070d18);
+}
+
+.dcl-media img {
+  transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+@media (hover: hover) {
+  .dcl-card:hover .dcl-media img {
+    transform: scale(1.045);
+  }
+}
+
+.dcl-scrim::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 55%;
+  background: linear-gradient(to top, rgb(4 7 13 / 0.85), transparent);
+  pointer-events: none;
+}
+
+/**
+ * Restrained motion.
+ *
+ * One transition, one distance, applied to things that enter. Anything more
+ * elaborate on a marketplace feed reads as a demo rather than a shop, and the
+ * global reduced-motion rule above already switches all of it off.
+ */
+@keyframes dcl-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dcl-rise {
+  animation: dcl-rise 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+/** A hairline that fades at both ends, for section rules on a dark ground. */
+.dcl-rule {
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--line-strong), transparent);
+  border: 0;
+}

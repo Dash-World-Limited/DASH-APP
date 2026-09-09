@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Archivo } from 'next/font/google';
 
 import { DeclutterHeader } from '@/components/declutter/DeclutterHeader';
 import { DeclutterFooter } from '@/components/declutter/DeclutterFooter';
@@ -26,9 +27,31 @@ import { DeclutterFooter } from '@/components/declutter/DeclutterFooter';
  * The admin console at `/ops/declutter` is unaffected and stays in the Ops
  * infrastructure where it belongs.
  */
+
+/**
+ * Archivo, loaded here rather than at the root.
+ *
+ * It is the display face on dashworldng.com, so a visitor arriving from the
+ * main site meets the same headline voice. Scoped to this layout because DASH
+ * APP does not use it and should not pay to download it — `next/font` only
+ * preloads a face on the routes whose layout declares it.
+ */
+const archivo = Archivo({
+  subsets: ['latin'],
+  weight: ['600', '700', '800'],
+  display: 'swap',
+  variable: '--font-archivo',
+});
+
 export default function DeclutterSiteLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-dvh flex-col bg-[var(--surface)]">
+    <div
+      // `data-surface` re-points the semantic tokens for this subtree only. The
+      // rest of the application keeps its own surface, and nothing here is a
+      // colour class that would have to be found and changed later.
+      data-surface="declutter"
+      className={`${archivo.variable} flex min-h-dvh flex-col`}
+    >
       <DeclutterHeader />
       {/* No bottom navigation, so no reserved space for one. The footer is the
           end of the page, the way a website ends. */}

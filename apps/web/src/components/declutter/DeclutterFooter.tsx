@@ -1,43 +1,62 @@
 /**
  * The end of the page.
  *
- * A website has a footer; an app has a tab bar. This one is deliberately plain
- * and says the two things a visitor to a second-hand marketplace actually wants
- * confirmed — who is behind it, and how the money and the safety work — rather
- * than a wall of links to pages that do not exist yet.
+ * A website has a footer; an app has a tab bar. This one says the things a
+ * visitor to a second-hand marketplace actually wants confirmed — who is behind
+ * it, and how the price and the safety work — and links back to Dash World,
+ * because Declutters is a Dash World product and a visitor who arrived here
+ * from a shared listing has no other way to find that out.
  *
- * A server component: nothing here is interactive, so none of it needs to be
- * JavaScript the visitor downloads.
+ * It claims nothing it cannot support. No review count, no "10,000 happy
+ * customers", no activity ticker. Invented social proof on a marketplace that
+ * has just launched is the fastest way to make every other claim on the page
+ * suspect.
+ *
+ * A server component: nothing here is interactive, so none of it is JavaScript
+ * the visitor downloads.
  */
 
 import Link from 'next/link';
 
+import { DASH_WORLD_URL } from '@/lib/declutter';
+import { DeclutterWordmark } from './DeclutterWordmark';
+
 export function DeclutterFooter() {
   return (
-    <footer className="mt-12 border-t bg-[var(--surface-raised)]">
-      <div className="mx-auto w-full max-w-6xl px-4 py-8">
-        <div className="grid gap-6 sm:grid-cols-3">
-          <div>
-            <p className="flex items-baseline gap-1.5">
-              <span className="text-base font-extrabold tracking-tight">DASH</span>
-              <span className="text-base font-semibold text-[var(--primary)]">Declutters</span>
+    <footer className="mt-24 border-t border-[var(--line)] bg-[var(--surface-sunken)]">
+      <div className="mx-auto w-full max-w-[1240px] px-5 py-14 sm:px-8">
+        <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="lg:col-span-2">
+            <DeclutterWordmark />
+            <p className="mt-4 max-w-sm text-sm leading-relaxed text-[var(--ink-muted)]">
+              Curated second-hand in Lagos and Asaba. Every item reviewed by the DASH team, every
+              price fixed, every seller identity-verified before anything goes live.
             </p>
-            <p className="mt-2 max-w-xs text-sm text-[var(--ink-muted)]">
-              Curated second-hand in Lagos and Asaba. Every item checked by the DASH team, every
-              price fixed, every seller identity-verified.
-            </p>
+            <a
+              href={DASH_WORLD_URL}
+              className="mt-6 inline-flex items-center gap-2 text-sm font-semibold text-[var(--ink)] hover:text-[var(--primary)]"
+            >
+              <span className="h-[5px] w-[5px] rounded-full bg-[var(--dcl-gold)]" aria-hidden />
+              A Dash World product
+              <span aria-hidden>→</span>
+            </a>
           </div>
 
           <nav aria-label="Marketplace">
-            <p className="text-sm font-semibold">Marketplace</p>
-            <ul className="mt-2 space-y-1 text-sm text-[var(--ink-muted)]">
+            <p className="dcl-eyebrow">Marketplace</p>
+            <ul className="mt-3 space-y-0.5 text-sm text-[var(--ink-muted)]">
               <li>
-                <Link href="/declutter" className="hover:underline">
+                <Link href="/declutter" className="-my-1 inline-block py-2 hover:text-[var(--ink)]">
                   Browse everything
                 </Link>
               </li>
               <li>
-                <Link href="/declutter/sell" className="hover:underline">
+                <Link href="/declutter#browse" className="-my-1 inline-block py-2 hover:text-[var(--ink)]">
+                  Categories
+                </Link>
+              </li>
+              <li>
+                <Link href="/declutter/sell" className="-my-1 inline-block py-2 hover:text-[var(--ink)]">
                   Sell an item
                 </Link>
               </li>
@@ -45,18 +64,22 @@ export function DeclutterFooter() {
           </nav>
 
           <div>
-            <p className="text-sm font-semibold">How it works</p>
-            <ul className="mt-2 space-y-1 text-sm text-[var(--ink-muted)]">
-              <li>DASH sets the price. There is no haggling.</li>
+            <p className="dcl-eyebrow">How it works</p>
+            <ul className="mt-3 space-y-0.5 text-sm text-[var(--ink-muted)]">
+              <li>DASH sets the price. There is no negotiation.</li>
               <li>Sellers are verified against government ID.</li>
               <li>Contact details are never published — DASH arranges introductions.</li>
+              <li>Items are listed by area. No addresses, ever.</li>
             </ul>
           </div>
         </div>
 
-        <p className="mt-8 border-t pt-6 text-xs text-[var(--ink-muted)]">
-          DASH World Limited · Lagos and Asaba, Nigeria
-        </p>
+        <hr className="dcl-rule my-10" />
+
+        <div className="flex flex-col gap-3 text-xs text-[var(--ink-muted)] sm:flex-row sm:items-center sm:justify-between">
+          <p>DASH World Limited · Lagos and Asaba, Nigeria</p>
+          <p>Prices in Nigerian naira. Fixed at listing.</p>
+        </div>
       </div>
     </footer>
   );

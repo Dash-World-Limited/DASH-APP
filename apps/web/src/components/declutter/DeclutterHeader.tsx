@@ -11,7 +11,7 @@
  *
  * What a website navigation owes a visitor is different from what an app's
  * navigation owes a signed-in user. This is horizontal, has real destinations
- * rather than tabs, and puts Sell an Item in front of people, because half the
+ * rather than tabs, and puts Sell an item in front of people, because half the
  * marketplace's supply arrives through somebody wondering whether their old
  * laptop is worth anything.
  *
@@ -19,6 +19,9 @@
  * work signed out; an account is needed only to ask about an item or to sell
  * one, and asking a stranger to sign in before they have seen anything is how a
  * marketplace loses them on the first screen.
+ *
+ * It is glass rather than a solid bar. The page beneath is photographs, and a
+ * solid header would cut the top off every one of them as it scrolled past.
  */
 
 import Link from 'next/link';
@@ -26,14 +29,15 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
 import { useHasSession } from '@/lib/session';
+import { DeclutterWordmark } from './DeclutterWordmark';
 
 const LINKS = [
   { href: '/declutter', label: 'Browse' },
   // Anchors to the category filter on the feed. There is no separate
-  // categories landing page yet, and a nav item that promised one and delivered
-  // the plain feed would be worse than one that takes you to the control that
-  // actually filters by category.
-  { href: '/declutter#filters', label: 'Categories' },
+  // categories landing page, by decision: the filter is the category
+  // experience, and a page that only re-listed the same nine categories would
+  // be a click between a visitor and the thing they came for.
+  { href: '/declutter#browse', label: 'Categories' },
   { href: '/declutter/sell', label: 'Sell an item' },
 ];
 
@@ -48,27 +52,41 @@ export function DeclutterHeader() {
     setOpen(false);
   }, [pathname]);
 
+  // The body must not scroll behind an open full-height menu.
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [open]);
+
   return (
-    <header className="sticky top-0 z-40 border-b bg-[var(--surface-raised)]">
-      <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 py-3">
-        <Link href="/declutter" className="flex shrink-0 items-baseline gap-1.5">
-          <span className="text-lg font-extrabold tracking-tight">DASH</span>
-          <span className="text-lg font-semibold text-[var(--primary)]">Declutters</span>
+    <header className="dcl-glass sticky top-0 z-50 border-x-0 border-t-0">
+      <div className="mx-auto flex w-full max-w-[1240px] items-center gap-4 px-5 py-3.5 sm:px-8">
+        <Link
+          href="/declutter"
+          // Padded so the wordmark is a comfortable tap target, not a 16px line of text.
+          className="-m-2 shrink-0 rounded-lg p-2"
+          aria-label="DASH World Declutters — marketplace home"
+        >
+          <DeclutterWordmark />
         </Link>
 
-        <nav aria-label="Marketplace" className="ml-auto hidden items-center gap-1 sm:flex">
+        <nav aria-label="Marketplace" className="ml-auto hidden items-center gap-1 md:flex">
           {LINKS.map((link) => (
             <Link
               key={link.label}
               href={link.href}
-              className="rounded-lg px-3 py-2 text-sm font-semibold hover:bg-graphite-100"
+              className="rounded-full px-4 py-2 text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--dcl-glass)] hover:text-[var(--ink)]"
             >
               {link.label}
             </Link>
           ))}
           <Link
             href={hasSession ? '/account' : '/signin'}
-            className="ml-1 rounded-xl border px-3 py-2 text-sm font-semibold"
+            className="ml-2 rounded-full border border-[var(--line-strong)] px-4 py-2 text-sm font-semibold transition-colors hover:bg-[var(--dcl-glass)]"
           >
             {hasSession ? 'Account' : 'Sign in'}
           </Link>
@@ -79,11 +97,15 @@ export function DeclutterHeader() {
             of the screen, which is an app pattern. */}
         <button
           type="button"
-          className="ml-auto rounded-xl border px-3 py-2 text-sm font-semibold sm:hidden"
+          className="ml-auto inline-flex min-h-11 items-center gap-2 rounded-full border border-[var(--line-strong)] px-4 text-sm font-semibold md:hidden"
           aria-expanded={open}
           aria-controls="declutter-menu"
           onClick={() => setOpen((current) => !current)}
         >
+          <span aria-hidden className="grid gap-[3px]">
+            <span className="block h-[2px] w-4 bg-current" />
+            <span className="block h-[2px] w-4 bg-current" />
+          </span>
           {open ? 'Close' : 'Menu'}
         </button>
       </div>
@@ -92,28 +114,23 @@ export function DeclutterHeader() {
         <nav
           id="declutter-menu"
           aria-label="Marketplace"
-          className="border-t px-4 py-2 sm:hidden"
+          className="border-t border-[var(--line)] bg-[var(--surface)] px-5 pb-6 pt-2 md:hidden"
         >
-          <ul className="space-y-1">
+          <ul>
             {LINKS.map((link) => (
-              <li key={link.label}>
-                <Link
-                  href={link.href}
-                  className="block rounded-lg px-2 py-3 text-sm font-semibold"
-                >
+              <li key={link.label} className="border-b border-[var(--line)] last:border-0">
+                <Link href={link.href} className="block py-4 text-base font-semibold">
                   {link.label}
                 </Link>
               </li>
             ))}
-            <li>
-              <Link
-                href={hasSession ? '/account' : '/signin'}
-                className="block rounded-lg px-2 py-3 text-sm font-semibold"
-              >
-                {hasSession ? 'Account' : 'Sign in'}
-              </Link>
-            </li>
           </ul>
+          <Link
+            href={hasSession ? '/account' : '/signin'}
+            className="mt-4 block rounded-full border border-[var(--line-strong)] px-4 py-3 text-center text-sm font-semibold"
+          >
+            {hasSession ? 'Account' : 'Sign in'}
+          </Link>
         </nav>
       ) : null}
     </header>
