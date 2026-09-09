@@ -22,3 +22,4 @@ export * from './lifecycle.js';
 export * from './identity.js';
 export * from './taxonomy.js';
 export * from './seller.js';
+export * from './listing.js';

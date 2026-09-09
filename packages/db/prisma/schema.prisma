@@ -1968,6 +1968,21 @@ model DeclutterSubmissionPhoto {
   height     Int?
   bytes      Int?
 
+  /// Which view of the item this is: front | back | side | label | screen |
+  /// accessories | damage | other.
+  ///
+  /// The same vocabulary as `PHOTO_ROLES` in @dash/domain/valuecheck, and it is
+  /// asked for at upload rather than inferred. A valuation that cannot tell a
+  /// box shot from a photograph of the serial label has to assume the worst
+  /// about both, and its confidence is capped accordingly — so this column is
+  /// the difference between an item that prices itself and one that escalates
+  /// to a human for being unidentifiable.
+  role String @default("other")
+
+  /// Seller's own caption. Shown publicly, so it is moderated with the rest of
+  /// the listing rather than trusted.
+  caption String?
+
   createdAt DateTime @default(now())
 
   submission  DeclutterSubmission       @relation(fields: [submissionId], references: [id], onDelete: Cascade)
@@ -2104,6 +2119,16 @@ model DeclutterListingPhoto {
   position   Int
   width      Int?
   height     Int?
+
+  /// Copied from the submission photo it was materialised from. Carried onto
+  /// the listing rather than joined back, because a listing must keep showing
+  /// what was approved even if the submission is later edited.
+  role String @default("other")
+
+  /// Alt text and caption. Never null in effect — the publication route
+  /// derives one from the listing title when the seller supplied none, because
+  /// an unlabelled photograph is unreadable to a screen reader.
+  caption String?
 
   createdAt DateTime @default(now())
 
