@@ -57,9 +57,20 @@ export const PRIVACY_SLUG = 'privacy-policy';
  *
  * Dated rather than numbered, so "which terms did they accept" is answerable
  * without a lookup table. Bumping these is how new terms are published.
+ *
+ * **The date is the day the text was actually published, in UTC, and never a
+ * future one.** UTC matters: Nigeria is an hour ahead, so for one hour each
+ * evening a date that reads as "today" in Lagos is still tomorrow to a server,
+ * and a document stamped that way is not yet effective. Dating from the UTC day
+ * is never wrong; dating from the local one is wrong for an hour a day. A version dated ahead of today is not yet effective, so the selection
+ * rule skips it and serves the previous text — while signup, which looked the
+ * version up by name, recorded acceptance of the newer one. A person then read
+ * one document and was recorded as having agreed to another. That happened
+ * here, and `assertPublishable` below now makes it impossible rather than
+ * merely discouraged.
  */
-export const CURRENT_TERMS_VERSION = '2026-09-12';
-export const CURRENT_PRIVACY_VERSION = '2026-09-12';
+export const CURRENT_TERMS_VERSION = '2026-09-09';
+export const CURRENT_PRIVACY_VERSION = '2026-09-09';
 
 /**
  * The current published versions.
@@ -73,7 +84,7 @@ export const PUBLISHED_LEGAL_DOCUMENTS = [
     slug: TERMS_SLUG,
     version: CURRENT_TERMS_VERSION,
     title: 'DASH World Terms of Service',
-    effectiveFrom: new Date('2026-09-12T00:00:00.000Z'),
+    effectiveFrom: new Date('2026-09-09T00:00:00.000Z'),
     body: [
       'Terms of Service',
       '',
@@ -213,7 +224,7 @@ export const PUBLISHED_LEGAL_DOCUMENTS = [
     slug: PRIVACY_SLUG,
     version: CURRENT_PRIVACY_VERSION,
     title: 'DASH World Privacy Policy',
-    effectiveFrom: new Date('2026-09-12T00:00:00.000Z'),
+    effectiveFrom: new Date('2026-09-09T00:00:00.000Z'),
     body: [
       'Privacy Policy',
       '',
@@ -352,7 +363,52 @@ export const PUBLISHED_LEGAL_DOCUMENTS = [
   },
 ];
 
-export async function seedLegalDocuments(prisma: PrismaClient): Promise<LegalSeedResult> {
+/**
+ * Refuse to publish a document that cannot be served.
+ *
+ * Two invariants, both learned the hard way:
+ *
+ *   * **The version string is the effective date.** They are two spellings of
+ *     one fact, and letting them drift means "which version is current" and
+ *     "which version is effective" can disagree.
+ *   * **Neither is in the future.** A document dated ahead of today is skipped
+ *     by the selection rule, so the site serves the previous text while signup
+ *     records acceptance of the new one. Somebody reads one document and is
+ *     recorded as agreeing to another, and nothing fails loudly enough to
+ *     notice.
+ *
+ * Throwing here is deliberate. A seed that silently writes an unservable
+ * document is a seed that has published nothing while appearing to succeed.
+ */
+export function assertPublishable(
+  document: { slug: string; version: string; effectiveFrom: Date },
+  now: Date,
+): void {
+  const dateOfVersion = `${document.version}T00:00:00.000Z`;
+
+  if (document.effectiveFrom.toISOString() !== dateOfVersion) {
+    throw new Error(
+      `${document.slug}: version "${document.version}" does not match effectiveFrom ` +
+        `${document.effectiveFrom.toISOString()}. The version string is the effective date.`,
+    );
+  }
+
+  if (document.effectiveFrom.getTime() > now.getTime()) {
+    throw new Error(
+      `${document.slug}: version "${document.version}" is dated in the future. ` +
+        'It would not be served, while signup recorded acceptance of it.',
+    );
+  }
+}
+
+export async function seedLegalDocuments(
+  prisma: PrismaClient,
+  now: Date = new Date(),
+): Promise<LegalSeedResult> {
+  for (const document of PUBLISHED_LEGAL_DOCUMENTS) {
+    assertPublishable(document, now);
+  }
+
   for (const document of PUBLISHED_LEGAL_DOCUMENTS) {
     await prisma.legalDocument.upsert({
       where: { slug_version: { slug: document.slug, version: document.version } },

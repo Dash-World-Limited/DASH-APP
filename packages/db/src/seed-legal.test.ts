@@ -15,7 +15,12 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { PUBLISHED_LEGAL_DOCUMENTS, TERMS_SLUG, PRIVACY_SLUG } from './seed-legal.js';
+import {
+  assertPublishable,
+  PUBLISHED_LEGAL_DOCUMENTS,
+  TERMS_SLUG,
+  PRIVACY_SLUG,
+} from './seed-legal.js';
 
 function bodyOf(slug: string): string {
   const document = PUBLISHED_LEGAL_DOCUMENTS.find((candidate) => candidate.slug === slug);
@@ -165,6 +170,85 @@ describe('what the privacy policy must actually cover', () => {
 });
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Dating
+// ---------------------------------------------------------------------------
+
+describe('a published version is never dated in the future', () => {
+  it('is not future-dated today', () => {
+    // The failure this catches is not cosmetic. A document dated ahead of today
+    // is skipped by the selection rule, so the site serves the *previous* text
+    // while signup records acceptance of the new one. Somebody reads one
+    // document and is recorded as agreeing to another, and nothing fails.
+    const now = new Date();
+    for (const document of PUBLISHED_LEGAL_DOCUMENTS) {
+      expect(document.effectiveFrom.getTime(), document.slug).toBeLessThanOrEqual(now.getTime());
+    }
+  });
+
+  it('spells the effective date the same way in both places', () => {
+    // The version string and the effective date are two spellings of one fact.
+    // Letting them drift means "which version is current" and "which version is
+    // effective" can disagree.
+    for (const document of PUBLISHED_LEGAL_DOCUMENTS) {
+      expect(document.effectiveFrom.toISOString(), document.slug).toBe(
+        `${document.version}T00:00:00.000Z`,
+      );
+    }
+  });
+
+  it('refuses to seed a future-dated document', () => {
+    expect(() =>
+      assertPublishable(
+        {
+          slug: 'terms-of-service',
+          version: '2099-01-01',
+          effectiveFrom: new Date('2099-01-01T00:00:00.000Z'),
+        },
+        new Date('2026-09-10T12:00:00.000Z'),
+      ),
+    ).toThrow(/dated in the future/);
+  });
+
+  it('refuses to seed a version that disagrees with its effective date', () => {
+    expect(() =>
+      assertPublishable(
+        {
+          slug: 'privacy-policy',
+          version: '2026-09-10',
+          effectiveFrom: new Date('2026-09-12T00:00:00.000Z'),
+        },
+        new Date('2026-12-01T00:00:00.000Z'),
+      ),
+    ).toThrow(/does not match effectiveFrom/);
+  });
+
+  it('accepts a document published today', () => {
+    expect(() =>
+      assertPublishable(
+        {
+          slug: 'terms-of-service',
+          version: '2026-09-10',
+          effectiveFrom: new Date('2026-09-10T00:00:00.000Z'),
+        },
+        new Date('2026-09-10T09:00:00.000Z'),
+      ),
+    ).not.toThrow();
+  });
+
+  it('sorts later versions after earlier ones lexicographically', () => {
+    // The selection rule orders by effectiveFrom then version, both descending,
+    // so the version strings have to sort the way the dates do. ISO dates are
+    // chosen precisely because they do; this pins it against somebody
+    // "tidying" the format to 10-09-2026.
+    const dates = ['2026-09-01', '2026-09-10', '2026-10-01', '2027-01-01'];
+    expect([...dates].sort()).toEqual(dates);
+    for (const document of PUBLISHED_LEGAL_DOCUMENTS) {
+      expect(document.version).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+});
 
 describe('the documents themselves', () => {
   it('publishes exactly one current version of each', () => {

@@ -56,13 +56,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { generateOtp, generateReference, hashOtp, verifyOtp } from '@dash/domain/crypto';
-import {
-  writeAudit,
-  CURRENT_PRIVACY_VERSION,
-  CURRENT_TERMS_VERSION,
-  PRIVACY_SLUG,
-  TERMS_SLUG,
-} from '@dash/db';
+import { writeAudit, PRIVACY_SLUG, TERMS_SLUG } from '@dash/db';
 import {
   ACQUISITION_SOURCES,
   NIGERIAN_STATES,
@@ -203,15 +197,21 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
       },
     });
 
-    const documents = await prisma.legalDocument.findMany({
-      where: {
-        OR: [
-          { slug: TERMS_SLUG, version: CURRENT_TERMS_VERSION },
-          { slug: PRIVACY_SLUG, version: CURRENT_PRIVACY_VERSION },
-        ],
-      },
-      select: { id: true },
-    });
+    // Resolved exactly the way `GET /v1/legal/:slug` resolves it: the newest
+    // version that is actually in effect. Looking these up by version constant
+    // instead is what let the two paths disagree — the page served the
+    // previous text because the newer version was future-dated, while this
+    // recorded acceptance of the newer one, so a person read one document and
+    // was recorded as agreeing to another.
+    const documents = await Promise.all(
+      [TERMS_SLUG, PRIVACY_SLUG].map((slug) =>
+        prisma.legalDocument.findFirst({
+          where: { slug, effectiveFrom: { lte: now } },
+          orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
+          select: { id: true },
+        }),
+      ),
+    ).then((rows) => rows.filter((row): row is { id: string } => row !== null));
 
     for (const document of documents) {
       await prisma.legalAcceptance.upsert({
