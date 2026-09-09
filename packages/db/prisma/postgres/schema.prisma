@@ -57,6 +57,21 @@ model Identity {
   phone String? @unique
   email String? @unique
 
+  /// When control of `email` was actually proved, by redeeming a code sent to
+  /// it. Null means the address is claimed but unproven.
+  ///
+  /// The column, not the presence of an address, is what makes an account real:
+  /// anybody can type a stranger's email into a signup form, and an unverified
+  /// row must never be able to receive anything or act as that person. Sellers
+  /// and Trusted Partners are separate privileged states on top of this, still
+  /// granted only by an admin.
+  ///
+  /// There is deliberately no `phoneVerifiedAt`. SMS verification is switched
+  /// off for V1, so a column recording it would be permanently null and read as
+  /// though every phone number had failed verification rather than never having
+  /// been asked to.
+  emailVerifiedAt DateTime?
+
   // Only ever set for staff accounts. Customers and riders use OTP.
   passwordHash String?
 

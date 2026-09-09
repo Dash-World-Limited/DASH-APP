@@ -12,6 +12,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { randomUUID } from 'node:crypto';
 import { prisma as defaultPrisma } from '@dash/db';
+import type { EmailPort } from '@dash/domain/ports';
 import {
   ConsoleEmailAdapter,
   ConsolePushAdapter,
@@ -69,6 +70,7 @@ import { registerDeclutterPricingRoutes } from './routes/declutter-pricing.js';
 import { registerDeclutterPhotoRoutes } from './routes/declutter-photos.js';
 import { registerDeclutterListingRoutes } from './routes/declutter-listings.js';
 import { registerFileRoutes } from './routes/files.js';
+import { registerSignupRoutes } from './routes/signup.js';
 import { DeterministicValuationAdapter } from '@dash/domain/valuecheck';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAccountRoutes } from './routes/account.js';
@@ -129,7 +131,7 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
         ? new PostgisGeoAdapter(prisma, new LocalGeoAdapter(prisma))
         : new LocalGeoAdapter(prisma)),
     sms: overrides.sms ?? new ConsoleSmsAdapter(quiet),
-    email: overrides.email ?? new ConsoleEmailAdapter(quiet),
+    email: overrides.email ?? createEmailAdapter(config.EMAIL_PROVIDER, quiet),
     // Console unless a provider is configured, so tests and local development
     // never need a Firebase credential and never send a real notification.
     push:
@@ -165,6 +167,32 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
       new ConsoleErrorReporter(config.NODE_ENV !== 'production', quiet, knownSecrets),
     metrics: overrides.metrics ?? new ConsoleMetrics(quiet, knownSecrets),
   };
+}
+
+/**
+ * Pick the email adapter the configuration actually asked for.
+ *
+ * This function exists because `EMAIL_PROVIDER` was validated at boot,
+ * classified as production-required, refused in production when set to
+ * `console` — and then never read. The adapter was hard-wired to the console
+ * one. A production deployment could therefore set `EMAIL_PROVIDER=smtp`, pass
+ * every guard, boot cleanly, and log every verification code to stdout while
+ * believing it was sending email. Nobody would find out until a user said they
+ * never received their code.
+ *
+ * So an unknown provider is now a startup failure rather than a silent
+ * downgrade. There is no SMTP adapter and no SES adapter yet: naming one is a
+ * request for delivery this process cannot perform, and refusing to start is
+ * the only answer that does not quietly lie about it.
+ */
+function createEmailAdapter(provider: string, quiet: boolean): EmailPort {
+  if (provider === 'console') return new ConsoleEmailAdapter(quiet);
+
+  throw new Error(
+    `EMAIL_PROVIDER is "${provider}", but no adapter for it is built into this service. ` +
+      'Email would silently go nowhere. Add the adapter, or set EMAIL_PROVIDER=console ' +
+      'for development only.',
+  );
 }
 
 export async function buildServer(options: BuildOptions = {}): Promise<FastifyInstance> {
@@ -385,6 +413,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerDeclutterPhotoRoutes(app);
   await registerDeclutterListingRoutes(app);
   await registerFileRoutes(app);
+  await registerSignupRoutes(app);
   await registerWebhookRoutes(app);
   await registerAccountRoutes(app);
   await registerDeviceRoutes(app);

@@ -62,16 +62,45 @@ const phoneSchema = z
   .trim()
   .regex(/^\+[1-9]\d{7,14}$/, 'Enter a valid phone number including the country code');
 
-const otpRequestSchema = z.object({
-  phone: phoneSchema,
-  purpose: z.enum(['login', 'step_up']).default('login'),
-});
+const emailSchema = z.string().trim().toLowerCase().email('Enter a valid email address');
 
-const otpVerifySchema = z.object({
-  phone: phoneSchema,
-  code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code'),
-  purpose: z.enum(['login', 'step_up']).default('login'),
-});
+/**
+ * A code goes to one destination: a phone or an email address, never both.
+ *
+ * Email was added for the Declutters website, where a visitor signs up with an
+ * email address and would otherwise have no way back into their own account:
+ * SMS verification is off for V1, and the phone number they typed has never
+ * been proved. Rather than build a second sign-in, the destination became a
+ * choice — everything after it (the hashed code, the attempt ceiling, the
+ * expiry, single use, the session it mints) is the same proven path both
+ * channels have always run through.
+ */
+const destinationSchema = z
+  .object({ phone: phoneSchema.optional(), email: emailSchema.optional() })
+  .refine((value) => (value.phone === undefined) !== (value.email === undefined), {
+    message: 'Give either a phone number or an email address',
+  });
+
+const otpRequestSchema = destinationSchema.and(
+  z.object({ purpose: z.enum(['login', 'step_up']).default('login') }),
+);
+
+const otpVerifySchema = destinationSchema.and(
+  z.object({
+    code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code'),
+    purpose: z.enum(['login', 'step_up']).default('login'),
+  }),
+);
+
+/** The address a code was sent to, and how it travelled. */
+function destinationOf(body: { phone?: string | undefined; email?: string | undefined }): {
+  value: string;
+  channel: 'sms' | 'email';
+} {
+  return body.phone !== undefined
+    ? { value: body.phone, channel: 'sms' }
+    : { value: body.email!, channel: 'email' };
+}
 
 const passwordLoginSchema = z.object({
   email: z.string().trim().toLowerCase().email('Enter a valid email address'),
@@ -86,7 +115,7 @@ async function getDecoyHash(): Promise<string> {
 }
 
 export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma, config, sms } = app.services;
+  const { prisma, config, sms, email } = app.services;
 
   /** Delegates to the shared issuer so both flows mint identical claims. */
   const issueAccessFor = (identityId: string, sessionId: string) =>
@@ -106,31 +135,43 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request) => {
       const body = otpRequestSchema.parse(request.body);
+      const destination = destinationOf(body);
 
       const identity = await prisma.identity.findUnique({
-        where: { phone: body.phone },
-        select: { id: true, status: true },
+        where:
+          destination.channel === 'sms'
+            ? { phone: destination.value }
+            : { email: destination.value },
+        // `emailVerifiedAt` gates the email channel only. An address nobody has
+        // proved must not be able to receive a sign-in code, or signup would be
+        // a way to take over an account by claiming somebody else's address.
+        select: { id: true, status: true, emailVerifiedAt: true, displayName: true },
       });
 
       // Always do the same work and return the same shape, account or not.
       let issuedCode: string | null = null;
 
-      if (identity && identity.status === 'active') {
+      const usable =
+        identity !== null &&
+        identity.status === 'active' &&
+        (destination.channel === 'sms' || identity.emailVerifiedAt !== null);
+
+      if (identity && usable) {
         const code = generateOtp(6);
         issuedCode = code;
 
         // Invalidate any outstanding codes for this destination so an older code
         // cannot be used after a new one is requested.
         await prisma.otpChallenge.updateMany({
-          where: { destination: body.phone, purpose: body.purpose, consumedAt: null },
+          where: { destination: destination.value, purpose: body.purpose, consumedAt: null },
           data: { consumedAt: new Date() },
         });
 
         await prisma.otpChallenge.create({
           data: {
             identityId: identity.id,
-            destination: body.phone,
-            channel: 'sms',
+            destination: destination.value,
+            channel: destination.channel,
             codeHash: await hashOtp(code),
             purpose: body.purpose,
             maxAttempts: config.OTP_MAX_ATTEMPTS,
@@ -138,11 +179,24 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
           },
         });
 
-        await sms.send({
-          to: body.phone,
-          body: `Your DASH APP code is ${code}. It expires in ${Math.round(config.OTP_TTL_SECONDS / 60)} minutes.`,
-          reference: `otp_${body.purpose}`,
-        });
+        const minutes = Math.round(config.OTP_TTL_SECONDS / 60);
+
+        if (destination.channel === 'sms') {
+          await sms.send({
+            to: destination.value,
+            body: `Your DASH APP code is ${code}. It expires in ${minutes} minutes.`,
+            reference: `otp_${body.purpose}`,
+          });
+        } else {
+          const greeting = identity.displayName ? `Hello ${identity.displayName},` : 'Hello,';
+          await email.send({
+            to: destination.value,
+            subject: `${code} is your DASH sign-in code`,
+            text: `${greeting}\n\nYour DASH sign-in code is ${code}.\nIt expires in ${minutes} minutes.\n\nIf you did not try to sign in, ignore this email. Nobody can use this code without it.\n\nDASH World Limited`,
+            html: `<p>${greeting}</p><p>Your DASH sign-in code is <strong style="font-size:20px;letter-spacing:2px">${code}</strong></p><p>It expires in ${minutes} minutes.</p><p>If you did not try to sign in, ignore this email. Nobody can use this code without it.</p><p>DASH World Limited</p>`,
+            reference: `otp_${body.purpose}`,
+          });
+        }
       }
 
       // Development convenience: return the code in the response so local work
@@ -160,7 +214,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       return {
         sent: true,
         expiresInSeconds: config.OTP_TTL_SECONDS,
-        message: 'If that number has an account, a code is on its way.',
+        message: 'If that account exists, a code is on its way.',
         // Note this is only ever present for a real account, so it cannot be
         // used to distinguish one — the absence of the field is identical to
         // the response for an unknown number in production, where it is never
@@ -178,10 +232,11 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     { config: { rateLimit: { max: 10, timeWindow: '10 minutes' } } },
     async (request, reply) => {
       const body = otpVerifySchema.parse(request.body);
+      const destination = destinationOf(body);
 
       const challenge = await prisma.otpChallenge.findFirst({
         where: {
-          destination: body.phone,
+          destination: destination.value,
           purpose: body.purpose,
           consumedAt: null,
           expiresAt: { gt: new Date() },
