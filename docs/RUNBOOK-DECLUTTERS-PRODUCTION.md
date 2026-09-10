@@ -22,15 +22,35 @@ Target: **`declutters.dashworldng.com`**, with the API on its own host under the
 same registrable domain.
 
 **Decided 10 September 2026:** everything runs in **eu-west-1 (Ireland)**, where
-the SES identity `notify.dashworldng.com` is verified, on **AWS Lightsail** — a
-VM for the two Node processes plus Lightsail's managed PostgreSQL. One account
-holds SES, S3, the database and the instance, which keeps the credential story
-to a single instance role and the region story to a single answer.
+the SES identity `notify.dashworldng.com` is verified.
 
-Lightsail rather than EC2 + RDS because this is one marketplace at launch
-volume: a flat monthly price and no VPC, subnet-group or security-group work to
-get wrong. If Declutters later needs several services, the migration path to
-EC2 + RDS is a database snapshot restore, not a rewrite.
+| Piece | Where |
+|---|---|
+| API and web Node processes, Redis | **Lightsail** instance |
+| PostgreSQL | **Amazon RDS**, Single-AZ, encrypted |
+| Object storage | **S3** — `dash-declutters-prod` |
+| Transactional email | **SES** — `notify.dashworldng.com` |
+
+Lightsail for the compute because this is one marketplace at launch volume: a
+flat monthly price and no VPC or security-group work to get wrong. Redis lives
+on the same instance, since Lightsail has no managed Redis and production
+refuses per-process rate limits.
+
+**The database is RDS rather than Lightsail's managed PostgreSQL, for two
+reasons.** The cheapest Lightsail managed tier does not encrypt data at rest,
+and this database holds government identity evidence for every verified seller —
+application-level envelope encryption protects the identity numbers, but the
+storage underneath them should be encrypted too. And PostGIS support on Lightsail
+managed databases is not documented clearly enough to depend on, while on RDS it
+is a supported extension. The API's production guards require
+`GEO_ZONES_PROVIDER=postgis` for DASH APP's delivery zones, so a database that
+cannot install PostGIS cannot run this service at all — even though Declutters
+itself uses no geography.
+
+Lightsail and RDS reach each other over **Lightsail VPC peering**, which joins
+the Lightsail VPC to the region's default VPC. The database is therefore never
+publicly accessible: nothing reaches it from the internet, and migrations run
+from the Lightsail instance rather than from a laptop.
 
 > **The API and the web must be same-site.** The API sends
 > `Cross-Origin-Resource-Policy: same-site`, so item photographs are blocked if
@@ -47,7 +67,7 @@ EC2 + RDS is a database snapshot restore, not a rewrite.
 | Variable | Value | Notes |
 |---|---|---|
 | `NODE_ENV` | `production` | Turns on every boot guard below |
-| `DATABASE_URL` | `postgresql://…` | PostgreSQL 15+ with PostGIS |
+| `DATABASE_URL` | `postgresql://…` | RDS PostgreSQL 16, PostGIS installed, private endpoint |
 | `API_PORT` | e.g. `4000` | |
 | `PUBLIC_WEB_URL` | `https://declutters.dashworldng.com` | CORS allowlist. A wrong value blocks every browser call |
 | `JWT_ACCESS_SECRET` | 32+ random bytes | Boot refuses a development value |
