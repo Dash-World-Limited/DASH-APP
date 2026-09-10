@@ -28,7 +28,7 @@ the SES identity `notify.dashworldng.com` is verified.
 |---|---|
 | API and web Node processes, Redis | **Lightsail** instance |
 | PostgreSQL | **Amazon RDS**, Single-AZ, encrypted |
-| Object storage | **S3** — `dash-declutters-prod` |
+| Object storage | **S3** — `dash-declutters-prod-media`, private |
 | Transactional email | **SES** — `notify.dashworldng.com` |
 
 Lightsail for the compute because this is one marketplace at launch volume: a
@@ -62,6 +62,47 @@ from the Lightsail instance rather than from a laptop.
 
 ## 1. Environment — API
 
+### The deployment profile — set this first
+
+| Variable | Value |
+|---|---|
+| `DEPLOYMENT_PROFILE` | `declutters` |
+
+This is the variable that makes a marketplace-only deployment possible, and it
+must be set deliberately. It defaults to `full`, so a deployment that forgets it
+gets DASH APP's complete set of production guards rather than the relaxed ones.
+
+A profile is a set of **capabilities**. `apps/api/src/deployment/profile.ts` owns
+the table:
+
+| Capability | `full` | `declutters` | What is switched off means |
+|---|---|---|---|
+| `email` | on | **on** | SES. Required, live, guarded |
+| `storage` | on | **on** | S3. Required, live, guarded |
+| `payments` | on | off | `DisabledPaymentAdapter` throws on every call. `POST /v1/webhooks/paystack` is not registered |
+| `delivery` | on | off | Catalogue, orders, vendor and rider routes are not registered |
+| `sms` | on | off | `DisabledSmsAdapter` throws. Declutters authenticates by email code |
+| `push` | on | off | `DisabledPushAdapter` throws. `POST /v1/devices` is not registered |
+| `maps` | on | off | Routing and geocoding throw. Zone containment still works, because PostGIS answers it from the database |
+| `dataExport` | on | off | `/v1/account/export*` is not registered. Deletion stays available |
+
+**Switched off means unreachable, not mocked.** A disabled capability gets an
+adapter whose every method throws `CapabilityDisabledError`, and its routes are
+never registered, so they answer `404`. That distinction is the whole point: the
+reason production refuses `PAYMENT_PROVIDER=mock` is that a mock reports a
+successful charge and settles nothing. Relaxing the guard while leaving the mock
+wired would have reproduced exactly the failure the guard existed to prevent.
+Refusing to answer at all cannot be mistaken for success.
+
+What stays strict on `declutters`: PostgreSQL (no SQLite), PostGIS, Redis-backed
+rate limiting, a durable queue, S3, SES, and every secret-strength check. The
+four guards that no longer apply — payments, maps, SMS, push — are the four whose
+subject does not exist on this deployment.
+
+What this does **not** change: the `full` profile. Every guard there behaves
+exactly as it did before, and `apps/api/src/__tests__/deployment-profile.test.ts`
+asserts that a `full` production boot still refuses all four.
+
 ### Required, always
 
 | Variable | Value | Notes |
@@ -70,17 +111,23 @@ from the Lightsail instance rather than from a laptop.
 | `DATABASE_URL` | `postgresql://…` | RDS PostgreSQL 16, PostGIS installed, private endpoint |
 | `API_PORT` | e.g. `4000` | |
 | `PUBLIC_WEB_URL` | `https://declutters.dashworldng.com` | CORS allowlist. A wrong value blocks every browser call |
-| `JWT_ACCESS_SECRET` | 32+ random bytes | Boot refuses a development value |
+| `JWT_ACCESS_SECRET` | 32+ random bytes | Boot refuses a development value, and refuses it if it equals the refresh secret |
+| `JWT_REFRESH_SECRET` | 32+ random bytes | Must differ from `JWT_ACCESS_SECRET` |
 | `REFRESH_TOKEN_PEPPER` | 32+ random bytes | |
-| `ENCRYPTION_KEYS` / `ENCRYPTION_ACTIVE_KEY` | per `docs/` key custody | KYC envelope encryption |
-| `REDIS_URL`, `RATE_LIMIT_REDIS` | Redis connection | Production refuses per-process rate limits |
+| `ENCRYPTION_KEY` | base64 or hex 32 bytes | KYC envelope encryption. See `docs/` key custody. `ENCRYPTION_KEY_ID` defaults to `k1`; `ENCRYPTION_KEYS_RETIRED` only during a rotation |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis on the same Lightsail instance |
+| `RATE_LIMIT_ENABLED` | `true` | Production refuses `false` |
+| `RATE_LIMIT_REDIS` | `true` | Production refuses per-process counters: they multiply the real limit by the instance count |
+| `QUEUE_PROVIDER` | `redis` | Production refuses `memory` — it loses jobs on restart |
+| `GEO_ZONES_PROVIDER` | `postgis` | Required in production even here. Declutters never asks a geography question, but the guard is DASH APP's and PostGIS must be installed for boot to pass |
+| `VALUECHECK_PROVIDER` | `local` | The only value. No live AI provider is connected — which is why no listing may be publicly labelled *DASH ValueChecked* |
 
 ### Storage — required
 
 | Variable | Value |
 |---|---|
 | `STORAGE_PROVIDER` | `s3` |
-| `S3_BUCKET` | `dash-declutters-prod` |
+| `S3_BUCKET` | `dash-declutters-prod-media` |
 | `S3_REGION` | `eu-west-1` |
 | `S3_ENDPOINT` | *only* for a non-AWS S3-compatible provider |
 | `S3_FORCE_PATH_STYLE` | `true` only for those providers |
@@ -164,12 +211,52 @@ recreates fictional vendors, riders and orders.
 
 ```bash
 npm ci
-npm run db:generate
+npm run db:pg:generate
 npm run build
 ```
 
-Then run `apps/api` and `apps/web` under a supervisor. Neither holds state in
-memory that matters, so both can be restarted freely.
+`db:pg:generate` rather than `db:generate`: the PostgreSQL client is the one this
+deployment needs. `npm run build` builds the web app; the API runs from source
+through `tsx`.
+
+**`NEXT_PUBLIC_*` is read at build time.** Set the web variables from §2 in the
+environment of `npm run build`, not only in the supervisor. A rebuild is required
+to change any of them.
+
+Then run both under a supervisor. Neither holds state in memory that matters, so
+both can be restarted freely.
+
+### The API
+
+Every variable from §1 must be in its environment, starting with the profile:
+
+```bash
+NODE_ENV=production DEPLOYMENT_PROFILE=declutters npm run start --workspace @dash/api
+```
+
+### The web app
+
+```bash
+NODE_ENV=production npm run start --workspace @dash/web
+```
+
+### Confirming the profile took effect
+
+Two checks, because a missing `DEPLOYMENT_PROFILE` does not fail quietly — it
+fails loudly at boot, refusing `PAYMENT_PROVIDER`, `MAPS_PROVIDER`,
+`SMS_PROVIDER` and `PUSH_PROVIDER` by name. If the API is running at all, the
+profile was accepted. What is worth confirming is that the disabled surface is
+genuinely absent:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.dashworldng.com/v1/orders
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.dashworldng.com/v1/devices
+curl -s -o /dev/null -w '%{http_code}\n' https://api.dashworldng.com/v1/account/export
+```
+
+All three must answer `404`. A `401` would mean the route is still mounted and
+only authentication stands between a caller and a feature this deployment cannot
+perform.
 
 ---
 
@@ -267,6 +354,10 @@ app, and no data changes.
 ---
 
 ## 9. What is deliberately not deployed
+
+Each of these is a capability switched off by `DEPLOYMENT_PROFILE=declutters`,
+not a feature that merely happens to be unused. Its adapter throws and its routes
+return `404`, so none of it can half-work.
 
 - **No live AI valuation.** `VALUECHECK_PROVIDER=local` is the deterministic
   adapter. No listing says `DASH ValueChecked`; the domain refuses to emit it.

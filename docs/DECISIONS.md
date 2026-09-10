@@ -838,3 +838,93 @@ problems, in exchange for saving one HTTP read on reconnect.
 because in-band authentication needs no new endpoint, no new token type, no new
 secret, and no new table — and solves token renewal on a live socket, which a
 ticket does not.
+
+---
+
+## ADR-0014 — Deployment profiles: a disabled capability is unreachable, not mocked
+
+**Status:** Accepted · Declutters launch
+
+### Context
+
+DASH World Declutters is deployed on its own — `declutters.dashworldng.com` — and it
+is a marketplace. It takes no money, dispatches no rider, sends no SMS, pushes to
+no device and geocodes no address. It needs PostgreSQL, PostGIS (because the
+database is shared with DASH APP's schema), Redis, S3 and SES, and nothing else
+external.
+
+The production boot guards refused it. They require a real payment provider, a
+real maps provider, a real SMS provider and a real push provider whenever
+`NODE_ENV=production`, because each mock or console adapter reports success and
+does nothing — a production service that claims to charge a card and settles
+nothing, or logs a login code to stdout and tells the customer it was sent. Those
+guards are correct. They were also, for this deployment, asking a question with
+no subject: there is no payment to mock because there is no payment.
+
+The effect was that the documented Declutters deployment could not boot without
+being handed Paystack keys it would never use, a Google Maps key for addresses it
+would never geocode, and an SMS provider for codes it would never send. Unused
+production credentials are a liability with no corresponding benefit.
+
+### Decision
+
+`DEPLOYMENT_PROFILE` selects a named set of **capabilities**
+(`apps/api/src/deployment/profile.ts`). `full` has all eight. `declutters` has
+`email` and `storage`.
+
+A capability does three things:
+
+1. **It chooses the adapter.** A disabled capability gets an adapter from
+   `apps/api/src/adapters/disabled.ts` whose every method throws
+   `CapabilityDisabledError`. `providerName` is `disabled` and `isLive` is
+   `false`.
+2. **It decides whether routes are registered.** Without `delivery`, the
+   catalogue, order, vendor and rider routes are never mounted. Without
+   `payments`, neither is the Paystack webhook. Without `push`, neither is device
+   registration. Without `dataExport`, neither is the export half of the account
+   routes. They answer `404`.
+3. **It scopes the guard.** Each provider guard runs only when the deployment has
+   the capability it is about.
+
+The default is `full`. A deployment that forgets to declare itself gets the
+strictest checks, not the loosest.
+
+### Consequences
+
+- The `full` profile is unchanged. Every guard behaves exactly as before, and
+  `deployment-profile.test.ts` asserts that a `full` production boot still
+  refuses all four mock providers by name.
+- Guards that are not about a capability still apply everywhere: email, storage,
+  PostgreSQL-not-SQLite, PostGIS, Redis-backed rate limiting, a durable queue,
+  secret strength, `ENCRYPTION_KEY`, SES and S3 completeness.
+- `zonesContaining` is deliberately *not* disabled with `maps`. PostGIS answers
+  it from the database, so it needs no provider; routing and geocoding do, and
+  those throw.
+- A disabled `parseWebhook` returns `null` rather than throwing, because `null`
+  already means "this did not verify, act on nothing" — which is precisely how a
+  deployment with payments off should treat a payment webhook.
+- Adding a capability means adding it in one table, not auditing every guard and
+  route again.
+
+### Rejected alternatives
+
+**Relax the four guards in production.** The smallest diff, and the worst
+outcome. It leaves `MockPaymentAdapter` and `ConsoleSmsAdapter` wired into a
+production process with nothing left to object, which recreates the exact silent
+failure the guards existed to prevent. The guard was never the safety property;
+the absence of a lying adapter is.
+
+**A boolean per feature (`PAYMENTS_ENABLED`, `SMS_ENABLED`, …).** Eight
+independent switches is 256 combinations, most of them incoherent — delivery
+without payments, push without devices — and each one a configuration a
+deployment could reach by accident. A named profile is a reviewed combination.
+
+**A separate API service containing only the marketplace.** The honest long-term
+answer, and far too much for a launch: it means splitting the schema, the
+identity system and the admin console, when there is deliberately **one** DASH
+identity and **one** source of truth.
+
+**`NODE_ENV=staging` or a looser environment.** Would relax the guards by
+relaxing production itself, including the ones about secrets, SQLite and rate
+limiting. This deployment is production. It serves real sellers' identity
+documents.

@@ -19,6 +19,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { capabilitiesFor } from '../deployment/profile.js';
 import { z } from 'zod';
 import { ApiError } from '../http/errors.js';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
@@ -41,6 +42,16 @@ function downloadSecret(jwtAccessSecret: string): string {
 }
 
 export async function registerAccountRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * Whether personal-data export is offered.
+   *
+   * Deletion is always available — it is a right the Privacy Policy promises,
+   * and it needs no archive. Export needs somewhere durable to put the file,
+   * and the archive adapter still writes to local disk: an archive built in
+   * production would be lost on the next deploy. Rather than offer a download
+   * that quietly disappears, the endpoints are not registered at all.
+   */
+  const exportEnabled = capabilitiesFor(app.services.config.DEPLOYMENT_PROFILE).has('dataExport');
   const { prisma, config, queue } = app.services;
 
   /** Deletion and export are a customer flow. Staff/vendor/rider are out of scope. */
@@ -135,6 +146,8 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
   // -------------------------------------------------------------------------
   // Export
   // -------------------------------------------------------------------------
+
+  if (!exportEnabled) return;
 
   app.post(
     '/v1/account/export',

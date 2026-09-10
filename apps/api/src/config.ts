@@ -26,6 +26,7 @@ import {
 } from '@dash/domain/account';
 import { redactSecretsInText } from '@dash/domain/redaction';
 import { presentSecretValues } from './secrets/classification.js';
+import { capabilitiesFor, DEPLOYMENT_PROFILES } from './deployment/profile.js';
 
 const booleanish = z
   .enum(['true', 'false', '1', '0'])
@@ -151,6 +152,19 @@ const schema = z
      * identity with no file at all.
      */
     GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),
+
+    /**
+     * Which parts of DASH this deployment runs.
+     *
+     * `full` is DASH APP: payments, delivery, dispatch, SMS, push and maps, and
+     * every strict production guard below applies. `declutters` is the
+     * marketplace alone — see `deployment/profile.ts` for what each capability
+     * means and why the marketplace has none of those.
+     *
+     * Defaults to `full` deliberately. A deployment that forgets to name its
+     * profile gets the strictest checks, not the loosest.
+     */
+    DEPLOYMENT_PROFILE: z.enum(DEPLOYMENT_PROFILES).default('full'),
 
     STORAGE_PROVIDER: z.enum(['local', 's3']).default('local'),
     /**
@@ -446,13 +460,26 @@ const schema = z
     // Every one of these reports `isLive: false`. Running any of them in
     // production means the platform silently does nothing where it claims to
     // charge a card, send a code, or store a document.
-    if (env.PAYMENT_PROVIDER === 'mock') {
+    //
+    // Each check applies only to a capability this deployment actually has.
+    // Nothing is weakened: on the `full` profile every one of them runs exactly
+    // as before. On `declutters` the capability is switched off, its adapter
+    // throws on every call, and its routes are never registered — so the
+    // question the guard asks ("is this provider real?") has no subject.
+    //
+    // Checking a switched-off feature would force a Declutters deployment to be
+    // handed Paystack keys it will never use and a maps key for addresses it
+    // never geocodes, which is how unused credentials end up in production
+    // environments.
+    const capabilities = capabilitiesFor(env.DEPLOYMENT_PROFILE);
+
+    if (capabilities.has('payments') && env.PAYMENT_PROVIDER === 'mock') {
       fail('PAYMENT_PROVIDER', 'The mock payment provider must never run in production — it settles nothing');
     }
-    if (env.MAPS_PROVIDER === 'local') {
+    if (capabilities.has('maps') && env.MAPS_PROVIDER === 'local') {
       fail('MAPS_PROVIDER', 'The local geo adapter cannot geocode an address; production needs a real provider');
     }
-    if (env.SMS_PROVIDER === 'console') {
+    if (capabilities.has('sms') && env.SMS_PROVIDER === 'console') {
       fail('SMS_PROVIDER', 'The console SMS adapter only logs — no customer would ever receive a login code');
     }
     if (env.EMAIL_PROVIDER === 'console') {
@@ -475,7 +502,7 @@ const schema = z
         );
       }
     }
-    if (env.PUSH_PROVIDER === 'console') {
+    if (capabilities.has('push') && env.PUSH_PROVIDER === 'console') {
       fail('PUSH_PROVIDER', 'The console push adapter only logs — no device is notified');
     }
     if (env.STORAGE_PROVIDER === 'local') {

@@ -24,6 +24,14 @@ import {
   MockPaymentAdapter,
 } from './adapters/index.js';
 import { PostgisGeoAdapter } from './adapters/postgis.js';
+import {
+  DisabledExportArchiveAdapter,
+  DisabledMapsGeoAdapter,
+  DisabledPaymentAdapter,
+  DisabledPushAdapter,
+  DisabledSmsAdapter,
+} from './adapters/disabled.js';
+import { capabilitiesFor } from './deployment/profile.js';
 import { S3StorageAdapter } from './adapters/s3.js';
 import { SesEmailAdapter } from './adapters/ses.js';
 import { SuppressionAwareEmailAdapter } from './adapters/suppressed-email.js';
@@ -121,21 +129,44 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
   // test harness sets, so it doubles as the signal here.
   const quiet = config.LOG_LEVEL === 'silent';
 
+  /**
+   * What this deployment runs.
+   *
+   * Read once and used for two things: which adapter each port gets, and which
+   * routes are registered at all. See `deployment/profile.ts`.
+   */
+  const capabilities = capabilitiesFor(config.DEPLOYMENT_PROFILE);
+
   return {
     config,
     // Built once at boot so a malformed key fails immediately rather than at
     // the first enrolment.
     keyring: overrides.keyring ?? (isEncryptionConfigured(config) ? buildKeyring(config) : null),
     prisma,
-    payments: overrides.payments ?? new MockPaymentAdapter(),
+    // A disabled capability gets an adapter that throws, never a mock. A
+    // production deployment whose guards no longer check the payment provider
+    // must not still be holding one that reports a successful charge and
+    // settles nothing.
+    payments:
+      overrides.payments ??
+      (capabilities.has('payments') ? new MockPaymentAdapter() : new DisabledPaymentAdapter()),
     // PostGIS answers zone containment; everything else geo still comes from
     // the maps provider, which the PostGIS adapter wraps rather than replaces.
+    // Zone containment survives with maps off, because PostGIS answers it from
+    // the database rather than from a provider. Routing and geocoding are the
+    // parts that need a third party, and those throw.
     geo:
       overrides.geo ??
-      (config.GEO_ZONES_PROVIDER === 'postgis'
-        ? new PostgisGeoAdapter(prisma, new LocalGeoAdapter(prisma))
-        : new LocalGeoAdapter(prisma)),
-    sms: overrides.sms ?? new ConsoleSmsAdapter(quiet),
+      (() => {
+        const zones =
+          config.GEO_ZONES_PROVIDER === 'postgis'
+            ? new PostgisGeoAdapter(prisma, new LocalGeoAdapter(prisma))
+            : new LocalGeoAdapter(prisma);
+        return capabilities.has('maps') ? zones : new DisabledMapsGeoAdapter(zones);
+      })(),
+    sms:
+      overrides.sms ??
+      (capabilities.has('sms') ? new ConsoleSmsAdapter(quiet) : new DisabledSmsAdapter()),
     // Wrapped, always, and including the override a test supplies: the
     // suppression list is a policy about who may be written to, and a policy
     // that only applies to one adapter is one the next adapter forgets.
@@ -147,13 +178,20 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     // never need a Firebase credential and never send a real notification.
     push:
       overrides.push ??
-      (config.PUSH_PROVIDER === 'fcm' ? createFcmAdapter() : new ConsolePushAdapter(quiet)),
+      (!capabilities.has('push')
+        ? new DisabledPushAdapter()
+        : config.PUSH_PROVIDER === 'fcm'
+          ? createFcmAdapter()
+          : new ConsolePushAdapter(quiet)),
     storage: overrides.storage ?? createStorageAdapter(config),
     // ValueCheck. One value today; a live provider is a new branch and a new
     // adapter, and no marketplace code changes when one arrives.
     valuation: overrides.valuation ?? new DeterministicValuationAdapter(),
     exportArchive:
-      overrides.exportArchive ?? new LocalExportArchiveAdapter(config.STORAGE_LOCAL_DIR),
+      overrides.exportArchive ??
+      (capabilities.has('dataExport')
+        ? new LocalExportArchiveAdapter(config.STORAGE_LOCAL_DIR)
+        : new DisabledExportArchiveAdapter()),
     queue:
       overrides.queue ??
       (config.QUEUE_PROVIDER === 'redis' && config.REDIS_URL
@@ -300,6 +338,13 @@ function createEmailAdapter(config: Config, quiet: boolean): EmailPort {
 export async function buildServer(options: BuildOptions = {}): Promise<FastifyInstance> {
   const config = options.config ?? loadConfig();
   const services = buildServices(config, options.services ?? {});
+
+  /**
+   * What this deployment runs, for the route registration at the foot of this
+   * function. `buildServices` reads the same set to decide which adapters to
+   * wire, so the two answers cannot diverge: both come from the profile.
+   */
+  const capabilities = capabilitiesFor(config.DEPLOYMENT_PROFILE);
 
   // Captured once. The values do not change while the process runs, and
   // re-reading them per log line would be both slow and a second place secret
@@ -517,12 +562,10 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   });
 
   // --- Routes ----------------------------------------------------------------
+  // Always. Authentication, the admin console, the marketplace, the files it
+  // serves and the mail it receives back.
   await registerAuthRoutes(app);
   await registerMfaRoutes(app);
-  await registerCatalogRoutes(app);
-  await registerOrderRoutes(app);
-  await registerVendorRoutes(app);
-  await registerRiderRoutes(app);
   await registerAdminRoutes(app);
   await registerDeclutterRoutes(app);
   await registerValueCheckRoutes(app);
@@ -532,9 +575,38 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerFileRoutes(app);
   await registerSignupRoutes(app);
   await registerEmailEventRoutes(app);
-  await registerWebhookRoutes(app);
   await registerAccountRoutes(app);
-  await registerDeviceRoutes(app);
+
+  /**
+   * Registered only where the capability exists.
+   *
+   * A route left mounted on a deployment that cannot fulfil it is worse than a
+   * 404. `POST /v1/orders` on a service with no payments and no dispatch would
+   * accept an order, take no money, and send nobody — so the honest answer to
+   * a request the deployment cannot perform is that the endpoint is not there.
+   *
+   * Delivery covers the whole basket-to-doorstep path: the vendor catalogue a
+   * basket is built from, the orders themselves, the vendor console and the
+   * rider app.
+   */
+  if (capabilities.has('delivery')) {
+    await registerCatalogRoutes(app);
+    await registerOrderRoutes(app);
+    await registerVendorRoutes(app);
+    await registerRiderRoutes(app);
+  }
+
+  // The Paystack webhook. Without payments there is nothing for it to confirm,
+  // and an endpoint that accepts payment notifications a deployment cannot act
+  // on is an invitation.
+  if (capabilities.has('payments')) {
+    await registerWebhookRoutes(app);
+  }
+
+  // Device tokens exist to be pushed to.
+  if (capabilities.has('push')) {
+    await registerDeviceRoutes(app);
+  }
 
   // --- Realtime --------------------------------------------------------------
   // The hub is per instance and holds only sockets, so it needs no shutdown
