@@ -46,6 +46,8 @@ function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEn
     // A path, never a credential. Firebase reads the file; nothing here does.
     GOOGLE_APPLICATION_CREDENTIALS: '/var/secrets/firebase-service-account.json',
     STORAGE_PROVIDER: 's3',
+    S3_BUCKET: 'dash-declutters',
+    S3_REGION: 'eu-west-1',
     QUEUE_PROVIDER: 'redis',
     REDIS_URL: 'redis://cache.internal:6379',
     RATE_LIMIT_REDIS: 'true',

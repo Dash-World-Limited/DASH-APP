@@ -12,7 +12,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { randomUUID } from 'node:crypto';
 import { prisma as defaultPrisma } from '@dash/db';
-import type { EmailPort } from '@dash/domain/ports';
+import type { EmailPort, StoragePort } from '@dash/domain/ports';
 import {
   ConsoleEmailAdapter,
   ConsolePushAdapter,
@@ -24,6 +24,7 @@ import {
   MockPaymentAdapter,
 } from './adapters/index.js';
 import { PostgisGeoAdapter } from './adapters/postgis.js';
+import { S3StorageAdapter } from './adapters/s3.js';
 import { SesEmailAdapter } from './adapters/ses.js';
 import { SuppressionAwareEmailAdapter } from './adapters/suppressed-email.js';
 import { RedisQueueAdapter } from './adapters/redis-queue.js';
@@ -47,6 +48,7 @@ import { buildKeyring, isEncryptionConfigured, loadConfig, type Config } from '.
 import { registerContext, type Services } from './http/context.js';
 import {
   checkDependency,
+  type DependencyCheck,
   ConsoleErrorReporter,
   ConsoleMetrics,
 } from './observability/index.js';
@@ -146,7 +148,7 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     push:
       overrides.push ??
       (config.PUSH_PROVIDER === 'fcm' ? createFcmAdapter() : new ConsolePushAdapter(quiet)),
-    storage: overrides.storage ?? new LocalStorageAdapter(config.STORAGE_LOCAL_DIR),
+    storage: overrides.storage ?? createStorageAdapter(config),
     // ValueCheck. One value today; a live provider is a new branch and a new
     // adapter, and no marketplace code changes when one arrives.
     valuation: overrides.valuation ?? new DeterministicValuationAdapter(),
@@ -194,6 +196,79 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
  * request for delivery this process cannot perform, and refusing to start is
  * the only answer that does not quietly lie about it.
  */
+/**
+ * Pick the storage adapter the configuration asked for.
+ *
+ * Written for the same reason `createEmailAdapter` was: `STORAGE_PROVIDER` was
+ * validated at boot, classified production-required, refused in production when
+ * set to `local` — and then never read. The adapter was hard-wired to the
+ * local-disk one. A production deployment could set `STORAGE_PROVIDER=s3`,
+ * satisfy every guard, boot cleanly, and write every item photograph and every
+ * government identity document to a container filesystem discarded on the next
+ * deploy.
+ *
+ * That failure is quieter than the email one and worse. Nothing errors, the
+ * photographs are there, the listings look right — and they are gone after the
+ * next release, with the KYC evidence behind them.
+ */
+/**
+ * Whether storage can answer for itself, and the memo that keeps it cheap.
+ *
+ * Structural rather than an `instanceof`: a test can substitute anything with a
+ * `reachable()` method, and an adapter without one — the local disk, which is
+ * always "reachable" — simply contributes no check rather than a fake pass.
+ */
+interface SelfChecking {
+  reachable(): Promise<boolean>;
+}
+
+const STORAGE_OK_TTL_MS = 60_000;
+let storageOkUntil = 0;
+
+async function checkStorageReadiness(storage: unknown): Promise<DependencyCheck | null> {
+  const candidate = storage as Partial<SelfChecking>;
+  if (typeof candidate?.reachable !== 'function') return null;
+
+  if (Date.now() < storageOkUntil) return { name: 'storage', status: 'ok', latencyMs: 0 };
+
+  // Through `checkDependency` for its timeout: a readiness probe that can hang
+  // is worse than one that fails, because an orchestrator waiting on it keeps
+  // the instance in service.
+  const check = await checkDependency('storage', async () => {
+    if (!(await (candidate as SelfChecking).reachable())) throw new Error('unreachable');
+    return true;
+  });
+
+  // A failure is never cached, so a bucket that comes back is noticed at the
+  // next poll rather than a minute later.
+  storageOkUntil = check.status === 'ok' ? Date.now() + STORAGE_OK_TTL_MS : 0;
+  return check;
+}
+
+function createStorageAdapter(config: Config): StoragePort {
+  if (config.STORAGE_PROVIDER === 'local') return new LocalStorageAdapter(config.STORAGE_LOCAL_DIR);
+
+  if (config.STORAGE_PROVIDER === 's3') {
+    // The config guards already refused to start without these in production.
+    // Re-checked because `buildServer` is also called by tests and scripts that
+    // never went through them.
+    if (!config.S3_BUCKET || !config.S3_REGION) {
+      throw new Error('STORAGE_PROVIDER=s3 needs S3_BUCKET and S3_REGION.');
+    }
+    return new S3StorageAdapter({
+      bucket: config.S3_BUCKET,
+      region: config.S3_REGION,
+      endpoint: config.S3_ENDPOINT,
+      forcePathStyle: config.S3_FORCE_PATH_STYLE,
+    });
+  }
+
+  throw new Error(
+    `STORAGE_PROVIDER is "${config.STORAGE_PROVIDER}", but no adapter for it is built into ` +
+      'this service. Uploads would go nowhere durable.',
+  );
+}
+
 function createEmailAdapter(config: Config, quiet: boolean): EmailPort {
   if (config.EMAIL_PROVIDER === 'console') return new ConsoleEmailAdapter(quiet);
 
@@ -413,6 +488,21 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
         }),
       );
     }
+
+    // Storage, when the adapter can answer for itself.
+    //
+    // Worth checking because a wrong bucket name or a missing credential is
+    // otherwise invisible: the service boots, the marketplace renders, and the
+    // first seller to photograph an item discovers it. Named for its role like
+    // the others — this endpoint is unauthenticated and must not disclose that
+    // storage happens to be S3.
+    //
+    // A success is cached briefly. A load balancer polls this every few
+    // seconds, and an unbounded HeadBucket per poll is a bill and a rate limit
+    // for no extra safety. A *failure* is never cached, so recovery is noticed
+    // at the next poll.
+    const storageCheck = await checkStorageReadiness(request.services.storage);
+    if (storageCheck) checks.push(storageCheck);
 
     const ready = checks.every((check) => check.status === 'ok');
 

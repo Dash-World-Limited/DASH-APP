@@ -108,6 +108,7 @@ export const PUBLIC_VARIABLES: readonly ConfigVariable[] = [
   { name: 'EMAIL_REPLY_TO', sensitivity: 'public', production: 'optional', purpose: 'Monitored mailbox; the identity-conflict email tells people to reply to it' },
   { name: 'SES_CONFIGURATION_SET', sensitivity: 'public', production: 'optional', purpose: 'Groups messages so bounce and complaint events can be attributed' },
   { name: 'SES_EVENT_TOPIC_ARN', sensitivity: 'public', production: 'optional', purpose: 'Only bounce/complaint notifications from this topic are accepted' },
+  { name: 'SIGNUP_ALLOWLIST', sensitivity: 'secret', production: 'optional', purpose: 'Personal email addresses; restricts signup while SES is sandboxed, empty means open' },
   { name: 'STORAGE_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `local` is refused in production' },
   { name: 'STORAGE_LOCAL_DIR', sensitivity: 'public', production: 'optional', purpose: 'Local storage directory in development' },
   { name: 'QUEUE_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `memory` is refused in production' },
@@ -138,8 +139,10 @@ export const PUBLIC_VARIABLES: readonly ConfigVariable[] = [
     purpose:
       'Publishable key, designed to be embedded in a client. Genuinely not a secret — pairing it with PAYSTACK_SECRET_KEY in one block is how the two get confused.',
   },
-  { name: 'S3_ENDPOINT', sensitivity: 'public', production: 'optional', purpose: 'Bucket endpoint. Not read by any code yet.' },
-  { name: 'S3_BUCKET', sensitivity: 'public', production: 'optional', purpose: 'Bucket name. Not read by any code yet.' },
+  { name: 'S3_ENDPOINT', sensitivity: 'public', production: 'optional', purpose: 'Set for an S3-compatible provider that is not AWS' },
+  { name: 'S3_BUCKET', sensitivity: 'public', production: 'conditional', purpose: 'Bucket holding item photographs and KYC documents; required when STORAGE_PROVIDER=s3' },
+  { name: 'S3_REGION', sensitivity: 'public', production: 'conditional', purpose: 'Region the bucket lives in; required when STORAGE_PROVIDER=s3' },
+  { name: 'S3_FORCE_PATH_STYLE', sensitivity: 'public', production: 'optional', purpose: 'Required by most S3-compatible providers; harmless on AWS' },
 ];
 
 /**
@@ -234,8 +237,11 @@ export const ANTICIPATED_SECRET_VARIABLES: readonly ConfigVariable[] = [
   { name: 'TWILIO_AUTH_TOKEN', sensitivity: 'secret', production: 'conditional', purpose: 'Not yet read by any code. Reserved for the Twilio SMS adapter.' },
   { name: 'SMTP_URL', sensitivity: 'secret', production: 'conditional', purpose: 'Not yet read by any code. Reserved for the SMTP email adapter.', embedsCredential: true },
   { name: 'FCM_SERVICE_ACCOUNT_JSON', sensitivity: 'secret', production: 'conditional', purpose: 'Not yet read by any code. Reserved for the FCM push adapter.' },
-  { name: 'S3_ACCESS_KEY_ID', sensitivity: 'secret', production: 'conditional', purpose: 'Not yet read by any code. Reserved for the S3 storage adapter.' },
-  { name: 'S3_SECRET_ACCESS_KEY', sensitivity: 'secret', production: 'conditional', purpose: 'Not yet read by any code. Reserved for the S3 storage adapter.' },
+  // Still anticipated, and now permanently so: the S3 adapter resolves
+  // credentials through the AWS SDK default chain, which reads AWS_* or an
+  // instance role. These two names are never consulted by anything.
+  { name: 'S3_ACCESS_KEY_ID', sensitivity: 'secret', production: 'conditional', purpose: 'Not yet read by any code. The SDK reads AWS_ACCESS_KEY_ID or an instance role.' },
+  { name: 'S3_SECRET_ACCESS_KEY', sensitivity: 'secret', production: 'conditional', purpose: 'Not yet read by any code. The SDK reads AWS_SECRET_ACCESS_KEY or an instance role.' },
   { name: 'ERROR_TRACKING_DSN', sensitivity: 'secret', production: 'optional', purpose: 'Not yet read by any code. Reserved for the error-reporting adapter.', embedsCredential: true },
 ];
 

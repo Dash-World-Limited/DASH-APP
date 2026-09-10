@@ -163,6 +163,8 @@ describe('a refused configuration never echoes a secret', () => {
     EMAIL_REPLY_TO: 'admin@dashworldng.com',
       PUSH_PROVIDER: 'fcm',
       STORAGE_PROVIDER: 's3',
+    S3_BUCKET: 'dash-declutters',
+    S3_REGION: 'eu-west-1',
       QUEUE_PROVIDER: 'redis',
       REDIS_URL: `redis://:${syntheticValue('REDIS_URL')}@cache.internal:6379`,
       RATE_LIMIT_REDIS: 'true',

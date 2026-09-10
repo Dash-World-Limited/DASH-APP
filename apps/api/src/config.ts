@@ -101,6 +101,28 @@ const schema = z
      * still somebody else's traffic.
      */
     SES_EVENT_TOPIC_ARN: z.string().trim().min(1).optional(),
+
+    /**
+     * Who may create an account, while SES is still in the sandbox.
+     *
+     * A comma-separated list of addresses. Empty — the default — means signup is
+     * open to everybody.
+     *
+     * This exists because of a specific, silent failure. Inside the SES
+     * sandbox AWS delivers *only* to addresses verified individually in the
+     * console. Signup would otherwise accept anybody, create their identity,
+     * report success, and send a verification code that never arrives — and
+     * the person has no way to tell that from a code lost in spam. They would
+     * simply be stuck, with an account they can never open.
+     *
+     * So the application mirrors what the mail provider will actually do. An
+     * address that cannot receive a code is told signup is not open yet, which
+     * is true, instead of being handed an account that cannot work.
+     *
+     * Remove it once production access is granted. It is not a launch feature
+     * and nothing else in the product reads it.
+     */
+    SIGNUP_ALLOWLIST: z.string().trim().default(''),
     PUSH_PROVIDER: z.enum(['console', 'fcm']).default('console'),
     /**
      * Which engine answers a DASH ValueCheck.
@@ -131,6 +153,18 @@ const schema = z
     GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),
 
     STORAGE_PROVIDER: z.enum(['local', 's3']).default('local'),
+    /**
+     * Object storage.
+     *
+     * `S3_ENDPOINT` and `S3_FORCE_PATH_STYLE` are what make this
+     * S3-*compatible* rather than S3-only: MinIO, R2, Spaces and B2 differ from
+     * AWS by configuration, not by code, and keeping it that way means the
+     * storage decision stays reversible.
+     */
+    S3_BUCKET: z.string().trim().min(1).optional(),
+    S3_REGION: z.string().trim().min(1).optional(),
+    S3_ENDPOINT: z.string().trim().url().optional(),
+    S3_FORCE_PATH_STYLE: z.coerce.boolean().default(false),
     STORAGE_LOCAL_DIR: z.string().default('./.storage'),
 
     QUEUE_PROVIDER: z.enum(['memory', 'redis']).default('memory'),
@@ -446,6 +480,13 @@ const schema = z
     }
     if (env.STORAGE_PROVIDER === 'local') {
       fail('STORAGE_PROVIDER', 'Local disk storage is development-only and is lost on redeploy');
+    }
+    if (env.STORAGE_PROVIDER === 's3') {
+      // Checked at boot, not at the first upload. A wrong bucket name is
+      // otherwise discovered by the first seller to photograph an item, and it
+      // presents as a broken upload form.
+      if (!env.S3_BUCKET) fail('S3_BUCKET', 'Object storage needs a bucket to write to');
+      if (!env.S3_REGION) fail('S3_REGION', 'S3 is regional and the bucket lives in one region');
     }
     if (env.QUEUE_PROVIDER === 'memory') {
       fail('QUEUE_PROVIDER', 'The in-memory queue loses jobs on restart and cannot be shared across instances');
