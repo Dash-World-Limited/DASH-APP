@@ -149,6 +149,32 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
   const expiresInMinutes = Math.round(config.OTP_TTL_SECONDS / 60);
 
   /**
+   * Addresses allowed to create an account right now.
+   *
+   * Empty means everybody, which is the normal state. It is populated only
+   * while SES is in its sandbox, where AWS delivers to verified addresses and
+   * silently drops everything else.
+   */
+  const allowlist = new Set(
+    config.SIGNUP_ALLOWLIST.split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => entry.length > 0),
+  );
+
+  /**
+   * Refused with a plain answer, not the enumeration-safe one.
+   *
+   * "Signup is not open yet" is a fact about DASH, not about whether an account
+   * exists, so saying it leaks nothing — and the alternative is worse than a
+   * leak: accepting somebody, creating their identity, and sending a code the
+   * mail provider will never deliver leaves them with an account they can never
+   * open and no way to know why.
+   */
+  function signupPermitted(address: string): boolean {
+    return allowlist.size === 0 || allowlist.has(address);
+  }
+
+  /**
    * Write the profile, the age attestation and both consents.
    *
    * The customer row is created at signup rather than at verification, because
@@ -290,6 +316,12 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
     },
     async (request) => {
       const body = signupSchema.parse(request.body);
+
+      if (!signupPermitted(body.email)) {
+        throw ApiError.forbidden(
+          'Accounts are not open to everyone yet. Check back shortly, or contact DASH if you were expecting access.',
+        );
+      }
 
       const [byEmail, byPhone] = await Promise.all([
         prisma.identity.findUnique({

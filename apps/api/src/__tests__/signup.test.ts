@@ -444,6 +444,66 @@ describe('age and consent', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The sandbox gate
+// ---------------------------------------------------------------------------
+
+describe('while SES is sandboxed', () => {
+  let gated: TestContext;
+
+  beforeAll(async () => {
+    gated = await createTestContext(
+      { SIGNUP_ALLOWLIST: 'founder@dashworldng.com, Tester@Example.com' },
+      { email: mailbox },
+    );
+    await seedLegalDocuments(gated.prisma);
+  }, 180_000);
+
+  afterAll(async () => {
+    await gated?.close();
+  });
+
+  async function gatedPost(payload: Record<string, unknown>) {
+    return await gated.app.inject({ method: 'POST', url: '/v1/auth/signup', payload });
+  }
+
+  it('lets an allowlisted address through', async () => {
+    const response = await gatedPost(freshPerson({ email: 'founder@dashworldng.com' }));
+    expect(response.statusCode).toBe(200);
+    expect(response.json().devCode).toMatch(/^\d{6}$/);
+  });
+
+  it('matches an address case-insensitively', async () => {
+    const response = await gatedPost(freshPerson({ email: 'tester@example.com' }));
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('turns everybody else away, and says so plainly', async () => {
+    const response = await gatedPost(freshPerson());
+    // Not the enumeration-safe answer. "Signup is not open yet" is a fact about
+    // DASH, not about whether an account exists, so saying it leaks nothing.
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error.message).toMatch(/not open to everyone yet/i);
+  });
+
+  it('creates nothing for a refused address', async () => {
+    const person = freshPerson();
+    await gatedPost(person);
+    // The alternative is worse than a leak: an identity, a profile, and a code
+    // the mail provider will never deliver, leaving somebody with an account
+    // they can never open and no way to know why.
+    expect(
+      await gated.prisma.identity.findUnique({ where: { email: person.email } }),
+    ).toBeNull();
+  });
+
+  it('is open to everybody when the list is empty', async () => {
+    // The default, and the state after production access is granted.
+    const response = await post('/v1/auth/signup', freshPerson());
+    expect(response.statusCode).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Enumeration
 // ---------------------------------------------------------------------------
 
