@@ -21,6 +21,17 @@ signup gate until SES production access lands.
 Target: **`declutters.dashworldng.com`**, with the API on its own host under the
 same registrable domain.
 
+**Decided 10 September 2026:** everything runs in **eu-west-1 (Ireland)**, where
+the SES identity `notify.dashworldng.com` is verified, on **AWS Lightsail** — a
+VM for the two Node processes plus Lightsail's managed PostgreSQL. One account
+holds SES, S3, the database and the instance, which keeps the credential story
+to a single instance role and the region story to a single answer.
+
+Lightsail rather than EC2 + RDS because this is one marketplace at launch
+volume: a flat monthly price and no VPC, subnet-group or security-group work to
+get wrong. If Declutters later needs several services, the migration path to
+EC2 + RDS is a database snapshot restore, not a rewrite.
+
 > **The API and the web must be same-site.** The API sends
 > `Cross-Origin-Resource-Policy: same-site`, so item photographs are blocked if
 > the two are on unrelated domains. `declutters.dashworldng.com` +
@@ -49,8 +60,8 @@ same registrable domain.
 | Variable | Value |
 |---|---|
 | `STORAGE_PROVIDER` | `s3` |
-| `S3_BUCKET` | e.g. `dash-declutters-prod` |
-| `S3_REGION` | e.g. `eu-west-1` |
+| `S3_BUCKET` | `dash-declutters-prod` |
+| `S3_REGION` | `eu-west-1` |
 | `S3_ENDPOINT` | *only* for a non-AWS S3-compatible provider |
 | `S3_FORCE_PATH_STYLE` | `true` only for those providers |
 
@@ -62,7 +73,7 @@ without a bucket and region.
 | Variable | Value |
 |---|---|
 | `EMAIL_PROVIDER` | `ses` |
-| `SES_REGION` | the region the identity is verified in |
+| `SES_REGION` | `eu-west-1` |
 | `EMAIL_FROM_ADDRESS` | `no-reply@notify.dashworldng.com` |
 | `EMAIL_FROM_NAME` | `DASH World` |
 | `EMAIL_REPLY_TO` | `admin@dashworldng.com` — **must be monitored** |
