@@ -71,7 +71,32 @@ const nextConfig = {
    * had, and only the index moved.
    */
   async redirects() {
-    return [{ source: '/browse', destination: '/home', permanent: false }];
+    return [
+      { source: '/browse', destination: '/home', permanent: false },
+
+      /**
+       * The Declutters subdomain lands on the marketplace.
+       *
+       * `declutters.dashworldng.com/` would otherwise serve the DASH APP
+       * landing page, which is a development build of a delivery app and not
+       * what somebody typing that name is looking for.
+       *
+       * Scoped to the host rather than applied globally: `/` on the app's own
+       * domain must keep working. Temporary rather than permanent, because a
+       * 308 is cached by browsers indefinitely and would be painful to undo if
+       * the hosting shape changes.
+       *
+       * The marketplace keeps its `/declutter` paths. Moving it to the root of
+       * the subdomain would rewrite every URL, every canonical, every share
+       * link already in the wild, and the sitemap — for a cosmetic gain.
+       */
+      {
+        source: '/',
+        has: [{ type: 'host', value: 'declutters.dashworldng.com' }],
+        destination: '/declutter',
+        permanent: false,
+      },
+    ];
   },
 
   async headers() {
