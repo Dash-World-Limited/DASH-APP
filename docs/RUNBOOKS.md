@@ -567,12 +567,24 @@ one. A production image must run `db:pg:generate`, not `db:generate`.
 ### 2. Verify it
 
 ```bash
-PG_CHECK_URL='postgresql://USER:PASSWORD@HOST:5432/dash_verify' npm run check:postgres
+PG_CHECK_URL='postgresql://USER:PASSWORD@HOST:5432/dash_verify_20260911' npm run check:postgres
 REDIS_CHECK_URL='redis://HOST:6379' npm run check:redis
 ```
 
 Point `check:postgres` at a **throwaway database**. It migrates from zero and
 writes a temporary city and zone, then deletes them.
+
+**This is enforced, not advised.** The target's database name must match
+`dash_verify` or `dash_verify_<something>`, and the database must hold no
+application tables. Fail either and the run stops with a non-zero exit before a
+single migration is applied — a wrongly-named target is not even connected to.
+A whitelist rather than a blacklist of `dashdb`, because a blacklist passes every
+other name a production database could be restored under. The rule lives in
+`packages/db/src/postgres-check-guard.ts` and is tested there.
+
+An earlier version of the script only *said* it rejected an unsafe target: the
+pre-flight recorded a failure and execution continued into `migrate deploy`, so
+a production database would have been migrated regardless.
 
 `check:postgres` proves the migration history applies to an empty database,
 that `migrate status` is clean and drift is zero, that PostGIS answers, and —

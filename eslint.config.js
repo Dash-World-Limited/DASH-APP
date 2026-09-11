@@ -70,6 +70,10 @@ export default tseslint.config(
       // Same reason: it pushes the schema into a throwaway SQLite file and
       // hands the child process a `DATABASE_URL` for it.
       'packages/db/src/seed-declutter.test.ts',
+      // Same reason again: it runs scripts/postgres-check.mjs as a subprocess
+      // with a deliberately unsafe `PG_CHECK_URL`, to prove the script refuses
+      // a production database name before reaching any Prisma command.
+      'packages/db/src/postgres-check-guard.test.ts',
     ],
     rules: {
       'no-restricted-properties': [

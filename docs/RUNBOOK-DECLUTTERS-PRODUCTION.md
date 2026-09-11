@@ -263,9 +263,16 @@ recreates fictional vendors, riders and orders.
 > both dialects, and `packages/db/src/migration-parity.test.ts` now asserts the
 > property on every commit without needing a server.
 >
-> **Re-run it against a throwaway database before migrating production**, so the
-> repair is verified on a real server rather than only structurally. It migrates
-> from zero and writes, so never point it at `dashdb`.
+> **Re-run it against a fresh throwaway database before migrating production**,
+> so the repair is verified on a real server rather than only structurally. Not
+> `dash_verify_20260911` again — that one now holds the old history, and the
+> check requires an empty target.
+>
+> It migrates from zero and then writes, so the script now refuses to run unless
+> the database is named `dash_verify` or `dash_verify_<something>` and holds no
+> application tables; it exits non-zero before applying anything otherwise, and
+> never connects to a wrongly-named target at all. `dashdb` cannot be reached
+> through it.
 
 ---
 

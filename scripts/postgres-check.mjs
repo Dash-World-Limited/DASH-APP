@@ -13,13 +13,16 @@
  * every commit without needing a server, so this gate is no longer the only
  * thing standing between a schema edit and production.
  *
- *   createdb dash_verify
- *   psql -d dash_verify -c 'CREATE EXTENSION IF NOT EXISTS postgis;'
- *   PG_CHECK_URL='postgresql://user:pw@localhost:5432/dash_verify' \
- *     node scripts/postgres-check.mjs
+ *   createdb dash_verify_20260911
+ *   psql -d dash_verify_20260911 -c 'CREATE EXTENSION IF NOT EXISTS postgis;'
+ *   PG_CHECK_URL='postgresql://user:pw@localhost:5432/dash_verify_20260911' \
+ *     npm run check:postgres
  *
- * The database is migrated from zero and then written to. Point it at a
- * throwaway database — it is not destructive, but it is not read-only either.
+ * The database is migrated from zero and then written to, so the target name
+ * must match the `dash_verify` convention and the database must hold no
+ * application tables. Both are enforced — see
+ * `packages/db/src/postgres-check-guard.ts` — and failing either stops the run
+ * before a single migration is applied. An earlier version only *said* it did.
  *
  * Every Prisma command is judged by its **exit status**, never by matching words
  * in its output. The first run reported a failure for a command that had plainly
@@ -49,8 +52,25 @@ const url = process.env.PG_CHECK_URL;
 if (!url) {
   console.error(
     '\n  PG_CHECK_URL is required.\n' +
-      "  Example: PG_CHECK_URL='postgresql://user:pw@localhost:5432/dash_verify'\n",
+      "  Example: PG_CHECK_URL='postgresql://user:pw@localhost:5432/dash_verify_20260911'\n",
   );
+  process.exit(2);
+}
+
+// The naming refusal, before anything else happens.
+//
+// Repeated inside `requireSafeTarget` below, which is the authoritative guard.
+// It is also done here so that pointing this script at production costs a
+// tenth of a second and no side effects at all — rather than a Prisma client
+// generation and a connection first. Neither placement is load-bearing on its
+// own; the one below is.
+const { checkDatabaseName, requireSafeTarget } = await import(
+  '../packages/db/src/postgres-check-guard.ts'
+);
+
+const named = checkDatabaseName(url);
+if (!named.safe) {
+  console.error(`\n  ${named.reason}\n`);
   process.exit(2);
 }
 
@@ -156,9 +176,23 @@ const client = new PrismaClient({ datasources: { db: { url } } });
  * rejected.
  */
 console.log('\nPre-flight');
-let applicationTables = [];
-try {
-  applicationTables = await client.$queryRaw`
+
+/**
+ * The refusal, and it is a real one.
+ *
+ * An earlier version of this block recorded a failed `check()` and then fell
+ * through into `migrate deploy` on the next line. It printed FAIL and migrated
+ * the database anyway — so a populated production database would have received
+ * every pending migration, and an empty one would have passed the pre-flight
+ * and been migrated without complaint. The comment claimed the database was
+ * "rejected"; nothing rejected it.
+ *
+ * `requireSafeTarget` either returns or does not come back. `onUnsafe` closes
+ * over the exit, so there is no path from an unsafe target to the line below.
+ */
+await requireSafeTarget({
+  url,
+  listApplicationTables: () => client.$queryRaw`
     SELECT n.nspname AS schema, c.relname AS name
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -169,20 +203,18 @@ try {
         WHERE d.objid = c.oid AND d.deptype = 'e'
       )
     ORDER BY 1, 2
-  `;
-  check(
-    'the target database holds no application tables',
-    applicationTables.length === 0,
-    applicationTables.length === 0
-      ? undefined
-      : `Found ${applicationTables.length}: ${applicationTables
-          .map((row) => `${row.schema}.${row.name}`)
-          .join(', ')}. Drop and recreate the database - this check migrates from zero, and its ` +
-          'results are meaningless against a partially-migrated one.',
-  );
-} catch (error) {
-  check('the target database holds no application tables', false, error.message);
-}
+  `,
+  onUnsafe: async (reason) => {
+    check('the target is a throwaway database holding no application tables', false, reason);
+    console.log('\n' + '='.repeat(50));
+    console.log(`  ${passed} passed, ${failed} failed`);
+    console.log('  Stopped before applying any migration.\n');
+    await client.$disconnect();
+    process.exit(1);
+  },
+});
+
+check('the target is a throwaway database holding no application tables', true);
 
 // --- 1. Fresh migration ----------------------------------------------------
 console.log('\nMigration');
