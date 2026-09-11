@@ -248,12 +248,24 @@ Then the reference data, all idempotent and safe to re-run:
 **Do not run `npm run db:seed`.** That is the development seed: it deletes and
 recreates fictional vendors, riders and orders.
 
-> **Gate: `npm run check:postgres` has never been run.** Nothing in `npm test`
-> proves the PostgreSQL path, because it runs on SQLite. That script migrates a
-> throwaway PostgreSQL database from zero, checks for drift, and verifies
-> PostGIS containment against the in-process adapter. Run it against a
-> **throwaway** database before touching production. Until it passes, the
-> PostgreSQL path is implemented and unverified.
+> **Gate: `npm run check:postgres` was first run on 11 September 2026**, against
+> the throwaway RDS database `dash_verify_20260911` — never `dashdb`. PostgreSQL
+> 16.15, PostGIS 3.4. All nine migrations applied, `_prisma_migrations` held
+> nothing unfinished, and every PostGIS containment case agreed with the
+> in-process adapter, including the point on an edge and the point in a hole.
+>
+> **It found real drift.** Four objects existed in `schema.prisma` and in no
+> migration: `DispatchOffer.eligibilityMode`, `MenuItem.condition`,
+> `Rider.onlineUntil`, and the unique index on `Device.pushToken`. They had been
+> added to the schema and pushed into local SQLite with `db:push`, which syncs a
+> database without writing a migration, so development had them and the history
+> never did. Repaired forward-only by `20260915000000_schema_parity_repair` in
+> both dialects, and `packages/db/src/migration-parity.test.ts` now asserts the
+> property on every commit without needing a server.
+>
+> **Re-run it against a throwaway database before migrating production**, so the
+> repair is verified on a real server rather than only structurally. It migrates
+> from zero and writes, so never point it at `dashdb`.
 
 ---
 
