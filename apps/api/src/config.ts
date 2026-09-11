@@ -32,7 +32,7 @@ const booleanish = z
   .enum(['true', 'false', '1', '0'])
   .transform((value) => value === 'true' || value === '1');
 
-const schema = z
+const shape = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
@@ -276,7 +276,25 @@ const schema = z
       .positive()
       .default(DELETION_COOLING_OFF_DAYS),
     DATA_EXPORT_TTL_HOURS: z.coerce.number().int().positive().default(EXPORT_DOWNLOAD_TTL_HOURS),
-  })
+  });
+
+/**
+ * Every variable this application reads, as a sorted list.
+ *
+ * Exported so documentation can be checked against it rather than proof-read.
+ * `.env.example` and the production runbook twice drifted into naming variables
+ * no code reads: `ENCRYPTION_KEYS`, `ENCRYPTION_ACTIVE_KEY` and
+ * `REFRESH_TOKEN_PEPPER` were all documented as required while the schema knew
+ * nothing about them. Each looked harmless on its own. Together they meant a
+ * deployment could follow the runbook exactly and still be refused at boot over a
+ * variable the runbook never mentioned — which is the same failure as a
+ * validated-but-never-read provider setting, arriving from the other direction.
+ *
+ * A list derived from the schema cannot drift from the schema.
+ */
+export const CONFIG_VARIABLE_NAMES: readonly string[] = Object.keys(shape.shape).sort();
+
+const schema = shape
   .superRefine((env, ctx) => {
     const fail = (path: string, message: string): void => {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
@@ -533,7 +551,17 @@ const schema = z
     // Only when realtime is on: a deployment that has deliberately turned it
     // off has no fan-out to get wrong, and demanding Redis for a feature that
     // is switched off would be a startup failure with no cause.
-    if (env.REALTIME_ENABLED && env.REALTIME_BROADCAST === 'memory') {
+    //
+    // The capability is checked first and the env flag second, because the
+    // capability is the stronger statement. On a profile without `realtime` the
+    // socket is never served whatever `REALTIME_ENABLED` says, so requiring
+    // Redis for its fan-out would be asking a deployment to configure the
+    // plumbing of a feature it cannot reach.
+    if (
+      capabilities.has('realtime') &&
+      env.REALTIME_ENABLED &&
+      env.REALTIME_BROADCAST === 'memory'
+    ) {
       fail(
         'REALTIME_BROADCAST',
         'In-process fan-out reaches only the sockets on one instance, so most clients would silently never be notified; production must broadcast through Redis',

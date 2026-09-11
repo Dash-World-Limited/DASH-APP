@@ -84,6 +84,7 @@ the table:
 | `sms` | on | off | `DisabledSmsAdapter` throws. Declutters authenticates by email code |
 | `push` | on | off | `DisabledPushAdapter` throws. `POST /v1/devices` is not registered |
 | `maps` | on | off | Routing and geocoding throw. Zone containment still works, because PostGIS answers it from the database |
+| `realtime` | on | off | No WebSocket is served. Every topic the protocol accepts is an order, vendor, rider or city — all delivery |
 | `dataExport` | on | off | `/v1/account/export*` is not registered. Deletion stays available |
 
 **Switched off means unreachable, not mocked.** A disabled capability gets an
@@ -96,8 +97,15 @@ Refusing to answer at all cannot be mistaken for success.
 
 What stays strict on `declutters`: PostgreSQL (no SQLite), PostGIS, Redis-backed
 rate limiting, a durable queue, S3, SES, and every secret-strength check. The
-four guards that no longer apply — payments, maps, SMS, push — are the four whose
-subject does not exist on this deployment.
+five guards that no longer apply — payments, maps, SMS, push and realtime fan-out
+— are the five whose subject does not exist on this deployment.
+
+**Nothing about realtime needs to be set.** `REALTIME_ENABLED` defaults to on and
+`REALTIME_BROADCAST` defaults to in-memory, which production refuses — so before
+realtime was a capability, following this runbook exactly got you refused at boot
+over a variable it never mentioned. Setting `REALTIME_ENABLED=true` is not a way
+round it either: the socket closes immediately with the "disabled" code whatever
+the flag says.
 
 What this does **not** change: the `full` profile. Every guard there behaves
 exactly as it did before, and `apps/api/src/__tests__/deployment-profile.test.ts`
@@ -113,7 +121,6 @@ asserts that a `full` production boot still refuses all four.
 | `PUBLIC_WEB_URL` | `https://declutters.dashworldng.com` | CORS allowlist. A wrong value blocks every browser call |
 | `JWT_ACCESS_SECRET` | 32+ random bytes | Boot refuses a development value, and refuses it if it equals the refresh secret |
 | `JWT_REFRESH_SECRET` | 32+ random bytes | Must differ from `JWT_ACCESS_SECRET` |
-| `REFRESH_TOKEN_PEPPER` | 32+ random bytes | |
 | `ENCRYPTION_KEY` | base64 or hex 32 bytes | KYC envelope encryption. See `docs/` key custody. `ENCRYPTION_KEY_ID` defaults to `k1`; `ENCRYPTION_KEYS_RETIRED` only during a rotation |
 | `REDIS_URL` | `redis://127.0.0.1:6379` | Redis on the same Lightsail instance |
 | `RATE_LIMIT_ENABLED` | `true` | Production refuses `false` |
@@ -175,9 +182,52 @@ classified only so an audit notices them.
 
 | Variable | Value | Notes |
 |---|---|---|
+| `DEPLOYMENT_PROFILE` | `declutters` | Read by `apps/web/src/middleware.ts` **at runtime**, unlike the three below |
 | `NEXT_PUBLIC_API_URL` | `https://api.dashworldng.com` | **Read at build time.** Changing it needs a rebuild |
 | `NEXT_PUBLIC_SITE_ORIGIN` | `https://declutters.dashworldng.com` | Canonicals, Open Graph, sitemap |
 | `NEXT_PUBLIC_DECLUTTER_INDEXABLE` | `false` | **Leave false.** See §7 |
+
+**The three `NEXT_PUBLIC_*` variables are read when `next build` runs**, not when
+the process starts: Next inlines them into the bundle, so setting them only in the
+supervisor has no effect and changing one means rebuilding.
+
+`DEPLOYMENT_PROFILE` is the exception, and it was worth checking rather than
+assuming. The compiled middleware keeps the `process.env` reference and reads it
+when the process starts, which was confirmed by starting one build artifact twice:
+with the variable `/vendor` answers 404, without it 200. So the profile is a
+supervisor setting and needs no rebuild — though setting it in both places is
+harmless and keeps the two halves of the deployment described the same way.
+
+### What the web profile removes
+
+One Next application holds both products. Without a boundary the marketplace host
+would also serve DASH APP's customer shell, vendor console, rider app and
+dispatch board — pages that would render and then fail against an API that no
+longer has those endpoints, so a visitor would see a *broken* DASH APP rather
+than no DASH APP. The landing page is worse: it is a development surface that
+lists every internal console by name.
+
+With `DEPLOYMENT_PROFILE=declutters` the deployment serves exactly:
+
+| Path | Why |
+|---|---|
+| `/declutter/**` | The marketplace, including its own sign-in, verification, terms and privacy |
+| `/ops/declutter/**` | The team's console: seller verification, submission queue, pricing. Without it nobody can approve a listing, so there would be nothing to show |
+| `/signin` | How a staff member authenticates for that console. `/declutter/signin` is the customer's email-code flow, which is a different thing |
+| `/_next/**`, `/robots.txt`, `/sitemap.xml`, `/favicon.ico` | Assets and fixed root files. Blocking `/_next` serves unstyled HTML |
+
+Everything else answers `404` with `X-Robots-Tag: noindex` and one line pointing
+at `/declutter`. `/` redirects to `/declutter` for **any** hostname, because the
+`next.config.mjs` redirect is scoped to the public name — reaching the instance
+by its Lightsail DNS name would otherwise serve the landing page.
+
+Note that `/ops` itself — the dispatch board and the money ledger — is **not**
+served, while `/ops/declutter` beneath it is.
+
+> This is a deployment boundary, not a security boundary. Every one of those
+> pages already requires a session and a server-side permission check, and the
+> API enforces both. What it removes is surface that cannot work here, and the
+> leak of advertising the internal consoles on a public marketplace domain.
 
 ---
 
@@ -258,6 +308,21 @@ All three must answer `404`. A `401` would mean the route is still mounted and
 only authentication stands between a caller and a feature this deployment cannot
 perform.
 
+The web side is a separate switch, read at build time:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}
+' https://declutters.dashworldng.com/vendor
+curl -s -o /dev/null -w '%{http_code}
+' https://declutters.dashworldng.com/ops
+curl -s -o /dev/null -w '%{http_code}
+' https://declutters.dashworldng.com/ops/declutter
+```
+
+`404`, `404`, `200`. A `200` on either of the first two means the web process does
+not have `DEPLOYMENT_PROFILE=declutters` in its environment — check the
+supervisor unit, not the build.
+
 ---
 
 ## 5. Health checks
@@ -284,6 +349,8 @@ unauthenticated, and the detail belongs in the log.
       `2026-09-09` and contains no "PLACEHOLDER"
 - [ ] `https://declutters.dashworldng.com/` redirects to `/declutter`
 - [ ] `https://declutters.dashworldng.com/robots.txt` says `Disallow: /`
+- [ ] `/vendor` returns 404 and `/ops/declutter` returns 200 — the web build
+      picked up the profile
 - [ ] Open a listing **on a phone, on mobile data** and confirm the photograph
       loads. This is the check that catches a storage or same-site
       misconfiguration, and it cannot be done from a desktop on office wifi.
@@ -366,5 +433,9 @@ return `404`, so none of it can half-work.
 - **No payments.** Nothing on Declutters takes money.
 - **No seller portal.** Verification and submission happen with the Declutters
   team on WhatsApp, and the sell page says so.
+- **No realtime sockets.** Every topic the protocol carries is an order, a
+  vendor, a rider or a city. The marketplace has no live surface.
+- **No DASH APP web pages.** The customer shell, vendor console, rider app and
+  dispatch board answer 404 on this host.
 - **No admin screen for the email suppression list.** Clearing an entry is a
   database update.

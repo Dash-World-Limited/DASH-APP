@@ -60,6 +60,8 @@ export const CAPABILITIES = [
   'email',
   /** Object storage for photographs and documents. Required by both. */
   'storage',
+  /** WebSocket notifications: order tracking, the vendor queue, the ops board. */
+  'realtime',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -81,6 +83,9 @@ export type Capability = (typeof CAPABILITIES)[number];
  *     at all.
  *   * **delivery** — nothing is dispatched. Cars are `direct_only` and every
  *     other item is collected or handed over directly.
+ *   * **realtime** — every topic kind the protocol accepts is `order`, `vendor`,
+ *     `rider` or `city`. There is no Declutters topic, so the socket could only
+ *     ever carry notifications about deliveries this deployment does not make.
  *   * **dataExport** — the export archive adapter still writes to local disk,
  *     so an archive built in production would be lost on the next deploy.
  *     Rather than offer a download that quietly disappears, the capability is

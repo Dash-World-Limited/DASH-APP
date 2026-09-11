@@ -631,9 +631,19 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     }
   });
 
+  /**
+   * Both must agree before a socket is served.
+   *
+   * The capability decides whether this deployment has realtime at all; the env
+   * flag decides whether a deployment that has it wants it on right now. A
+   * profile without the capability therefore cannot be talked into serving the
+   * socket by setting `REALTIME_ENABLED=true` — which matters, because that
+   * combination would otherwise fan out in process, past the guard that exists
+   * to stop exactly that in production.
+   */
   await registerRealtimeRoutes(app, {
     hub,
-    enabled: config.REALTIME_ENABLED,
+    enabled: capabilities.has('realtime') && config.REALTIME_ENABLED,
     ...(options.realtime?.heartbeatMs === undefined
       ? {}
       : { heartbeatMs: options.realtime.heartbeatMs }),

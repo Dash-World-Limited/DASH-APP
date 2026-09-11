@@ -869,7 +869,7 @@ production credentials are a liability with no corresponding benefit.
 ### Decision
 
 `DEPLOYMENT_PROFILE` selects a named set of **capabilities**
-(`apps/api/src/deployment/profile.ts`). `full` has all eight. `declutters` has
+(`apps/api/src/deployment/profile.ts`). `full` has all nine. `declutters` has
 `email` and `storage`.
 
 A capability does three things:
@@ -886,6 +886,14 @@ A capability does three things:
 3. **It scopes the guard.** Each provider guard runs only when the deployment has
    the capability it is about.
 
+The same variable is read by `apps/web`, where a middleware serves only
+`/declutter`, `/ops/declutter` and `/signin` and answers 404 for the rest. Without
+it the marketplace host would serve DASH APP's customer shell, vendor console and
+rider app against an API that no longer has their endpoints — a *broken* DASH APP
+rather than no DASH APP — and the landing page, which lists every internal console
+by name. That one is a deployment boundary rather than a security boundary: those
+pages already require a session and a server-side permission check.
+
 The default is `full`. A deployment that forgets to declare itself gets the
 strictest checks, not the loosest.
 
@@ -900,6 +908,17 @@ strictest checks, not the loosest.
 - `zonesContaining` is deliberately *not* disabled with `maps`. PostGIS answers
   it from the database, so it needs no provider; routing and geocoding do, and
   those throw.
+- `realtime` became the ninth capability for the same reason as the other four,
+  found late: `REALTIME_ENABLED` defaults to on and `REALTIME_BROADCAST` defaults
+  to in-memory, which production refuses, so a Declutters deployment was still
+  refused at boot — over a variable the runbook never mentioned. Both the
+  capability and the flag must now agree before a socket is served, so the flag
+  cannot re-enable fan-out on a profile that has no realtime.
+- The capability set is what documentation is checked against. `CONFIG_VARIABLE_NAMES`
+  is derived from the config schema, and a test asserts the runbook names nothing
+  outside it — after the runbook was found requiring `ENCRYPTION_KEYS`,
+  `ENCRYPTION_ACTIVE_KEY` and `REFRESH_TOKEN_PEPPER`, none of which any code has
+  ever read, while omitting three variables production refuses to start without.
 - A disabled `parseWebhook` returns `null` rather than throwing, because `null`
   already means "this did not verify, act on nothing" — which is precisely how a
   deployment with payments off should treat a payment webhook.

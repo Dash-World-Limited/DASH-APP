@@ -19,6 +19,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import WebSocket from 'ws';
+import { CLOSE } from '@dash/domain/realtime';
 import { createTestContext, type TestContext } from './harness.js';
 import { useIntegrationTimeouts } from './timeouts.js';
 import { seedLegalDocuments } from '@dash/db';
@@ -72,13 +74,18 @@ const DECLUTTERS_PRODUCTION = {
 
   JWT_ACCESS_SECRET: 'Xq7#mP2$vL9!wR4^tY6&zB8*nK1@jH3%cF5',
   JWT_REFRESH_SECRET: 'Bd4!kM8@pW2#hL6$nQ9^rT3&vY7*xZ1%gJ5',
-  REFRESH_TOKEN_PEPPER: 'Ns5@wF9#kP3$mR7^bT2&vL8*qY4!zH6%jD1',
   ENCRYPTION_KEY: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=',
   // Production refuses the in-memory queue: it loses jobs on restart and
   // cannot be shared across instances. The marketplace uses the same Redis.
   QUEUE_PROVIDER: 'redis',
   PUBLIC_WEB_URL: 'https://declutters.dashworldng.com',
-  REALTIME_ENABLED: 'false',
+  // Deliberately *not* setting REALTIME_ENABLED or REALTIME_BROADCAST. Production
+  // refuses in-process fan-out, and both default to "realtime on, in memory" — so
+  // if the capability did not switch realtime off, this fixture would be refused
+  // at boot. It is the same shape of problem as the four mock providers, and the
+  // earlier version of this fixture hid it by setting REALTIME_ENABLED=false by
+  // hand, which is exactly the "configure a feature you do not run" tax the
+  // profile exists to remove.
 } as const;
 
 function load(overrides: Record<string, string> = {}) {
@@ -146,6 +153,23 @@ describe('a Declutters production configuration', () => {
     expectRefusal({ EMAIL_REPLY_TO: '' }, 'EMAIL_REPLY_TO');
   });
 
+  it('boots without being told anything about realtime', () => {
+    // The regression this guards. `REALTIME_ENABLED` defaults to true and
+    // `REALTIME_BROADCAST` defaults to memory, which production refuses — so
+    // before realtime was a capability, a Declutters deployment following the
+    // runbook was refused at boot over a variable the runbook never mentioned.
+    const config = load();
+    expect(config.REALTIME_BROADCAST).toBe('memory');
+    expect(capabilitiesFor(config.DEPLOYMENT_PROFILE).has('realtime')).toBe(false);
+  });
+
+  it('cannot be talked into in-process fan-out by setting the flag', () => {
+    // Boot is permitted, because the guard is about a capability this profile
+    // does not have. What must then be true is that no socket is actually served
+    // — proved against a running server below, not inferred from here.
+    expect(() => load({ REALTIME_ENABLED: 'true' })).not.toThrow();
+  });
+
   it('still requires the bucket and region', () => {
     expectRefusal({ S3_BUCKET: '' }, 'S3_BUCKET');
     expectRefusal({ S3_REGION: '' }, 'S3_REGION');
@@ -182,6 +206,14 @@ describe('the full DASH APP profile still refuses every mock provider', () => {
     expectFullRefusal({}, 'PUSH_PROVIDER');
   });
 
+  it('still refuses in-process realtime fan-out', () => {
+    // The guard is now capability-scoped like the other four, so this is the
+    // assertion that scoping it did not switch it off for DASH APP. Realtime
+    // defaults to on, broadcasting in memory, which in production means most
+    // clients silently never get notified.
+    expectFullRefusal({}, 'REALTIME_BROADCAST');
+  });
+
   it('is the default when no profile is named', () => {
     // A deployment that forgets to declare itself gets the strictest checks.
     resetConfigCache();
@@ -196,13 +228,21 @@ describe('the full DASH APP profile still refuses every mock provider', () => {
 
 describe('the capability table', () => {
   it('gives the full profile everything', () => {
-    for (const capability of ['payments', 'sms', 'push', 'maps', 'delivery', 'dataExport', 'email', 'storage'] as const) {
+    for (const capability of ['payments', 'sms', 'push', 'maps', 'delivery', 'dataExport', 'email', 'storage', 'realtime'] as const) {
       expect(hasCapability('full', capability), capability).toBe(true);
     }
   });
 
   it('gives Declutters only email and storage', () => {
     expect([...capabilitiesFor('declutters')].sort()).toEqual(['email', 'storage']);
+  });
+
+  it('does not give Declutters realtime, because no topic kind is its own', () => {
+    // Every topic the protocol accepts is `order`, `vendor`, `rider` or `city`.
+    // A Declutters socket could only ever carry notifications about deliveries
+    // this deployment does not make.
+    expect(hasCapability('declutters', 'realtime')).toBe(false);
+    expect(hasCapability('full', 'realtime')).toBe(true);
   });
 
   it('keeps email and storage in both, because both products need them', () => {
@@ -351,6 +391,32 @@ describe('routes for a disabled capability are not mounted', () => {
     // Unauthenticated, so 401 rather than 404: the endpoint exists.
     expect(await status('GET', '/v1/auth/me')).toBe(401);
   });
+
+  it('accepts no realtime socket, even with the flag forced on', async () => {
+    // The other half of the config test above. Boot is permitted with
+    // `REALTIME_ENABLED=true` because the guard is about a capability this
+    // profile does not have — so what has to be true is that nothing is actually
+    // served. If the capability were ignored here, this deployment would fan out
+    // in process: sockets on one instance notified, every other client silently
+    // never told, and no guard left to object.
+    const forced = await createTestContext({
+      DEPLOYMENT_PROFILE: 'declutters',
+      REALTIME_ENABLED: 'true',
+    });
+    try {
+      await forced.app.listen({ port: 0, host: '127.0.0.1' });
+      const address = forced.app.server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/realtime`);
+      const closed = await new Promise<number>((resolve, reject) => {
+        socket.on('close', (code: number) => resolve(code));
+        socket.once('error', reject);
+      });
+      expect(closed).toBe(CLOSE.disabled);
+    } finally {
+      await forced.close();
+    }
+  }, 180_000);
 
   it('refuses a phone code cleanly instead of throwing', async () => {
     // SMS is off, so this must not reach the disabled adapter and produce a
