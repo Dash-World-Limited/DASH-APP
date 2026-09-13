@@ -45,7 +45,16 @@ function Navigator({ initialMode }: { initialMode: AppMode }) {
   return (
     <Stack
       initialRouteName={initialRouteName}
-      screenOptions={{ headerShown: false, contentStyle: { backgroundColor: palette.background } }}
+      screenOptions={{
+        // Customer and Rider are separate native stacks. On Android Fabric,
+        // moving between them during a native exit animation can make
+        // react-native-screens try to attach a view that is still owned by the
+        // outgoing fragment. Keep this one boundary instantaneous; screens
+        // inside either mode retain their normal transitions.
+        animation: 'none',
+        headerShown: false,
+        contentStyle: { backgroundColor: palette.background },
+      }}
     >
       <Stack.Screen name="(customer)" />
       <Stack.Screen name="rider" />
