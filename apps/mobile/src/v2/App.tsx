@@ -22,6 +22,9 @@ import { ThemeProvider, useTheme } from '../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../theme/tokens';
 import { Icon, type IconName } from '../ui/Icon';
 import { Text } from '../ui/Text';
+import { CategoryArtwork, type ServiceId } from './artwork/CategoryArtwork';
+import { Wordmark } from './brand/Wordmark';
+import { CartScreen, CategoryDashboard, ProductDetail, Storefront } from './catalog/CatalogScreens';
 import {
   CUSTOMER_TABS,
   RIDER_TABS,
@@ -38,7 +41,7 @@ import {
 
 void SplashScreen.preventAutoHideAsync();
 
-const SERVICES: ReadonlyArray<{ id: string; label: string; icon: IconName; color: string }> = [
+const SERVICES: ReadonlyArray<{ id: ServiceId; label: string; icon: IconName; color: string }> = [
   { id: 'food', label: 'Food', icon: 'silverware-fork-knife', color: '#E7B66C' },
   { id: 'shops', label: 'Shops', icon: 'shopping-outline', color: '#8AA7C7' },
   { id: 'pharmacy', label: 'Pharmacy', icon: 'medical-bag', color: '#8EBA9A' },
@@ -160,7 +163,13 @@ function RouteView({
     case 'customer.notifications':
       return <DetailPage title="Notifications" onBack={onBack}><EmptyState icon="bell-outline" title="You’re all caught up" body="Order and account updates will arrive here." /></DetailPage>;
     case 'customer.category':
-      return <CategoryPage id={route.params?.id ?? 'food'} onBack={onBack} />;
+      return <CategoryDashboard id={route.params?.id ?? 'food'} onBack={onBack} onPush={onPush} />;
+    case 'customer.store':
+      return <Storefront category={route.params?.category ?? 'food'} merchantId={route.params?.id ?? ''} onBack={onBack} onPush={onPush} />;
+    case 'customer.product':
+      return <ProductDetail category={route.params?.category ?? 'food'} productId={route.params?.id ?? ''} onBack={onBack} onCart={() => onPush({ name: 'customer.cart', params: { product: route.params?.id ?? '' } })} />;
+    case 'customer.cart':
+      return <CartScreen onBack={onBack} />;
     case 'rider.home':
       return <RiderHome onPush={onPush} />;
     case 'rider.earnings':
@@ -247,7 +256,7 @@ function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   );
 }
 
-function ServiceCard({ label, icon, color, onPress }: { label: string; icon: IconName; color: string; onPress: () => void }) {
+function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: string; icon: IconName; color: string; onPress: () => void }) {
   const { palette } = useTheme();
   return (
     <Pressable
@@ -267,10 +276,8 @@ function ServiceCard({ label, icon, color, onPress }: { label: string; icon: Ico
         borderColor: palette.line,
       })}
     >
-      <View style={{ width: 62, height: 62, borderRadius: 22, backgroundColor: `${color}35`, alignItems: 'center', justifyContent: 'center' }}>
-        <View style={{ width: 42, height: 42, borderRadius: 16, backgroundColor: color, alignItems: 'center', justifyContent: 'center', transform: [{ rotate: '-3deg' }] }}>
-          <Icon name={icon} size={25} color="#15171A" />
-        </View>
+      <View style={{ width: 72, height: 72, borderRadius: 24, backgroundColor: `${color}35`, alignItems: 'center', justifyContent: 'center' }}>
+        <CategoryArtwork id={id} size={69} />
       </View>
       <Text variant="caption" weight="bold" align="center">{label}</Text>
     </Pressable>
@@ -337,11 +344,6 @@ function CustomerAccount({ onBack, onSwitch }: { onBack: () => void; onSwitch: (
   return <DetailPage title="Account" onBack={onBack}><ProfileHero initials="DU" title="Welcome to DASH" subtitle="Sign in and session restore arrive in the account connection milestone." /><SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" /><SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" /><SettingsRow icon="bell-outline" title="Notifications" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} /></DetailPage>;
 }
 
-function CategoryPage({ id, onBack }: { id: string; onBack: () => void }) {
-  const service = SERVICES.find((item) => item.id === id) ?? SERVICES[0];
-  return <DetailPage title={service?.label ?? 'DASH'} onBack={onBack}><EmptyState icon={service?.icon ?? 'apps'} title={`${service?.label ?? 'Service'} is ready for connection`} body="The native surface is in place. Live catalogue data will come from the existing DASH API, not hard-coded product cards." /></DetailPage>;
-}
-
 function EmptyPage({ title, icon, body }: { title: string; icon: IconName; body: string }) {
   return <Page><Header /><Text variant="title">{title}</Text><EmptyState icon={icon} title={`No ${title.toLowerCase()} yet`} body={body} /></Page>;
 }
@@ -358,11 +360,6 @@ function Page({ children, testID }: { children: ReactNode; testID?: string }) {
 
 function Header({ right }: { right?: ReactNode }) {
   return <View style={{ height: 54, alignItems: 'center', justifyContent: 'center' }}><Wordmark />{right ? <View style={{ position: 'absolute', right: 0 }}>{right}</View> : null}</View>;
-}
-
-function Wordmark() {
-  const { palette } = useTheme();
-  return <Text accessibilityRole="header" variant="title" weight="extrabold" style={{ letterSpacing: 4.2, color: palette.accent }}>DASH</Text>;
 }
 
 function AvatarButton({ label, initials, onPress }: { label: string; initials: string; onPress: () => void }) {
