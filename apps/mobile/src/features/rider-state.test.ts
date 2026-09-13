@@ -6,14 +6,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { stagingOffer } from '../data/staging';
-import { riderModeOffered } from './mode';
+import { hrefForMode, initialRouteForMode, riderModeOffered } from './mode';
 import { offerPhase, remainingFraction, secondsLeft } from './offer';
 
 const NOW = Date.parse('2026-09-13T12:00:00.000Z');
 const at = (offsetSeconds: number): string => new Date(NOW + offsetSeconds * 1000).toISOString();
 
 describe('the offer clock', () => {
-  it('counts from the server\'s expiry, not from when the screen opened', () => {
+  it("counts from the server's expiry, not from when the screen opened", () => {
     // A rider woken from a killed app opens the offer late. They must see the
     // time they actually have — the server expires offers, not this screen.
     const expiresAt = at(30);
@@ -37,7 +37,7 @@ describe('the offer clock', () => {
     expect(offerPhase('not a date', NOW)).toBe('expired');
   });
 
-  it('draws the ring against the offer\'s own window — 30s live, 90s woken', () => {
+  it("draws the ring against the offer's own window — 30s live, 90s woken", () => {
     expect(remainingFraction(at(15), 30, NOW)).toBeCloseTo(0.5);
     expect(remainingFraction(at(45), 90, NOW)).toBeCloseTo(0.5);
     expect(remainingFraction(at(200), 30, NOW)).toBe(1);
@@ -58,6 +58,13 @@ describe('the incoming offer never carries the customer', () => {
 });
 
 describe('Customer and Rider — one account', () => {
+  it('maps the remembered mode to one startup route and one interactive destination', () => {
+    expect(initialRouteForMode('customer')).toBe('(customer)');
+    expect(hrefForMode('customer')).toBe('/');
+    expect(initialRouteForMode('rider')).toBe('rider');
+    expect(hrefForMode('rider')).toBe('/rider');
+  });
+
   it('offers Rider mode in production only to an approved rider', () => {
     expect(riderModeOffered('production', { riderStatus: 'approved' })).toBe(true);
     for (const riderStatus of ['pending', 'rejected', 'suspended', null] as const) {
