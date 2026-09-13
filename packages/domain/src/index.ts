@@ -18,6 +18,7 @@ export * from './dispatch/index.js';
 export * from './pay/index.js';
 export * from './ledger/index.js';
 export * from './ports/index.js';
+export * from './services/index.js';
 
 /**
  * DASH ValueCheck is deliberately absent from this barrel.

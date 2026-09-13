@@ -947,3 +947,50 @@ identity and **one** source of truth.
 relaxing production itself, including the ones about secrets, SQLite and rate
 limiting. This deployment is production. It serves real sellers' identity
 documents.
+
+## ADR-0015 — Native-first clients and a stable six-service product contract
+
+**Status:** Accepted · Product foundation
+
+*Numbered ADR-0011 on `codex/native-service-foundation`, which was cut from
+`main` before ADR-0011 to ADR-0014 landed on the V1 line. Renumbered on
+integration; the content is unchanged.*
+
+**Context.** The current milestone proved the core flow through one responsive
+Next.js application. Product review established that the customer and rider
+experiences must be genuine mobile applications, while vendor and operations
+work remain browser-based. The earlier public category names also mixed UI
+language with legacy Vendor.category storage values.
+
+**Decision.**
+
+- Customer and rider are separate React Native / Expo applications. They call
+  the existing API directly and must not embed the web app in a WebView.
+- Vendor, admin, support and finance remain web surfaces, designed to feel like
+  purpose-built operational applications rather than a wrapped consumer site.
+- The permanent public service ids, in order, are: food, shops, pharmacy,
+  local_market, declutter, logistics. Their visible navigation labels are
+  FOOD, SHOPS, PHARMACY, LOCAL MARKET, DECLUTTER and LOGISTICS.
+- Food, Shops, Pharmacy and Local Market are merchant-commerce services.
+  Declutter is a marketplace domain. Logistics is a shipment-request domain.
+- Existing Vendor.category values remain compatibility storage until a later
+  additive migration. No historical row is reinterpreted or destructively
+  renamed for this decision.
+- The existing merchant Order aggregate keeps its required vendor and branch.
+  Declutter and Logistics must receive separate aggregates and may share a
+  fulfilment abstraction only after their different ownership, pricing,
+  cancellation, dispute and proof-of-delivery rules are explicit.
+
+**Consequences.** The current customer and rider web routes remain useful as a
+staging harness while native clients are built, but they are no longer the
+official end-product direction. Legacy API clients may continue using the
+category filter during a measured compatibility window; new clients use the
+service filter and the public service-category endpoint.
+
+**Supersedes.** This supersedes ADR-0004 only for client topology. Its rule
+that authorization is enforced by the API remains fully in force.
+
+**Migration safety.** Future database work is additive: create new structures,
+dual-read or backfill in bounded batches, observe, cut over, and only then
+remove old paths in a later release. A migration may not make merchant-order
+fields nullable merely to squeeze a different business model into Order.

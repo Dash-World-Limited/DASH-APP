@@ -113,4 +113,26 @@ export default tseslint.config(
       'no-console': 'off',
     },
   },
+  {
+    // The same kind of program, written as CommonJS so it can `require` the
+    // Prisma client directly on a staging host with no build step —
+    // `scripts/setup-asaba-staging.cjs` is the first. `require` and `module`
+    // are how such a file works rather than a mistake, so they are declared
+    // here instead of the rule being relaxed anywhere else.
+    files: ['scripts/**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        module: 'writable',
+        console: 'readonly',
+        process: 'readonly',
+        URL: 'readonly',
+      },
+    },
+    rules: {
+      'no-console': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
 );
