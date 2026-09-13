@@ -200,7 +200,7 @@ describe('.env.example names variables that exist', () => {
    */
   const ELSEWHERE: Readonly<Record<string, string>> = {
     PUBLIC_API_URL: 'apps/web/src/lib/api.ts, and the mobile build scripts',
-    WEB_PORT: 'apps/mobile/scripts/configure.mjs',
+    WEB_PORT: 'apps/android-shell/scripts/configure.mjs',
     PAYSTACK_PUBLIC_KEY: "reserved: Paystack's browser SDK will need it; nothing reads it today",
     DEFAULT_COUNTRY: 'reserved for internationalisation; nothing reads it today',
   };

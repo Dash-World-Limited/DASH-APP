@@ -8,7 +8,9 @@
   },
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/api",
+    "apps/web",
+    "apps/android-shell"
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",

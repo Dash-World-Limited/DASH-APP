@@ -1,4 +1,18 @@
-# DASH APP — Android test shell
+# DASH APP — Android test shell (legacy)
+
+> **Status, 13 September 2026: superseded as the product direction.** DASH's
+> Customer and Rider clients are now a genuine React Native / Expo app in
+> [`apps/mobile`](../mobile/README.md) — see ADR-0015 and ADR-0016 in
+> `docs/DECISIONS.md`. The argument below for a thin WebView shell was right
+> for a prototype and is no longer the decision.
+>
+> This shell was moved here from `apps/mobile`, history intact, rather than
+> deleted, because it is still the **only client with physically proven rider
+> behaviour** on a handset: FCM offer delivery, swipe-away wake, cold-start
+> session restore and fresh-location acceptance. It stays buildable as a
+> regression reference until the native Rider reaches parity, and takes no new
+> product work.
+
 
 An internal debug APK for testing DASH APP on a real handset. **Not a release
 artefact, not a store build.** Debug-signed, pointed at a development machine.
@@ -31,7 +45,7 @@ build needs that decision made** — see "Not yet done" below.
 ## Build
 
 ```bash
-DASH_MOBILE_HOST=<machine-lan-ip> npm run apk:debug --workspace @dash/mobile
+DASH_MOBILE_HOST=<machine-lan-ip> npm run apk:debug --workspace @dash/android-shell
 ```
 
 `DASH_MOBILE_HOST` has no default and the build refuses `localhost` and
@@ -41,7 +55,7 @@ perfectly and then fails with a network error that says nothing about why.
 Output:
 
 ```
-apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+apps/android-shell/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ## Run the backend so the phone can reach it
@@ -69,7 +83,7 @@ alongside it, so browser testing is unaffected.
 Then `npm run dev` and install:
 
 ```bash
-adb install -r apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+adb install -r apps/android-shell/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 Or copy the APK to the phone and open it (allow "install unknown apps").

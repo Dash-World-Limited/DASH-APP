@@ -84,18 +84,18 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
-# --- Android shell (apps/mobile) -------------------------------------------
+# --- Legacy Android WebView shell (apps/android-shell) -------------------------------------------
 # Gradle build output and machine-specific paths. The Android project itself
 # is committed; what it produces and where a given machine keeps its SDK are
 # not.
-apps/mobile/android/build/
-apps/mobile/android/app/build/
-apps/mobile/android/.gradle/
-apps/mobile/android/local.properties
-apps/mobile/android/app/src/main/assets/public/
-apps/mobile/android/app/src/main/assets/capacitor.config.json
-apps/mobile/android/app/src/main/res/xml/network_security_config.xml
-apps/mobile/android/capacitor-cordova-android-plugins/
+apps/android-shell/android/build/
+apps/android-shell/android/app/build/
+apps/android-shell/android/.gradle/
+apps/android-shell/android/local.properties
+apps/android-shell/android/app/src/main/assets/public/
+apps/android-shell/android/app/src/main/assets/capacitor.config.json
+apps/android-shell/android/app/src/main/res/xml/network_security_config.xml
+apps/android-shell/android/capacitor-cordova-android-plugins/
 
 # Firebase configuration for the Android shell.
 #
@@ -108,10 +108,10 @@ apps/mobile/android/capacitor-cordova-android-plugins/
 # The dangerous half is the service-account credential used to *send*. That is
 # never a file in this repository; it goes through the secret-management
 # contract as an environment value.
-apps/mobile/android/app/google-services.json
+apps/android-shell/android/app/google-services.json
 # Written per build from DASH_MOBILE_HOST; committing one would bake one
 # developer's LAN address into everyone else's build.
-apps/mobile/capacitor.config.json
-apps/mobile/www/target.json
+apps/android-shell/capacitor.config.json
+apps/android-shell/www/target.json
 *.apk
 .tooling/
