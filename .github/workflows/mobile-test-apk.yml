@@ -55,6 +55,13 @@ jobs:
           npm ci
           npm ci --prefix apps/mobile
 
+      - name: Verify the Android screens patch
+        run: |
+          set -euo pipefail
+          screens=apps/mobile/node_modules/react-native-screens/android/src/main/java/com/swmansion/rnscreens
+          grep -Fq 'transitioningViews.asReversed().forEach' "$screens/Screen.kt"
+          grep -Fq 'view.fragment.screen.endRemovalTransition()' "$screens/ScreenStack.kt"
+
       - name: Typecheck the native app
         run: npm run typecheck --prefix apps/mobile
 
