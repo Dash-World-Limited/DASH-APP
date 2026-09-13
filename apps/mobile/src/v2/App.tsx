@@ -167,7 +167,7 @@ function RouteView({
     case 'customer.store':
       return <Storefront category={route.params?.category ?? 'food'} merchantId={route.params?.id ?? ''} onBack={onBack} onPush={onPush} />;
     case 'customer.product':
-      return <ProductDetail category={route.params?.category ?? 'food'} productId={route.params?.id ?? ''} onBack={onBack} onCart={() => onPush({ name: 'customer.cart', params: { product: route.params?.id ?? '' } })} />;
+      return <ProductDetail category={route.params?.category ?? 'food'} merchantId={route.params?.store ?? ''} productId={route.params?.id ?? ''} onBack={onBack} onCart={() => onPush({ name: 'customer.cart', params: { product: route.params?.id ?? '' } })} />;
     case 'customer.cart':
       return <CartScreen onBack={onBack} />;
     case 'rider.home':
@@ -337,11 +337,11 @@ function RiderInbox() {
 }
 
 function RiderProfile({ onSwitch }: { onSwitch: () => void }) {
-  return <Page><Header /><Text variant="title">Profile & Settings</Text><ProfileHero initials="DR" title="DASH Rider" subtitle="Rider details arrive with onboarding and approval." /><SettingsRow icon="account-outline" title="Personal profile" note="Onboarding milestone" /><SettingsRow icon="bank-outline" title="Bank account" note="Payout milestone" /><SettingsRow icon="bell-outline" title="Notifications" note="Push milestone" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Customer" icon="account-switch-outline" onPress={onSwitch} /></Page>;
+  return <Page><Header /><Text variant="title">Profile & Settings</Text><ProfileHero initials="DR" title="DASH Rider" subtitle="Rider details arrive with onboarding and approval." /><AppearanceControl /><SettingsRow icon="account-outline" title="Personal profile" note="Onboarding milestone" /><SettingsRow icon="bank-outline" title="Bank account" note="Payout milestone" /><SettingsRow icon="bell-outline" title="Notifications" note="Push milestone" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Customer" icon="account-switch-outline" onPress={onSwitch} /></Page>;
 }
 
 function CustomerAccount({ onBack, onSwitch }: { onBack: () => void; onSwitch: () => void }) {
-  return <DetailPage title="Account" onBack={onBack}><ProfileHero initials="DU" title="Welcome to DASH" subtitle="Sign in and session restore arrive in the account connection milestone." /><SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" /><SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" /><SettingsRow icon="bell-outline" title="Notifications" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} /></DetailPage>;
+  return <DetailPage title="Account" onBack={onBack}><ProfileHero initials="DU" title="Welcome to DASH" subtitle="Sign in and session restore arrive in the account connection milestone." /><AppearanceControl /><SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" /><SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" /><SettingsRow icon="bell-outline" title="Notifications" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} /></DetailPage>;
 }
 
 function EmptyPage({ title, icon, body }: { title: string; icon: IconName; body: string }) {
@@ -390,6 +390,11 @@ function ProfileHero({ initials, title, subtitle }: { initials: string; title: s
 function SettingsRow({ icon, title, note }: { icon: IconName; title: string; note?: string }) {
   const { palette } = useTheme();
   return <Surface row><Icon name={icon} color={palette.accent} /><View style={{ flex: 1 }}><Text variant="label" weight="bold">{title}</Text>{note ? <Text variant="micro" tone="muted">{note}</Text> : null}</View><Icon name="chevron-right" color={palette.textSubtle} /></Surface>;
+}
+
+function AppearanceControl() {
+  const { scheme, setAppearance, palette } = useTheme();
+  return <Surface><Text variant="label" weight="bold">Appearance</Text><View style={{ flexDirection: 'row', padding: 4, borderRadius: radius.md, backgroundColor: palette.surfaceMuted }}>{(['light', 'dark'] as const).map((option) => { const active = option === scheme; return <Pressable key={option} onPress={() => setAppearance(option)} accessibilityRole="button" accessibilityState={{ selected: active }} accessibilityLabel={`Use ${option} appearance`} style={{ flex: 1, minHeight: 40, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center', backgroundColor: active ? palette.inverse : 'transparent' }}><Text variant="caption" tone={active ? 'onInverse' : 'muted'} weight="bold">{option === 'light' ? 'Light' : 'Dark'}</Text></Pressable>; })}</View></Surface>;
 }
 
 function PrimaryAction({ label, icon, onPress }: { label: string; icon: IconName; onPress: () => void }) {
