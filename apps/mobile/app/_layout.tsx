@@ -28,6 +28,7 @@ import naira800 from '../assets/fonts/DashNairaSign-800.ttf';
 
 import { CartProvider } from '../src/features/CartProvider';
 import { ModeProvider, useAppMode } from '../src/features/ModeProvider';
+import { initialRouteForMode } from '../src/features/mode';
 import { SavedProvider } from '../src/features/saved';
 import { ThemeProvider, useTheme } from '../src/theme/ThemeProvider';
 
@@ -35,14 +36,14 @@ void SplashScreen.preventAutoHideAsync();
 
 function Shell() {
   const { palette, ready: themeReady } = useTheme();
-  const { ready: modeReady } = useAppMode();
+  const { mode, ready: modeReady } = useAppMode();
   const [fontsLoaded, fontError] = useFonts({
     Manrope_400Regular,
     Manrope_500Medium,
     Manrope_600SemiBold,
     Manrope_700Bold,
     Manrope_800ExtraBold,
-    // Manrope has no ₦ — see `nairaFamily` in the tokens.
+    // Manrope has no ₦ — see nairaFamily in the tokens.
     DashNairaSign_400: naira400,
     DashNairaSign_500: naira500,
     DashNairaSign_600: naira600,
@@ -60,7 +61,10 @@ function Shell() {
   if (!ready) return null;
 
   return (
-    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: palette.background } }}>
+    <Stack
+      initialRouteName={initialRouteForMode(mode)}
+      screenOptions={{ headerShown: false, contentStyle: { backgroundColor: palette.background } }}
+    >
       <Stack.Screen name="(customer)" />
       <Stack.Screen name="rider" />
     </Stack>
