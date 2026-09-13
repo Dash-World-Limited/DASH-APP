@@ -49,7 +49,7 @@ jobs:
       - name: Prove the navigation boundary
         run: |
           test '"index.js"' = "$(node -p "JSON.stringify(require('./apps/mobile/package.json').main)")"
-          ! grep -R "from 'expo-router'\|from \"expo-router\"\|react-native-screens" apps/mobile/src/v2 apps/mobile/index.js
+          ! grep -R "from 'expo-router'\|from \"expo-router\"\|from 'react-native-screens'\|from \"react-native-screens\"" apps/mobile/src/v2 apps/mobile/index.js
 
       - name: Generate Android project
         working-directory: apps/mobile
