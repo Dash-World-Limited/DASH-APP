@@ -1,20 +1,18 @@
 /**
  * The Customer face: its tabs, and the flow screens pushed over them.
  *
- * A rider who last used DASH as a rider is sent straight to the Rider home —
- * the remembered mode is known before the splash screen hides, so they never
- * see this face first.
+ * Startup chooses the remembered face in the root Stack. Interactive
+ * Customer/Rider switches are owned by their switch buttons. This layout must
+ * stay passive: adding a Redirect here would race that imperative navigation
+ * and can make Fabric attach one native view to two parents.
  */
 
-import { Redirect, Stack } from 'expo-router';
+import { Stack } from 'expo-router';
 
-import { useAppMode } from '../../src/features/ModeProvider';
 import { useTheme } from '../../src/theme/ThemeProvider';
 
 export default function CustomerLayout() {
   const { palette } = useTheme();
-  const { mode } = useAppMode();
-  if (mode === 'rider') return <Redirect href="/rider" />;
 
   return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: palette.background } }} />;
 }
