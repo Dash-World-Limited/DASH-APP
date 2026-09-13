@@ -2,8 +2,8 @@
   "name": "@dash/mobile",
   "version": "0.1.0",
   "private": true,
-  "description": "DASH native client — Customer and Rider. React Native, Expo development builds, Expo Router.",
-  "main": "expo-router/entry",
+  "description": "DASH native client — one stable React Native app with Customer and Rider faces.",
+  "main": "index.js",
   "scripts": {
     "start": "expo start --dev-client",
     "android": "expo run:android",
