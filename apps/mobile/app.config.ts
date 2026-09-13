@@ -79,7 +79,18 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // a foreground service and its own Play policy declaration; it arrives with
     // that milestone and is not requested here in the meantime.
     permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION'],
-    blockedPermissions: ['android.permission.ACCESS_BACKGROUND_LOCATION'],
+    // Least privilege. The Expo template brings these in by default; the app
+    // uses none of them. SYSTEM_ALERT_WINDOW (draw over other apps) is one Play
+    // reviews closely — debug builds keep their own copy in the debug
+    // manifest for the developer menu, and a build-type manifest outranks
+    // main, so only release builds lose it. Found by reading the generated
+    // manifest after the first prebuild.
+    blockedPermissions: [
+      'android.permission.ACCESS_BACKGROUND_LOCATION',
+      'android.permission.SYSTEM_ALERT_WINDOW',
+      'android.permission.READ_EXTERNAL_STORAGE',
+      'android.permission.WRITE_EXTERNAL_STORAGE',
+    ],
     ...(googleMapsApiKey ? { config: { googleMaps: { apiKey: googleMapsApiKey } } } : {}),
   },
   web: {
