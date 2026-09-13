@@ -37,6 +37,15 @@ export function useSingleFlight(needed: boolean, run: () => Promise<void>): bool
     void (async () => {
       try {
         await latest.current();
+      } catch {
+        // The job reports its own failures — the rider screen's job surfaces a
+        // failed fix through its readiness state. This hook owns one thing,
+        // whether a job is in flight, and a rejection is still an end.
+        //
+        // Without this the reset below still ran, but the rejection escaped
+        // the `void`-ed promise as an unhandled rejection: in the Android
+        // WebView, a console error and a development overlay every time a
+        // rider woke without signal.
       } finally {
         inFlight.current = false;
         setRunning(false);

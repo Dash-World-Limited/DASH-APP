@@ -38,6 +38,27 @@ describe('useSingleFlight', () => {
     await waitFor(() => expect(result.current).toBe(false));
   });
 
+  it('does not let a failed job escape as an unhandled rejection', async () => {
+    // The previous test passed while the hook leaked the rejection: the reset
+    // ran, and the error surfaced afterwards as an unhandled rejection that
+    // vitest reported against the whole run. Listening for it directly makes
+    // the leak a failure of *this* test rather than noise attributed to
+    // whichever test happened to be last.
+    const leaked: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { leaked.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const run = vi.fn(async () => { throw new Error('no signal'); });
+      const { result } = renderHook(() => useSingleFlight(true, run));
+      await waitFor(() => expect(result.current).toBe(false));
+      // Let the rejection, if any, reach the process before looking.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(leaked).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('runs once, not once per render', async () => {
     let resolve!: () => void;
     const run = vi.fn(() => new Promise<void>((r) => { resolve = r; }));
