@@ -48,6 +48,13 @@ jobs:
       - name: Install
         run: npm ci
 
+      # The native app is a standalone project, outside the npm workspaces:
+      # React Native requires React to match its renderer exactly, and the web
+      # app pins a different release. It has its own lockfile, installed here
+      # so the typecheck below can check it rather than fail it.
+      - name: Install the native app
+        run: npm ci --prefix apps/mobile
+
       # Generated explicitly rather than relying on Prisma's postinstall.
       #
       # npm 11 gates install scripts behind an `allowScripts` allowlist in

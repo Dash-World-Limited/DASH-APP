@@ -14,6 +14,12 @@ export default tseslint.config(
       // in. Generated, gitignored, and not ours to lint.
       'apps/android-shell/android/**',
       'apps/android-shell/www/**',
+      // The native app's generated output: `expo prebuild` writes android/ and
+      // ios/ from app.config.ts, and Metro and the web export write the rest.
+      'apps/mobile/android/**',
+      'apps/mobile/ios/**',
+      'apps/mobile/dist/**',
+      'apps/mobile/.expo/**',
       // The PostgreSQL Prisma client, generated on demand by
       // `npm run check:postgres` into its own directory so it cannot overwrite
       // the SQLite client. Generated code, gitignored, and not ours to lint.
@@ -74,6 +80,13 @@ export default tseslint.config(
       // with a deliberately unsafe `PG_CHECK_URL`, to prove the script refuses
       // a production database name before reaching any Prisma command.
       'packages/db/src/postgres-check-guard.test.ts',
+      // Expo's build-time configuration. It runs in Node while a binary is
+      // being built — never in the app — and its whole job is to read the
+      // build variables (APP_VARIANT, EXPO_PUBLIC_API_URL, the Android maps
+      // key) and bake them into the native project. None is a server secret:
+      // the maps key is compiled into every APK by design and restricted by
+      // package signature in Google Cloud, not by secrecy.
+      'apps/mobile/app.config.ts',
     ],
     rules: {
       'no-restricted-properties': [
@@ -111,6 +124,18 @@ export default tseslint.config(
     },
     rules: {
       'no-console': 'off',
+    },
+  },
+  {
+    // Metro's configuration, which Metro loads with `require` — CommonJS by
+    // the bundler's contract, not by choice.
+    files: ['apps/mobile/metro.config.js'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: { require: 'readonly', module: 'writable', __dirname: 'readonly' },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
   {
