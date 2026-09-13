@@ -1,6 +1,8 @@
+import { useEffect, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
-import type { ReactNode } from 'react';
+import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 
+import { api } from '../../api';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../../theme/tokens';
 import { Icon, type IconName } from '../../ui/Icon';
@@ -23,6 +25,32 @@ interface Product {
   price: string;
   description: string;
   badge?: string;
+  available?: boolean;
+}
+
+interface ApiVendorSummary {
+  slug: string;
+  name: string;
+  description: string;
+  rating: { average: number; count: number };
+  branch: { estimatedMinutes: number } | null;
+}
+
+interface ApiVendorDetail {
+  slug: string;
+  name: string;
+  description: string;
+  ratingAverage: number;
+  categories: Array<{
+    items: Array<{
+      id: string;
+      name: string;
+      description: string;
+      price: number;
+      condition: string | null;
+      isAvailable: boolean;
+    }>;
+  }>;
 }
 
 const SERVICE_COPY: Record<ServiceId, { title: string; intro: string; search: string }> = {
@@ -99,6 +127,7 @@ export function CategoryDashboard({ id, onBack, onPush }: { id: string; onBack: 
   const service = isServiceId(id) ? id : 'food';
   const copy = SERVICE_COPY[service];
   const { palette } = useTheme();
+  const { merchants, live } = useMerchantList(service);
   return (
     <CatalogPage>
       <BackHeader title={copy.title} onBack={onBack} cart={() => onPush({ name: 'customer.cart' })} />
@@ -108,16 +137,15 @@ export function CategoryDashboard({ id, onBack, onPush }: { id: string; onBack: 
       </View>
       <SearchShell label={copy.search} />
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text variant="heading">Near you</Text><Text variant="caption" tone="accent">See all</Text></View>
-      {MERCHANTS[service].map((merchant) => <MerchantCard key={merchant.id} merchant={merchant} service={service} onPress={() => onPush({ name: 'customer.store', params: { category: service, id: merchant.id } })} />)}
-      <PreviewNote />
+      {merchants.map((merchant) => <MerchantCard key={merchant.id} merchant={merchant} service={service} onPress={() => onPush({ name: 'customer.store', params: { category: service, id: merchant.id } })} />)}
+      <DataSourceNote live={live} />
     </CatalogPage>
   );
 }
 
 export function Storefront({ category, merchantId, onBack, onPush }: { category: string; merchantId: string; onBack: () => void; onPush: (route: AppRoute) => void }) {
   const service = isServiceId(category) ? category : 'food';
-  const merchant = MERCHANTS[service].find((item) => item.id === merchantId) ?? MERCHANTS[service][0];
-  const products = PRODUCTS[service];
+  const { merchant, products, live } = useStorefront(service, merchantId);
   const { palette } = useTheme();
   return (
     <CatalogPage>
@@ -131,14 +159,15 @@ export function Storefront({ category, merchantId, onBack, onPush }: { category:
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
         {products.map((product) => <ProductCard key={product.id} product={product} service={service} onPress={() => onPush({ name: 'customer.product', params: { category: service, store: merchant?.id ?? '', id: product.id } })} />)}
       </View>
-      <PreviewNote />
+      <DataSourceNote live={live} />
     </CatalogPage>
   );
 }
 
-export function ProductDetail({ category, productId, onBack, onCart }: { category: string; productId: string; onBack: () => void; onCart: () => void }) {
+export function ProductDetail({ category, merchantId, productId, onBack, onCart }: { category: string; merchantId: string; productId: string; onBack: () => void; onCart: () => void }) {
   const service = isServiceId(category) ? category : 'food';
-  const product = PRODUCTS[service].find((item) => item.id === productId) ?? PRODUCTS[service][0];
+  const { products } = useStorefront(service, merchantId);
+  const product = products.find((item) => item.id === productId) ?? products[0];
   const { palette } = useTheme();
   return (
     <CatalogPage>
@@ -151,7 +180,7 @@ export function ProductDetail({ category, productId, onBack, onCart }: { categor
       {service === 'shops' ? <OptionRow title="Choose an option" options={['128 GB', '256 GB', '512 GB']} /> : null}
       {service === 'food' ? <OptionRow title="Choose your portion" options={['Regular', 'Large']} /> : null}
       {service === 'declutter' ? <Notice icon="shield-check-outline" text="Condition, defects and seller verification must be disclosed before checkout." /> : null}
-      <PrimaryButton label={product?.price === 'Get quote' ? 'Start delivery quote' : 'Add to cart'} onPress={onCart} />
+      <PrimaryButton label={product?.available === false ? 'Currently unavailable' : product?.price === 'Get quote' ? 'Start delivery quote' : 'Add to cart'} onPress={onCart} disabled={product?.available === false} />
     </CatalogPage>
   );
 }
@@ -208,14 +237,87 @@ function Notice({ icon, text }: { icon: IconName; text: string }) {
   return <View style={{ flexDirection: 'row', gap: space.sm, padding: space.md, borderRadius: radius.md, backgroundColor: palette.accentSoft }}><Icon name={icon} color={palette.accent} /><Text variant="caption" style={{ flex: 1 }}>{text}</Text></View>;
 }
 
-function PrimaryButton({ label, onPress }: { label: string; onPress: () => void }) {
+function PrimaryButton({ label, onPress, disabled = false }: { label: string; onPress: () => void; disabled?: boolean }) {
   const { palette } = useTheme();
-  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} style={({ pressed }) => ({ minHeight: 52, borderRadius: radius.md, backgroundColor: pressed ? palette.accentPressed : palette.accent, alignItems: 'center', justifyContent: 'center' })}><Text variant="label" tone="onAccent" weight="bold">{label}</Text></Pressable>;
+  return <Pressable disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} style={({ pressed }) => ({ minHeight: 52, borderRadius: radius.md, opacity: disabled ? 0.55 : 1, backgroundColor: pressed ? palette.accentPressed : palette.accent, alignItems: 'center', justifyContent: 'center' })}><Text variant="label" tone="onAccent" weight="bold">{label}</Text></Pressable>;
 }
 
-function PreviewNote() {
+function DataSourceNote({ live }: { live: boolean }) {
   const { palette } = useTheme();
-  return <View style={{ flexDirection: 'row', gap: space.sm, padding: space.md, borderRadius: radius.md, borderWidth: 1, borderColor: palette.line }}><Icon name="flask-outline" color={palette.textMuted} size={18} /><Text variant="micro" tone="muted" style={{ flex: 1 }}>Interface preview. Live merchants, availability and prices will come from the DASH API.</Text></View>;
+  return <View style={{ flexDirection: 'row', gap: space.sm, padding: space.md, borderRadius: radius.md, borderWidth: 1, borderColor: palette.line }}><Icon name={live ? 'cloud-check-outline' : 'flask-outline'} color={live ? palette.success : palette.textMuted} size={18} /><Text variant="micro" tone={live ? 'success' : 'muted'} style={{ flex: 1 }}>{live ? 'Live merchants, availability and prices from the DASH API.' : 'Interface preview. Configure EXPO_PUBLIC_API_URL to load the live DASH catalogue.'}</Text></View>;
+}
+
+function useMerchantList(service: ServiceId): { merchants: readonly Merchant[]; live: boolean } {
+  const [state, setState] = useState<{ merchants: readonly Merchant[]; live: boolean }>({ merchants: MERCHANTS[service], live: false });
+  useEffect(() => {
+    setState({ merchants: MERCHANTS[service], live: false });
+    if (!api.configured || service === 'logistics') return;
+    const controller = new AbortController();
+    const query = service === 'declutter' ? 'category=declutter' : `service=${service === 'local-market' ? 'local_market' : service}`;
+    api.request<{ vendors: ApiVendorSummary[] }>(`/v1/vendors?${query}&limit=20`, { auth: false, signal: controller.signal })
+      .then(({ vendors }) => {
+        if (vendors.length === 0) return;
+        setState({
+          live: true,
+          merchants: vendors.map((vendor) => ({
+            id: vendor.slug,
+            name: vendor.name,
+            description: vendor.description,
+            rating: vendor.rating.average.toFixed(1),
+            eta: vendor.branch ? `${vendor.branch.estimatedMinutes} min estimate` : 'See store',
+            accent: serviceAccent(service),
+          })),
+        });
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [service]);
+  return state;
+}
+
+function useStorefront(service: ServiceId, merchantId: string): { merchant: Merchant | undefined; products: readonly Product[]; live: boolean } {
+  const fallbackMerchant = MERCHANTS[service].find((item) => item.id === merchantId) ?? MERCHANTS[service][0];
+  const [state, setState] = useState<{ merchant: Merchant | undefined; products: readonly Product[]; live: boolean }>({ merchant: fallbackMerchant, products: PRODUCTS[service], live: false });
+  useEffect(() => {
+    const preview = MERCHANTS[service].find((item) => item.id === merchantId) ?? MERCHANTS[service][0];
+    setState({ merchant: preview, products: PRODUCTS[service], live: false });
+    if (!api.configured || !merchantId || service === 'logistics') return;
+    const controller = new AbortController();
+    api.request<{ vendor: ApiVendorDetail }>(`/v1/vendors/${encodeURIComponent(merchantId)}`, { auth: false, signal: controller.signal })
+      .then(({ vendor }) => {
+        const items = vendor.categories.flatMap((category) => category.items);
+        setState({
+          live: true,
+          merchant: {
+            id: vendor.slug,
+            name: vendor.name,
+            description: vendor.description,
+            rating: vendor.ratingAverage.toFixed(1),
+            eta: 'Live availability',
+            accent: serviceAccent(service),
+          },
+          products: items.map((item) => ({
+            id: item.id,
+            name: item.name,
+            description: item.description,
+            price: formatNairaCompact(item.price as Kobo),
+            badge: item.condition ? conditionLabel(item.condition) : item.isAvailable ? undefined : 'Unavailable',
+            available: item.isAvailable,
+          })),
+        });
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [merchantId, service]);
+  return state;
+}
+
+function serviceAccent(service: ServiceId): string {
+  return service === 'food' ? '#D88F67' : service === 'shops' ? '#87A9CC' : service === 'pharmacy' ? '#83B998' : service === 'local-market' ? '#D6A552' : service === 'declutter' ? '#B89CC8' : '#8FA987';
+}
+
+function conditionLabel(value: string): string {
+  return value.replace('_', ' ').replace(/^./, (letter) => letter.toUpperCase());
 }
 
 function isServiceId(value: string): value is ServiceId {
