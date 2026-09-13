@@ -10,11 +10,13 @@
  */
 
 import { useRouter } from 'expo-router';
+import { useRef } from 'react';
 import { View } from 'react-native';
 
 import { api } from '../../../src/api';
 import { SampleDataNote } from '../../../src/commerce/Promotions';
 import { RIDER_PROFILE } from '../../../src/data/staging';
+import { hrefForMode } from '../../../src/features/mode';
 import { useAppMode } from '../../../src/features/ModeProvider';
 import { useRiderShift } from '../../../src/features/RiderShift';
 import { formatRating } from '../../../src/lib/format';
@@ -28,13 +30,19 @@ export default function RiderProfile() {
   const { palette } = useTheme();
   const { setMode } = useAppMode();
   const { setOnline } = useRiderShift();
+  const switchingMode = useRef(false);
 
   const toCustomer = (): void => {
+    if (switchingMode.current) return;
+    switchingMode.current = true;
+
     // Leaving the Rider face ends the shift on this device first — a rider who
-    // switches to shopping is not silently still Online.
+    // switches to shopping is not silently still Online. This handler is also
+    // the only navigation owner for the transition; the Customer layout does
+    // not react with a second redirect.
     setOnline(false);
     setMode('customer');
-    router.replace('/');
+    router.replace(hrefForMode('customer'));
   };
 
   return (
