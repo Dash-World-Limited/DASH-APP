@@ -994,3 +994,61 @@ that authorization is enforced by the API remains fully in force.
 dual-read or backfill in bounded batches, observe, cut over, and only then
 remove old paths in a later release. A migration may not make merchant-order
 fields nullable merely to squeeze a different business model into Order.
+
+## ADR-0016 — One native app with two faces, built outside the npm workspaces
+
+**Status:** Proposed · Native mobile Checkpoint 1 · awaiting director review
+
+**Context.** ADR-0015 made Customer and Rider genuine React Native / Expo
+clients and described them as *separate* applications. The director's
+13 September instruction asks for one `apps/mobile` holding a Customer shell and
+a Rider shell, and the earlier product decision (9 September) was that every
+consumer identity is a Customer and an approved rider switches to the Rider
+face inside the same identity and session. The approved Customer and Rider
+boards were supplied the same day.
+
+**Decision.**
+
+- **One app, two faces.** `apps/mobile` is a single Expo app. The Customer face
+  lives at the root; the Rider face under `/rider`. Switching is a profile
+  action that changes which face is shown — no second sign-in, no second
+  session. In a production build the switch is offered only to an identity the
+  server has approved as a rider; every rider route still authorises on the
+  server regardless. This supersedes ADR-0015's "separate applications" line
+  only; the rest of ADR-0015 stands.
+- **A standalone project, not a workspace.** React Native requires React to
+  match its renderer exactly; Expo SDK 57 pins React 19.2.3 while the web app
+  runs 19.2.8. `apps/mobile` therefore has its own lockfile and is excluded from
+  the npm workspaces (which become an explicit list). It shares *source* with
+  the monorepo: Metro bundles `@dash/domain` through a `file:` link, with a
+  resolver shim for the domain's `.js`-named TypeScript imports. The web and API
+  dependency graphs are unchanged. `scripts/typecheck.mjs` checks the app with
+  its own TypeScript and fails, never skips, when its dependencies are absent;
+  CI installs them.
+- **Expo development builds.** Native projects are generated from
+  `app.config.ts` by `expo prebuild` and not committed. Variants
+  (`development`, `staging`, `production`) install side by side under
+  `com.dashworldng.dash[.dev|.staging]`; the production identifier is permanent
+  once published and needs confirmation first.
+- **Auth needs no backend change.** The HttpOnly refresh cookie (path
+  `/v1/auth`) is kept by the platform HTTP cookie store and never reaches
+  JavaScript; the double-submit CSRF value the server already returns in the
+  body is kept in SecureStore and echoed on refresh and logout; the access
+  token stays in memory. ADR-0008 holds unchanged.
+- **The server's projections are the client's models.** Where a board shows
+  data the API does not serve, the client model marks it as a gap rather than
+  inventing it. Where a board shows data the API *withholds by rule* — the
+  customer's name on an offer before acceptance — the model has no field for
+  it, and the difference is reported.
+- **Tokens from the boards.** Colours are sampled from the approved board
+  pixels; the bronze is the midpoint of the two boards' renderings. Blue is
+  retired as a brand colour. Dark mode shares every token key and is marked as
+  a derivation pending approval.
+
+**Consequences.** The Capacitor WebView shell moved to `apps/android-shell`,
+history intact, and remains the only physically proven rider client until the
+native Rider reaches parity. Native Checkpoint 1 is visually complete against
+the boards for its screens, wired only for the service list, and not yet
+device-verified. Merchant imagery, vendor cover and logo fields, product
+galleries and variants, rider earnings, demand signals and customer names after
+acceptance are backend gaps listed in `apps/mobile/src/data/models.ts`.
