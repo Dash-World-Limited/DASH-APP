@@ -7,7 +7,10 @@ export type CustomerRoute =
   | 'customer.support'
   | 'customer.account'
   | 'customer.notifications'
-  | 'customer.category';
+  | 'customer.category'
+  | 'customer.store'
+  | 'customer.product'
+  | 'customer.cart';
 
 export type RiderRoute =
   | 'rider.home'
