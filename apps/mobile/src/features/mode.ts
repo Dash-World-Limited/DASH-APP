@@ -18,6 +18,20 @@ export type AppMode = 'customer' | 'rider';
 
 export const MODE_STORAGE_KEY = 'dash.mode.v1';
 
+/**
+ * The root navigator reads this once, after the saved mode has loaded, to
+ * choose the first face. Interactive switches use the href below and never a
+ * second layout-level Redirect: one user action must produce one navigation
+ * operation, or Fabric can try to mount the same native view twice.
+ */
+export function initialRouteForMode(mode: AppMode): '(customer)' | 'rider' {
+  return mode === 'rider' ? 'rider' : '(customer)';
+}
+
+export function hrefForMode(mode: AppMode): '/' | '/rider' {
+  return mode === 'rider' ? '/rider' : '/';
+}
+
 export function parseMode(raw: unknown): AppMode {
   return raw === 'rider' ? 'rider' : 'customer';
 }
