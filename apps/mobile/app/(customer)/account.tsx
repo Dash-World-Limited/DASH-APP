@@ -6,16 +6,17 @@
  * account feel like one app. Sign-in arrives with checkout, so this build
  * shows a guest and says how that changes.
  *
- * "Switch to Rider" is shown only when `riderModeOffered` says so: in
+ * "Switch to Rider" is shown only when riderModeOffered says so: in
  * production, to an approved rider only. It changes which face is shown and
  * nothing else — no sign-out, no second session.
  */
 
 import { useRouter } from 'expo-router';
+import { useRef } from 'react';
 import { View } from 'react-native';
 
 import { buildVariant } from '../../src/api';
-import { riderModeOffered } from '../../src/features/mode';
+import { hrefForMode, riderModeOffered } from '../../src/features/mode';
 import { useAppMode } from '../../src/features/ModeProvider';
 import { space } from '../../src/theme/tokens';
 import { AppBar, Avatar, Card, Divider, ListRow, Screen, Text } from '../../src/ui';
@@ -24,7 +25,16 @@ import { AppearanceRow } from '../../src/ui/AppearanceRow';
 export default function Account() {
   const router = useRouter();
   const { setMode } = useAppMode();
+  const switchingMode = useRef(false);
   const offerRider = riderModeOffered(buildVariant, null);
+
+  const toRider = (): void => {
+    if (switchingMode.current) return;
+    switchingMode.current = true;
+
+    setMode('rider');
+    router.replace(hrefForMode('rider'));
+  };
 
   return (
     <Screen>
@@ -71,10 +81,7 @@ export default function Account() {
               icon="moped"
               label="Switch to Rider"
               value={buildVariant === 'production' ? undefined : 'Staging'}
-              onPress={() => {
-                setMode('rider');
-                router.replace('/rider');
-              }}
+              onPress={toRider}
             />
           </Card>
         ) : null}
