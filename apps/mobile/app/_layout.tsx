@@ -1,10 +1,11 @@
 /**
- * The root of the app: fonts, theme, remembered mode, cart, and one stack.
+ * The root of the app: fonts, theme, remembered mode, cart, and the active
+ * application face.
  *
  * The splash screen stays up until the three things that decide the first
- * frame are known — the typeface, the Light/Dark choice, and whether this is a
- * Customer or a Rider launch. Painting before them would flash Light at
- * someone who chose Dark, or the shop grid at a rider mid-shift.
+ * frame are known — the typeface, the Light/Dark choice, and the remembered
+ * Customer/Rider preference. Painting before them would flash Light at someone
+ * who chose Dark or expose an incomplete provider tree.
  */
 
 import {
@@ -15,9 +16,10 @@ import {
   Manrope_800ExtraBold,
   useFonts,
 } from '@expo-google-fonts/manrope';
-import { Stack } from 'expo-router';
+import { Slot } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
+import { View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import naira400 from '../assets/fonts/DashNairaSign-400.ttf';
@@ -28,43 +30,29 @@ import naira800 from '../assets/fonts/DashNairaSign-800.ttf';
 
 import { CartProvider } from '../src/features/CartProvider';
 import { ModeProvider, useAppMode } from '../src/features/ModeProvider';
-import { initialRouteForMode, type AppMode } from '../src/features/mode';
 import { SavedProvider } from '../src/features/saved';
 import { ThemeProvider, useTheme } from '../src/theme/ThemeProvider';
 
 void SplashScreen.preventAutoHideAsync();
 
-function Navigator({ initialMode }: { initialMode: AppMode }) {
+function ActiveRoute() {
   const { palette } = useTheme();
 
-  // Navigator mounts only after the saved mode is ready. Freeze that startup
-  // decision: later mode changes are handled by exactly one router.replace in
-  // the pressed switch, never by changing navigation configuration as well.
-  const initialRouteName = useRef(initialRouteForMode(initialMode)).current;
-
+  // Do not put Customer and Rider inside a shared native Stack. Android Fabric
+  // can otherwise move a react-native-screens view while the outgoing fragment
+  // still owns it, producing addViewAt("child already has a parent"). Slot
+  // keeps this role boundary outside react-native-screens; each face retains
+  // its own nested Stack and Tabs for normal in-mode navigation.
   return (
-    <Stack
-      initialRouteName={initialRouteName}
-      screenOptions={{
-        // Customer and Rider are separate native stacks. On Android Fabric,
-        // moving between them during a native exit animation can make
-        // react-native-screens try to attach a view that is still owned by the
-        // outgoing fragment. Keep this one boundary instantaneous; screens
-        // inside either mode retain their normal transitions.
-        animation: 'none',
-        headerShown: false,
-        contentStyle: { backgroundColor: palette.background },
-      }}
-    >
-      <Stack.Screen name="(customer)" />
-      <Stack.Screen name="rider" />
-    </Stack>
+    <View style={{ flex: 1, backgroundColor: palette.background }}>
+      <Slot />
+    </View>
   );
 }
 
 function Shell() {
   const { ready: themeReady } = useTheme();
-  const { mode, ready: modeReady } = useAppMode();
+  const { ready: modeReady } = useAppMode();
   const [fontsLoaded, fontError] = useFonts({
     Manrope_400Regular,
     Manrope_500Medium,
@@ -88,7 +76,7 @@ function Shell() {
 
   if (!ready) return null;
 
-  return <Navigator initialMode={mode} />;
+  return <ActiveRoute />;
 }
 
 export default function RootLayout() {
