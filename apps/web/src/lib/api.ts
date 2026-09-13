@@ -1,3 +1,5 @@
+import type { MerchantServiceCategoryId } from '@dash/domain/services';
+
 /**
  * API client.
  *
@@ -172,7 +174,9 @@ export interface VendorSummary {
   name: string;
   slug: string;
   description: string | null;
+  /** Deprecated storage value retained for old clients. */
   category: string;
+  serviceCategory: MerchantServiceCategoryId | null;
   rating: { average: number; count: number };
   branch: {
     id: string;
@@ -217,7 +221,9 @@ export interface VendorDetail {
   name: string;
   slug: string;
   description: string | null;
+  /** Deprecated storage value retained for old clients. */
   category: string;
+  serviceCategory: MerchantServiceCategoryId | null;
   ratingAverage: number;
   ratingCount: number;
   branches: {

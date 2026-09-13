@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { SERVICE_CATEGORIES } from '@dash/domain/services';
 import { AppHeader } from '@/components/AppHeader';
 import {
   Badge,
@@ -19,12 +20,9 @@ import { apiFetch, ApiRequestError, type VendorSummary } from '@/lib/api';
 const DEFAULT_POSITION = { latitude: 6.4281, longitude: 3.4219 };
 
 const CATEGORIES = [
-  { value: '', label: 'Everything' },
-  { value: 'restaurant', label: 'Food' },
-  { value: 'grocery', label: 'Groceries' },
-  { value: 'pharmacy', label: 'Pharmacy' },
-  { value: 'retail', label: 'Essentials' },
-] as const;
+  { id: '', label: 'ALL' },
+  ...SERVICE_CATEGORIES.filter(({ kind }) => kind === 'merchant'),
+];
 
 interface Serviceability {
   serviceable: boolean;
@@ -62,7 +60,7 @@ export default function BrowsePage() {
         if (cancelled) return;
         setService(serviceability);
 
-        if (category) query.set('category', category);
+        if (category) query.set('service', category);
         if (search.trim().length > 1) query.set('search', search.trim());
 
         const result = await apiFetch<{ vendors: VendorSummary[] }>(
@@ -152,18 +150,18 @@ export default function BrowsePage() {
             type="search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search for jollof, groceries, a pharmacy…"
+            placeholder="Search food, shops, pharmacies or local markets…"
             className="w-full rounded-xl border bg-[var(--surface-raised)] px-4 py-3 text-base placeholder:text-graphite-400"
           />
 
-          <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by category">
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Filter by service">
             {CATEGORIES.map((option) => (
               <button
-                key={option.value}
-                onClick={() => setCategory(option.value)}
-                aria-pressed={category === option.value}
+                key={option.id}
+                onClick={() => setCategory(option.id)}
+                aria-pressed={category === option.id}
                 className={`rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
-                  category === option.value
+                  category === option.id
                     ? 'bg-graphite-900 text-white'
                     : 'border hover:bg-[var(--surface-raised)]'
                 }`}
