@@ -1,0 +1,93 @@
+name: Native v2 Android
+
+on:
+  push:
+    branches: [codex/native-mobile-v2-rebuild]
+    paths:
+      - 'apps/mobile/**'
+      - 'packages/domain/**'
+      - '.github/workflows/mobile-v2.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: native-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install native dependencies
+        run: npm ci --prefix apps/mobile
+
+      - name: Typecheck native v2
+        run: npm run typecheck --prefix apps/mobile
+
+      - name: Prove the navigation boundary
+        run: |
+          test '"index.js"' = "$(node -p "JSON.stringify(require('./apps/mobile/package.json').main)")"
+          ! grep -R "from 'expo-router'\|from \"expo-router\"\|react-native-screens" apps/mobile/src/v2 apps/mobile/index.js
+
+      - name: Generate Android project
+        working-directory: apps/mobile
+        env:
+          APP_VARIANT: development
+          NODE_ENV: production
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Embed standalone JavaScript and assets
+        working-directory: apps/mobile
+        env:
+          APP_VARIANT: development
+          NODE_ENV: production
+        run: |
+          mkdir -p android/app/src/main/assets
+          npx expo export:embed \
+            --entry-file index.js \
+            --platform android \
+            --dev false \
+            --reset-cache \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res
+
+      - name: Build A55 debug APK
+        working-directory: apps/mobile/android
+        env:
+          NODE_ENV: production
+        run: ./gradlew app:assembleDebug -PreactNativeArchitectures=arm64-v8a --no-daemon
+
+      - name: Verify APK payload
+        working-directory: apps/mobile
+        run: |
+          test -s android/app/build/outputs/apk/debug/app-debug.apk
+          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep -q 'assets/index.android.bundle'
+          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/arm64-v8a/'
+          sha256sum android/app/build/outputs/apk/debug/app-debug.apk | tee DASH-native-v2.sha256
+          cp android/app/build/outputs/apk/debug/app-debug.apk DASH-native-v2-arm64-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DASH-native-v2-arm64-debug
+          path: |
+            apps/mobile/DASH-native-v2-arm64-debug.apk
+            apps/mobile/DASH-native-v2.sha256
+          if-no-files-found: error
+          retention-days: 14
