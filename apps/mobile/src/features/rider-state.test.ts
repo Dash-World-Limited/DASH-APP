@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { stagingOffer } from '../data/staging';
-import { hrefForMode, initialRouteForMode, riderModeOffered } from './mode';
+import { hrefForMode, INITIAL_MODE_STATE, modeReducer, riderModeOffered } from './mode';
 import { offerPhase, remainingFraction, secondsLeft } from './offer';
 
 const NOW = Date.parse('2026-09-13T12:00:00.000Z');
@@ -58,11 +58,39 @@ describe('the incoming offer never carries the customer', () => {
 });
 
 describe('Customer and Rider — one account', () => {
-  it('maps the remembered mode to one startup route and one interactive destination', () => {
-    expect(initialRouteForMode('customer')).toBe('(customer)');
+  it('maps each face to one destination', () => {
     expect(hrefForMode('customer')).toBe('/');
-    expect(initialRouteForMode('rider')).toBe('rider');
     expect(hrefForMode('rider')).toBe('/rider');
+  });
+
+  it('sends a remembered rider back to the Rider face once per launch', () => {
+    let s = modeReducer(INITIAL_MODE_STATE, { type: 'loaded', stored: 'rider' });
+    expect(s).toEqual({ mode: 'rider', launchFace: 'rider', ready: true });
+    s = modeReducer(s, { type: 'arrived', face: 'rider' });
+    expect(s.launchFace).toBeNull();
+    // Arriving at the Customer face later never re-arms it.
+    expect(modeReducer(s, { type: 'arrived', face: 'customer' }).launchFace).toBeNull();
+  });
+
+  it('never redirects a customer launch, or a launch whose saved mode is unreadable', () => {
+    for (const stored of ['customer', null, undefined, 'RIDER', 42]) {
+      const s = modeReducer(INITIAL_MODE_STATE, { type: 'loaded', stored });
+      expect(s, String(stored)).toEqual({ mode: 'customer', launchFace: null, ready: true });
+    }
+  });
+
+  it('cancels a pending launch redirect when the person switches, so one tap is one navigation', () => {
+    // The crash on the A55 came from a switch's own navigation racing a
+    // layout's redirect. Switching must leave nothing for a layout to act on.
+    const launching = modeReducer(INITIAL_MODE_STATE, { type: 'loaded', stored: 'rider' });
+    for (const to of ['customer', 'rider'] as const) {
+      expect(modeReducer(launching, { type: 'switched', to })).toEqual({ mode: to, launchFace: null, ready: true });
+    }
+  });
+
+  it('does not let a late storage read undo a switch the person already made', () => {
+    const switched = modeReducer(modeReducer(INITIAL_MODE_STATE, { type: 'loaded', stored: 'customer' }), { type: 'switched', to: 'rider' });
+    expect(modeReducer(switched, { type: 'loaded', stored: 'customer' })).toBe(switched);
   });
 
   it('offers Rider mode in production only to an approved rider', () => {

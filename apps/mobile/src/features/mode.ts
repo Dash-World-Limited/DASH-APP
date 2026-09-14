@@ -18,22 +18,54 @@ export type AppMode = 'customer' | 'rider';
 
 export const MODE_STORAGE_KEY = 'dash.mode.v1';
 
-/**
- * The root navigator reads this once, after the saved mode has loaded, to
- * choose the first face. Interactive switches use the href below and never a
- * second layout-level Redirect: one user action must produce one navigation
- * operation, or Fabric can try to mount the same native view twice.
- */
-export function initialRouteForMode(mode: AppMode): '(customer)' | 'rider' {
-  return mode === 'rider' ? 'rider' : '(customer)';
-}
-
 export function hrefForMode(mode: AppMode): '/' | '/rider' {
   return mode === 'rider' ? '/rider' : '/';
 }
 
 export function parseMode(raw: unknown): AppMode {
   return raw === 'rider' ? 'rider' : 'customer';
+}
+
+/**
+ * The remembered face, and whether the app still owes a launch redirect to it.
+ *
+ * Every launch opens at `/`, the Customer face. `launchFace` is 'rider' when
+ * the app was closed on the Rider face and has not yet arrived back there; the
+ * Customer layout redirects on it, once. It is a launch-time fact, not a
+ * reaction to `mode`: an interactive switch clears it before navigating, so a
+ * switch button's own navigation can never be followed by a second one. One
+ * user action must produce one navigation, or Android Fabric can try to mount
+ * the same native view under two parents (the A55 "child already has a
+ * parent" crash).
+ */
+export interface ModeState {
+  mode: AppMode;
+  launchFace: 'rider' | null;
+  ready: boolean;
+}
+
+export type ModeEvent =
+  /** The saved mode has been read (or could not be: `stored` is then null). */
+  | { type: 'loaded'; stored: unknown }
+  /** The person switched faces. */
+  | { type: 'switched'; to: AppMode }
+  /** A face's layout has mounted. */
+  | { type: 'arrived'; face: AppMode };
+
+export const INITIAL_MODE_STATE: ModeState = { mode: 'customer', launchFace: null, ready: false };
+
+export function modeReducer(state: ModeState, event: ModeEvent): ModeState {
+  switch (event.type) {
+    case 'loaded': {
+      if (state.ready) return state; // a late read never overrides a choice already made
+      const mode = parseMode(event.stored);
+      return { mode, launchFace: mode === 'rider' ? 'rider' : null, ready: true };
+    }
+    case 'switched':
+      return { ...state, mode: event.to, launchFace: null };
+    case 'arrived':
+      return state.launchFace === event.face ? { ...state, launchFace: null } : state;
+  }
 }
 
 export interface RiderCapability {
