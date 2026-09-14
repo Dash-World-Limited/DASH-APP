@@ -141,7 +141,7 @@ export default function RiderHome() {
           </Pressable>
         </Card>
 
-        <PromoCard campaign={RIDER_CAMPAIGN} height={120} onPress={() => router.push('/rider/earnings')} />
+        <PromoCard campaign={RIDER_CAMPAIGN} height={120} onPress={() => router.push('/rider/campaign')} />
         <SampleDataNote />
       </View>
     </Screen>
