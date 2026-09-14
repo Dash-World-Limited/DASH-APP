@@ -9,21 +9,51 @@
 
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 
 import { createApiClient, normaliseBaseUrl } from './client';
-import { createSession } from './session';
+import { createSession, type CsrfStore } from './session';
 
 const CSRF_KEY = 'dash.csrf.v1';
 
-export const session = createSession({
+const secureStore: CsrfStore = {
   get: () => SecureStore.getItemAsync(CSRF_KEY),
   set: (value) => (value ? SecureStore.setItemAsync(CSRF_KEY, value) : SecureStore.deleteItemAsync(CSRF_KEY)),
-});
+};
+
+/**
+ * The browser build (design review, not the product) has no secure store. On
+ * the web the CSRF value is script-readable by design (the web client reads
+ * it from a non-HttpOnly cookie), so local storage holds it there. The refresh
+ * token is an HttpOnly cookie on every platform and never reaches this code.
+ */
+const webStore: CsrfStore = {
+  get: async () => {
+    try {
+      return globalThis.localStorage?.getItem(CSRF_KEY) ?? null;
+    } catch {
+      return null;
+    }
+  },
+  set: async (value) => {
+    try {
+      if (value) globalThis.localStorage?.setItem(CSRF_KEY, value);
+      else globalThis.localStorage?.removeItem(CSRF_KEY);
+    } catch {
+      // Private mode or blocked storage: the session simply will not survive a reload.
+    }
+  },
+};
+
+export const session = createSession(Platform.OS === 'web' ? webStore : secureStore);
 
 const extra = (Constants.expoConfig?.extra ?? {}) as { apiUrl?: unknown; variant?: unknown; mapsConfigured?: unknown };
 
 export const api = createApiClient({
-  baseUrl: normaliseBaseUrl(extra.apiUrl),
+  // The app config's value on a device. The web build's manifest carries the
+  // key but not the string (it arrives as `{}`), so fall back to the same
+  // variable, which Expo inlines into every bundle at build time.
+  baseUrl: normaliseBaseUrl(extra.apiUrl) ?? normaliseBaseUrl(process.env.EXPO_PUBLIC_API_URL),
   fetch: (input, init) => fetch(input, init),
   session,
 });

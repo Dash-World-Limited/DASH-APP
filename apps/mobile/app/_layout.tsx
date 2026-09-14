@@ -29,6 +29,7 @@ import naira700 from '../assets/fonts/DashNairaSign-700.ttf';
 import naira800 from '../assets/fonts/DashNairaSign-800.ttf';
 
 import { CartProvider } from '../src/features/CartProvider';
+import { AuthProvider } from '../src/features/AuthProvider';
 import { ModeProvider, useAppMode } from '../src/features/ModeProvider';
 import { SavedProvider } from '../src/features/saved';
 import { ThemeProvider, useTheme } from '../src/theme/ThemeProvider';
@@ -84,11 +85,13 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <ThemeProvider>
         <ModeProvider>
-          <CartProvider>
-            <SavedProvider>
-              <Shell />
-            </SavedProvider>
-          </CartProvider>
+          <AuthProvider>
+            <CartProvider>
+              <SavedProvider>
+                <Shell />
+              </SavedProvider>
+            </CartProvider>
+          </AuthProvider>
         </ModeProvider>
       </ThemeProvider>
     </SafeAreaProvider>

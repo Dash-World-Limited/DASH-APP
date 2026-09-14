@@ -87,6 +87,11 @@ export default tseslint.config(
       // the maps key is compiled into every APK by design and restricted by
       // package signature in Google Cloud, not by secrecy.
       'apps/mobile/app.config.ts',
+      // The app's one read of a build variable: EXPO_PUBLIC_API_URL, the
+      // public API origin (never a secret), which Expo inlines into the
+      // bundle at build time. Used only where the web build's manifest drops
+      // the value app.config.ts put in `extra`.
+      'apps/mobile/src/api/index.ts',
     ],
     rules: {
       'no-restricted-properties': [

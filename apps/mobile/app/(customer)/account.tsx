@@ -3,8 +3,9 @@
  * the Customer board puts the profile, since it has no Account tab.
  *
  * Laid out like the Rider board's Profile & Settings so the two faces of one
- * account feel like one app. Sign-in arrives with checkout, so this build
- * shows a guest and says how that changes.
+ * account feel like one app. Who is shown comes from the session: a skeleton
+ * while it is being restored (never a flash of "Guest"), the person once
+ * signed in, and a way to sign in otherwise.
  *
  * "Switch to Rider" is shown only when riderModeOffered says so: in
  * production, to an approved rider only. It changes which face is shown and
@@ -16,17 +17,21 @@ import { useRef } from 'react';
 import { View } from 'react-native';
 
 import { buildVariant } from '../../src/api';
+import { useAuth } from '../../src/features/AuthProvider';
 import { hrefForMode, riderModeOffered } from '../../src/features/mode';
 import { useAppMode } from '../../src/features/ModeProvider';
+import { viewerName } from '../../src/features/signIn';
 import { space } from '../../src/theme/tokens';
-import { AppBar, Avatar, Card, Divider, ListRow, Screen, Text } from '../../src/ui';
+import { AppBar, Avatar, Card, Divider, ListRow, Screen, Skeleton, Text } from '../../src/ui';
 import { AppearanceRow } from '../../src/ui/AppearanceRow';
 
 export default function Account() {
   const router = useRouter();
   const { setMode } = useAppMode();
   const switchingMode = useRef(false);
-  const offerRider = riderModeOffered(buildVariant, null);
+  const auth = useAuth();
+  const offerRider = riderModeOffered(buildVariant, auth.viewer ? { riderStatus: auth.viewer.riderStatus } : null);
+  const name = viewerName(auth.viewer);
 
   const toRider = (): void => {
     if (switchingMode.current) return;
@@ -40,24 +45,40 @@ export default function Account() {
     <Screen>
       <AppBar title="Profile & Settings" />
       <View style={{ paddingHorizontal: space.gutter, gap: space.lg }}>
-        <Card>
-          <ListRow
-            icon="account-circle-outline"
-            label="Sign in"
-            value="Orders, wallet, addresses"
-            onPress={() => router.push('/settings/sign-in')}
-          />
-        </Card>
+        {auth.state === 'unauthenticated' ? (
+          <Card>
+            <ListRow
+              icon="account-circle-outline"
+              label="Sign in"
+              value="Orders, wallet, addresses"
+              onPress={() => router.push('/sign-in')}
+            />
+          </Card>
+        ) : null}
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-          <Avatar name="Guest" size={52} />
-          <View style={{ gap: 2 }}>
-            <Text variant="heading">Guest</Text>
-            <Text variant="caption" tone="muted">
-              Browsing without an account
-            </Text>
+        {auth.state === 'restoring' ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }} accessibilityLabel="Loading your account">
+            <Skeleton style={{ width: 52, height: 52, borderRadius: 26 }} />
+            <View style={{ gap: space.sm }}>
+              <Skeleton style={{ width: 140, height: 18 }} />
+              <Skeleton style={{ width: 190, height: 14 }} />
+            </View>
           </View>
-        </View>
+        ) : (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+            <Avatar name={name ?? 'Guest'} size={52} />
+            <View style={{ gap: 2, flex: 1 }}>
+              <Text variant="heading" numberOfLines={1}>
+                {auth.state === 'authenticated' ? (auth.viewer?.identity.displayName ?? name ?? 'Signed in') : 'Guest'}
+              </Text>
+              <Text variant="caption" tone="muted" numberOfLines={1}>
+                {auth.state === 'authenticated'
+                  ? (auth.viewer?.identity.email ?? auth.viewer?.identity.phone ?? 'Signed in')
+                  : 'Browsing without an account'}
+              </Text>
+            </View>
+          </View>
+        )}
 
         <Card padded={false} style={{ paddingHorizontal: space.lg }}>
           <ListRow icon="account-outline" label="Personal Information" onPress={() => router.push('/settings/personal')} />
@@ -83,6 +104,12 @@ export default function Account() {
               value={buildVariant === 'production' ? undefined : 'Staging'}
               onPress={toRider}
             />
+          </Card>
+        ) : null}
+
+        {auth.state === 'authenticated' ? (
+          <Card padded={false} style={{ paddingHorizontal: space.lg }}>
+            <ListRow icon="logout" label="Sign out" onPress={() => void auth.signOut()} />
           </Card>
         ) : null}
       </View>
