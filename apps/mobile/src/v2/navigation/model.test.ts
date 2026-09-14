@@ -28,12 +28,33 @@ describe('native-v2 navigation model', () => {
     state = navigate(state, { name: 'customer.store', params: { category: 'food', id: 'urban-bites' } });
     state = navigate(state, { name: 'customer.product', params: { category: 'food', store: 'urban-bites', id: 'jollof-chicken' } });
     state = navigate(state, { name: 'customer.cart', params: { product: 'jollof-chicken' } });
+    state = navigate(state, { name: 'customer.checkout' });
+    state = navigate(state, { name: 'customer.track-order', params: { id: 'preview-order-active' } });
     expect(state.stack.map((route) => route.name)).toEqual([
       'customer.home',
       'customer.category',
       'customer.store',
       'customer.product',
       'customer.cart',
+      'customer.checkout',
+      'customer.track-order',
+    ]);
+  });
+
+  it('supports the rider offer, route and completion path on one JS stack', () => {
+    let state = createNavigationState('rider');
+    state = navigate(state, { name: 'rider.online' });
+    state = navigate(state, { name: 'rider.offer' });
+    state = navigate(state, { name: 'rider.delivery' });
+    state = navigate(state, { name: 'rider.route' });
+    state = navigate(state, { name: 'rider.complete' });
+    expect(state.stack.map((route) => route.name)).toEqual([
+      'rider.home',
+      'rider.online',
+      'rider.offer',
+      'rider.delivery',
+      'rider.route',
+      'rider.complete',
     ]);
   });
 

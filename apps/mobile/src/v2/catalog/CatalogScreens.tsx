@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Alert, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 
 import { api } from '../../api';
+import { useCart } from '../../features/CartProvider';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../../theme/tokens';
 import { Icon, type IconName } from '../../ui/Icon';
@@ -170,6 +171,38 @@ export function ProductDetail({ category, merchantId, productId, onBack, onCart 
   const { products } = useStorefront(service, merchantId);
   const product = products.find((item) => item.id === productId) ?? products[0];
   const { palette } = useTheme();
+  const { dispatch, refusalFor } = useCart();
+  const [quantity, setQuantity] = useState(1);
+  const optionTitle = service === 'shops' ? 'Storage' : service === 'food' ? 'Portion' : null;
+  const optionValues = service === 'shops' ? ['128 GB', '256 GB', '512 GB'] : service === 'food' ? ['Regular', 'Large'] : [];
+  const [selectedOption, setSelectedOption] = useState(optionValues[0] ?? '');
+
+  const addToCart = () => {
+    if (!product || product.available === false) return;
+    if (product.price === 'Get quote') {
+      Alert.alert('Logistics quote', 'Pickup, destination and package details are collected in the logistics booking milestone.');
+      return;
+    }
+    const action = {
+      merchantSlug: merchantId,
+      productId: product.id,
+      quantity,
+      options: optionTitle ? { [optionTitle.toLowerCase()]: selectedOption } : undefined,
+    } as const;
+    if (refusalFor(merchantId) === 'different_merchant') {
+      Alert.alert(
+        'Start a new cart?',
+        'DASH keeps one merchant per order. Replacing the cart removes items from the other store.',
+        [
+          { text: 'Keep current cart', style: 'cancel' },
+          { text: 'Replace cart', style: 'destructive', onPress: () => { dispatch({ type: 'replaceWith', ...action }); onCart(); } },
+        ],
+      );
+      return;
+    }
+    dispatch({ type: 'add', ...action });
+    onCart();
+  };
   return (
     <CatalogPage>
       <BackHeader title="Item details" onBack={onBack} cart={onCart} />
@@ -178,21 +211,68 @@ export function ProductDetail({ category, merchantId, productId, onBack, onCart 
       <Text variant="title">{product?.name}</Text>
       <Text variant="heading" tone="accent">{product?.price}</Text>
       <Text tone="muted">{product?.description}</Text>
-      {service === 'shops' ? <OptionRow title="Choose an option" options={['128 GB', '256 GB', '512 GB']} /> : null}
-      {service === 'food' ? <OptionRow title="Choose your portion" options={['Regular', 'Large']} /> : null}
+      {optionTitle ? <OptionRow title={optionTitle} options={optionValues} selected={selectedOption} onSelect={setSelectedOption} /> : null}
       {service === 'declutter' ? <Notice icon="shield-check-outline" text="Condition, defects and seller verification must be disclosed before checkout." /> : null}
-      <PrimaryButton label={product?.available === false ? 'Currently unavailable' : product?.price === 'Get quote' ? 'Start delivery quote' : 'Add to cart'} onPress={onCart} disabled={product?.available === false} />
+      {product?.price !== 'Get quote' ? <QuantityControl value={quantity} onChange={setQuantity} /> : null}
+      <PrimaryButton label={product?.available === false ? 'Currently unavailable' : product?.price === 'Get quote' ? 'Start delivery quote' : `Add ${quantity} to cart`} onPress={addToCart} disabled={product?.available === false} />
     </CatalogPage>
   );
 }
 
-export function CartScreen({ onBack }: { onBack: () => void }) {
+export function CartScreen({ onBack, onCheckout }: { onBack: () => void; onCheckout: () => void }) {
   const { palette } = useTheme();
+  const { cart, count, dispatch } = useCart();
   return (
     <CatalogPage>
       <BackHeader title="Your cart" onBack={onBack} />
-      <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.sm }}><View style={{ width: 72, height: 72, borderRadius: 24, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name="cart-outline" size={34} color={palette.accent} /></View><Text variant="heading">Cart connection comes next</Text><Text tone="muted" align="center">The product path is working. Cart contents will use the existing server-owned quote and order contract rather than fabricated totals.</Text></View>
-      <PrimaryButton label="Continue browsing" onPress={onBack} />
+      {cart.lines.length === 0 ? (
+        <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.sm }}><View style={{ width: 72, height: 72, borderRadius: 24, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name="cart-outline" size={34} color={palette.accent} /></View><Text variant="heading">Your cart is empty</Text><Text tone="muted" align="center">Choose an item from a restaurant, shop, pharmacy or market seller.</Text></View>
+      ) : (
+        <>
+          <Notice icon="storefront-outline" text={`${count} item${count === 1 ? '' : 's'} from ${merchantLabel(cart.merchantSlug)}. One merchant is kept per order.`} />
+          {cart.lines.map((line) => {
+            const product = findPreviewProduct(line.productId);
+            return (
+              <View key={line.key} style={{ padding: space.lg, gap: space.md, borderRadius: radius.lg, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line }}>
+                <View style={{ flexDirection: 'row', gap: space.md, alignItems: 'center' }}>
+                  <View style={{ width: 68, height: 68, borderRadius: radius.md, overflow: 'hidden', backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center' }}><CategoryPhoto id={product?.service ?? 'shops'} size={64} accessibilityLabel={`${product?.name ?? 'Cart item'} photo`} /></View>
+                  <View style={{ flex: 1, gap: 2 }}><Text variant="label" weight="bold">{product?.name ?? 'DASH item'}</Text><Text variant="caption" tone="accent">{product?.price ?? 'Price confirmed by server'}</Text>{Object.values(line.options).length ? <Text variant="micro" tone="muted">{Object.values(line.options).join(' · ')}</Text> : null}</View>
+                  <Pressable onPress={() => dispatch({ type: 'remove', key: line.key })} accessibilityRole="button" accessibilityLabel={`Remove ${product?.name ?? 'item'}`} hitSlop={10}><Icon name="delete-outline" color={palette.danger} /></Pressable>
+                </View>
+                <QuantityControl value={line.quantity} onChange={(quantity) => dispatch({ type: 'setQuantity', key: line.key, quantity })} compact />
+              </View>
+            );
+          })}
+          <Notice icon="shield-check-outline" text="Delivery fees, discounts and the payable total are calculated and signed by the DASH quote endpoint at checkout." />
+          <PrimaryButton label="Review checkout" onPress={onCheckout} />
+        </>
+      )}
+      <PrimaryButton label="Continue browsing" onPress={onBack} secondary={cart.lines.length > 0} />
+    </CatalogPage>
+  );
+}
+
+export function CustomerSearchScreen({ onBack, onPush }: { onBack: () => void; onPush: (route: AppRoute) => void }) {
+  const { palette } = useTheme();
+  const [query, setQuery] = useState('');
+  const results = useMemo(() => searchPreview(query), [query]);
+  return (
+    <CatalogPage>
+      <BackHeader title="Search DASH" onBack={onBack} />
+      <View style={{ minHeight: 52, borderRadius: radius.md, borderWidth: 1, borderColor: palette.line, backgroundColor: palette.surface, flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.md, gap: space.sm }}>
+        <Icon name="magnify" color={palette.textMuted} />
+        <TextInput autoFocus value={query} onChangeText={setQuery} placeholder="Food, shops, products…" placeholderTextColor={palette.textSubtle} accessibilityLabel="Search DASH" style={{ flex: 1, color: palette.text, fontFamily: 'Manrope_500Medium', fontSize: 15 }} />
+        {query ? <Pressable onPress={() => setQuery('')} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="close-circle" color={palette.textMuted} /></Pressable> : null}
+      </View>
+      {!query.trim() ? <Notice icon="magnify" text="Search across all six DASH categories. Results below are interactive development data until the API URL is configured." /> : null}
+      <Text variant="heading">{query.trim() ? `${results.length} result${results.length === 1 ? '' : 's'}` : 'Popular now'}</Text>
+      {results.map((entry) => (
+        <Pressable key={`${entry.service}-${entry.kind}-${entry.id}`} onPress={() => onPush(entry.route)} accessibilityRole="button" style={({ pressed }) => ({ minHeight: 78, padding: space.md, borderRadius: radius.lg, flexDirection: 'row', alignItems: 'center', gap: space.md, backgroundColor: pressed ? palette.surfaceMuted : palette.surface, borderWidth: 1, borderColor: palette.line })}>
+          <View style={{ width: 58, height: 58, borderRadius: radius.md, overflow: 'hidden', backgroundColor: palette.surfaceMuted }}><CategoryPhoto id={entry.service} size={56} accessibilityLabel={`${entry.title} photo`} /></View>
+          <View style={{ flex: 1 }}><Text variant="label" weight="bold">{entry.title}</Text><Text variant="caption" tone="muted">{entry.subtitle}</Text></View><Icon name="chevron-right" color={palette.accent} />
+        </Pressable>
+      ))}
+      {query.trim() && results.length === 0 ? <View style={{ minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: space.sm }}><Icon name="magnify-close" size={36} color={palette.textMuted} /><Text variant="heading">No matching result</Text><Text variant="caption" tone="muted">Try a category, shop or product name.</Text></View> : null}
     </CatalogPage>
   );
 }
@@ -227,10 +307,21 @@ function InfoChip({ icon, text }: { icon: IconName; text: string }) {
   return <View style={{ flex: 1, minHeight: 54, borderRadius: radius.md, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center', gap: 2 }}><Icon name={icon} size={17} color={palette.accent} /><Text variant="micro" align="center">{text}</Text></View>;
 }
 
-function OptionRow({ title, options }: { title: string; options: readonly string[] }) {
+function OptionRow({ title, options, selected, onSelect }: { title: string; options: readonly string[]; selected: string; onSelect: (value: string) => void }) {
   const { palette } = useTheme();
-  const selected = options[0];
-  return <View style={{ gap: space.sm }}><Text variant="label" weight="bold">{title}</Text><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>{options.map((option) => <View key={option} style={{ minHeight: 42, justifyContent: 'center', paddingHorizontal: space.md, borderRadius: radius.pill, backgroundColor: option === selected ? palette.inverse : palette.surface, borderWidth: 1, borderColor: option === selected ? palette.inverse : palette.line }}><Text variant="caption" tone={option === selected ? 'onInverse' : 'default'}>{option}</Text></View>)}</View></View>;
+  return <View style={{ gap: space.sm }}><Text variant="label" weight="bold">{title}</Text><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>{options.map((option) => <Pressable key={option} onPress={() => onSelect(option)} accessibilityRole="radio" accessibilityState={{ selected: option === selected }} style={{ minHeight: 42, justifyContent: 'center', paddingHorizontal: space.md, borderRadius: radius.pill, backgroundColor: option === selected ? palette.inverse : palette.surface, borderWidth: 1, borderColor: option === selected ? palette.inverse : palette.line }}><Text variant="caption" tone={option === selected ? 'onInverse' : 'default'}>{option}</Text></Pressable>)}</View></View>;
+}
+
+function QuantityControl({ value, onChange, compact = false }: { value: number; onChange: (value: number) => void; compact?: boolean }) {
+  const { palette } = useTheme();
+  return <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: compact ? 'flex-end' : 'space-between', gap: space.md }}>
+    {!compact ? <Text variant="label" weight="bold">Quantity</Text> : null}
+    <View style={{ flexDirection: 'row', alignItems: 'center', borderRadius: radius.pill, backgroundColor: palette.surfaceMuted, overflow: 'hidden' }}>
+      <Pressable onPress={() => onChange(Math.max(compact ? 0 : 1, value - 1))} accessibilityRole="button" accessibilityLabel="Decrease quantity" style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}><Icon name="minus" color={palette.text} /></Pressable>
+      <Text variant="label" weight="bold" align="center" style={{ minWidth: 28 }}>{value}</Text>
+      <Pressable onPress={() => onChange(Math.min(20, value + 1))} accessibilityRole="button" accessibilityLabel="Increase quantity" style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}><Icon name="plus" color={palette.text} /></Pressable>
+    </View>
+  </View>;
 }
 
 function Notice({ icon, text }: { icon: IconName; text: string }) {
@@ -238,9 +329,9 @@ function Notice({ icon, text }: { icon: IconName; text: string }) {
   return <View style={{ flexDirection: 'row', gap: space.sm, padding: space.md, borderRadius: radius.md, backgroundColor: palette.accentSoft }}><Icon name={icon} color={palette.accent} /><Text variant="caption" style={{ flex: 1 }}>{text}</Text></View>;
 }
 
-function PrimaryButton({ label, onPress, disabled = false }: { label: string; onPress: () => void; disabled?: boolean }) {
+function PrimaryButton({ label, onPress, disabled = false, secondary = false }: { label: string; onPress: () => void; disabled?: boolean; secondary?: boolean }) {
   const { palette } = useTheme();
-  return <Pressable disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} style={({ pressed }) => ({ minHeight: 52, borderRadius: radius.md, opacity: disabled ? 0.55 : 1, backgroundColor: pressed ? palette.accentPressed : palette.accent, alignItems: 'center', justifyContent: 'center' })}><Text variant="label" tone="onAccent" weight="bold">{label}</Text></Pressable>;
+  return <Pressable disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} style={({ pressed }) => ({ minHeight: 52, borderRadius: radius.md, opacity: disabled ? 0.55 : 1, backgroundColor: secondary ? (pressed ? palette.surfaceMuted : palette.surface) : (pressed ? palette.accentPressed : palette.accent), borderWidth: secondary ? 1 : 0, borderColor: palette.line, alignItems: 'center', justifyContent: 'center' })}><Text variant="label" tone={secondary ? 'default' : 'onAccent'} weight="bold">{label}</Text></Pressable>;
 }
 
 function DataSourceNote({ live }: { live: boolean }) {
@@ -323,4 +414,37 @@ function conditionLabel(value: string): string {
 
 function isServiceId(value: string): value is ServiceId {
   return value === 'food' || value === 'shops' || value === 'pharmacy' || value === 'local-market' || value === 'declutter' || value === 'logistics';
+}
+
+function findPreviewProduct(productId: string): (Product & { service: ServiceId }) | undefined {
+  for (const service of Object.keys(PRODUCTS) as ServiceId[]) {
+    const product = PRODUCTS[service].find((item) => item.id === productId);
+    if (product) return { ...product, service };
+  }
+  return undefined;
+}
+
+function merchantLabel(slug: string | null): string {
+  if (!slug) return 'this merchant';
+  for (const service of Object.keys(MERCHANTS) as ServiceId[]) {
+    const merchant = MERCHANTS[service].find((item) => item.id === slug);
+    if (merchant) return merchant.name;
+  }
+  return slug.replace(/-/g, ' ');
+}
+
+function searchPreview(query: string): Array<{ id: string; service: ServiceId; kind: 'merchant' | 'product'; title: string; subtitle: string; route: AppRoute }> {
+  const needle = query.trim().toLowerCase();
+  const entries: Array<{ id: string; service: ServiceId; kind: 'merchant' | 'product'; title: string; subtitle: string; route: AppRoute }> = [];
+  for (const service of Object.keys(MERCHANTS) as ServiceId[]) {
+    for (const merchant of MERCHANTS[service]) {
+      entries.push({ id: merchant.id, service, kind: 'merchant', title: merchant.name, subtitle: `${SERVICE_COPY[service].title} · ${merchant.description}`, route: { name: 'customer.store', params: { category: service, id: merchant.id } } });
+    }
+    const store = MERCHANTS[service][0];
+    for (const product of PRODUCTS[service]) {
+      entries.push({ id: product.id, service, kind: 'product', title: product.name, subtitle: `${SERVICE_COPY[service].title} · ${product.price}`, route: { name: 'customer.product', params: { category: service, store: store?.id ?? '', id: product.id } } });
+    }
+  }
+  const filtered = needle ? entries.filter((entry) => `${entry.title} ${entry.subtitle}`.toLowerCase().includes(needle)) : entries.filter((entry) => entry.kind === 'product');
+  return filtered.slice(0, needle ? 20 : 8);
 }

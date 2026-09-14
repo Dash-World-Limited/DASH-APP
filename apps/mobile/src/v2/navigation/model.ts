@@ -7,17 +7,25 @@ export type CustomerRoute =
   | 'customer.support'
   | 'customer.account'
   | 'customer.notifications'
+  | 'customer.search'
   | 'customer.category'
   | 'customer.store'
   | 'customer.product'
-  | 'customer.cart';
+  | 'customer.cart'
+  | 'customer.checkout'
+  | 'customer.track-order';
 
 export type RiderRoute =
   | 'rider.home'
   | 'rider.earnings'
   | 'rider.orders'
   | 'rider.inbox'
-  | 'rider.profile';
+  | 'rider.profile'
+  | 'rider.online'
+  | 'rider.offer'
+  | 'rider.delivery'
+  | 'rider.route'
+  | 'rider.complete';
 
 export type RouteName = CustomerRoute | RiderRoute;
 

@@ -8,7 +8,7 @@ import {
 } from '@expo-google-fonts/manrope';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { BackHandler, Pressable, ScrollView, Switch, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
@@ -17,6 +17,7 @@ import naira500 from '../../assets/fonts/DashNairaSign-500.ttf';
 import naira600 from '../../assets/fonts/DashNairaSign-600.ttf';
 import naira700 from '../../assets/fonts/DashNairaSign-700.ttf';
 import naira800 from '../../assets/fonts/DashNairaSign-800.ttf';
+import { CartProvider } from '../features/CartProvider';
 import { ModeProvider, useAppMode } from '../features/ModeProvider';
 import { ThemeProvider, useTheme } from '../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../theme/tokens';
@@ -24,8 +25,10 @@ import { Icon, type IconName } from '../ui/Icon';
 import { Text } from '../ui/Text';
 import type { ServiceId } from './artwork/CategoryArtwork';
 import { CategoryPhoto } from './artwork/CategoryPhoto';
+import { AccountSessionCard } from './auth/AccountSessionCard';
+import { AppSessionProvider } from './auth/AppSessionProvider';
 import { Wordmark } from './brand/Wordmark';
-import { CartScreen, CategoryDashboard, ProductDetail, Storefront } from './catalog/CatalogScreens';
+import { CartScreen, CategoryDashboard, CustomerSearchScreen, ProductDetail, Storefront } from './catalog/CatalogScreens';
 import {
   CUSTOMER_TABS,
   RIDER_TABS,
@@ -39,6 +42,9 @@ import {
   type AppRoute,
   type NavigationState,
 } from './navigation/model';
+import { CustomerCheckoutScreen, CustomerOrdersScreen, CustomerTrackingScreen } from './orders/CustomerOrderScreens';
+import { RiderFlowProvider, useRiderFlow } from './rider/RiderFlowProvider';
+import { RiderCompleteScreen, RiderDeliveryScreen, RiderOfferScreen, RiderOnlineScreen, RiderOrdersScreen, RiderRouteScreen } from './rider/RiderScreens';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -65,7 +71,13 @@ export default function DashApp() {
     <SafeAreaProvider>
       <ThemeProvider>
         <ModeProvider>
-          <Bootstrap />
+          <AppSessionProvider>
+            <CartProvider>
+              <RiderFlowProvider>
+                <Bootstrap />
+              </RiderFlowProvider>
+            </CartProvider>
+          </AppSessionProvider>
         </ModeProvider>
       </ThemeProvider>
     </SafeAreaProvider>
@@ -157,7 +169,7 @@ function RouteView({
     case 'customer.home':
       return <CustomerHome onPush={onPush} />;
     case 'customer.orders':
-      return <EmptyPage title="Orders" icon="receipt-text-outline" body="Active deliveries and completed orders will appear here as separate sections." />;
+      return <CustomerOrdersScreen onTrack={(id) => onPush({ name: 'customer.track-order', params: { id } })} onAccount={() => onPush({ name: 'customer.account' })} />;
     case 'customer.wallet':
       return <EmptyPage title="DASH Wallet" icon="wallet-outline" body="Your balance, refunds, credits and payment methods appear after sign-in is connected." />;
     case 'customer.support':
@@ -166,6 +178,8 @@ function RouteView({
       return <CustomerAccount onBack={onBack} onSwitch={() => onSwitchFace('rider')} />;
     case 'customer.notifications':
       return <DetailPage title="Notifications" onBack={onBack}><EmptyState icon="bell-outline" title="You’re all caught up" body="Order and account updates will arrive here." /></DetailPage>;
+    case 'customer.search':
+      return <CustomerSearchScreen onBack={onBack} onPush={onPush} />;
     case 'customer.category':
       return <CategoryDashboard id={route.params?.id ?? 'food'} onBack={onBack} onPush={onPush} />;
     case 'customer.store':
@@ -173,17 +187,31 @@ function RouteView({
     case 'customer.product':
       return <ProductDetail category={route.params?.category ?? 'food'} merchantId={route.params?.store ?? ''} productId={route.params?.id ?? ''} onBack={onBack} onCart={() => onPush({ name: 'customer.cart', params: { product: route.params?.id ?? '' } })} />;
     case 'customer.cart':
-      return <CartScreen onBack={onBack} />;
+      return <CartScreen onBack={onBack} onCheckout={() => onPush({ name: 'customer.checkout' })} />;
+    case 'customer.checkout':
+      return <CustomerCheckoutScreen onBack={onBack} onAccount={() => onPush({ name: 'customer.account' })} onTrack={(id) => onPush({ name: 'customer.track-order', params: { id } })} />;
+    case 'customer.track-order':
+      return <CustomerTrackingScreen orderId={route.params?.id ?? 'preview-order-active'} onBack={onBack} />;
     case 'rider.home':
       return <RiderHome onPush={onPush} />;
     case 'rider.earnings':
       return <RiderEarnings />;
     case 'rider.orders':
-      return <EmptyPage title="Orders" icon="clipboard-text-outline" body="Active delivery appears first. Completed and cancelled deliveries remain in History below it." />;
+      return <RiderOrdersScreen onOpen={() => onPush({ name: 'rider.delivery' })} />;
     case 'rider.inbox':
       return <RiderInbox />;
     case 'rider.profile':
       return <RiderProfile onSwitch={() => onSwitchFace('customer')} />;
+    case 'rider.online':
+      return <RiderOnlineScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} />;
+    case 'rider.offer':
+      return <RiderOfferScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} />;
+    case 'rider.delivery':
+      return <RiderDeliveryScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} />;
+    case 'rider.route':
+      return <RiderRouteScreen onBack={onBack} />;
+    case 'rider.complete':
+      return <RiderCompleteScreen onBack={onBack} />;
   }
 }
 
@@ -218,17 +246,18 @@ function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
         </Pressable>
       </Pressable>
 
-      <View style={{ minHeight: 50, borderRadius: radius.md, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.md, gap: space.sm }}>
+      <Pressable onPress={() => onPush({ name: 'customer.search' })} accessibilityRole="button" accessibilityLabel="Search DASH" style={{ minHeight: 50, borderRadius: radius.md, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.md, gap: space.sm }}>
         <Icon name="magnify" color={palette.textMuted} />
         <TextInput
           placeholder="Search restaurants, shops, pharmacy…"
           placeholderTextColor={palette.textSubtle}
           editable={false}
+          pointerEvents="none"
           accessibilityLabel="Search DASH"
           style={{ flex: 1, color: palette.text, fontFamily: 'Manrope_500Medium', fontSize: 14 }}
         />
         <Icon name="tune-variant" color={palette.text} />
-      </View>
+      </Pressable>
 
       <View>
         <Text variant="heading" style={{ marginBottom: space.md }}>What do you need?</Text>
@@ -292,7 +321,14 @@ function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: stri
 
 function RiderHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   const { palette } = useTheme();
-  const [online, setOnline] = useState(false);
+  const flow = useRiderFlow();
+  const changeAvailability = (next: boolean) => {
+    if (next) {
+      void flow.goOnline().then((ok) => ok && onPush({ name: 'rider.online' }));
+    } else {
+      void flow.goOffline();
+    }
+  };
   return (
     <Page testID="rider-home-v2">
       <Header right={<AvatarButton label="Open rider profile" initials="DR" onPress={() => onPush({ name: 'rider.profile' })} />} />
@@ -310,10 +346,12 @@ function RiderHome({ onPush }: { onPush: (route: AppRoute) => void }) {
         </Surface>
       </Pressable>
       <Surface row>
-        <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: online ? palette.success : palette.textSubtle }} />
-        <Text variant="heading" style={{ flex: 1 }}>{online ? 'Online' : 'Offline'}</Text>
-        <Switch value={online} onValueChange={setOnline} trackColor={{ false: palette.sand, true: palette.accent }} thumbColor={palette.surface} accessibilityLabel={online ? 'Go offline' : 'Go online'} />
+        <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: flow.online ? palette.success : palette.textSubtle }} />
+        <Pressable disabled={!flow.online} onPress={() => onPush({ name: 'rider.online' })} style={{ flex: 1 }}><Text variant="heading">{flow.busy ? 'Updating…' : flow.online ? 'Online' : 'Offline'}</Text>{flow.online ? <Text variant="micro" tone="accent">Tap to view dispatch</Text> : null}</Pressable>
+        <Switch disabled={flow.busy} value={flow.online} onValueChange={changeAvailability} trackColor={{ false: palette.sand, true: palette.accent }} thumbColor={palette.surface} accessibilityLabel={flow.online ? 'Go offline' : 'Go online'} />
       </Surface>
+      {flow.error ? <Surface row><Icon name="alert-circle-outline" color={palette.danger} /><Text variant="caption" style={{ flex: 1, color: palette.danger }}>{flow.error}</Text></Surface> : null}
+      {flow.delivery && flow.delivery.status !== 'delivered' ? <Pressable onPress={() => onPush({ name: 'rider.delivery' })}><Surface row><Icon name="bike-fast" color={palette.accent} /><View style={{ flex: 1 }}><Text variant="caption" tone="muted">Active delivery</Text><Text variant="label" weight="bold">{flow.delivery.code}</Text></View><Icon name="chevron-right" color={palette.accent} /></Surface></Pressable> : null}
       <View style={{ flexDirection: 'row', gap: space.sm }}>
         <Metric value="0" label="Trips" />
         <Metric value="—" label="Rating" />
@@ -347,7 +385,7 @@ function RiderProfile({ onSwitch }: { onSwitch: () => void }) {
 }
 
 function CustomerAccount({ onBack, onSwitch }: { onBack: () => void; onSwitch: () => void }) {
-  return <DetailPage title="Account" onBack={onBack}><ProfileHero initials="DU" title="Welcome to DASH" subtitle="Sign in and session restore arrive in the account connection milestone." /><AppearanceControl /><SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" /><SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" /><SettingsRow icon="bell-outline" title="Notifications" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} /></DetailPage>;
+  return <DetailPage title="Account" onBack={onBack}><ProfileHero initials="DU" title="Welcome to DASH" subtitle="Your customer account, preferences and Rider access stay in one app." /><AccountSessionCard /><AppearanceControl /><SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" /><SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" /><SettingsRow icon="bell-outline" title="Notifications" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} /></DetailPage>;
 }
 
 function EmptyPage({ title, icon, body }: { title: string; icon: IconName; body: string }) {
