@@ -5,7 +5,7 @@
  * contract in `@dash/domain/services` — the same list the API serves at
  * /v1/service-categories. Nothing here redefines them. What lives here is only
  * presentation the contract deliberately leaves to clients: the board's
- * title-case label, the line beneath it, the illustration, and where a tap
+ * title-case label, the line beneath it, the photograph, and where a tap
  * goes.
  *
  * Keyed by `ServiceCategoryId`, so a seventh service added to the contract is a
@@ -21,12 +21,13 @@ import {
 import type { Href } from 'expo-router';
 import type { ImageSourcePropType } from 'react-native';
 
-import declutterArt from '../../assets/staging/customer/service-declutter.png';
-import foodArt from '../../assets/staging/customer/service-food.png';
-import marketArt from '../../assets/staging/customer/service-local-market.png';
-import logisticsArt from '../../assets/staging/customer/service-logistics.png';
-import pharmacyArt from '../../assets/staging/customer/service-pharmacy.png';
-import shopsArt from '../../assets/staging/customer/service-shops.png';
+// Photography, not the board's drawings; source and licence to confirm (assets/services/README.md).
+import declutterArt from '../../assets/services/declutter.png';
+import foodArt from '../../assets/services/food.png';
+import marketArt from '../../assets/services/local-market.png';
+import logisticsArt from '../../assets/services/logistics.png';
+import pharmacyArt from '../../assets/services/pharmacy.png';
+import shopsArt from '../../assets/services/shops.png';
 
 export interface ServicePresentation {
   /** The board's copy. The contract's all-caps label is the analytics name. */
