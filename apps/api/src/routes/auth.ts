@@ -38,6 +38,7 @@ import { writeAudit } from '@dash/db';
 import { requiresMfa } from '@dash/domain/mfa';
 import type { Role } from '@dash/domain/permissions';
 import { createChallenge, isMfaActive } from '../auth/mfa.js';
+import { describeDeliveryFailure, otpReference, sendOtpEmail, sendOtpSms } from '../auth/otp-delivery.js';
 import { revokeAllDeviceTokens, revokeDeviceToken } from '../push/registration.js';
 import { ApiError } from '../http/errors.js';
 import { actorOf, authenticate, requireAuth } from '../http/context.js';
@@ -121,6 +122,26 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   const issueAccessFor = (identityId: string, sessionId: string) =>
     issueAccessForShared(prisma, config, identityId, sessionId);
 
+  /**
+   * True when this destination was sent a code within the cooldown, or has
+   * reached the hourly cap. Counts every purpose: each one is a message sent
+   * to the same person at DASH's cost.
+   */
+  async function destinationThrottled(destination: string): Promise<boolean> {
+    const recent = await prisma.otpChallenge.findMany({
+      where: { destination, createdAt: { gt: new Date(Date.now() - 3_600_000) } },
+      orderBy: { createdAt: 'desc' },
+      take: config.OTP_MAX_CODES_PER_HOUR,
+      select: { createdAt: true },
+    });
+    if (recent.length >= config.OTP_MAX_CODES_PER_HOUR) return true;
+    const latest = recent[0];
+    return (
+      latest !== undefined &&
+      Date.now() - latest.createdAt.getTime() < config.OTP_RESEND_COOLDOWN_SECONDS * 1000
+    );
+  }
+
   // -------------------------------------------------------------------------
   // POST /v1/auth/otp/request
   // -------------------------------------------------------------------------
@@ -148,7 +169,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         select: { id: true, status: true, emailVerifiedAt: true, displayName: true },
       });
 
-      // Always do the same work and return the same shape, account or not.
+      // Always return the same shape, account or not.
       let issuedCode: string | null = null;
 
       const usable =
@@ -156,9 +177,13 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         identity.status === 'active' &&
         (destination.channel === 'sms' || identity.emailVerifiedAt !== null);
 
-      if (identity && usable) {
+      // Per-destination throttle (see OTP_RESEND_COOLDOWN_SECONDS). Only an
+      // account can have codes, so only an account can be throttled, and a
+      // throttled request is answered exactly like every other one.
+      const throttled = usable && (await destinationThrottled(destination.value));
+
+      if (identity && usable && !throttled) {
         const code = generateOtp(6);
-        issuedCode = code;
 
         // Invalidate any outstanding codes for this destination so an older code
         // cannot be used after a new one is requested.
@@ -167,7 +192,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
           data: { consumedAt: new Date() },
         });
 
-        await prisma.otpChallenge.create({
+        const challenge = await prisma.otpChallenge.create({
           data: {
             identityId: identity.id,
             destination: destination.value,
@@ -177,26 +202,42 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
             maxAttempts: config.OTP_MAX_ATTEMPTS,
             expiresAt: new Date(Date.now() + config.OTP_TTL_SECONDS * 1000),
           },
+          select: { id: true },
         });
 
-        const minutes = Math.round(config.OTP_TTL_SECONDS / 60);
-
-        if (destination.channel === 'sms') {
-          await sms.send({
-            to: destination.value,
-            body: `Your DASH APP code is ${code}. It expires in ${minutes} minutes.`,
-            reference: `otp_${body.purpose}`,
+        const message = {
+          code,
+          ttlSeconds: config.OTP_TTL_SECONDS,
+          purpose: body.purpose,
+          displayName: identity.displayName,
+        };
+        try {
+          if (destination.channel === 'sms') await sendOtpSms(sms, destination.value, message);
+          else await sendOtpEmail(email, destination.value, message);
+          issuedCode = code;
+        } catch (error) {
+          // A delivery failure (SES refusing an unverified address while the
+          // account is sandboxed, a provider outage) happens only for a real
+          // account, so answering it differently would tell a caller the
+          // account exists. Answer as usual, retire the code that never
+          // arrived, and record the failure without the body.
+          await prisma.otpChallenge.update({
+            where: { id: challenge.id },
+            data: { consumedAt: new Date() },
           });
-        } else {
-          const greeting = identity.displayName ? `Hello ${identity.displayName},` : 'Hello,';
-          await email.send({
-            to: destination.value,
-            subject: `${code} is your DASH sign-in code`,
-            text: `${greeting}\n\nYour DASH sign-in code is ${code}.\nIt expires in ${minutes} minutes.\n\nIf you did not try to sign in, ignore this email. Nobody can use this code without it.\n\nDASH World Limited`,
-            html: `<p>${greeting}</p><p>Your DASH sign-in code is <strong style="font-size:20px;letter-spacing:2px">${code}</strong></p><p>It expires in ${minutes} minutes.</p><p>If you did not try to sign in, ignore this email. Nobody can use this code without it.</p><p>DASH World Limited</p>`,
-            reference: `otp_${body.purpose}`,
-          });
+          request.log.warn(
+            {
+              channel: destination.channel,
+              reference: otpReference(body.purpose),
+              provider: destination.channel === 'sms' ? sms.providerName : email.providerName,
+              ...describeDeliveryFailure(error),
+            },
+            'otp delivery failed',
+          );
         }
+      } else {
+        // The issuing path's dominant cost is the hash; pay it here too.
+        await hashOtp(generateOtp(6));
       }
 
       // Development convenience: return the code in the response so local work
@@ -214,6 +255,9 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       return {
         sent: true,
         expiresInSeconds: config.OTP_TTL_SECONDS,
+        // A constant, never account-dependent: the client counts down before
+        // offering "Send again", which is also when the server would send.
+        resendAfterSeconds: config.OTP_RESEND_COOLDOWN_SECONDS,
         message: 'If that account exists, a code is on its way.',
         // Note this is only ever present for a real account, so it cannot be
         // used to distinguish one — the absence of the field is identical to

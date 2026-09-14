@@ -166,7 +166,7 @@ Two properties worth naming because they are easy to get backwards:
 | Endpoint | Method | Auth | Notes | Cov |
 |---|---|---|---|---|
 | `/v1/auth/login` | POST | none | Staff receive an MFA challenge, **not** a session | ✅ |
-| `/v1/auth/otp/request` | POST | none | Identical response whether or not the number exists | ✅ |
+| `/v1/auth/otp/request` | POST | none | Identical response whether or not the number or address exists, including when throttled per destination or when delivery fails | ✅ |
 | `/v1/auth/otp/verify` | POST | none | Single-use, attempt-limited | ✅ |
 | `/v1/auth/refresh` | POST | refresh cookie + CSRF | Rotates; reuse revokes the family | ✅ |
 | `/v1/auth/logout` | POST | session | | ✅ |

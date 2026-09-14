@@ -178,6 +178,20 @@ describe('DEV_EXPOSE_OTP is refused in production', () => {
   });
 });
 
+describe('the per-destination OTP resend cooldown', () => {
+  it('refuses a cooldown under 30 seconds in production', () => {
+    expectRefusal({ OTP_RESEND_COOLDOWN_SECONDS: '0' }, 'OTP_RESEND_COOLDOWN_SECONDS');
+    expectRefusal({ OTP_RESEND_COOLDOWN_SECONDS: '29' }, 'OTP_RESEND_COOLDOWN_SECONDS');
+  });
+
+  it('defaults to a minute and five codes an hour', () => {
+    resetConfigCache();
+    const config = loadConfig(productionEnv());
+    expect(config.OTP_RESEND_COOLDOWN_SECONDS).toBe(60);
+    expect(config.OTP_MAX_CODES_PER_HOUR).toBe(5);
+  });
+});
+
 describe('development secrets are refused in production', () => {
   it('refuses the .env.example placeholder', () => {
     expectRefusal(

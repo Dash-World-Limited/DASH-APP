@@ -62,6 +62,10 @@ function testEnv(databaseUrl: string): NodeJS.ProcessEnv {
     REFRESH_TOKEN_TTL_SECONDS: '2592000',
     OTP_TTL_SECONDS: '300',
     OTP_MAX_ATTEMPTS: '5',
+    // Off for the suite at large, which requests codes back to back; the OTP
+    // delivery suite turns both on to test them.
+    OTP_RESEND_COOLDOWN_SECONDS: '0',
+    OTP_MAX_CODES_PER_HOUR: '1000',
     DEV_EXPOSE_OTP: 'true',
     LOG_LEVEL: 'silent',
     PUBLIC_WEB_URL: 'http://127.0.0.1:3000',

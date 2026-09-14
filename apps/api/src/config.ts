@@ -52,6 +52,15 @@ const shape = z
 
     OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
     OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+    /**
+     * Per destination (phone or email address), not per client: the IP rate
+     * limit alone lets anyone with rotating addresses flood one inbox, and
+     * every email or SMS costs money. Within the cooldown, or past the hourly
+     * cap, a request is answered exactly like any other and nothing is sent;
+     * the code already issued stays valid.
+     */
+    OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(60),
+    OTP_MAX_CODES_PER_HOUR: z.coerce.number().int().positive().default(5),
     DEV_EXPOSE_OTP: booleanish.default('false'),
 
     DEFAULT_CURRENCY: z.literal('NGN').default('NGN'),
@@ -445,6 +454,13 @@ const schema = shape
 
     if (env.DEV_EXPOSE_OTP) {
       fail('DEV_EXPOSE_OTP', 'DEV_EXPOSE_OTP must be false in production — it returns login codes in the API response');
+    }
+
+    if (env.OTP_RESEND_COOLDOWN_SECONDS < 30) {
+      fail(
+        'OTP_RESEND_COOLDOWN_SECONDS',
+        'OTP_RESEND_COOLDOWN_SECONDS must be at least 30 in production — without it one address can be sent a code on every request',
+      );
     }
 
     if (!env.MFA_ENABLED) {

@@ -209,7 +209,7 @@ everyone behind the same NAT. Tighter per-route limits where abuse is cheap:
 
 | Route | Limit | Why |
 |---|---|---|
-| `POST /v1/auth/otp/request` | 5 / 10 min | Sends SMS. Costs money, and can be weaponised to spam a stranger's phone. |
+| `POST /v1/auth/otp/request` | 5 / 10 min per client, and per destination: one code per 60 s, 5 per hour | Sends SMS or email. Costs money, and can be weaponised to spam a stranger's phone or inbox; the per-destination limit holds even against rotating IPs. |
 | `POST /v1/auth/otp/verify` | 10 / 10 min | Brute-forcing a 6-digit code. |
 | `POST /v1/auth/login` | 10 / 15 min | Credential stuffing. |
 | `POST /v1/rider/deliveries/:id/complete` | 8 / 10 min | A 4-digit PIN is only 10,000 possibilities; the attempt limit is what makes it meaningful. |
@@ -219,7 +219,12 @@ everyone behind the same NAT. Tighter per-route limits where abuse is cheap:
 ### No user enumeration
 
 - `POST /v1/auth/otp/request` returns an identical response whether or not the
-  number has an account.
+  number or address has an account — including when the per-destination
+  throttle holds the request, and when the email or SMS provider refuses the
+  message (SES in sandbox refuses unverified recipients). A failed delivery
+  retires its code and is logged by provider and error name only, never with
+  the message body, which is the code. `resendAfterSeconds` in the response is
+  the configured constant, never account-dependent.
 - `POST /v1/auth/login` compares against a decoy hash when the account does not
   exist, so response time does not reveal which emails are registered, and
   returns the same message for a wrong password and a missing account.
