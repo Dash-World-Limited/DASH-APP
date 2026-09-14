@@ -46,7 +46,7 @@ export default function RiderHome() {
     <Screen testID="rider-home">
       <View style={{ paddingHorizontal: space.gutter, gap: space.md }}>
         <View style={{ height: 52, alignItems: 'center', justifyContent: 'center' }}>
-          <Wordmark height={26} />
+          <Wordmark />
           <Pressable
             onPress={() => router.push('/rider/profile')}
             accessibilityRole="button"

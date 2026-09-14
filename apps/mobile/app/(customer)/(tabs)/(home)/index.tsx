@@ -43,7 +43,7 @@ export default function CustomerHome() {
     <Screen testID="customer-home">
       <View style={{ paddingHorizontal: space.gutter, gap: space.lg }}>
         <View style={{ height: 52, alignItems: 'center', justifyContent: 'center' }}>
-          <Wordmark height={26} />
+          <Wordmark />
           <Pressable
             onPress={() => router.push('/account')}
             accessibilityRole="button"

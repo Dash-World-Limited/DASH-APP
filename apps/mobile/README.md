@@ -109,7 +109,7 @@ src/
   api/                  client, session, errors — dependencies injected, tested
   data/                 view models, the six-service presentation, STAGING fixtures
   features/             cart, quick-add, offer clock, mode, saved — pure logic, tested
-assets/brand/           the approved DASH wordmark (interim raster — see below)
+assets/brand/           SVG masters of the DASH wordmark, light and dark (see below)
 assets/fonts/           the Naira-sign faces (Manrope has no ₦)
 assets/staging/         interim imagery cropped from the boards (see its README)
 ```
@@ -162,10 +162,18 @@ reported for a director decision rather than silently decided.
 
 ## Interim assets
 
-- **Wordmark**: cropped from the Customer board's footer, keyed and upscaled —
-  the approved mark, not a redrawing, but soft at device resolution. The Dark
-  variant only lightens the graphite letters and is unapproved. Needed: the
-  master file (SVG) and an approved dark version.
+- **Wordmark (locked brand requirement)**: a vector *measured* from the four
+  appearances of the mark on the Customer and Rider boards. Each letter was
+  fitted as geometry to the board pixels and the four measurements were
+  averaged. No letter was drawn by eye, and "DASH" is never typed. It renders
+  sharp at every density, and the Home headers use the boards' letter height
+  of 24 pt. The method, numbers and a side-by-side check against the boards
+  are in
+  [`docs/design/boards/2026-09-13/wordmark`](../../docs/design/boards/2026-09-13/wordmark/README.md).
+  The Dark variant changes only the graphite letters, to off-white, and is not
+  yet approved. Needed: the master SVG, an approved dark version, and
+  confirmation of the small bronze bar in the A (on four of five board
+  appearances).
 - **Imagery**: cropped from the boards. Needed: master illustrations for the six
   services, and merchant photography via catalogue upload.
 - **₦**: Inter's Naira sign, subset per weight (OFL, licence in `assets/fonts`).

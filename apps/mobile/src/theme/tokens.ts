@@ -31,6 +31,18 @@ export interface MapPalette {
   destinationPin: string;
 }
 
+/**
+ * The DASH wordmark's two inks. Measured from the letter interiors on the
+ * boards (see docs/design/boards/2026-09-13/wordmark), and deliberately not
+ * `accent`: the mark's bronze is lighter and warmer than the button bronze.
+ */
+export interface WordmarkPalette {
+  /** The D and the open A. */
+  lead: string;
+  /** The S, the H and the bar in the A. The same in both schemes. */
+  bronze: string;
+}
+
 export interface Palette {
   /** Screen ground. Warm ivory. */
   background: string;
@@ -74,6 +86,7 @@ export interface Palette {
   scrim: string;
 
   map: MapPalette;
+  wordmark: WordmarkPalette;
   /** Which system status-bar content style reads on `background`. */
   statusBar: 'dark' | 'light';
 }
@@ -127,6 +140,7 @@ const light: Palette = {
     dropoffPin: '#D93A32',
     destinationPin: '#F0780C',
   },
+  wordmark: { lead: '#1D1D1D', bronze: '#B18546' },
   statusBar: 'dark',
 };
 
@@ -176,6 +190,12 @@ const dark: Palette = {
     dropoffPin: '#E5605A',
     destinationPin: '#F59A45',
   },
+  /*
+   * The boards show the mark on light grounds only. On a dark ground the
+   * graphite letters take the scheme's warm off-white; the bronze is kept
+   * exactly (5.8:1 on #0E0F11), so the mark changes colour, not shape.
+   */
+  wordmark: { lead: '#F4F1EA', bronze: '#B18546' },
   statusBar: 'light',
 };
 
