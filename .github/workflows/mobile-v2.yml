@@ -1,8 +1,10 @@
 name: Native v2 Android
 
 on:
-  # Manual checkpoints prevent intermediate rebuild work from sending noisy
-  # failure emails or cancelling an expensive native compile.
+  push:
+    branches: [codex/native-mobile-v2-rebuild]
+    paths:
+      - '.github/workflows/mobile-v2.yml'
   workflow_dispatch:
 
 concurrency:
