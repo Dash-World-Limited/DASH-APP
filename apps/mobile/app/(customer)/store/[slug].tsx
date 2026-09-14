@@ -11,27 +11,31 @@
  * appears at the foot. The board shows the empty state; without the bar a
  * customer who tapped a plus would have no way to reach what they added.
  *
- * STAGING DATA — see the note at the foot of the screen.
+ * Live when the build has an API: `GET /v1/vendors/:slug` gives the shop, its
+ * own shelves (in the shop's order) and its products; shops have no photos in
+ * the API yet, so the hero and product tiles draw the designed placeholders
+ * (commerce/Placeholders). Without an API the staging fixtures are drawn and
+ * the foot of the screen says so.
  */
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Image } from 'expo-image';
 import { StatusBar } from 'expo-status-bar';
 import { useMemo, useState } from 'react';
 import { ScrollView, Share, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { RatingLine } from '../../../src/commerce/MerchantCards';
+import { CoverArt } from '../../../src/commerce/Placeholders';
 import { ProductCard } from '../../../src/commerce/ProductCard';
 import { SampleDataNote } from '../../../src/commerce/Promotions';
-import { PRODUCTS, STOREFRONT_HERO, STOREFRONT_SHELVES, merchantBySlug } from '../../../src/data/staging';
+import { useStorefront } from '../../../src/data/useCatalog';
 import { useCart } from '../../../src/features/CartProvider';
 import { quickAddPlan } from '../../../src/features/quickAdd';
 import { useAddToCart } from '../../../src/features/useAddToCart';
 import { useSaved } from '../../../src/features/saved';
 import { useTheme } from '../../../src/theme/ThemeProvider';
 import { space } from '../../../src/theme/tokens';
-import { ActionFooter, Avatar, Button, Chip, EmptyState, IconButton, Text } from '../../../src/ui';
+import { ActionFooter, Avatar, Button, Chip, EmptyState, ErrorState, IconButton, Skeleton, Text } from '../../../src/ui';
 
 const HERO_HEIGHT = 240;
 
@@ -45,34 +49,53 @@ export default function Storefront() {
   const [shelf, setShelf] = useState<string>('all');
   const { isSaved, toggle } = useSaved();
 
-  const merchant = merchantBySlug(slug ?? '');
+  const store = useStorefront(slug);
   const products = useMemo(
-    () => PRODUCTS.filter((p) => p.merchantSlug === slug && (shelf === 'all' || p.shelf === shelf)),
-    [slug, shelf],
+    () => (store.data?.products ?? []).filter((p) => shelf === 'all' || p.shelf === shelf),
+    [store.data, shelf],
   );
 
-  if (!merchant) {
+  if (store.status !== 'ready' || !store.data) {
     return (
-      <View style={{ flex: 1, paddingTop: insets.top, backgroundColor: palette.background }}>
-        <EmptyState icon="storefront-outline" title="Shop not found" body="This shop is not available right now." action="Back to Shops" onAction={() => router.back()} />
+      <View style={{ flex: 1, paddingTop: insets.top, backgroundColor: palette.background }} testID="storefront-state">
+        <IconButton icon="chevron-left" size={30} label="Back" onPress={() => router.back()} />
+        {store.status === 'loading' ? (
+          <View style={{ paddingHorizontal: space.gutter, gap: space.lg }} accessibilityLabel="Loading shop">
+            <Skeleton style={{ height: 180, borderRadius: 16 }} />
+            <Skeleton style={{ width: 200, height: 24 }} />
+            <Skeleton style={{ width: 140, height: 16 }} />
+            <View style={{ flexDirection: 'row', gap: space.md }}>
+              <Skeleton style={{ flex: 1, height: 170, borderRadius: 16 }} />
+              <Skeleton style={{ flex: 1, height: 170, borderRadius: 16 }} />
+            </View>
+          </View>
+        ) : store.notFound ? (
+          <EmptyState icon="storefront-outline" title="Shop not found" body="This shop is not available right now." action="Back to Shops" onAction={() => router.back()} />
+        ) : (
+          <ErrorState title="This shop could not load" message={store.error ?? 'Please try again.'} onRetry={store.retry} />
+        )}
       </View>
     );
   }
 
-  const hero = merchant.slug === 'techworld' ? STOREFRONT_HERO.techworld : merchant.cover;
+  const { merchant, shelves, hero } = store.data;
   // A product with a choice to make opens instead of adding — see quickAddPlan.
   const add = (product: (typeof products)[number]): void => {
     const plan = quickAddPlan(product);
-    if (plan.kind === 'choose') router.push(`/product/${product.id}`);
+    if (plan.kind === 'choose') openProduct(product.id);
     else addToCart({ merchantSlug: merchant.slug, productId: product.id, quantity: 1, options: plan.options });
   };
 
+  function openProduct(id: string): void {
+    router.push({ pathname: '/product/[id]', params: { id, store: merchant.slug } });
+  }
+
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }} testID="storefront">
-      <StatusBar style="light" />
+      <StatusBar style={hero ? 'light' : palette.statusBar} />
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: space.xxl }}>
         <View style={{ height: HERO_HEIGHT + insets.top }}>
-          <Image source={hero} style={{ position: 'absolute', inset: 0 }} contentFit="cover" accessibilityIgnoresInvertColors />
+          <CoverArt merchant={{ ...merchant, cover: hero }} style={{ position: 'absolute', inset: 0 }} />
           <View
             style={{
               marginTop: insets.top,
@@ -120,7 +143,7 @@ export default function Storefront() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={{ gap: space.sm, paddingVertical: space.lg }}
           >
-            {STOREFRONT_SHELVES.map((s) => (
+            {shelves.map((s) => (
               <Chip key={s.id} label={s.label} selected={shelf === s.id} onPress={() => setShelf(s.id)} />
             ))}
           </ScrollView>
@@ -135,7 +158,7 @@ export default function Storefront() {
                     <ProductCard
                       key={product.id}
                       product={product}
-                      onPress={() => router.push(`/product/${product.id}`)}
+                      onPress={() => openProduct(product.id)}
                       onAdd={() => add(product)}
                       needsChoice={quickAddPlan(product).kind === 'choose'}
                     />
@@ -145,7 +168,7 @@ export default function Storefront() {
               ))}
             </View>
           )}
-          <SampleDataNote />
+          {store.live ? null : <SampleDataNote />}
         </View>
       </ScrollView>
       {count > 0 ? (

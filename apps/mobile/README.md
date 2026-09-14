@@ -25,10 +25,11 @@ fixtures · **wired** = talks to the real API · **device** = proven on a handse
 | Customer Home | Customer 1 | ✅ measured wordmark, photographed services | service list ✅ (bundled six if the answer is empty, malformed or collapsed) | ⏳ |
 | Sign in (email code) | — | ✅ | ✅ `/v1/auth/otp/request`, `/otp/verify`, `/auth/me`; restore on launch | ⏳ needs a build pointed at a reachable API |
 | Profile & Settings (Customer) | — | ✅ | ✅ signed-in name, email, Sign out | ⏳ |
-| Shops landing | Customer 2 | ✅ fixtures | — | ⏳ |
-| Shop storefront | Customer 3 | ✅ fixtures | — | ⏳ |
-| Product detail | Customer 4 | ✅ fixtures | — | ⏳ |
-| Cart | Customer 5 | ✅ fixtures (quote stands in for `/v1/orders/quote`) | — | ⏳ |
+| Shops landing | Customer 2 | ✅ | ✅ `/v1/vendors?service=shops`; real category doors; "Top rated" / "All shops" (no featured or popular signal exists) | ⏳ |
+| Shop storefront | Customer 3 | ✅ | ✅ `/v1/vendors/:slug`; the shop's own shelves and products | ⏳ |
+| Product detail | Customer 4 | ✅ | ✅ from its storefront; modifier groups as options; availability | ⏳ |
+| Search | — | ✅ | ✅ `/v1/search` (two-character minimum, debounced) | ⏳ |
+| Cart | Customer 5 | ✅ | lines ✅ from the storefront; the quote waits for checkout (`/v1/orders/quote` needs sign-in and an address), so no total is shown | ⏳ |
 | Checkout → Delivered | Customer 6–10 | designed "next checkpoint" state | — | — |
 | Rider Home | Rider 1 | ✅ fixtures | — | ⏳ |
 | Online / looking | Rider 2 | ✅ fixtures | — | ⏳ |
@@ -42,11 +43,18 @@ fixtures · **wired** = talks to the real API · **device** = proven on a handse
 Every other tap lands on a designed screen that says what it will do and what
 it waits on (`src/ui/ComingScreen.tsx`) — there are no dead controls.
 
-**Verified so far:** typecheck, lint, 77 unit tests, arm64 debug APKs built
+**Photographs.** The API serves no vendor cover or logo, and product
+`imageKey`s are storage keys it cannot resolve yet (an `https` value is used
+as-is, the web's rule). Live shops and products therefore draw the designed
+placeholders in `src/commerce/Placeholders.tsx`, in the same frames a photo
+will fill. Without an API the app draws the staging fixtures and says so.
+
+**Verified so far:** typecheck, lint, 89 unit tests, arm64 debug APKs built
 and inspected (embedded bundle, arm64 only), and the flows driven in the web
-build at A55 metrics, including sign-in against a local API (request, wrong
-code, right code, restore on a cold start, sign-out, Back from settings on
-both faces). **Not yet verified on the A55:** the Customer/Rider switch
+build at A55 metrics against a local API: sign-in (request, wrong code, right
+code, restore on a cold start, sign-out, Back from settings on both faces) and
+the discovery journey Home → Shops → category → storefront → shelf → product →
+cart, plus search and a missing shop, in Light and Dark. **Not yet verified on the A55:** the Customer/Rider switch
 after the stabilization fix, sign-in and the Android cookie jar (no build has
 yet pointed at a reachable API), and the native map with a key.
 

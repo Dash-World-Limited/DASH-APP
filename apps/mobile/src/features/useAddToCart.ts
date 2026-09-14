@@ -9,7 +9,7 @@
 
 import { Alert } from 'react-native';
 
-import { merchantBySlug } from '../data/staging';
+import { knownMerchantName } from '../data/useCatalog';
 import { useCart } from './CartProvider';
 
 export function useAddToCart(): (item: {
@@ -27,8 +27,8 @@ export function useAddToCart(): (item: {
       onAdded?.();
       return;
     }
-    const current = merchantBySlug(cart.merchantSlug ?? '')?.name ?? 'another shop';
-    const next = merchantBySlug(item.merchantSlug)?.name ?? 'this shop';
+    const current = knownMerchantName(cart.merchantSlug) ?? 'another shop';
+    const next = knownMerchantName(item.merchantSlug) ?? 'this shop';
     Alert.alert(
       'Start a new cart?',
       `Your cart has items from ${current}. A DASH order comes from one shop, so adding from ${next} starts a new cart.`,

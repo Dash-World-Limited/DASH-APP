@@ -4,31 +4,36 @@
  * The lines the customer chose, a note for the shop, and the order summary.
  * The summary is a quote: items, delivery fee, service fee and total all come
  * from it, and this screen adds nothing up. In staging the quote is the fixture
- * module's; wired, it is POST /v1/orders/quote, the only place a fee is
- * decided.
+ * module's. With a live shop the lines come from its storefront, and the quote
+ * is POST /v1/orders/quote, which needs a signed-in customer and a delivery
+ * address, both arriving with checkout; until then the summary says where the
+ * total will come from rather than adding one up on the phone.
  *
  * Proceed to Checkout opens the checkout that the next checkpoint builds.
  */
 
 import { formatNairaCompact } from '@dash/domain/money';
-import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { TextInput, View } from 'react-native';
 
+import { ProductArt } from '../../src/commerce/Placeholders';
 import { SampleDataNote } from '../../src/commerce/Promotions';
-import { productById, stagingQuote } from '../../src/data/staging';
+import { stagingQuote } from '../../src/data/staging';
+import { useCartProducts } from '../../src/data/useCatalog';
 import { useCart } from '../../src/features/CartProvider';
 import { useTheme } from '../../src/theme/ThemeProvider';
 import { fontFamily, radius, space, typeScale } from '../../src/theme/tokens';
-import { ActionFooter, AppBar, Button, Card, Divider, EmptyState, Icon, IconButton, QuantityStepper, Screen, Text } from '../../src/ui';
+import { ActionFooter, AppBar, Button, Card, Divider, EmptyState, ErrorState, Icon, IconButton, QuantityStepper, Screen, Skeleton, Text } from '../../src/ui';
 
 export default function CartScreen() {
   const router = useRouter();
   const { palette } = useTheme();
   const { cart, count, dispatch } = useCart();
   const [note, setNote] = useState('');
-  const quote = useMemo(() => stagingQuote(cart.lines), [cart.lines]);
+  const products = useCartProducts(cart.merchantSlug);
+  const live = products.live;
+  const quote = useMemo(() => (live ? null : stagingQuote(cart.lines)), [live, cart.lines]);
 
   if (cart.lines.length === 0) {
     return (
@@ -70,9 +75,31 @@ export default function CartScreen() {
         }
       />
       <View style={{ paddingHorizontal: space.gutter, paddingTop: space.md, gap: space.lg }}>
+        {products.status === 'loading' ? (
+          <View style={{ gap: space.md }} accessibilityLabel="Loading your cart">
+            {cart.lines.map((line) => (
+              <Skeleton key={line.key} style={{ height: 76, borderRadius: 12 }} />
+            ))}
+          </View>
+        ) : products.status === 'error' ? (
+          <ErrorState title="Your cart could not load" message={products.error ?? 'Please try again.'} onRetry={products.retry} />
+        ) : null}
+
         {cart.lines.map((line) => {
-          const product = productById(line.productId);
-          if (!product) return null;
+          if (products.status !== 'ready') return null;
+          const product = products.data?.get(line.productId);
+          if (!product) {
+            // The shop removed it since it was added: say so, and let it go.
+            return (
+              <View key={line.key} style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                <Icon name="package-variant-remove" size={24} color={palette.textSubtle} />
+                <Text variant="caption" tone="muted" style={{ flex: 1 }}>
+                  An item in your cart is no longer available from this shop.
+                </Text>
+                <IconButton icon="delete-outline" label="Remove unavailable item" onPress={() => dispatch({ type: 'remove', key: line.key })} />
+              </View>
+            );
+          }
           const optionText = product.optionGroups
             .map((group) => group.options.find((o) => o.id === line.options[group.id])?.label)
             .filter(Boolean)
@@ -81,7 +108,7 @@ export default function CartScreen() {
           return (
             <View key={line.key} style={{ flexDirection: 'row', gap: space.md }}>
               <View style={{ width: 76, height: 76, borderRadius: radius.md, backgroundColor: palette.surfaceMuted, overflow: 'hidden' }}>
-                <Image source={product.image} style={{ width: '100%', height: '100%' }} contentFit="contain" />
+                <ProductArt product={product} style={{ width: '100%', height: '100%' }} />
               </View>
               <View style={{ flex: 1, gap: 2 }}>
                 <Text variant="label" weight="bold" numberOfLines={1}>
@@ -127,6 +154,7 @@ export default function CartScreen() {
           </View>
         </View>
 
+        {quote ? (
         <Card>
           <Text variant="heading" style={{ marginBottom: space.md }}>
             Order Summary
@@ -146,7 +174,19 @@ export default function CartScreen() {
             </Text>
           </View>
         </Card>
-        <SampleDataNote />
+        ) : (
+          <Card testID="cart-summary-pending">
+            <Text variant="heading" style={{ marginBottom: space.sm }}>
+              Order Summary
+            </Text>
+            <SummaryRow label="Items" value={String(count)} />
+            <Text variant="caption" tone="muted" style={{ marginTop: space.sm }}>
+              Your total, delivery fee and service fee are worked out by DASH when you check out, for your address. This
+              screen never adds up what you pay.
+            </Text>
+          </Card>
+        )}
+        {live ? null : <SampleDataNote />}
       </View>
     </Screen>
   );
