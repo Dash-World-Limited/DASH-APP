@@ -15,14 +15,16 @@ Where this app differs from them, the difference is listed under
 
 ---
 
-## Checkpoint 1 status
+## Checkpoint status (updated 14 September)
 
 Honest labels, per the brief: **visual** = built to the board with staging
 fixtures · **wired** = talks to the real API · **device** = proven on a handset.
 
 | Screen | Board | Visual | Wired | Device |
 |---|---|:-:|:-:|:-:|
-| Customer Home | Customer 1 | ✅ | service list ✅ (falls back to the bundled contract) | ⏳ |
+| Customer Home | Customer 1 | ✅ measured wordmark, photographed services | service list ✅ (bundled six if the answer is empty, malformed or collapsed) | ⏳ |
+| Sign in (email code) | — | ✅ | ✅ `/v1/auth/otp/request`, `/otp/verify`, `/auth/me`; restore on launch | ⏳ needs a build pointed at a reachable API |
+| Profile & Settings (Customer) | — | ✅ | ✅ signed-in name, email, Sign out | ⏳ |
 | Shops landing | Customer 2 | ✅ fixtures | — | ⏳ |
 | Shop storefront | Customer 3 | ✅ fixtures | — | ⏳ |
 | Product detail | Customer 4 | ✅ fixtures | — | ⏳ |
@@ -40,10 +42,22 @@ fixtures · **wired** = talks to the real API · **device** = proven on a handse
 Every other tap lands on a designed screen that says what it will do and what
 it waits on (`src/ui/ComingScreen.tsx`) — there are no dead controls.
 
-**Verified so far:** typecheck, lint, 60 unit tests, a web export (proves every
-import bundles, including `@dash/domain` from outside the app), and the flows
-driven in a browser preview. **Not yet verified:** anything on a device. No
-native build has been produced in this checkpoint.
+**Verified so far:** typecheck, lint, 77 unit tests, arm64 debug APKs built
+and inspected (embedded bundle, arm64 only), and the flows driven in the web
+build at A55 metrics, including sign-in against a local API (request, wrong
+code, right code, restore on a cold start, sign-out, Back from settings on
+both faces). **Not yet verified on the A55:** the Customer/Rider switch
+after the stabilization fix, sign-in and the Android cookie jar (no build has
+yet pointed at a reachable API), and the native map with a key.
+
+**Navigation rule.** The root layout is a `Slot`, not a stack, so the two faces
+never share one native stack (the source of the Android Fabric "child already
+has a parent" crash). A screen shared by both faces must therefore live inside
+each face's own stack (see `app/(customer)/settings` and `app/rider/settings`);
+a root-level screen would replace the whole face and Back would have nowhere to
+go. Face switches are one navigation, owned by the switch buttons; the only
+other redirect is the one-time launch redirect for a remembered rider
+(`modeReducer` in `src/features/mode.ts`).
 
 ---
 
@@ -77,11 +91,25 @@ Read at build time by `app.config.ts`; nothing is hard-coded.
 | Variable | Meaning | Default |
 |---|---|---|
 | `APP_VARIANT` | `development` · `staging` · `production`; each installs as its own app | `development` |
-| `EXPO_PUBLIC_API_URL` | The API origin, e.g. the staging API | none — the app uses staging fixtures and says so |
+| `EXPO_PUBLIC_API_URL` | The API origin, e.g. the staging API | none — the app uses staging fixtures, and Sign in says the build is not connected |
 | `GOOGLE_MAPS_ANDROID_API_KEY` | Android map tiles. Compiled into the APK and restricted by package signature | none — Android shows a designed "map needs a key" fallback |
 
 Identifiers: `com.dashworldng.dash` (+`.dev` / `.staging`). The production id is
 permanent once published and needs director confirmation first.
+
+**Maps key.** Create an Android key in Google Cloud with the *Maps SDK for
+Android* enabled, restricted to Android apps: package `com.dashworldng.dash.dev`
+(and `.staging` / the production id when they exist) with the signing
+certificate's SHA-1. Debug builds are signed with the standard React Native
+debug keystore, SHA-1 `5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25`;
+release builds need the upload/app-signing key's SHA-1 instead. Supply it as
+`GOOGLE_MAPS_ANDROID_API_KEY` in the build environment, never in the repo.
+
+**Email codes.** Sign-in is by emailed code because SMS is off for V1. While
+Amazon SES is in sandbox it delivers only to verified recipient addresses, so
+testers' addresses must be verified in SES, and each account's email must be
+verified in DASH. The server's answer is the same for every address, so the app
+never says whether an account exists.
 
 ---
 
