@@ -1,13 +1,8 @@
 name: Native v2 Android
 
 on:
-  # One path-scoped push builds this explicit checkpoint. The follow-up commit
-  # returns the workflow to manual-only before more feature work continues.
-  push:
-    branches:
-      - codex/native-mobile-v2-rebuild
-    paths:
-      - .github/workflows/mobile-v2.yml
+  # Manual checkpoints prevent intermediate rebuild work from sending noisy
+  # failure emails or cancelling an expensive native compile.
   workflow_dispatch:
 
 concurrency:
