@@ -111,7 +111,7 @@ export default tseslint.config(
   {
     // Developer scripts are Node programs whose whole job is printing to a
     // terminal, so `console` and the Node globals are expected here.
-    files: ['scripts/**/*.mjs', 'apps/android-shell/scripts/**/*.mjs', 'packages/db/src/seed.ts'],
+    files: ['scripts/**/*.mjs', 'apps/android-shell/scripts/**/*.mjs', 'apps/mobile/scripts/**/*.mjs', 'packages/db/src/seed.ts'],
     languageOptions: {
       globals: {
         console: 'readonly',
