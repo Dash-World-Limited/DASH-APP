@@ -8,6 +8,8 @@
 
 import type { ReactNode } from 'react';
 
+import { DashWordmark } from './brand/DashWordmark';
+
 export function formatNaira(kobo: number): string {
   const negative = kobo < 0;
   const abs = Math.abs(kobo);
@@ -235,12 +237,15 @@ export function Input({
   );
 }
 
-/** The DASH wordmark. An original placeholder, replaceable in one place. */
+/**
+ * The DASH wordmark: the measured artwork from the approved boards, never
+ * typed and never followed by a dot (that was the retired mark). `className`
+ * still sets its scale through font-size and its D and A through colour.
+ */
 export function Wordmark({ className = '' }: { className?: string }) {
   return (
-    <span className={`inline-flex items-baseline font-extrabold tracking-tight ${className}`}>
-      <span>DASH</span>
-      <span className="ml-0.5 text-gold-400">•</span>
+    <span className={`inline-flex items-center ${className}`}>
+      <DashWordmark />
     </span>
   );
 }

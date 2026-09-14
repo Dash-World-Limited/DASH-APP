@@ -84,26 +84,24 @@
   text-transform: uppercase;
 }
 
+/* The DASH wordmark is artwork (components/brand/DashWordmark): font-size sets
+   its scale, colour sets the D and A. Graphite #1D1D1D and, on dark panels,
+   #F4F1EA are the measured light and dark variants; the bronze is fixed. */
 .wordmark,
 .wordmarkCompact {
   display: inline-flex;
-  color: var(--vendor-ink, #0b0d10);
+  align-items: center;
+  color: #1d1d1d;
   font-size: 29px;
-  font-weight: 900;
-  letter-spacing: -0.11em;
   line-height: 1;
 }
 
 .sidebar .wordmark {
-  color: #ffffff;
+  color: #f4f1ea;
 }
 
 .wordmarkCompact {
   font-size: 23px;
-}
-
-.wordmarkBronze {
-  color: #a67834;
 }
 
 .vendorMini {
@@ -2100,7 +2098,7 @@
 }
 
 .signInBrand .wordmark {
-  color: #fff;
+  color: #f4f1ea;
 }
 
 .signInBrand h1 {

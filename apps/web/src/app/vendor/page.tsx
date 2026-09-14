@@ -19,6 +19,7 @@ import {
 } from '@/lib/session';
 import { liveLabel, useLive } from '@/lib/useLive';
 import styles from './vendor.module.css';
+import { DashWordmark as BrandWordmark } from '@/components/brand/DashWordmark';
 
 type Section =
   | 'home'
@@ -284,11 +285,11 @@ function errorMessage(caught: unknown, fallback: string): string {
   return caught instanceof ApiRequestError ? caught.message : fallback;
 }
 
+/** The measured DASH wordmark (never typed); its size and colour come from the class. */
 function DashWordmark({ compact = false }: { compact?: boolean }) {
   return (
-    <span className={compact ? styles.wordmarkCompact : styles.wordmark} aria-label="DASH">
-      <span>DA</span>
-      <span className={styles.wordmarkBronze}>SH</span>
+    <span className={compact ? styles.wordmarkCompact : styles.wordmark}>
+      <BrandWordmark />
     </span>
   );
 }

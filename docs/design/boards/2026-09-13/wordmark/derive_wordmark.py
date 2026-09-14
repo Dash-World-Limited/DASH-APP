@@ -10,7 +10,7 @@ scale, and its parameters are solved until it reproduces the board's pixels.
 The four measurements are then averaged (weighted by size) into one mark.
 
     python derive_wordmark.py fit    # ~5 min: measure every board instance
-    python derive_wordmark.py emit   # write the app geometry and SVG masters
+    python derive_wordmark.py emit   # write the app geometry (native and web) and SVG masters
 
 Needs Python 3 with Pillow. Run from anywhere; paths are resolved from here.
 See README.md in this folder for the method and the results.
@@ -338,7 +338,12 @@ export const WORDMARK_GRAPHITE_PATH =
 export const WORDMARK_BRONZE_PATH =
   '{bronze}';
 '''
+    # One geometry, two apps: the native client and the web (Vendor console,
+    # sign-in, header) draw the same measured outlines.
     (MOBILE / 'src' / 'brand' / 'wordmarkGeometry.ts').write_text(ts, encoding='utf-8')
+    web = REPO / 'apps' / 'web' / 'src' / 'components' / 'brand'
+    web.mkdir(parents=True, exist_ok=True)
+    (web / 'wordmarkGeometry.ts').write_text(ts, encoding='utf-8')
     print('viewBox', vb, 'aspect', round(vb[2] / vb[3], 4), 'path bytes', len(graphite) + len(bronze))
 
 if __name__ == '__main__':
