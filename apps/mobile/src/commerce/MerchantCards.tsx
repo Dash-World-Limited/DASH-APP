@@ -11,7 +11,6 @@
  *   overlaps it (Popular Near You).
  */
 
-import { Image } from 'expo-image';
 import { Pressable, View } from 'react-native';
 
 import type { MerchantModel } from '../data/models';
@@ -21,6 +20,7 @@ import { elevation, radius, space } from '../theme/tokens';
 import { Avatar } from '../ui/Display';
 import { Icon } from '../ui/Icon';
 import { Text } from '../ui/Text';
+import { CoverArt } from './Placeholders';
 
 export function RatingLine({
   rating,
@@ -80,7 +80,7 @@ export function MerchantCard({ merchant, onPress, width = 168 }: { merchant: Mer
         transform: [{ scale: pressed ? 0.98 : 1 }],
       })}
     >
-      <Image source={merchant.cover} style={{ width: '100%', height: 138 }} contentFit="cover" />
+      <CoverArt merchant={merchant} style={{ width: '100%', height: 138 }} />
       <View style={{ position: 'absolute', top: 138 - 18, left: space.md }}>
         <Avatar source={merchant.logo} name={merchant.name} size={34} ring />
       </View>
@@ -108,11 +108,7 @@ export function WideMerchantCard({ merchant, onPress }: { merchant: MerchantMode
       accessibilityLabel={`${merchant.name}, ${merchant.descriptor}`}
       style={({ pressed }) => ({ transform: [{ scale: pressed ? 0.99 : 1 }] })}
     >
-      <Image
-        source={merchant.cover}
-        style={{ width: '100%', height: 112, borderRadius: radius.lg, backgroundColor: palette.sand }}
-        contentFit="cover"
-      />
+      <CoverArt merchant={merchant} style={{ width: '100%', height: 112, borderRadius: radius.lg, backgroundColor: palette.sand }} />
       {/* Only the logo overlaps the banner; the words sit below it. */}
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.md, marginTop: -32, paddingLeft: space.md }}>
         <Avatar source={merchant.logo} name={merchant.name} size={64} ring />

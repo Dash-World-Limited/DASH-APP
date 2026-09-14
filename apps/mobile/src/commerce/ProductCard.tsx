@@ -11,10 +11,10 @@
  */
 
 import { formatNairaCompact } from '@dash/domain/money';
-import { Image } from 'expo-image';
 import { Pressable, View } from 'react-native';
 
 import type { ProductModel } from '../data/models';
+import { ProductArt } from './Placeholders';
 import { useTheme } from '../theme/ThemeProvider';
 import { radius, space } from '../theme/tokens';
 import { Icon } from '../ui/Icon';
@@ -37,16 +37,17 @@ export function ProductCard({
 }) {
   const { palette } = useTheme();
   const price = formatNairaCompact(product.price);
+  const available = product.available !== false;
   return (
     <View style={{ flex: 1 }} testID={`product-${product.id}`}>
       <Pressable
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={`${product.name}, ${price}`}
+        accessibilityLabel={`${product.name}, ${price}${available ? '' : ', unavailable'}`}
         style={({ pressed }) => ({ transform: [{ scale: pressed ? 0.98 : 1 }] })}
       >
         <View style={{ borderRadius: radius.lg, backgroundColor: palette.surfaceMuted, overflow: 'hidden' }}>
-          <Image source={product.image} style={{ width: '100%', aspectRatio: PHOTO_ASPECT }} contentFit="contain" />
+          <ProductArt product={product} style={{ width: '100%', aspectRatio: PHOTO_ASPECT }} />
         </View>
         <View style={{ paddingTop: space.md, paddingHorizontal: 2, paddingRight: 40, gap: 2 }}>
           <Text variant="caption" tone="muted" numberOfLines={1}>
@@ -55,10 +56,16 @@ export function ProductCard({
           <Text variant="bodyStrong" weight="bold">
             {price}
           </Text>
+          {available ? null : (
+            <Text variant="micro" tone="muted">
+              Unavailable right now
+            </Text>
+          )}
         </View>
       </Pressable>
       {/* Anchored to the bottom-right of the photograph: the photo is full
           width at a fixed aspect, so its height is width / aspect. */}
+      {available ? (
       <View pointerEvents="box-none" style={{ position: 'absolute', left: 0, right: 0, top: 0, aspectRatio: PHOTO_ASPECT }}>
         <Pressable
           onPress={onAdd}
@@ -83,6 +90,7 @@ export function ProductCard({
           <Icon name="plus" size={18} color={palette.onAccent} />
         </Pressable>
       </View>
+      ) : null}
     </View>
   );
 }

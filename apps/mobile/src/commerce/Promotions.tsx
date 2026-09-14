@@ -14,7 +14,7 @@ import { Pressable, View, type ImageSourcePropType } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
 import { palettes, radius, space } from '../theme/tokens';
 import { Button } from '../ui/Button';
-import { Icon } from '../ui/Icon';
+import { Icon, type IconName } from '../ui/Icon';
 import { Text } from '../ui/Text';
 
 export interface Campaign {
@@ -78,11 +78,14 @@ export function PromoCard({ campaign, onPress, height = 196 }: { campaign: Campa
 export function CategoryBubble({
   label,
   image,
+  icon,
   selected,
   onPress,
 }: {
   label: string;
   image: ImageSourcePropType | null;
+  /** The symbol drawn when there is no picture. The grid glyph ("All") when absent. */
+  icon?: IconName;
   selected: boolean;
   onPress: () => void;
 }) {
@@ -111,7 +114,7 @@ export function CategoryBubble({
         {image ? (
           <Image source={image} style={{ width: '100%', height: '100%' }} contentFit="cover" />
         ) : (
-          <Icon name="view-grid-outline" size={24} color={selected ? palette.onAccent : palette.text} />
+          <Icon name={icon ?? 'view-grid-outline'} size={24} color={selected ? palette.onAccent : palette.text} />
         )}
       </View>
       <Text variant="micro" weight={selected ? 'bold' : 'medium'} numberOfLines={1}>
