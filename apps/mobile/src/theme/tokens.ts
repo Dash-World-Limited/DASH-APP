@@ -52,8 +52,15 @@ export interface Palette {
   sand: string;
   /** Recessed tiles lighter than sand: rider stat tiles, product photo grounds. */
   surfaceMuted: string;
-  /** Hairlines and card borders. */
+  /** Hairlines: dividers between rows, rules inside a card. */
   line: string;
+  /**
+   * The outline of a raised surface: cards, tiles, fields, chips, icon plates.
+   * On Light it is the boards' hairline. On Dark, raised surfaces are told
+   * apart by tone, and an outline reads as a stray line round every card, so
+   * it is transparent (the width stays, so nothing shifts between schemes).
+   */
+  edge: string;
 
   text: string;
   textMuted: string;
@@ -97,6 +104,7 @@ const light: Palette = {
   sand: '#F1ECE1',
   surfaceMuted: '#F4F2EC',
   line: '#ECE7DD',
+  edge: '#ECE7DD',
 
   text: '#0B0D10',
   textMuted: '#6E6B64',
@@ -159,6 +167,7 @@ const dark: Palette = {
   sand: '#24221F',
   surfaceMuted: '#1D1E21',
   line: '#2B2A27',
+  edge: 'transparent',
 
   text: '#F4F1EA',
   textMuted: '#A8A399',

@@ -41,7 +41,7 @@ export function makeTabBar(tabs: readonly TabDefinition[]) {
           flexDirection: 'row',
           backgroundColor: palette.surface,
           borderTopWidth: 1,
-          borderTopColor: palette.line,
+          borderTopColor: palette.edge,
           paddingTop: space.sm,
           paddingBottom: Math.max(insets.bottom, space.sm),
         }}

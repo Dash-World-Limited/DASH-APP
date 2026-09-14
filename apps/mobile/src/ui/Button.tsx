@@ -44,6 +44,12 @@ export interface ButtonProps {
    * confusing to a screen reader, which hears the card and then the button.
    */
   decorative?: boolean;
+  /**
+   * Fixed colours instead of the theme's, for a button on content that brings
+   * its own colours and does not change with the scheme (a campaign card): a
+   * themed button there turns light-on-light in Dark.
+   */
+  colors?: { bg: string; fg: string };
   style?: StyleProp<ViewStyle>;
   testID?: string;
 }
@@ -60,6 +66,7 @@ export function Button({
   busy = false,
   accessibilityHint,
   decorative = false,
+  colors,
   style,
   testID,
 }: ButtonProps) {
@@ -72,7 +79,9 @@ export function Button({
     inverse: { bg: palette.inverse, pressed: palette.inverse, fg: palette.textOnInverse },
     outline: { bg: palette.surface, pressed: palette.sand, fg: palette.text, border: palette.line },
   };
-  const tone = fill[variant];
+  const tone: { bg: string; pressed: string; fg: string; border?: string } = colors
+    ? { bg: colors.bg, pressed: colors.bg, fg: colors.fg }
+    : fill[variant];
 
   const content = (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>

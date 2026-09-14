@@ -43,7 +43,7 @@ export function Chip({
         justifyContent: 'center',
         backgroundColor: selected ? palette.inverse : palette.surface,
         borderWidth: selected ? 0 : 1,
-        borderColor: palette.line,
+        borderColor: palette.edge,
         opacity: pressed ? 0.8 : 1,
       })}
     >
@@ -168,7 +168,7 @@ export function SearchField({
         borderRadius: radius.md,
         backgroundColor: palette.surface,
         borderWidth: 1,
-        borderColor: palette.line,
+        borderColor: palette.edge,
       }}
     >
       {editable || !onPress ? (
@@ -270,7 +270,7 @@ export function QuantityStepper({
         flexDirection: 'row',
         alignItems: 'center',
         borderWidth: 1,
-        borderColor: palette.line,
+        borderColor: palette.edge,
         borderRadius: radius.md,
         backgroundColor: palette.surface,
         minHeight: touchTarget,

@@ -107,7 +107,7 @@ export function Card({
           backgroundColor: tone === 'sand' ? palette.sand : tone === 'muted' ? palette.surfaceMuted : palette.surface,
           borderRadius: radius.lg,
           borderWidth: recessed ? 0 : 1,
-          borderColor: palette.line,
+          borderColor: palette.edge,
           padding: padded ? space.lg : 0,
           ...(recessed ? elevation.flat : elevation.card),
         },

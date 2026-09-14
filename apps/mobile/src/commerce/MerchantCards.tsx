@@ -74,7 +74,7 @@ export function MerchantCard({ merchant, onPress, width = 168 }: { merchant: Mer
         borderRadius: radius.lg,
         backgroundColor: palette.surface,
         borderWidth: 1,
-        borderColor: palette.line,
+        borderColor: palette.edge,
         overflow: 'hidden',
         ...elevation.card,
         transform: [{ scale: pressed ? 0.98 : 1 }],

@@ -62,7 +62,7 @@ export function IconButton({
           borderRadius: radius.pill,
           backgroundColor: plateColor,
           borderWidth: plate === 'surface' ? 1 : 0,
-          borderColor: palette.line,
+          borderColor: palette.edge,
           alignItems: 'center',
           justifyContent: 'center',
           opacity: pressed ? 0.6 : 1,

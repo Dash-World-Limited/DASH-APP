@@ -12,7 +12,7 @@ import { Image } from 'expo-image';
 import { Pressable, View, type ImageSourcePropType } from 'react-native';
 
 import { useTheme } from '../theme/ThemeProvider';
-import { radius, space } from '../theme/tokens';
+import { palettes, radius, space } from '../theme/tokens';
 import { Button } from '../ui/Button';
 import { Icon } from '../ui/Icon';
 import { Text } from '../ui/Text';
@@ -59,6 +59,9 @@ export function PromoCard({ campaign, onPress, height = 196 }: { campaign: Campa
           <Button
             label={campaign.action}
             variant="inverse"
+            // Campaign art is drawn on the Light board and keeps its colours in
+            // Dark, so its call to action keeps the board's graphite pill too.
+            colors={{ bg: palettes.light.inverse, fg: palettes.light.textOnInverse }}
             size="md"
             pill
             trailingIcon="arrow-right"
@@ -102,7 +105,7 @@ export function CategoryBubble({
           justifyContent: 'center',
           backgroundColor: selected ? palette.accent : palette.sand,
           borderWidth: selected ? 0 : 1,
-          borderColor: palette.line,
+          borderColor: palette.edge,
         }}
       >
         {image ? (

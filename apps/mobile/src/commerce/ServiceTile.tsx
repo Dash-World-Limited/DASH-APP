@@ -34,7 +34,7 @@ export function ServiceTile({ tile, onPress }: { tile: ServiceTileModel; onPress
         borderRadius: radius.lg,
         backgroundColor: palette.surface,
         borderWidth: 1,
-        borderColor: palette.line,
+        borderColor: palette.edge,
         transform: [{ scale: pressed ? 0.97 : 1 }],
       })}
     >
