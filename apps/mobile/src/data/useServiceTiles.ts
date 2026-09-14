@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react';
 
 import { api } from '../api';
-import { BUNDLED_SERVICE_TILES, toServiceTiles, type ServiceTileModel } from './services';
+import { BUNDLED_SERVICE_TILES, tilesFromServer, type ServiceTileModel } from './services';
 
 export function useServiceTiles(): readonly ServiceTileModel[] {
   const [tiles, setTiles] = useState<readonly ServiceTileModel[]>(BUNDLED_SERVICE_TILES);
@@ -20,12 +20,12 @@ export function useServiceTiles(): readonly ServiceTileModel[] {
     if (!api.configured) return;
     let cancelled = false;
     api
-      .request<{ categories: unknown[] }>('/v1/service-categories', { auth: false })
+      .request<unknown>('/v1/service-categories', { auth: false })
       .then((body) => {
-        const fromServer = toServiceTiles(Array.isArray(body.categories) ? body.categories : []);
-        // An empty or malformed answer is a server problem, not a reason to
-        // take every door off Home.
-        if (!cancelled && fromServer.length > 0) setTiles(fromServer);
+        // An empty, malformed or collapsed answer is a server problem, not a
+        // reason to take the doors off Home (see MIN_SERVER_SERVICES).
+        const fromServer = tilesFromServer(body);
+        if (!cancelled && fromServer) setTiles(fromServer);
       })
       .catch(() => {
         // Keep the bundled contract. Offline Home still works.

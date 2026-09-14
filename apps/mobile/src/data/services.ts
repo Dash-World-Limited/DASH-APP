@@ -78,3 +78,22 @@ export function toServiceTiles(categories: readonly unknown[]): ServiceTileModel
 
 /** The bundled contract, used before — or without — a server. */
 export const BUNDLED_SERVICE_TILES: readonly ServiceTileModel[] = toServiceTiles(SERVICE_CATEGORIES);
+
+/**
+ * The fewest services this build must recognise in a server answer before it
+ * replaces the bundled six. DASH APP once collapsed its categories until only
+ * "Everything" was left; a Home grid of one door is that failure, not a
+ * decision. Operations can still hide a service (five doors is an answer), but
+ * an answer that leaves one or none is treated as a server fault.
+ */
+export const MIN_SERVER_SERVICES = 2;
+
+/** The server's tiles, or null to keep the bundled contract. */
+export function tilesFromServer(body: unknown): ServiceTileModel[] | null {
+  const categories =
+    body && typeof body === 'object' && Array.isArray((body as { categories?: unknown }).categories)
+      ? (body as { categories: unknown[] }).categories
+      : [];
+  const tiles = toServiceTiles(categories);
+  return tiles.length >= MIN_SERVER_SERVICES ? tiles : null;
+}

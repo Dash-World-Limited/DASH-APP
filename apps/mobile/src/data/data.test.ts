@@ -7,7 +7,7 @@ import { SERVICE_CATEGORY_IDS } from '@dash/domain/services';
 import { describe, expect, it } from 'vitest';
 
 import { formatCount, formatDistance, formatEta, formatRating, greetingFor } from '../lib/format';
-import { BUNDLED_SERVICE_TILES, SERVICE_PRESENTATION, toServiceTiles } from './services';
+import { BUNDLED_SERVICE_TILES, SERVICE_PRESENTATION, tilesFromServer, toServiceTiles } from './services';
 import { stagingQuote } from './staging';
 
 describe('the Home grid', () => {
@@ -29,6 +29,22 @@ describe('the Home grid', () => {
       { id: 'shops' },
     ]);
     expect(tiles.map((t) => t.id)).toEqual(['food', 'logistics']);
+  });
+
+  it('never lets a server answer collapse Home to one door', () => {
+    // The old DASH APP failure: every category gone but "Everything".
+    expect(tilesFromServer({ categories: [{ id: 'everything', position: 1 }] })).toBeNull();
+    expect(tilesFromServer({ categories: [{ id: 'everything', position: 1 }, { id: 'shops', position: 2 }] })).toBeNull();
+    expect(tilesFromServer({ categories: [] })).toBeNull();
+    expect(tilesFromServer({ nope: true })).toBeNull();
+    expect(tilesFromServer(null)).toBeNull();
+  });
+
+  it('takes the server’s answer when it is a real set of services, including one hidden by operations', () => {
+    const all = SERVICE_CATEGORY_IDS.map((id, index) => ({ id, position: index + 1 }));
+    expect(tilesFromServer({ categories: all })?.map((t) => t.id)).toEqual([...SERVICE_CATEGORY_IDS]);
+    const withoutLogistics = all.filter((c) => c.id !== 'logistics');
+    expect(tilesFromServer({ categories: withoutLogistics })).toHaveLength(SERVICE_CATEGORY_IDS.length - 1);
   });
 
   it('opens only the flows this checkpoint built, and says so for the rest', () => {
