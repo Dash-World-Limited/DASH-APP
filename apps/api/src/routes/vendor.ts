@@ -45,6 +45,341 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
     return { actor, order };
   }
 
+  /**
+   * Resolve the vendor behind this session once, from the server-built actor.
+   *
+   * No vendor id is accepted from a query string or request body. That keeps
+   * the dashboard useful to owners who can see every branch and safe for staff
+   * accounts that are limited to one branch.
+   */
+  function vendorActor(request: Parameters<typeof actorOf>[0]) {
+    const actor = actorOf(request);
+    if (!actor.vendorId) throw ApiError.forbidden('This account is not linked to a vendor.');
+    return actor as typeof actor & { vendorId: string };
+  }
+
+  // -------------------------------------------------------------------------
+  // GET /v1/vendor/dashboard — identity, branches, catalogue and reviews
+  // -------------------------------------------------------------------------
+  app.get(
+    '/v1/vendor/dashboard',
+    { preHandler: requirePermission('vendor:catalog:read') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const vendor = await prisma.vendor.findUnique({
+        where: { id: actor.vendorId },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          description: true,
+          category: true,
+          status: true,
+          logoKey: true,
+          coverKey: true,
+          ratingAverage: true,
+          ratingCount: true,
+          autoAcceptSeconds: true,
+          branches: {
+            where: {
+              isActive: true,
+              ...(actor.branchId ? { id: actor.branchId } : {}),
+            },
+            orderBy: { createdAt: 'asc' },
+            select: {
+              id: true,
+              name: true,
+              address: true,
+              phone: true,
+              state: true,
+              busyExtraMinutes: true,
+              minimumOrder: true,
+              defaultPrepMinutes: true,
+              supportsDelivery: true,
+              supportsPickup: true,
+              supportsVendorDelivery: true,
+            },
+          },
+          categories: {
+            where: { isActive: true },
+            orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+            select: {
+              id: true,
+              name: true,
+              description: true,
+              sortOrder: true,
+              items: {
+                where: { archivedAt: null },
+                orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+                select: {
+                  id: true,
+                  name: true,
+                  description: true,
+                  imageKey: true,
+                  price: true,
+                  prepMinutes: true,
+                  isAvailable: true,
+                  requiresAgeCheck: true,
+                  updatedAt: true,
+                  stock: {
+                    where: actor.branchId
+                      ? { branchId: actor.branchId }
+                      : { branch: { isActive: true } },
+                    select: {
+                      branchId: true,
+                      quantity: true,
+                      isAvailable: true,
+                      updatedAt: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          reviews: {
+            where: { status: 'published' },
+            orderBy: { createdAt: 'desc' },
+            take: 20,
+            select: {
+              id: true,
+              rating: true,
+              comment: true,
+              vendorResponse: true,
+              respondedAt: true,
+              createdAt: true,
+              order: { select: { code: true } },
+              customer: { select: { identity: { select: { displayName: true } } } },
+            },
+          },
+        },
+      });
+
+      if (!vendor) throw ApiError.notFound();
+
+      return {
+        vendor: {
+          ...vendor,
+          reviews: vendor.reviews.map((review) => ({
+            id: review.id,
+            rating: review.rating,
+            comment: review.comment,
+            vendorResponse: review.vendorResponse,
+            respondedAt: review.respondedAt,
+            createdAt: review.createdAt,
+            orderCode: review.order.code,
+            customerName:
+              review.customer.identity.displayName?.split(' ')[0] ?? 'DASH customer',
+          })),
+        },
+      };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/vendor/categories — create a catalogue section
+  // -------------------------------------------------------------------------
+  app.post(
+    '/v1/vendor/categories',
+    { preHandler: requirePermission('vendor:catalog:write') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const body = z
+        .object({
+          name: z.string().trim().min(2).max(80),
+          description: z.string().trim().max(240).nullable().optional(),
+        })
+        .parse(request.body);
+
+      const last = await prisma.menuCategory.findFirst({
+        where: { vendorId: actor.vendorId },
+        orderBy: { sortOrder: 'desc' },
+        select: { sortOrder: true },
+      });
+      const category = await prisma.menuCategory.create({
+        data: {
+          vendorId: actor.vendorId,
+          name: body.name,
+          description: body.description ?? null,
+          sortOrder: (last?.sortOrder ?? -1) + 1,
+        },
+        select: { id: true, name: true, description: true, sortOrder: true },
+      });
+
+      return { category };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/vendor/items — add a product to the vendor's own catalogue
+  // -------------------------------------------------------------------------
+  app.post(
+    '/v1/vendor/items',
+    { preHandler: requirePermission('vendor:catalog:write') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const body = z
+        .object({
+          categoryId: z.string().trim().min(1),
+          name: z.string().trim().min(2).max(120),
+          description: z.string().trim().max(1_000).nullable().optional(),
+          price: z.number().int().min(0).max(100_000_000),
+          prepMinutes: z.number().int().min(0).max(360).default(15),
+          quantity: z.number().int().min(0).max(100_000).nullable().optional(),
+          requiresAgeCheck: z.boolean().default(false),
+        })
+        .parse(request.body);
+
+      const category = await prisma.menuCategory.findUnique({
+        where: { id: body.categoryId },
+        select: { id: true, vendorId: true },
+      });
+      if (!category) throw ApiError.notFound();
+      requireScope(actor, { vendorId: category.vendorId });
+
+      const branches = await prisma.branch.findMany({
+        where: {
+          vendorId: actor.vendorId,
+          isActive: true,
+          ...(actor.branchId ? { id: actor.branchId } : {}),
+        },
+        select: { id: true },
+      });
+
+      const item = await prisma.menuItem.create({
+        data: {
+          vendorId: actor.vendorId,
+          categoryId: category.id,
+          name: body.name,
+          description: body.description ?? null,
+          price: body.price,
+          prepMinutes: body.prepMinutes,
+          requiresAgeCheck: body.requiresAgeCheck,
+          isAvailable: body.quantity !== 0,
+          stock:
+            branches.length > 0
+              ? {
+                  create: branches.map((branch) => ({
+                    branchId: branch.id,
+                    quantity: body.quantity ?? null,
+                    isAvailable: body.quantity !== 0,
+                  })),
+                }
+              : undefined,
+        },
+        select: {
+          id: true,
+          categoryId: true,
+          name: true,
+          description: true,
+          price: true,
+          prepMinutes: true,
+          isAvailable: true,
+          requiresAgeCheck: true,
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'vendor.catalog.item_created',
+        resourceType: 'menu_item',
+        resourceId: item.id,
+        after: { categoryId: item.categoryId, name: item.name, price: item.price },
+        requestId: request.id,
+      });
+
+      return { item };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PATCH /v1/vendor/items/:id — edit a product without crossing vendors
+  // -------------------------------------------------------------------------
+  app.patch<{ Params: { id: string } }>(
+    '/v1/vendor/items/:id',
+    { preHandler: requirePermission('vendor:catalog:write') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const body = z
+        .object({
+          categoryId: z.string().trim().min(1).optional(),
+          name: z.string().trim().min(2).max(120).optional(),
+          description: z.string().trim().max(1_000).nullable().optional(),
+          price: z.number().int().min(0).max(100_000_000).optional(),
+          prepMinutes: z.number().int().min(0).max(360).optional(),
+          requiresAgeCheck: z.boolean().optional(),
+        })
+        .refine((value) => Object.keys(value).length > 0, 'At least one change is required.')
+        .parse(request.body);
+
+      const current = await prisma.menuItem.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, vendorId: true },
+      });
+      if (!current) throw ApiError.notFound();
+      requireScope(actor, { vendorId: current.vendorId });
+
+      if (body.categoryId) {
+        const category = await prisma.menuCategory.findUnique({
+          where: { id: body.categoryId },
+          select: { vendorId: true },
+        });
+        if (!category) throw ApiError.notFound();
+        requireScope(actor, { vendorId: category.vendorId });
+      }
+
+      const item = await prisma.menuItem.update({
+        where: { id: current.id },
+        data: body,
+        select: {
+          id: true,
+          categoryId: true,
+          name: true,
+          description: true,
+          price: true,
+          prepMinutes: true,
+          isAvailable: true,
+          requiresAgeCheck: true,
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'vendor.catalog.item_changed',
+        resourceType: 'menu_item',
+        resourceId: item.id,
+        after: body,
+        requestId: request.id,
+      });
+
+      return { item };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/vendor/reviews/:id/respond
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/vendor/reviews/:id/respond',
+    { preHandler: requirePermission('vendor:review:respond') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const body = z.object({ response: z.string().trim().min(2).max(500) }).parse(request.body);
+      const review = await prisma.review.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, vendorId: true },
+      });
+      if (!review || !review.vendorId) throw ApiError.notFound();
+      requireScope(actor, { vendorId: review.vendorId });
+
+      const updated = await prisma.review.update({
+        where: { id: review.id },
+        data: { vendorResponse: body.response, respondedAt: new Date() },
+        select: { id: true, vendorResponse: true, respondedAt: true },
+      });
+      return { review: updated };
+    },
+  );
+
   // -------------------------------------------------------------------------
   // GET /v1/vendor/orders — the live queue
   // -------------------------------------------------------------------------
@@ -88,7 +423,14 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
           estimatedReadyAt: true,
           instructions: true,
           items: {
-            select: { nameSnapshot: true, quantity: true, modifiers: true, instructions: true },
+            select: {
+              nameSnapshot: true,
+              priceSnapshot: true,
+              quantity: true,
+              lineTotal: true,
+              modifiers: true,
+              instructions: true,
+            },
           },
           // The vendor sees the customer's first name only. They do not need the
           // phone number or the full address to cook the food; the rider does.

@@ -527,3 +527,110 @@ describe('reports', () => {
     expect(Number.isInteger(body.itemsRevenue)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+describe('dashboard and catalogue editor', () => {
+  it('returns only the signed-in vendor dashboard data', async () => {
+    const response = await context.app.inject({
+      method: 'GET',
+      url: '/v1/vendor/dashboard',
+      headers: vendorA.headers,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{
+      vendor: {
+        id: string;
+        branches: { id: string }[];
+        categories: { items: { id: string }[] }[];
+      };
+    }>();
+    expect(body.vendor.id).toBe(world.vendorA.vendorId);
+    expect(body.vendor.branches.some((branch) => branch.id === world.vendorA.branchId)).toBe(true);
+    expect(
+      body.vendor.categories.flatMap((category) => category.items).some((item) => item.id === world.vendorA.itemId),
+    ).toBe(true);
+    expect(
+      body.vendor.categories.flatMap((category) => category.items).some((item) => item.id === world.vendorB.itemId),
+    ).toBe(false);
+  });
+
+  it('does not expose the dashboard to non-vendor actors', async () => {
+    for (const [label, actor] of [
+      ['customer', customerA],
+      ['rider', riderA],
+      ['dispatcher', dispatcher],
+    ] as const) {
+      const response = await context.app.inject({
+        method: 'GET',
+        url: '/v1/vendor/dashboard',
+        headers: actor.headers,
+      });
+      expect(response.statusCode, label).toBe(403);
+    }
+  });
+
+  it('creates and edits a product inside the caller’s catalogue', async () => {
+    const category = await context.prisma.menuItem.findUniqueOrThrow({
+      where: { id: world.vendorA.itemId },
+      select: { categoryId: true },
+    });
+
+    const created = await context.app.inject({
+      method: 'POST',
+      url: '/v1/vendor/items',
+      headers: vendorA.headers,
+      payload: {
+        categoryId: category.categoryId,
+        name: 'Vendor dashboard test item',
+        description: 'Created through the vendor catalogue contract.',
+        price: 325_000,
+        prepMinutes: 12,
+        quantity: 8,
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const item = created.json<{ item: { id: string; name: string; price: number } }>().item;
+    expect(item).toMatchObject({ name: 'Vendor dashboard test item', price: 325_000 });
+
+    const changed = await context.app.inject({
+      method: 'PATCH',
+      url: `/v1/vendor/items/${item.id}`,
+      headers: vendorA.headers,
+      payload: { name: 'Edited dashboard item', price: 350_000 },
+    });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json<{ item: { name: string; price: number } }>().item).toMatchObject({
+      name: 'Edited dashboard item',
+      price: 350_000,
+    });
+  });
+
+  it('cannot add a product to another vendor’s category', async () => {
+    const foreign = await context.prisma.menuItem.findUniqueOrThrow({
+      where: { id: world.vendorB.itemId },
+      select: { categoryId: true },
+    });
+    const response = await context.app.inject({
+      method: 'POST',
+      url: '/v1/vendor/items',
+      headers: vendorA.headers,
+      payload: {
+        categoryId: foreign.categoryId,
+        name: 'Cross-tenant item',
+        price: 100_000,
+      },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('cannot edit another vendor’s product', async () => {
+    const response = await context.app.inject({
+      method: 'PATCH',
+      url: `/v1/vendor/items/${world.vendorB.itemId}`,
+      headers: vendorA.headers,
+      payload: { name: 'Not yours' },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+});
