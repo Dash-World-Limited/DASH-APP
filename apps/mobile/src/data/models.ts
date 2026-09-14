@@ -26,19 +26,24 @@ export interface MerchantModel {
   name: string;
   /** "Electronics & Gadgets". GAP: the API has one coarse vendor category, not this line. */
   descriptor: string;
-  /** GAP: `Vendor` has no cover or logo image field yet. Arrives with catalogue management. */
-  cover: ImageSourcePropType;
+  /** The API's vendor category (`grocery`, `retail`…), which the category doors filter on. */
+  category?: string;
+  /** GAP: `Vendor` has no cover or logo image field yet. Null draws the designed placeholder. */
+  cover: ImageSourcePropType | null;
   logo: ImageSourcePropType | null;
   rating: { average: number; count: number } | null;
   /** Minutes, low and high. The API serves one estimate per branch; a range needs a server change. */
   eta: { min: number; max: number } | null;
+  /** The shop's own words about itself, where it has written some. */
+  description?: string;
 }
 
 export interface ProductOptionGroup {
   id: string;
   label: string;
   kind: 'swatch' | 'chip';
-  options: readonly { id: string; label: string; swatch?: string }[];
+  /** `priceDelta` (kobo) is shown on the option; the server prices the order. */
+  options: readonly { id: string; label: string; swatch?: string; priceDelta?: number }[];
   /** Pre-selected option. The first option when absent. */
   defaultOption?: string;
 }
@@ -49,7 +54,8 @@ export interface ProductModel {
   name: string;
   /** Short line under the name in the cart: "256GB, Natural Titanium". */
   price: Kobo;
-  image: ImageSourcePropType;
+  /** Null draws the designed placeholder: the API cannot resolve storage keys yet. */
+  image: ImageSourcePropType | null;
   /**
    * GAP: `MenuItem` holds one image. A gallery needs an additive image table.
    */
@@ -64,6 +70,10 @@ export interface ProductModel {
   optionGroups: readonly ProductOptionGroup[];
   /** The storefront filter this product sits under. */
   shelf: string;
+  /** The shelf's name as the shop wrote it ("Produce"), where known. */
+  shelfLabel?: string;
+  /** False when the shop has marked it unavailable. Treated as available when absent. */
+  available?: boolean;
 }
 
 /**
