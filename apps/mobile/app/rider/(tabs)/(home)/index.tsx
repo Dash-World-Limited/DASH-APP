@@ -134,7 +134,7 @@ export default function RiderHome() {
               {RIDER_ZONE.region}
             </Text>
           </View>
-          <Pressable onPress={() => router.push('/settings/zone')} accessibilityRole="link" hitSlop={10}>
+          <Pressable onPress={() => router.push('/rider/settings/zone')} accessibilityRole="link" hitSlop={10}>
             <Text variant="label" tone="accent">
               Change
             </Text>

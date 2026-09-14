@@ -124,7 +124,7 @@ export default function RiderOnline() {
           </View>
         </Card>
 
-        <Pressable onPress={() => router.push('/settings/zone')} accessibilityRole="button" accessibilityLabel={`Current zone, ${RIDER_ZONE.name}`}>
+        <Pressable onPress={() => router.push('/rider/settings/zone')} accessibilityRole="button" accessibilityLabel={`Current zone, ${RIDER_ZONE.name}`}>
           <Card style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
             <Icon name="map-marker" size={24} color={palette.accent} />
             <View style={{ flex: 1 }}>

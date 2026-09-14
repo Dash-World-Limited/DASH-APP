@@ -1,35 +1,35 @@
 /**
  * Account settings that belong to a later checkpoint, each saying what it will
- * do and what it is waiting on. Shared by the Customer and Rider profiles, so it
- * lives at the root rather than inside either face's group.
+ * do and what it is waiting on. Shared by the Customer and Rider profiles.
+ *
+ * Each face mounts it inside its own stack (app/(customer)/settings and
+ * app/rider/settings) rather than once at the root: the root is a Slot, not a
+ * stack, so a root screen would replace the whole face and Back would have
+ * nowhere to return to (from the Rider face it would even land on the
+ * Customer Home).
  */
 
 import { Redirect, useLocalSearchParams } from 'expo-router';
 
-import type { IconName } from '../../src/ui/Icon';
-import { ComingScreen } from '../../src/ui/ComingScreen';
+import type { Href } from 'expo-router';
+
+import type { IconName } from '../ui/Icon';
+import { ComingScreen } from '../ui/ComingScreen';
 
 const SECTIONS: Record<string, { title: string; icon: IconName; headline: string; body: string; waitingOn: string }> = {
-  'sign-in': {
-    title: 'Sign in',
-    icon: 'account-circle-outline',
-    headline: 'Sign in with your phone',
-    body: 'One DASH account for shopping, and for riding if you are approved to deliver. We send a one-time code — no password to remember.',
-    waitingOn: 'Arrives in Checkpoint 2. The server side already exists: phone codes, refresh rotation and the same session rules the web uses.',
-  },
   personal: {
     title: 'Personal Information',
     icon: 'account-outline',
     headline: 'Your details',
     body: 'Your name, phone number and email, as DASH holds them.',
-    waitingOn: 'Needs sign-in, which arrives in Checkpoint 2.',
+    waitingOn: 'Editing your details arrives with account settings. Once signed in, your name and email already show on your profile.',
   },
   addresses: {
     title: 'Addresses',
     icon: 'map-marker-outline',
     headline: 'Where we deliver',
     body: 'Save home, work and other places, and choose where each order goes.',
-    waitingOn: 'Saved addresses need sign-in (Checkpoint 2). The address shown on Home is a staging sample until then.',
+    waitingOn: 'Saved addresses arrive with checkout. The address shown on Home is a staging sample until then.',
   },
   payments: {
     title: 'Payment Methods',
@@ -75,9 +75,10 @@ const SECTIONS: Record<string, { title: string; icon: IconName; headline: string
   },
 };
 
-export default function SettingsSection() {
+/** `fallback` is where an unknown section sends you: that face's own profile. */
+export function SettingsSection({ fallback }: { fallback: Href }) {
   const { section } = useLocalSearchParams<{ section: string }>();
   const copy = section ? SECTIONS[section] : undefined;
-  if (!copy) return <Redirect href="/account" />;
+  if (!copy) return <Redirect href={fallback} />;
   return <ComingScreen {...copy} />;
 }

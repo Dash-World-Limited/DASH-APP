@@ -71,12 +71,12 @@ export default function RiderProfile() {
         </Card>
 
         <Card padded={false} style={{ paddingHorizontal: space.lg }}>
-          <ListRow icon="account-outline" label="Personal Information" onPress={() => router.push('/settings/personal')} />
+          <ListRow icon="account-outline" label="Personal Information" onPress={() => router.push('/rider/settings/personal')} />
           <Divider />
           <ListRow
             icon="card-account-details-outline"
             label="Vehicle & Documents"
-            onPress={() => router.push('/settings/vehicle')}
+            onPress={() => router.push('/rider/settings/vehicle')}
             trailing={
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.xs }}>
                 <StatusPill label="Verified" />
@@ -85,13 +85,13 @@ export default function RiderProfile() {
             }
           />
           <Divider />
-          <ListRow icon="bank-outline" label="Bank Account" onPress={() => router.push('/settings/bank')} />
+          <ListRow icon="bank-outline" label="Bank Account" onPress={() => router.push('/rider/settings/bank')} />
           <Divider />
-          <ListRow icon="bell-outline" label="Notifications" onPress={() => router.push('/settings/notifications')} />
+          <ListRow icon="bell-outline" label="Notifications" onPress={() => router.push('/rider/settings/notifications')} />
           <Divider />
           <AppearanceRow />
           <Divider />
-          <ListRow icon="translate" label="Language" value="English" onPress={() => router.push('/settings/language')} />
+          <ListRow icon="translate" label="Language" value="English" onPress={() => router.push('/rider/settings/language')} />
           <Divider />
           <ListRow icon="help-circle-outline" label="Help & Support" onPress={() => router.push('/rider/inbox')} />
         </Card>
