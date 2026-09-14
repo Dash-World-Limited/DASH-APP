@@ -7,7 +7,8 @@ import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../../theme/tokens';
 import { Icon, type IconName } from '../../ui/Icon';
 import { Text } from '../../ui/Text';
-import { CategoryArtwork, type ServiceId } from '../artwork/CategoryArtwork';
+import type { ServiceId } from '../artwork/CategoryArtwork';
+import { CategoryPhoto } from '../artwork/CategoryPhoto';
 import type { AppRoute } from '../navigation/model';
 
 interface Merchant {
@@ -133,7 +134,7 @@ export function CategoryDashboard({ id, onBack, onPush }: { id: string; onBack: 
       <BackHeader title={copy.title} onBack={onBack} cart={() => onPush({ name: 'customer.cart' })} />
       <View style={{ minHeight: 132, borderRadius: radius.xl, backgroundColor: palette.accentSoft, padding: space.lg, flexDirection: 'row', alignItems: 'center', overflow: 'hidden' }}>
         <View style={{ flex: 1, gap: space.xs }}><Text variant="title">{copy.title}</Text><Text variant="caption" tone="muted">{copy.intro}</Text></View>
-        <CategoryArtwork id={service} size={104} />
+        <CategoryPhoto id={service} size={112} accessibilityLabel={`${copy.title} category photo`} />
       </View>
       <SearchShell label={copy.search} />
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text variant="heading">Near you</Text><Text variant="caption" tone="accent">See all</Text></View>
@@ -151,7 +152,7 @@ export function Storefront({ category, merchantId, onBack, onPush }: { category:
     <CatalogPage>
       <BackHeader title={merchant?.name ?? SERVICE_COPY[service].title} onBack={onBack} cart={() => onPush({ name: 'customer.cart' })} />
       <View style={{ minHeight: 174, borderRadius: radius.xl, backgroundColor: merchant?.accent ?? palette.accentSoft, padding: space.xl, justifyContent: 'flex-end', overflow: 'hidden' }}>
-        <View style={{ position: 'absolute', right: -16, top: -10, opacity: 0.92 }}><CategoryArtwork id={service} size={154} /></View>
+        <View style={{ position: 'absolute', right: -16, top: -10, opacity: 0.96 }}><CategoryPhoto id={service} size={168} accessibilityLabel={`${SERVICE_COPY[service].title} store photo`} /></View>
         <View style={{ maxWidth: '67%' }}><Text variant="title" style={{ color: '#15171A' }}>{merchant?.name}</Text><Text variant="caption" style={{ color: '#33312D' }}>{merchant?.description}</Text></View>
       </View>
       <View style={{ flexDirection: 'row', gap: space.sm }}><InfoChip icon="star" text={merchant?.rating ?? 'New'} /><InfoChip icon="clock-outline" text={merchant?.eta ?? 'Nearby'} /><InfoChip icon="bike-fast" text="Delivery" /></View>
@@ -172,7 +173,7 @@ export function ProductDetail({ category, merchantId, productId, onBack, onCart 
   return (
     <CatalogPage>
       <BackHeader title="Item details" onBack={onBack} cart={onCart} />
-      <View style={{ height: 280, borderRadius: radius.xl, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center' }}><CategoryArtwork id={service} size={190} /></View>
+      <View style={{ height: 280, borderRadius: radius.xl, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center' }}><CategoryPhoto id={service} size={238} accessibilityLabel={`${SERVICE_COPY[service].title} product photo`} /></View>
       {product?.badge ? <View style={{ alignSelf: 'flex-start', backgroundColor: palette.accentSoft, paddingHorizontal: space.md, paddingVertical: space.xs, borderRadius: radius.pill }}><Text variant="micro" tone="accent">{product.badge}</Text></View> : null}
       <Text variant="title">{product?.name}</Text>
       <Text variant="heading" tone="accent">{product?.price}</Text>
@@ -198,12 +199,12 @@ export function CartScreen({ onBack }: { onBack: () => void }) {
 
 function MerchantCard({ merchant, service, onPress }: { merchant: Merchant; service: ServiceId; onPress: () => void }) {
   const { palette } = useTheme();
-  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open ${merchant.name}`} style={({ pressed }) => ({ borderRadius: radius.lg, overflow: 'hidden', backgroundColor: pressed ? palette.sand : palette.surface, borderWidth: 1, borderColor: palette.line })}><View style={{ height: 126, backgroundColor: merchant.accent, alignItems: 'flex-end', justifyContent: 'center', paddingRight: space.xl }}><CategoryArtwork id={service} size={116} /></View><View style={{ padding: space.md, gap: 3 }}><Text variant="bodyStrong">{merchant.name}</Text><Text variant="caption" tone="muted">{merchant.description}</Text><View style={{ flexDirection: 'row', gap: space.md, marginTop: space.xs }}><Text variant="micro">★ {merchant.rating}</Text><Text variant="micro" tone="muted">{merchant.eta}</Text></View></View></Pressable>;
+  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open ${merchant.name}`} style={({ pressed }) => ({ borderRadius: radius.lg, overflow: 'hidden', backgroundColor: pressed ? palette.sand : palette.surface, borderWidth: 1, borderColor: palette.line })}><View style={{ height: 126, backgroundColor: merchant.accent, alignItems: 'flex-end', justifyContent: 'center', paddingRight: space.xl }}><CategoryPhoto id={service} size={126} accessibilityLabel={`${merchant.name} photo`} /></View><View style={{ padding: space.md, gap: 3 }}><Text variant="bodyStrong">{merchant.name}</Text><Text variant="caption" tone="muted">{merchant.description}</Text><View style={{ flexDirection: 'row', gap: space.md, marginTop: space.xs }}><Text variant="micro">★ {merchant.rating}</Text><Text variant="micro" tone="muted">{merchant.eta}</Text></View></View></Pressable>;
 }
 
 function ProductCard({ product, service, onPress }: { product: Product; service: ServiceId; onPress: () => void }) {
   const { palette } = useTheme();
-  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open ${product.name}`} style={{ width: '47.8%', gap: space.sm }}><View style={{ height: 150, borderRadius: radius.lg, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center' }}><CategoryArtwork id={service} size={100} />{product.badge ? <View style={{ position: 'absolute', top: space.sm, left: space.sm, borderRadius: radius.pill, backgroundColor: palette.surface, paddingHorizontal: space.sm, paddingVertical: 3 }}><Text variant="micro" tone="accent">{product.badge}</Text></View> : null}</View><Text variant="label" weight="bold" numberOfLines={2}>{product.name}</Text><Text variant="caption" tone="accent">{product.price}</Text></Pressable>;
+  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open ${product.name}`} style={{ width: '47.8%', gap: space.sm }}><View style={{ height: 150, borderRadius: radius.lg, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center' }}><CategoryPhoto id={service} size={126} accessibilityLabel={`${product.name} preview`} />{product.badge ? <View style={{ position: 'absolute', top: space.sm, left: space.sm, borderRadius: radius.pill, backgroundColor: palette.surface, paddingHorizontal: space.sm, paddingVertical: 3 }}><Text variant="micro" tone="accent">{product.badge}</Text></View> : null}</View><Text variant="label" weight="bold" numberOfLines={2}>{product.name}</Text><Text variant="caption" tone="accent">{product.price}</Text></Pressable>;
 }
 
 function CatalogPage({ children }: { children: ReactNode }) {

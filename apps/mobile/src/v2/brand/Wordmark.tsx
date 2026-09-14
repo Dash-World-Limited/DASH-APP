@@ -1,4 +1,4 @@
-import Svg, { Path, Rect } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
 
 import { useTheme } from '../../theme/ThemeProvider';
 
@@ -6,8 +6,8 @@ import { useTheme } from '../../theme/ThemeProvider';
  * The DASH wordmark as native vector geometry.
  *
  * This replaces the board crop completely. D and the open A follow the
- * graphite/light side of the approved mark; S, H and the small dash inside A
- * use DASH bronze. Because these are paths, the mark stays sharp at every
+ * graphite/light side of the approved mark; S and H use DASH bronze. Because
+ * these are paths, the mark stays sharp at every
  * device density and needs no separate dark-mode bitmap.
  */
 export function Wordmark({ height = 25 }: { height?: number }) {
@@ -17,9 +17,9 @@ export function Wordmark({ height = 25 }: { height?: number }) {
 
   return (
     <Svg
-      width={height * (576 / 156)}
+      width={height * (463 / 112)}
       height={height}
-      viewBox="0 0 576 156"
+      viewBox="0 0 463 112"
       accessibilityRole="image"
       accessibilityLabel="DASH"
     >
@@ -27,23 +27,22 @@ export function Wordmark({ height = 25 }: { height?: number }) {
       <Path
         fill={lead}
         fillRule="evenodd"
-        d="M18 22h66c42 0 67 21 67 56s-25 56-67 56H18V22Zm31 28v56h33c24 0 37-9 37-28S106 50 82 50H49Z"
+        d="M8 8h64c38 0 62 18 62 48s-24 48-62 48H8V8Zm25 23v50h37c24 0 38-8 38-25S94 31 70 31H33Z"
       />
 
-      {/* Open A: two purpose-drawn legs, no raster tracing or font glyph. */}
-      <Path fill={lead} d="M145 134 197 22h28l-46 112h-34Z" />
-      <Path fill={lead} d="M211 22h28l52 112h-35L211 22Z" />
-      <Rect x="201" y="94" width="28" height="11" rx="5.5" fill={bronze} />
+      {/* Open A: two clean legs with no crossbar, matching the approved mark. */}
+      <Path fill={lead} d="M132 104 176 8h25l-39 96h-30Z" />
+      <Path fill={lead} d="M188 8h25l44 96h-31L188 8Z" />
 
       {/* S */}
       <Path
         fill={bronze}
-        d="M302 39c15-13 37-20 67-20 29 0 52 7 69 20l-18 25c-14-10-31-15-50-15-19 0-29 4-29 12 0 7 11 10 34 13 43 6 64 22 64 49 0 30-27 49-72 49-33 0-60-9-78-26l19-25c16 14 37 21 61 21 21 0 32-5 32-14 0-8-11-11-36-15-41-6-61-22-61-48 0-10 3-19 8-26Z"
-        transform="translate(0 -17)"
+        d="M253 23C267 11 288 5 315 5c27 0 48 6 64 18l-16 22c-13-9-29-14-47-14-18 0-27 4-27 11 0 6 10 9 32 12 40 5 59 19 59 43 0 27-25 43-67 43-30 0-55-8-72-23l18-22c15 12 34 18 56 18 20 0 30-4 30-12 0-7-10-10-33-13-38-6-57-20-57-43 0-9 3-16 8-22Z"
+        transform="translate(0 -4) scale(.92)"
       />
 
       {/* H */}
-      <Path fill={bronze} d="M449 22h31v42h65V22h31v112h-31V92h-65v42h-31V22Z" />
+      <Path fill={bronze} d="M353 8h27v37h56V8h27v96h-27V68h-56v36h-27V8Z" />
     </Svg>
   );
 }

@@ -22,7 +22,8 @@ import { ThemeProvider, useTheme } from '../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../theme/tokens';
 import { Icon, type IconName } from '../ui/Icon';
 import { Text } from '../ui/Text';
-import { CategoryArtwork, type ServiceId } from './artwork/CategoryArtwork';
+import type { ServiceId } from './artwork/CategoryArtwork';
+import { CategoryPhoto } from './artwork/CategoryPhoto';
 import { Wordmark } from './brand/Wordmark';
 import { CartScreen, CategoryDashboard, ProductDetail, Storefront } from './catalog/CatalogScreens';
 import {
@@ -41,19 +42,22 @@ import {
 
 void SplashScreen.preventAutoHideAsync();
 
-const SERVICES: ReadonlyArray<{ id: ServiceId; label: string; icon: IconName; color: string }> = [
-  { id: 'food', label: 'Food', icon: 'silverware-fork-knife', color: '#E7B66C' },
-  { id: 'shops', label: 'Shops', icon: 'shopping-outline', color: '#8AA7C7' },
-  { id: 'pharmacy', label: 'Pharmacy', icon: 'medical-bag', color: '#8EBA9A' },
-  { id: 'local-market', label: 'Local Market', icon: 'basket-outline', color: '#D58C65' },
-  { id: 'declutter', label: 'Declutter', icon: 'tag-outline', color: '#B699C6' },
-  { id: 'logistics', label: 'Logistics', icon: 'truck-outline', color: '#92A88A' },
+const SERVICES: ReadonlyArray<{ id: ServiceId; label: string; color: string }> = [
+  { id: 'food', label: 'Food', color: '#E7B66C' },
+  { id: 'shops', label: 'Shops', color: '#8AA7C7' },
+  { id: 'pharmacy', label: 'Pharmacy', color: '#8EBA9A' },
+  { id: 'local-market', label: 'Local Market', color: '#D58C65' },
+  { id: 'declutter', label: 'Declutter', color: '#B699C6' },
+  { id: 'logistics', label: 'Logistics', color: '#92A88A' },
 ];
 
 const CAMPAIGNS = [
   { title: 'Good Food\nBrighter Days', body: 'Order from restaurants near you', action: 'Explore Food', target: 'food', color: '#EADCC6' },
   { title: 'Everyday Finds\nDelivered', body: 'Discover trusted shops around you', action: 'Browse Shops', target: 'shops', color: '#DCE5EC' },
   { title: 'Care When\nYou Need It', body: 'Pharmacy essentials, closer to home', action: 'Find Pharmacy', target: 'pharmacy', color: '#DDE8DE' },
+  { title: 'Fresh From\nThe Market', body: 'Produce and ingredients from local sellers', action: 'Shop Market', target: 'local-market', color: '#F0DEC9' },
+  { title: 'Great Finds\nNew Stories', body: 'Give quality pre-owned items another life', action: 'Explore Declutter', target: 'declutter', color: '#E6DCEB' },
+  { title: 'Send It\nWith DASH', body: 'Move packages safely across the city', action: 'Book Logistics', target: 'logistics', color: '#DCE5D9' },
 ] as const;
 
 export default function DashApp() {
@@ -242,9 +246,11 @@ function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
         style={{ minHeight: 154, overflow: 'hidden', borderRadius: radius.xl, backgroundColor: activeCampaign.color, padding: space.xl, justifyContent: 'space-between' }}
       >
         <View style={{ position: 'absolute', right: -24, bottom: -34, width: 156, height: 156, borderRadius: 78, backgroundColor: 'rgba(255,255,255,0.55)' }} />
-        <View style={{ position: 'absolute', right: 26, top: 24, width: 62, height: 62, borderRadius: 31, borderWidth: 12, borderColor: 'rgba(166,120,52,0.30)' }} />
-        <Text variant="title" style={{ color: '#30230F' }}>{activeCampaign.title}</Text>
-        <View style={{ maxWidth: '72%' }}>
+        <View style={{ position: 'absolute', right: -8, top: 4 }}>
+          <CategoryPhoto id={activeCampaign.target} size={142} accessibilityLabel={`${activeCampaign.target} promotion`} />
+        </View>
+        <Text variant="title" style={{ color: '#30230F', maxWidth: '64%' }}>{activeCampaign.title}</Text>
+        <View style={{ maxWidth: '67%' }}>
           <Text variant="caption" style={{ color: '#5B4B34' }}>{activeCampaign.body}</Text>
           <Text variant="label" weight="bold" style={{ color: '#30230F', marginTop: space.sm }}>{activeCampaign.action}  →</Text>
         </View>
@@ -256,7 +262,7 @@ function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   );
 }
 
-function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: string; icon: IconName; color: string; onPress: () => void }) {
+function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: string; color: string; onPress: () => void }) {
   const { palette } = useTheme();
   return (
     <Pressable
@@ -276,8 +282,8 @@ function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: stri
         borderColor: palette.line,
       })}
     >
-      <View style={{ width: 72, height: 72, borderRadius: 24, backgroundColor: `${color}35`, alignItems: 'center', justifyContent: 'center' }}>
-        <CategoryArtwork id={id} size={69} />
+      <View style={{ width: 78, height: 72, borderRadius: 24, backgroundColor: `${color}28`, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+        <CategoryPhoto id={id} size={74} accessibilityLabel={`${label} category photo`} />
       </View>
       <Text variant="caption" weight="bold" align="center">{label}</Text>
     </Pressable>
