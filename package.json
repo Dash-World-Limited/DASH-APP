@@ -36,6 +36,7 @@
     "check:keys": "tsx scripts/key-custody-check.mjs",
     "db:studio": "prisma studio --schema packages/db/prisma/schema.prisma",
     "db:seed": "tsx packages/db/src/seed.ts",
+    "db:seed:reference": "tsx packages/db/src/seed-reference.ts",
     "setup": "npm install && npm run db:generate && npm run db:push && npm run db:seed",
     "clean": "node scripts/clean.mjs",
     "maintenance:retention": "tsx apps/api/src/jobs/run-retention.ts",

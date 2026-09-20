@@ -62,6 +62,13 @@ export default tseslint.config(
       'apps/web/src/**',
       'packages/db/src/index.ts',
       'packages/db/src/seed.ts',
+      // The production reference seed, for the same reason as the development
+      // one above: a standalone Node program whose whole job is to write to the
+      // database named by `DATABASE_URL`, and which has no API configuration to
+      // read. It reads that one variable to report the target before writing,
+      // so an operator with several shells open can see which database they
+      // are about to touch.
+      'packages/db/src/seed-reference.ts',
       // Runs the seed as a subprocess and has to hand it a `DATABASE_URL`
       // pointing at a throwaway file. That is building a child environment,
       // not reading application configuration, which is what the rule guards
