@@ -35,12 +35,16 @@
  * no `$executeRaw`.
  */
 
-import { PrismaClient } from '@prisma/client';
-
+// The shared client, deliberately, rather than constructing one from
+// `@prisma/client` directly. That import is the hoisted SQLite client, and
+// this seed's whole purpose is to run against production PostgreSQL — where a
+// SQLite client refuses the URL at the first query. `@dash/db` picks the
+// generated client that matches the connection string, so this stays correct
+// on both, and the API and this script cannot disagree about which client a
+// given DATABASE_URL needs.
+import { prisma } from './index.js';
 import { seedDeclutterTaxonomy } from './seed-declutter.js';
 import { seedLegalDocuments } from './seed-legal.js';
-
-const prisma = new PrismaClient();
 
 /**
  * The database being written to, with the password removed.

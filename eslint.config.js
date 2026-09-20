@@ -81,6 +81,11 @@ export default tseslint.config(
       // with a deliberately unsafe `PG_CHECK_URL`, to prove the script refuses
       // a production database name before reaching any Prisma command.
       'packages/db/src/postgres-check-guard.test.ts',
+      // Same reason once more: it runs child processes with a chosen
+      // `DATABASE_URL` to prove which generated Prisma client that URL
+      // resolves to. Module resolution is the thing under test, so it has to
+      // happen in a real process rather than behind a mock.
+      'packages/db/src/client-resolution.test.ts',
     ],
     rules: {
       'no-restricted-properties': [
