@@ -52,6 +52,7 @@ import {
 } from '../auth/sessions.js';
 import {
   clearAuthCookies,
+  ensureCsrfCookie,
   issueAuthCookies,
   readRefreshCookie,
 } from '../auth/cookies.js';
@@ -120,6 +121,34 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   /** Delegates to the shared issuer so both flows mint identical claims. */
   const issueAccessFor = (identityId: string, sessionId: string) =>
     issueAccessForShared(prisma, config, identityId, sessionId);
+
+  // -------------------------------------------------------------------------
+  // GET /v1/auth/csrf
+  // -------------------------------------------------------------------------
+  // The CSRF bootstrap. A cross-subdomain client cannot read the host-only
+  // cookie, so it asks for the value instead — see `ensureCsrfCookie`.
+  //
+  // Unauthenticated on purpose: the token is needed *before* sign-in, which is
+  // the first state-changing request a visitor makes. It authorises nothing on
+  // its own; it only proves a request came from script that an allowed origin
+  // was able to read a response on.
+  //
+  // A GET, so the global CSRF hook does not demand a token in order to obtain
+  // a token.
+  app.get(
+    '/v1/auth/csrf',
+    { config: { rateLimit: { max: 60, timeWindow: '10 minutes' } } },
+    async (request, reply) => {
+      const csrfToken = ensureCsrfCookie(request, reply, config);
+
+      // Never cached. A stored copy served to a second person would put one
+      // browser's token into another's page, where it matches no cookie and
+      // every write fails.
+      void reply.header('Cache-Control', 'no-store');
+
+      return { csrfToken };
+    },
+  );
 
   // -------------------------------------------------------------------------
   // POST /v1/auth/otp/request

@@ -113,6 +113,45 @@ export function issueAuthCookies(
 }
 
 /**
+ * The CSRF token this browser should echo, issuing one if it has none.
+ *
+ * The double-submit scheme needs the client to know the cookie's value. On a
+ * single origin it simply reads `document.cookie`. It cannot when the web app
+ * and the API are on different hosts: the cookie is deliberately host-only, so
+ * script on `declutters.dashworldng.com` cannot see a cookie belonging to
+ * `api.dashworldng.com`. The browser still *sends* it — the two are same-site,
+ * so `SameSite=Lax` attaches it — which is the precise failure seen in
+ * production: the cookie arrives, the header does not, and `assertCsrf` throws
+ * `csrf_missing`.
+ *
+ * The alternative was `Domain=.dashworldng.com`, which would have worked and
+ * would also have broadcast the token to every subdomain, including hosting we
+ * do not control. This keeps the cookie host-only and returns the value over
+ * an endpoint instead.
+ *
+ * That is safe because reading the response cross-origin requires CORS
+ * approval, and the allowlist in `buildServer` never reflects an arbitrary
+ * origin. An attacker's page can cause the request but cannot read the answer
+ * — the same property the double-submit scheme already depends on.
+ *
+ * Returns the existing token when there is one, so calling it never
+ * invalidates a token a page is already using.
+ */
+export function ensureCsrfCookie(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  config: Config,
+): string {
+  const existing = request.cookies[CSRF_COOKIE];
+  if (typeof existing === 'string' && existing.length > 0) return existing;
+
+  const csrfToken = generateCsrfToken();
+  void reply.setCookie(CSRF_COOKIE, csrfToken, csrfCookieOptions(config));
+
+  return csrfToken;
+}
+
+/**
  * Clear both cookies.
  *
  * The attributes must match those used to set them or the browser keeps the
