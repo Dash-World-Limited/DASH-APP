@@ -296,10 +296,10 @@ function BecomeSeller({ onCreated }: { onCreated: () => void }) {
     try {
       await authedFetch('/v1/declutter/seller', {
         method: 'POST',
-        body: JSON.stringify({
+        body: {
           displayName: displayName.trim(),
           ...(publicArea.trim() ? { publicArea: publicArea.trim() } : {}),
-        }),
+        },
       });
       onCreated();
     } catch (caught) {
