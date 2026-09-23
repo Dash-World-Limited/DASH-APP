@@ -353,7 +353,7 @@ function SellerDetailModal({
     try {
       await authedFetch(`/v1/admin/declutter/sellers/${sellerId}/decision`, {
         method: 'POST',
-        body: JSON.stringify({ to, reason: reason.trim() || undefined }),
+        body: { to, reason: reason.trim() || undefined },
       });
       onChanged();
     } catch (caught) {
@@ -371,7 +371,7 @@ function SellerDetailModal({
         `/v1/admin/declutter/sellers/${sellerId}/documents/${documentId}/review`,
         {
           method: 'POST',
-          body: JSON.stringify({ status, note: status === 'rejected' ? reason.trim() : undefined }),
+          body: { status, note: status === 'rejected' ? reason.trim() : undefined },
         },
       );
       await load();
@@ -659,7 +659,7 @@ function SubmissionModal({
     try {
       await authedFetch(`/v1/admin/declutter/submissions/${submission.id}/transition`, {
         method: 'POST',
-        body: JSON.stringify({ to, note: note.trim() || undefined }),
+        body: { to, note: note.trim() || undefined },
       });
       onChanged();
     } catch (caught) {
