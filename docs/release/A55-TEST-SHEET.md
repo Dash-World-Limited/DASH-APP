@@ -130,3 +130,9 @@ approvals on the website (`http://<PC-LAN-IP>:3000/ops/partners`).
 - [ ] The launcher icon shows the DASH wordmark on the ivory ground (not Expo's default), including when the home screen uses round or squircle icons, and in Android 13 themed icons (Settings → Wallpaper & style → Themed icons) it shows the wordmark silhouette.
 - [ ] Cold start shows the DASH splash — the wordmark centred on ivory, not cropped at the edges — then the app.
 - [ ] Take the store screenshots from real screens during this run (Play needs 2–8).
+
+If an action fails with a generic error and simply works when repeated, check
+that `DATABASE_URL` in your `.env` ends in `?connection_limit=1` (as
+`.env.example` now does), restart the API, and try again: SQLite on the PC can
+otherwise deadlock two overlapping writes. Production uses PostgreSQL and is
+not affected.

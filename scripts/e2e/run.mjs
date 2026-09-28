@@ -49,7 +49,8 @@ const work = mkdtempSync(join(tmpdir(), 'dash-e2e-'));
 const env = {
   ...process.env,
   NODE_ENV: 'development',
-  DATABASE_URL: `file:${join(work, 'journey.db').replace(/\\/g, '/')}`,
+  // One connection: see DATABASE_URL in .env.example.
+  DATABASE_URL: `file:${join(work, 'journey.db').replace(/\\/g, '/')}?connection_limit=1`,
   JWT_ACCESS_SECRET: randomBytes(32).toString('base64url'),
   JWT_REFRESH_SECRET: randomBytes(32).toString('base64url'),
   ENCRYPTION_KEY: randomBytes(32).toString('base64'),
