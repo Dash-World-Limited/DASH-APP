@@ -69,6 +69,7 @@ import { auditContext } from './declutter-shared.js';
 import { createSession } from '../auth/sessions.js';
 import { issueAccessFor } from '../auth/issue.js';
 import { issueAuthCookies } from '../auth/cookies.js';
+import { ensureCustomerRole } from '../auth/customer-role.js';
 
 /** E.164, matching the auth routes exactly. One definition of a phone number. */
 const phoneSchema = z
@@ -653,6 +654,10 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
             data: { identityId: identity.id, referralCode: generateReference('DW') },
           });
         }
+        // The profile alone grants nothing: every customer permission comes
+        // from the role. Without it a verified account could not save an
+        // address or place an order.
+        await ensureCustomerRole(tx, identity.id);
       });
 
       await writeAudit(prisma, {

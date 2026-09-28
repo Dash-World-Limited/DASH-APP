@@ -177,9 +177,12 @@ describe('creating an account', () => {
       include: { roles: true, customer: { include: { declutterSeller: true } } },
     });
     expect(identity.status).toBe('active');
-    // Ordinary users hold no roles. Selling is a separate privileged state that
-    // an admin still has to grant.
-    expect(identity.roles).toEqual([]);
+    // An ordinary user holds only the unscoped `customer` role — what lets
+    // them save an address and order — and nothing privileged. Selling is a
+    // separate state an admin still has to grant.
+    expect(identity.roles.map((row) => ({ role: row.role, vendorId: row.vendorId, cityId: row.cityId }))).toEqual([
+      { role: 'customer', vendorId: null, cityId: null },
+    ]);
     expect(identity.customer?.declutterSeller).toBeNull();
   });
 });
@@ -244,8 +247,10 @@ describe('the signup profile', () => {
       include: { roles: true, customer: { include: { declutterSeller: true } } },
     });
     // "A DASH World staff member told me about it" is attribution, not a
-    // credential. Selling still requires KYC and an admin.
-    expect(identity.roles).toEqual([]);
+    // credential, and "regular seller" is an intention, not a permission: the
+    // only role is the ordinary customer one. Selling still requires KYC and
+    // an admin.
+    expect(identity.roles.map((row) => row.role)).toEqual(['customer']);
     expect(identity.customer?.declutterSeller).toBeNull();
   });
 

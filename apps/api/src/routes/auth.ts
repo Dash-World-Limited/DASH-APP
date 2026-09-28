@@ -46,6 +46,7 @@ import { issueAccessFor as issueAccessForShared } from '../auth/issue.js';
 import { describePhone } from '@dash/domain/onboarding';
 import { phoneVerificationRequired } from './onboarding.js';
 import { effectiveCapabilities } from '../deployment/profile.js';
+import { ensureCustomerRole } from '../auth/customer-role.js';
 import {
   createSession,
   SessionError,
@@ -374,6 +375,11 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         });
         return { steppedUp: true };
       }
+
+      // Accounts verified before signup granted the customer role — including
+      // Declutters sign-ups, which are the same DASH account — get it here,
+      // once, so they can order. Only an identity with a customer profile.
+      await ensureCustomerRole(prisma, challenge.identityId);
 
       const session = await createSession(
         prisma,
