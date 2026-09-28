@@ -90,6 +90,16 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'android.permission.SYSTEM_ALERT_WINDOW',
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
+      // Found in the merged manifest of the first full build (28 September),
+      // brought in by libraries, used by nothing in the app: no biometric
+      // prompt (SecureStore is not used with requireAuthentication), no
+      // foreground service (background location is off), nothing that starts
+      // at boot. Each one is a question in Play review and the Data Safety
+      // form, so each is blocked until a feature genuinely needs it.
+      'android.permission.USE_BIOMETRIC',
+      'android.permission.USE_FINGERPRINT',
+      'android.permission.FOREGROUND_SERVICE',
+      'android.permission.RECEIVE_BOOT_COMPLETED',
     ],
     ...(googleMapsApiKey ? { config: { googleMaps: { apiKey: googleMapsApiKey } } } : {}),
   },
