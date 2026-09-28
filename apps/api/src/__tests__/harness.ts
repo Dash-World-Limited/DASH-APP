@@ -164,7 +164,16 @@ export async function createTestContext(
 
   const directory = mkdtempSync(join(tmpdir(), 'dash-test-'));
   const databaseFile = join(directory, 'test.db');
-  const databaseUrl = `file:${databaseFile}`;
+  // One connection per test database. SQLite has a single write lock per
+  // file, and two DEFERRED transactions on different connections that each
+  // read and then write can wait on each other until the lock timeout: the
+  // first holds RESERVED and needs the second's SHARED to go before it can
+  // commit, the second waits for RESERVED. Locally they rarely overlap; on a
+  // loaded CI runner the webhook-and-app race and the offer-grace suite did,
+  // and failed with P1008 (28 September). A longer lock wait only lengthened
+  // the stall; one connection removes the overlap. PostgreSQL, which
+  // production runs, uses row locks and MVCC and has no such upgrade.
+  const databaseUrl = `file:${databaseFile}?connection_limit=1`;
 
   copyFileSync(template, databaseFile);
 
