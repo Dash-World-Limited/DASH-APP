@@ -544,7 +544,9 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
             paymentId: captured.id,
             amount: body.amount,
             reason: body.reason,
-            status: 'pending',
+            // Approved and booked, but no money has moved: nothing here calls
+            // Paystack. It stays pending until Paystack confirms the refund.
+            status: 'refund_pending_manual_review',
             idempotencyKey: draft.idempotencyKey,
             requestedBy: actor.identityId,
             approvedBy: actor.identityId,
@@ -563,7 +565,9 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         requestId: request.id,
       });
 
-      return { refunded: true, amount: body.amount, replayed: posted.replayed };
+      // Not `refunded: true`. The decision is recorded and the ledger booked;
+      // the money goes back when someone refunds it through Paystack.
+      return { status: 'refund_pending_manual_review', recorded: true, amount: body.amount, replayed: posted.replayed };
     },
   );
 

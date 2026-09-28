@@ -17,6 +17,7 @@ import { add, kobo, ZERO, type Kobo } from '@dash/domain/money';
 import {
   assertTransition,
   customerLabel,
+  describeRefund,
   evaluateCustomerCancellation,
   isActive,
   phaseOf,
@@ -872,7 +873,13 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
 
       const order = await prisma.order.findUnique({
         where: { id: request.params.id },
-        select: { id: true, customerId: true, status: true, total: true },
+        select: {
+          id: true,
+          customerId: true,
+          status: true,
+          total: true,
+          payments: { where: { status: 'captured' }, select: { id: true, amount: true }, take: 1 },
+        },
       });
       if (!order) throw ApiError.notFound();
       requireScope(actor, { customerId: order.customerId });
@@ -882,6 +889,12 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
       if (!outcome.allowed) throw ApiError.conflict(outcome.explanation);
 
       assertTransition(status, 'cancelled', 'customer');
+
+      // What is owed back is computed from what was actually captured, not
+      // from the order total and not from the order's status. No capture, no
+      // refund record: nothing was taken.
+      const captured = order.payments[0];
+      const refundAmount = captured ? Math.round((captured.amount * outcome.refundBasisPoints) / 10_000) : 0;
 
       // A cancellation is the transition a vendor most needs to hear about
       // immediately — it is the one that stops food being cooked. The
@@ -908,6 +921,23 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
           },
         });
 
+        // Recorded with the cancellation, in the same transaction, so a
+        // cancelled paid order can never exist without the refund it owes.
+        // V1 returns money by hand through Paystack; the row says so until
+        // Paystack confirms, and nothing calls it refunded before then.
+        if (captured && refundAmount > 0) {
+          await tx.refund.create({
+            data: {
+              paymentId: captured.id,
+              amount: refundAmount,
+              reason: `customer_cancellation:${outcome.reasonCode}`,
+              status: 'refund_pending_manual_review',
+              idempotencyKey: `cancel_refund_${order.id}`,
+              requestedBy: actor.identityId,
+            },
+          });
+        }
+
         await recordOrderChange(tx, order.id);
       });
 
@@ -918,18 +948,30 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
         action: 'order.cancelled',
         resourceType: 'order',
         resourceId: order.id,
-        after: { reasonCode: outcome.reasonCode, refundBasisPoints: outcome.refundBasisPoints },
+        after: { reasonCode: outcome.reasonCode, refundBasisPoints: outcome.refundBasisPoints, refundAmount },
         ipAddress: request.ip,
         requestId: request.id,
       });
 
+      const refundState = describeRefund('refund_pending_manual_review');
       return {
         cancelled: true,
-        refund: {
-          basisPoints: outcome.refundBasisPoints,
-          estimatedAmount: kobo(Math.round((order.total * outcome.refundBasisPoints) / 10_000)),
-          explanation: outcome.explanation,
-        },
+        refund:
+          refundAmount > 0
+            ? {
+                status: 'refund_pending_manual_review',
+                amount: kobo(refundAmount),
+                basisPoints: outcome.refundBasisPoints,
+                label: refundState.label,
+                explanation: outcome.explanation,
+              }
+            : {
+                status: 'no_payment_taken',
+                amount: kobo(0),
+                basisPoints: outcome.refundBasisPoints,
+                label: 'Nothing to refund',
+                explanation: 'No payment was taken for this order, so there is nothing to refund.',
+              },
       };
     },
   );

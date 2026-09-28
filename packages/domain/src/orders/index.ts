@@ -293,6 +293,39 @@ export type CancellationReasonCode =
   | 'vendor_rejected'
   | 'ops_override';
 
+// ---------------------------------------------------------------------------
+// Refunds
+// ---------------------------------------------------------------------------
+
+/**
+ * The states a `Refund` row can be in.
+ *
+ * V1 moves no money back automatically. A refund that is owed is recorded as
+ * `refund_pending_manual_review`; the DASH team returns it through Paystack
+ * and it becomes `refunded` only once Paystack confirms the refund exists
+ * and has been processed. Nothing — no screen, no email, no API answer —
+ * says "refunded" before that.
+ */
+export const REFUND_STATES = ['refund_pending_manual_review', 'refunded', 'refund_failed'] as const;
+export type RefundState = (typeof REFUND_STATES)[number];
+
+/** What the customer is told about how a refund reaches them. */
+export const REFUND_PROCESS =
+  'Refunds are checked by the DASH team and returned to your card through Paystack. We will tell you when it has been returned.';
+
+/** The customer-facing sentence for a refund's current state. */
+export function describeRefund(state: string): { label: string; body: string } {
+  switch (state) {
+    case 'refunded':
+      return { label: 'Refunded', body: 'Paystack has confirmed this refund to your card. Banks can take a few days to show it.' };
+    case 'refund_failed':
+      return { label: 'Refund needs attention', body: 'This refund could not be completed. The DASH team will contact you.' };
+    default:
+      // `refund_pending_manual_review`, and the older `pending` rows.
+      return { label: 'Refund pending review', body: REFUND_PROCESS };
+  }
+}
+
 /**
  * Customer-initiated cancellation policy.
  *
@@ -312,6 +345,17 @@ export function evaluateCustomerCancellation(status: OrderStatus): CancellationO
       };
 
     case 'payment_pending':
+      // Payment has not been confirmed. Should a charge land after all, the
+      // whole of it is owed back — the basis points say so — but the customer
+      // is told what is true now.
+      return {
+        allowed: true,
+        feeBasisPoints: 0,
+        refundBasisPoints: 10_000,
+        explanation: 'Your payment has not been confirmed, so nothing has been charged.',
+        reasonCode: 'free_before_vendor_accepts',
+      };
+
     case 'placed':
     case 'vendor_reviewing':
     case 'accepted':
@@ -319,7 +363,7 @@ export function evaluateCustomerCancellation(status: OrderStatus): CancellationO
         allowed: true,
         feeBasisPoints: 0,
         refundBasisPoints: 10_000,
-        explanation: 'Your order has not been prepared yet, so you get a full refund.',
+        explanation: `Your order has not been prepared yet, so the full amount is owed back to you. ${REFUND_PROCESS}`,
         reasonCode: 'free_before_vendor_accepts',
       };
 
@@ -331,8 +375,7 @@ export function evaluateCustomerCancellation(status: OrderStatus): CancellationO
         allowed: true,
         feeBasisPoints: 3_000, // 30% — covers vendor ingredient and labour cost
         refundBasisPoints: 7_000,
-        explanation:
-          'Your order is already being prepared. A 30% charge covers the vendor, and the rest is refunded.',
+        explanation: `Your order is already being prepared. A 30% charge covers the vendor, and the rest is owed back to you. ${REFUND_PROCESS}`,
         reasonCode: 'fee_after_preparation_started',
       };
 

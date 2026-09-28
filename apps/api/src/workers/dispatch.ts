@@ -454,7 +454,9 @@ export function registerDispatchWorker(deps: {
         paymentId: captured.id,
         amount: captured.amount,
         reason: job.payload.reason,
-        status: 'pending',
+        // Owed, recorded, and not yet returned: a person returns it through
+        // Paystack, and only Paystack's confirmation makes it `refunded`.
+        status: 'refund_pending_manual_review',
         idempotencyKey: `auto_refund_${order.id}`,
         requestedBy: 'system',
       },
