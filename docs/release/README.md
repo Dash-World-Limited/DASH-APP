@@ -13,6 +13,7 @@ proven, what is built but unproven, and what blocks release — nothing more.
 | `DATA-SAFETY.md` | Data Safety answers traced to the code |
 | `STORE-LISTING-DRAFT.md` | listing text for David to edit |
 | `PRIVACY-POLICY-DASH-APP-DRAFT.md` | a draft policy for the delivery app (not published) |
+| `TERMS-DASH-APP-DRAFT.md` | draft Terms for the delivery app (not published) |
 | `A55-TEST-SHEET.md` | the manual device test |
 
 ## Proven (with the evidence)
@@ -60,8 +61,7 @@ proven, what is built but unproven, and what blocks release — nothing more.
 5. **Upload key** created by David; a signed bundle built with it.
 6. **Legal documents for the delivery app.** The published Terms of Service
    *and* Privacy Policy describe only Declutters, yet signup asks every DASH
-   customer to accept them. A DASH APP policy draft is here; Terms are not
-   drafted. Both need David's approval (ideally legal review) and publishing
+   customer to accept them. Drafts of both for the delivery app are here. Both need David's approval (ideally legal review) and publishing
    as new versions.
 7. **Store assets:** 512×512 icon, 1024×500 feature graphic, 2–8 real phone
    screenshots.
