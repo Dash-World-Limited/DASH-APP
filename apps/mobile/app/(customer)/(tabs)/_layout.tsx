@@ -1,6 +1,6 @@
 import { Tabs } from 'expo-router';
 
-import { CUSTOMER_TABS } from '../../../src/navigation/tabs';
+import { CUSTOMER_TABS, HIDDEN_CUSTOMER_ROUTES } from '../../../src/navigation/tabs';
 import { makeTabBar } from '../../../src/ui/TabBar';
 
 const CustomerTabBar = makeTabBar(CUSTOMER_TABS);
@@ -11,6 +11,9 @@ export default function CustomerTabs() {
     <Tabs screenOptions={{ headerShown: false }} tabBar={(props) => <CustomerTabBar {...props} />}>
       {CUSTOMER_TABS.map((tab) => (
         <Tabs.Screen key={tab.route} name={tab.route} options={{ title: tab.label }} />
+      ))}
+      {HIDDEN_CUSTOMER_ROUTES.map((route) => (
+        <Tabs.Screen key={route} name={route} options={{ href: null }} />
       ))}
     </Tabs>
   );

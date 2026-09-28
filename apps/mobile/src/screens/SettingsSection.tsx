@@ -35,8 +35,8 @@ const SECTIONS: Record<string, { title: string; icon: IconName; headline: string
     title: 'Payment Methods',
     icon: 'credit-card-outline',
     headline: 'How you pay',
-    body: 'Your DASH Wallet, cards, bank transfer, USSD and pay on delivery.',
-    waitingOn: 'Arrives with payments. Card details are only ever handled by the payment provider, never stored by this app.',
+    body: 'You pay at checkout on Paystack’s secure page, by card, bank transfer or USSD.',
+    waitingOn: 'Saved cards are not offered yet. Card details are only ever handled by Paystack, never by DASH or this app.',
   },
   notifications: {
     title: 'Notifications',

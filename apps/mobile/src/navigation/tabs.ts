@@ -32,9 +32,14 @@ export const CUSTOMER_TABS: readonly TabDefinition[] = [
   // tab, keeping the tab bar, exactly as the Shops board shows.
   { route: '(home)', label: 'Home', icon: 'home-outline', activeIcon: 'home' },
   { route: 'orders', label: 'Orders', icon: 'receipt-text-outline', activeIcon: 'receipt-text' },
-  { route: 'wallet', label: 'Wallet', icon: 'wallet-outline', activeIcon: 'wallet' },
+  // No Wallet tab. There is no wallet balance, top-up or wallet payment in V1,
+  // and a tab promising one would present it as working. The route file stays
+  // and is registered hidden (see the tabs layout) for when it is built.
   { route: 'support', label: 'Support', icon: 'headset', activeIcon: 'headset' },
 ];
+
+/** Routes inside the customer tabs that exist but are not offered in V1. */
+export const HIDDEN_CUSTOMER_ROUTES: readonly string[] = ['wallet'];
 
 export const RIDER_TABS: readonly TabDefinition[] = [
   // Also a stack: going Online pushes the Looking-for-orders screen inside the

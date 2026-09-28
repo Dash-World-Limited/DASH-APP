@@ -8,13 +8,20 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { CUSTOMER_TABS, RIDER_TABS } from './tabs';
+import { CUSTOMER_TABS, HIDDEN_CUSTOMER_ROUTES, RIDER_TABS } from './tabs';
 
 const app = fileURLToPath(new URL('../../app', import.meta.url));
 
 describe('Customer navigation', () => {
-  it('is the Customer board: Home, Orders, Wallet, Support', () => {
-    expect(CUSTOMER_TABS.map((t) => t.label)).toEqual(['Home', 'Orders', 'Wallet', 'Support']);
+  it('is the Customer board without Wallet: Home, Orders, Support', () => {
+    // The board shows a Wallet tab, but V1 has no wallet balance, top-up or
+    // wallet payment. Offering the tab would present it as working.
+    expect(CUSTOMER_TABS.map((t) => t.label)).toEqual(['Home', 'Orders', 'Support']);
+  });
+
+  it('keeps the wallet route registered but hidden', () => {
+    expect(HIDDEN_CUSTOMER_ROUTES).toContain('wallet');
+    expect(CUSTOMER_TABS.map((t) => t.route)).not.toContain('wallet');
   });
 
   it('reaches the profile from Home, not from a tab', () => {
