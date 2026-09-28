@@ -12,7 +12,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { randomUUID } from 'node:crypto';
 import { prisma as defaultPrisma } from '@dash/db';
-import type { EmailPort, StoragePort } from '@dash/domain/ports';
+import type { EmailPort, PaymentPort, StoragePort } from '@dash/domain/ports';
 import {
   ConsoleEmailAdapter,
   ConsolePushAdapter,
@@ -34,6 +34,7 @@ import {
 import { capabilitiesFor } from './deployment/profile.js';
 import { S3StorageAdapter } from './adapters/s3.js';
 import { SesEmailAdapter } from './adapters/ses.js';
+import { PaystackPaymentAdapter } from './adapters/paystack.js';
 import { SuppressionAwareEmailAdapter } from './adapters/suppressed-email.js';
 import { RedisQueueAdapter } from './adapters/redis-queue.js';
 import {
@@ -147,9 +148,7 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     // production deployment whose guards no longer check the payment provider
     // must not still be holding one that reports a successful charge and
     // settles nothing.
-    payments:
-      overrides.payments ??
-      (capabilities.has('payments') ? new MockPaymentAdapter() : new DisabledPaymentAdapter()),
+    payments: overrides.payments ?? (capabilities.has('payments') ? buildPayments(config) : new DisabledPaymentAdapter()),
     // PostGIS answers zone containment; everything else geo still comes from
     // the maps provider, which the PostGIS adapter wraps rather than replaces.
     // Zone containment survives with maps off, because PostGIS answers it from
@@ -216,6 +215,32 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
       new ConsoleErrorReporter(config.NODE_ENV !== 'production', quiet, knownSecrets),
     metrics: overrides.metrics ?? new ConsoleMetrics(quiet, knownSecrets),
   };
+}
+
+/**
+ * Pick the payment adapter the configuration asked for.
+ *
+ * The same defect `createEmailAdapter` and storage were rescued from, found
+ * last in the one place it costs money: `PAYMENT_PROVIDER=paystack` was
+ * validated and then never read, and every deployment with payments got the
+ * mock — which captures every charge on the spot and accepts webhooks signed
+ * with a secret printed in this repository. The production guard only refused
+ * `mock` by name, so naming Paystack walked straight past it.
+ *
+ * The mock is now reachable only by asking for it.
+ */
+export function buildPayments(config: Config): PaymentPort {
+  if (config.PAYMENT_PROVIDER === 'mock') return new MockPaymentAdapter();
+
+  if (!config.PAYSTACK_SECRET_KEY) {
+    // Config refuses this in every environment; this is the second lock on
+    // the same door, for a caller that built a Config by hand.
+    throw new Error('PAYMENT_PROVIDER=paystack needs PAYSTACK_SECRET_KEY.');
+  }
+  return new PaystackPaymentAdapter({
+    secretKey: config.PAYSTACK_SECRET_KEY,
+    callbackUrl: config.PAYSTACK_CALLBACK_URL ?? `${config.PUBLIC_WEB_URL.replace(/\/+$/, '')}/pay/complete`,
+  });
 }
 
 /**

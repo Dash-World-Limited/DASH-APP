@@ -98,6 +98,8 @@ export const PUBLIC_VARIABLES: readonly ConfigVariable[] = [
   { name: 'DEFAULT_CITY_SLUG', sensitivity: 'public', production: 'optional', purpose: 'Default city' },
   { name: 'DEFAULT_TIMEZONE', sensitivity: 'public', production: 'optional', purpose: 'Default timezone' },
   { name: 'PAYMENT_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `mock` is refused in production' },
+  { name: 'PAYSTACK_ALLOW_LIVE', sensitivity: 'public', production: 'optional', purpose: 'Explicit switch for a sk_live_ key; refused outside production' },
+  { name: 'PAYSTACK_CALLBACK_URL', sensitivity: 'public', production: 'optional', purpose: "Where Paystack returns the customer's browser after checkout" },
   { name: 'MAPS_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `local` is refused in production' },
   { name: 'SMS_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `console` is refused in production' },
   { name: 'EMAIL_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `console` is refused in production' },
@@ -206,7 +208,8 @@ export const SECRET_VARIABLES: readonly ConfigVariable[] = [
     name: 'PAYSTACK_WEBHOOK_SECRET',
     sensitivity: 'secret',
     production: 'conditional',
-    purpose: 'Verifies inbound webhook signatures. Required when PAYMENT_PROVIDER=paystack.',
+    purpose:
+      'Unused: Paystack signs webhooks with PAYSTACK_SECRET_KEY. Accepted for old environments; config refuses any value that differs from the secret key.',
   },
   {
     name: 'GOOGLE_MAPS_API_KEY',

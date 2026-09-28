@@ -69,7 +69,20 @@ const shape = z
 
     PAYMENT_PROVIDER: z.enum(['mock', 'paystack']).default('mock'),
     PAYSTACK_SECRET_KEY: z.string().optional(),
+    /**
+     * Not used. Paystack signs webhooks with the secret key itself, so a
+     * separate value here can only disagree with it. Accepted, so an existing
+     * environment still parses, and refused below unless empty or identical.
+     */
     PAYSTACK_WEBHOOK_SECRET: z.string().optional(),
+    /**
+     * The explicit switch for real money. A `sk_live_` key is refused unless
+     * this is true *and* NODE_ENV is production, so a live key pasted into a
+     * staging or developer environment cannot charge anybody.
+     */
+    PAYSTACK_ALLOW_LIVE: booleanish.default('false'),
+    /** Where Paystack returns the customer's browser. Defaults to PUBLIC_WEB_URL/pay/complete. */
+    PAYSTACK_CALLBACK_URL: z.string().url().optional(),
 
     MAPS_PROVIDER: z.enum(['local', 'google', 'mapbox']).default('local'),
     GOOGLE_MAPS_API_KEY: z.string().optional(),
@@ -445,6 +458,30 @@ const schema = shape
       fail('DATA_EXPORT_TTL_HOURS', error instanceof Error ? error.message : 'is out of range');
     }
 
+    // --- Paystack (every environment) ---------------------------------------
+    // Staging is where a live key is most likely to be pasted by mistake, so
+    // these are not production-only.
+    if (env.PAYMENT_PROVIDER === 'paystack') {
+      const key = env.PAYSTACK_SECRET_KEY ?? '';
+      if (!/^sk_(test|live)_[A-Za-z0-9]{16,}$/.test(key)) {
+        fail('PAYSTACK_SECRET_KEY', 'PAYMENT_PROVIDER=paystack needs a Paystack secret key (sk_test_… or sk_live_…)');
+      } else if (key.startsWith('sk_live_') && !(env.NODE_ENV === 'production' && env.PAYSTACK_ALLOW_LIVE)) {
+        fail(
+          'PAYSTACK_SECRET_KEY',
+          'A live Paystack key is refused unless NODE_ENV=production and PAYSTACK_ALLOW_LIVE=true — use the sk_test_ key everywhere else',
+        );
+      }
+      if (env.PAYSTACK_WEBHOOK_SECRET && env.PAYSTACK_WEBHOOK_SECRET !== key) {
+        fail(
+          'PAYSTACK_WEBHOOK_SECRET',
+          'Paystack signs webhooks with the secret key; a different value here would reject every genuine event. Leave it empty',
+        );
+      }
+    }
+    if (env.PAYSTACK_ALLOW_LIVE && env.NODE_ENV !== 'production') {
+      fail('PAYSTACK_ALLOW_LIVE', 'Live payments can only be switched on in production');
+    }
+
     if (env.NODE_ENV !== 'production') return;
 
     // --- Production-only guards ---------------------------------------------
@@ -585,12 +622,7 @@ const schema = shape
     }
 
     // --- Credentials required by the chosen providers ------------------------
-    if (env.PAYMENT_PROVIDER === 'paystack') {
-      if (!env.PAYSTACK_SECRET_KEY) fail('PAYSTACK_SECRET_KEY', 'Required when using Paystack');
-      if (!env.PAYSTACK_WEBHOOK_SECRET) {
-        fail('PAYSTACK_WEBHOOK_SECRET', 'Required — unsigned webhooks cannot be trusted');
-      }
-    }
+    // Paystack's key rules run in every environment, above.
     if (env.QUEUE_PROVIDER === 'redis' && !env.REDIS_URL) {
       fail('REDIS_URL', 'Required when QUEUE_PROVIDER is redis');
     }

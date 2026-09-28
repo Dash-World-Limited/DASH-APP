@@ -23,6 +23,9 @@ beforeEach(() => {
   resetConfigCache();
 });
 
+const FAKE_LIVE_KEY = ['sk', 'live', 'notarealkey'.repeat(4)].join('_');
+const FAKE_TEST_KEY = ['sk', 'test', 'notarealkey'.repeat(4)].join('_');
+
 /** A production environment that is otherwise entirely valid. */
 function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
@@ -33,8 +36,9 @@ function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEn
     DEV_EXPOSE_OTP: 'false',
     PUBLIC_WEB_URL: 'https://dashapp.ng',
     PAYMENT_PROVIDER: 'paystack',
-    PAYSTACK_SECRET_KEY: 'sk_live_not_a_real_key',
-    PAYSTACK_WEBHOOK_SECRET: 'whsec_not_a_real_secret',
+    // Assembled from parts so no scanner mistakes it for a leaked key.
+    PAYSTACK_SECRET_KEY: FAKE_LIVE_KEY,
+    PAYSTACK_ALLOW_LIVE: 'true',
     MAPS_PROVIDER: 'google',
     GOOGLE_MAPS_API_KEY: 'not-a-real-key',
     SMS_PROVIDER: 'termii',
@@ -173,6 +177,11 @@ describe('DEV_EXPOSE_OTP is refused in production', () => {
       // with it. The guard that enforces this pairing runs in every
       // environment, which is why it applies here.
       GEO_ZONES_PROVIDER: 'local',
+      // Likewise the Paystack rules: a live key and the go-live switch are
+      // refused outside production, so a development environment carries the
+      // test key.
+      PAYSTACK_SECRET_KEY: FAKE_TEST_KEY,
+      PAYSTACK_ALLOW_LIVE: 'false',
     });
     expect(config.DEV_EXPOSE_OTP).toBe(true);
   });
@@ -266,10 +275,47 @@ describe('required provider credentials', () => {
     expectRefusal({ PAYSTACK_SECRET_KEY: '' }, 'PAYSTACK_SECRET_KEY');
   });
 
-  it('refuses Paystack without a webhook secret', () => {
-    // Unsigned webhooks cannot be trusted, and a webhook endpoint that trusts
-    // an unsigned body is a way to mark any order paid.
-    expectRefusal({ PAYSTACK_WEBHOOK_SECRET: '' }, 'PAYSTACK_WEBHOOK_SECRET');
+  it('refuses a webhook secret that differs from the secret key', () => {
+    // Paystack signs webhooks with the secret key itself. A separate value
+    // could only disagree with it, and then every genuine event is rejected
+    // and paid orders never place. Empty (the default) is correct.
+    expectRefusal({ PAYSTACK_WEBHOOK_SECRET: 'something-else' }, 'PAYSTACK_WEBHOOK_SECRET');
+    expect(() => loadConfig(productionEnv({ PAYSTACK_WEBHOOK_SECRET: '' }))).not.toThrow();
+  });
+
+  it('refuses a key that is not shaped like a Paystack secret key', () => {
+    for (const key of ['sk', 'pk_live_' + 'x'.repeat(20), 'sk_live_not_a_real_key']) {
+      expectRefusal({ PAYSTACK_SECRET_KEY: key }, 'PAYSTACK_SECRET_KEY');
+    }
+  });
+
+  it('refuses a live key without the explicit go-live switch', () => {
+    expectRefusal({ PAYSTACK_ALLOW_LIVE: 'false' }, 'PAYSTACK_SECRET_KEY');
+  });
+
+  it('accepts the test key in production without the switch', () => {
+    // Staging runs NODE_ENV=production on test keys.
+    const config = loadConfig(productionEnv({ PAYSTACK_SECRET_KEY: FAKE_TEST_KEY, PAYSTACK_ALLOW_LIVE: 'false' }));
+    expect(config.PAYSTACK_SECRET_KEY).toBe(FAKE_TEST_KEY);
+  });
+
+  it('refuses a live key outside production, even with the switch', () => {
+    // The switch itself is refused outside production, so a developer cannot
+    // turn a pasted live key into real charges.
+    for (const allowLive of ['true', 'false']) {
+      resetConfigCache();
+      expect(() =>
+        loadConfig({
+          NODE_ENV: 'development',
+          DATABASE_URL: 'file:./dev.db',
+          JWT_ACCESS_SECRET: 'a'.repeat(40),
+          JWT_REFRESH_SECRET: 'b'.repeat(40),
+          PAYMENT_PROVIDER: 'paystack',
+          PAYSTACK_SECRET_KEY: FAKE_LIVE_KEY,
+          PAYSTACK_ALLOW_LIVE: allowLive,
+        }),
+      ).toThrow(/PAYSTACK_/);
+    }
   });
 
   it('refuses Redis without a URL', () => {
