@@ -106,7 +106,7 @@ export const PUBLIC_VARIABLES: readonly ConfigVariable[] = [
   { name: 'EMAIL_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `console` is refused in production' },
   { name: 'PUSH_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `console` is refused in production' },
   { name: 'SES_REGION', sensitivity: 'public', production: 'optional', purpose: 'SES is regional; the sending identity is verified per region' },
-  { name: 'EMAIL_FROM_ADDRESS', sensitivity: 'public', production: 'optional', purpose: 'Must be a verified SES identity' },
+  { name: 'EMAIL_FROM_ADDRESS', sensitivity: 'public', production: 'optional', purpose: 'Must be a sender the email provider has verified (Brevo sender or SES identity)' },
   { name: 'EMAIL_FROM_NAME', sensitivity: 'public', production: 'optional', purpose: 'Display name on transactional email' },
   { name: 'EMAIL_REPLY_TO', sensitivity: 'public', production: 'optional', purpose: 'Monitored mailbox; the identity-conflict email tells people to reply to it' },
   { name: 'SES_CONFIGURATION_SET', sensitivity: 'public', production: 'optional', purpose: 'Groups messages so bounce and complaint events can be attributed' },
@@ -198,6 +198,12 @@ export const SECRET_VARIABLES: readonly ConfigVariable[] = [
     production: 'required',
     purpose: 'Redis connection string. Carries the Redis password in its userinfo.',
     embedsCredential: true,
+  },
+  {
+    name: 'BREVO_API_KEY',
+    sensitivity: 'secret',
+    production: 'conditional',
+    purpose: 'Authenticates transactional email sends to Brevo. Required when EMAIL_PROVIDER=brevo.',
   },
   {
     name: 'PAYSTACK_SECRET_KEY',

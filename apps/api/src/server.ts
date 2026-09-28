@@ -34,6 +34,7 @@ import {
 import { effectiveCapabilities } from './deployment/profile.js';
 import { S3StorageAdapter } from './adapters/s3.js';
 import { SesEmailAdapter } from './adapters/ses.js';
+import { BrevoEmailAdapter } from './adapters/brevo.js';
 import { PaystackPaymentAdapter } from './adapters/paystack.js';
 import { SuppressionAwareEmailAdapter } from './adapters/suppressed-email.js';
 import { RedisQueueAdapter } from './adapters/redis-queue.js';
@@ -352,6 +353,20 @@ function createEmailAdapter(config: Config, quiet: boolean): EmailPort {
       fromName: config.EMAIL_FROM_NAME,
       replyTo: config.EMAIL_REPLY_TO,
       configurationSet: config.SES_CONFIGURATION_SET,
+    });
+  }
+
+  if (config.EMAIL_PROVIDER === 'brevo') {
+    // Refused by config in every environment; re-checked for a caller that
+    // built a Config by hand.
+    if (!config.BREVO_API_KEY || !config.EMAIL_FROM_ADDRESS || !config.EMAIL_REPLY_TO) {
+      throw new Error('EMAIL_PROVIDER=brevo needs BREVO_API_KEY, EMAIL_FROM_ADDRESS and EMAIL_REPLY_TO.');
+    }
+    return new BrevoEmailAdapter({
+      apiKey: config.BREVO_API_KEY,
+      fromAddress: config.EMAIL_FROM_ADDRESS,
+      fromName: config.EMAIL_FROM_NAME,
+      replyTo: config.EMAIL_REPLY_TO,
     });
   }
 

@@ -277,6 +277,39 @@ describe('development secrets are refused in production', () => {
   });
 });
 
+describe('Brevo email', () => {
+  // Assembled from parts so no scanner mistakes a fixture for a leaked key.
+  const FAKE_BREVO_KEY = ['xkeysib', 'notarealkey'.repeat(4)].join('-');
+  const brevo = { EMAIL_PROVIDER: 'brevo', BREVO_API_KEY: FAKE_BREVO_KEY };
+
+  it('is a valid production email provider — SES is not needed', () => {
+    const env = productionEnv(brevo);
+    delete env['SES_REGION'];
+    const config = loadConfig(env);
+    expect(config.EMAIL_PROVIDER).toBe('brevo');
+    expect(config.SES_REGION).toBeUndefined();
+  });
+
+  it('refuses a missing or malformed key, and a missing sender', () => {
+    expectRefusal({ ...brevo, BREVO_API_KEY: '' }, 'BREVO_API_KEY');
+    expectRefusal({ ...brevo, BREVO_API_KEY: 'not-a-brevo-key' }, 'BREVO_API_KEY');
+    expectRefusal({ ...brevo, EMAIL_FROM_ADDRESS: '' }, 'EMAIL_FROM_ADDRESS');
+  });
+
+  it('is checked outside production too', () => {
+    resetConfigCache();
+    expect(() =>
+      loadConfig({
+        NODE_ENV: 'development',
+        DATABASE_URL: 'file:./dev.db',
+        JWT_ACCESS_SECRET: 'a'.repeat(40),
+        JWT_REFRESH_SECRET: 'b'.repeat(40),
+        EMAIL_PROVIDER: 'brevo',
+      }),
+    ).toThrow(/BREVO_API_KEY/);
+  });
+});
+
 describe('required provider credentials', () => {
   it('refuses Paystack without a secret key', () => {
     expectRefusal({ PAYSTACK_SECRET_KEY: '' }, 'PAYSTACK_SECRET_KEY');

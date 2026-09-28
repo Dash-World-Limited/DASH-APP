@@ -95,7 +95,16 @@ const shape = z
      * included. Switched on together with phone verification.
      */
     SMS_ENABLED: booleanish.default('false'),
-    EMAIL_PROVIDER: z.enum(['console', 'ses']).default('console'),
+    EMAIL_PROVIDER: z.enum(['console', 'ses', 'brevo']).default('console'),
+
+    /**
+     * Brevo, the V1 transactional email provider (`EMAIL_PROVIDER=brevo`).
+     *
+     * An API v3 key (`xkeysib-…`), a secret. The sender (`EMAIL_FROM_ADDRESS`)
+     * must be verified in the same Brevo account, or Brevo refuses every send.
+     * SES remains available and optional; nothing in the release needs it.
+     */
+    BREVO_API_KEY: z.string().optional(),
 
     /**
      * Amazon SES, for transactional email.
@@ -109,7 +118,7 @@ const shape = z
      * environment at all.
      */
     SES_REGION: z.string().trim().min(1).optional(),
-    /** Must be a verified identity in `SES_REGION`. SES rejects anything else. */
+    /** A sender the provider has verified: an SES identity in `SES_REGION`, or a Brevo sender. */
     EMAIL_FROM_ADDRESS: z.string().trim().email().optional(),
     EMAIL_FROM_NAME: z.string().trim().min(1).max(60).default('DASH World'),
     /**
@@ -486,6 +495,25 @@ const schema = shape
     }
     if (env.PAYSTACK_ALLOW_LIVE && env.NODE_ENV !== 'production') {
       fail('PAYSTACK_ALLOW_LIVE', 'Live payments can only be switched on in production');
+    }
+
+    // --- Brevo (every environment) ------------------------------------------
+    // A half-configured provider fails at the first signup, where it looks
+    // like a broken form. Refused at boot instead, in staging as much as in
+    // production.
+    if (env.EMAIL_PROVIDER === 'brevo') {
+      if (!/^xkeysib-[A-Za-z0-9-]{20,}$/.test(env.BREVO_API_KEY ?? '')) {
+        fail('BREVO_API_KEY', 'EMAIL_PROVIDER=brevo needs a Brevo API v3 key (xkeysib-…)');
+      }
+      if (!env.EMAIL_FROM_ADDRESS) {
+        fail('EMAIL_FROM_ADDRESS', 'Brevo refuses any sender that is not verified in the account');
+      }
+      if (!env.EMAIL_REPLY_TO) {
+        fail(
+          'EMAIL_REPLY_TO',
+          'The identity-conflict email tells people to reply to it; an unset address leaves them nowhere to go',
+        );
+      }
     }
 
     if (env.NODE_ENV !== 'production') return;
