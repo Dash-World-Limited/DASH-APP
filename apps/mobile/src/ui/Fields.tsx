@@ -15,7 +15,7 @@ import { Text } from './Text';
 
 type Passthrough = Pick<
   TextInputProps,
-  'keyboardType' | 'autoComplete' | 'textContentType' | 'autoCapitalize' | 'autoCorrect' | 'returnKeyType' | 'onSubmitEditing' | 'autoFocus' | 'editable'
+  'keyboardType' | 'autoComplete' | 'textContentType' | 'autoCapitalize' | 'autoCorrect' | 'returnKeyType' | 'onSubmitEditing' | 'autoFocus' | 'editable' | 'maxLength'
 >;
 
 export function TextField({

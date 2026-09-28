@@ -251,6 +251,15 @@ export function getOrder(api: ApiClient, orderId: string): Promise<OrderDetailRe
   return api.request<OrderDetailResult>(`/v1/orders/${encodeURIComponent(orderId)}`);
 }
 
-export function cancelOrder(api: ApiClient, orderId: string, reason?: string): Promise<{ cancelled: boolean }> {
+export interface CancelResult {
+  cancelled: boolean;
+  /**
+   * `refund_pending_manual_review` when money is owed back (never "refunded"
+   * — that is only ever said once Paystack confirms), or `no_payment_taken`.
+   */
+  refund?: { status: 'refund_pending_manual_review' | 'no_payment_taken'; amount: Kobo; label: string; explanation: string };
+}
+
+export function cancelOrder(api: ApiClient, orderId: string, reason?: string): Promise<CancelResult> {
   return api.request(`/v1/orders/${encodeURIComponent(orderId)}/cancel`, { method: 'POST', body: reason ? { reason } : {} });
 }
