@@ -9,6 +9,9 @@
  * reorders a `superRefine` block.
  */
 
+import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   buildKeyring,
@@ -274,6 +277,40 @@ describe('development secrets are refused in production', () => {
       }),
     );
     expect(config.JWT_ACCESS_SECRET).not.toBe(config.JWT_REFRESH_SECRET);
+  });
+});
+
+describe('a fresh copy of .env.example', () => {
+  /** The committed template, read the way a copied .env is: KEY=value lines, comments ignored. */
+  function templateEnv(): NodeJS.ProcessEnv {
+    const text = readFileSync(fileURLToPath(new URL('../../../../.env.example', import.meta.url)), 'utf8');
+    const env: NodeJS.ProcessEnv = {};
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line.trim());
+      if (match) env[match[1]!] = match[2]!.replace(/^"(.*)"$/, '$1');
+    }
+    return env;
+  }
+
+  it('boots after its one documented step — its empty optional values mean "not set"', () => {
+    // Regression: `S3_BUCKET=` and `S3_ENDPOINT=` were parsed as supplied
+    // empty strings, failed their format checks, and the API refused to start
+    // from the template people are told to copy.
+    //
+    // The one step the template requires is generating ENCRYPTION_KEY: its
+    // placeholder is deliberately invalid so nobody runs on a shared key.
+    // This does that step, the way .env.example says to, and nothing else.
+    resetConfigCache();
+    const config = loadConfig({ ...templateEnv(), ENCRYPTION_KEY: randomBytes(32).toString('base64') });
+    expect(config.S3_BUCKET).toBeUndefined();
+    expect(config.S3_ENDPOINT).toBeUndefined();
+  });
+
+  it('still refuses a required value left empty, as missing', () => {
+    resetConfigCache();
+    expect(() =>
+      loadConfig({ ...templateEnv(), ENCRYPTION_KEY: randomBytes(32).toString('base64'), JWT_ACCESS_SECRET: '' }),
+    ).toThrow(/JWT_ACCESS_SECRET/);
   });
 });
 

@@ -737,10 +737,25 @@ export type Config = z.infer<typeof schema>;
 
 let cached: Config | null = null;
 
+/**
+ * An empty value means "not set".
+ *
+ * `.env.example` leaves every optional value deliberately empty (`S3_BUCKET=`,
+ * `PAYSTACK_SECRET_KEY=`) and tells people to copy it. Parsed literally, an
+ * empty string is a *supplied* value, so optional fields with a format —
+ * a URL, a non-empty name — rejected the template itself and the API refused
+ * to boot from a fresh copy. Dropping empty values first makes the file mean
+ * what it says. Nothing required is weakened: a required variable that is
+ * empty is now simply missing, and is refused as missing.
+ */
+function withoutEmptyValues(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(source).filter(([, value]) => value !== ''));
+}
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   if (cached) return cached;
 
-  const result = schema.safeParse(source);
+  const result = schema.safeParse(withoutEmptyValues(source));
   if (!result.success) {
     const lines = result.error.issues.map(
       (issue) => `  ${issue.path.join('.') || '(root)'}: ${issue.message}`,
