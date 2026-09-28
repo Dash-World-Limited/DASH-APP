@@ -55,6 +55,13 @@ import {
   withLease,
   type MaintenanceJobOutcome,
 } from './maintenance.js';
+import {
+  formatPaymentReconciliationReport,
+  paymentReconciliationNeedsAttention,
+  runPaymentReconciliation,
+} from './payment-reconciliation.js';
+import { buildPayments } from '../server.js';
+import { effectiveCapabilities } from '../deployment/profile.js';
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
@@ -147,6 +154,18 @@ async function main(): Promise<void> {
     });
 
     // 4. Ledger last, so it sees this cycle's writes.
+    // Only where this deployment takes payments; a Declutters deployment has
+    // no provider to ask.
+    if (effectiveCapabilities(config).has('payments')) {
+      await job('payments', async () => {
+        const report = await runPaymentReconciliation({ prisma, payments: buildPayments(config), queue }, { dryRun });
+        if (paymentReconciliationNeedsAttention(report)) {
+          throw new Error(`payments needing a person:\n${formatPaymentReconciliationReport(report)}`);
+        }
+        return formatPaymentReconciliationReport(report);
+      });
+    }
+
     await job('ledger', async () => {
       const report = await runLedgerReconciliation(prisma, { dryRun });
       if (ledgerReconciliationFailed(report)) {

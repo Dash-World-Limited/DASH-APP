@@ -18,6 +18,7 @@
 import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PaystackPaymentAdapter } from '../adapters/paystack.js';
+import { runPaymentReconciliation } from '../jobs/payment-reconciliation.js';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, idempotencyKey, type Actor, type World } from './world.js';
 
@@ -332,6 +333,69 @@ describe('the browser returning from Paystack', () => {
       paystack.down = false;
     }
     expect([...bodies]).toEqual([JSON.stringify({ checked: true })]);
+  });
+});
+
+describe('reconciliation of payments nobody settled', () => {
+  const age = async (orderId: string, ms: number) =>
+    context.prisma.payment.updateMany({ where: { orderId }, data: { createdAt: new Date(Date.now() - ms) } });
+  const paymentStatus = async (orderId: string) =>
+    (await context.prisma.payment.findFirstOrThrow({ where: { orderId }, orderBy: { createdAt: 'desc' } })).status;
+  const reconcile = (dryRun = false) =>
+    runPaymentReconciliation({ prisma: context.prisma, payments: context.app.services.payments, queue: context.app.services.queue }, { dryRun });
+
+  it('places a paid order whose webhook and return were both lost', async () => {
+    const { order } = await placedCheckout();
+    paystack.pay(order.code);
+    await age(order.id, 15 * 60_000);
+    await reconcile();
+    expect(await orderStatus(order.id)).toBe('placed');
+    expect(await ledgerCount(order.id)).toBe(1);
+  });
+
+  it('closes a checkout still unpaid after a day, claiming nothing', async () => {
+    const { order } = await placedCheckout();
+    await age(order.id, 25 * 60 * 60_000);
+    await reconcile();
+    expect(await orderStatus(order.id)).toBe('cancelled');
+    expect(await paymentStatus(order.id)).toBe('cancelled');
+    expect(await ledgerCount(order.id)).toBe(0);
+    expect(await context.prisma.refund.count({ where: { payment: { orderId: order.id } } })).toBe(0);
+  });
+
+  it('leaves a recent unpaid checkout alone', async () => {
+    const { order } = await placedCheckout();
+    await age(order.id, 60 * 60_000);
+    await reconcile();
+    expect(await orderStatus(order.id)).toBe('payment_pending');
+    expect(await paymentStatus(order.id)).toBe('pending');
+  });
+
+  it('changes nothing when Paystack cannot be reached, and nothing in a dry run', async () => {
+    const { order } = await placedCheckout();
+    paystack.pay(order.code);
+    await age(order.id, 25 * 60 * 60_000);
+
+    paystack.down = true;
+    try {
+      const report = await reconcile();
+      expect(report.unreachable).toBeGreaterThan(0);
+    } finally {
+      paystack.down = false;
+    }
+    expect(await orderStatus(order.id)).toBe('payment_pending');
+
+    const dry = await reconcile(true);
+    expect(dry.dryRun).toBe(true);
+    expect(await orderStatus(order.id)).toBe('payment_pending');
+  });
+
+  it('never sends another provider’s payment to Paystack', async () => {
+    const { order } = await placedCheckout();
+    await context.prisma.payment.updateMany({ where: { orderId: order.id }, data: { provider: 'mock' } });
+    await age(order.id, 25 * 60 * 60_000);
+    await reconcile();
+    expect(await orderStatus(order.id)).toBe('payment_pending');
   });
 });
 
