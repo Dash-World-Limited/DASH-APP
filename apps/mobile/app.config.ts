@@ -50,6 +50,20 @@ const identity: Record<Variant, { name: string; id: string }> = {
  */
 const googleMapsApiKey = process.env.GOOGLE_MAPS_ANDROID_API_KEY;
 
+/**
+ * Android's versionCode: a positive integer that must increase with every
+ * bundle uploaded to Play. Set per build with DASH_VERSION_CODE; a build
+ * without it is version code 1, which is only ever the first upload.
+ */
+const versionCode = (() => {
+  const raw = process.env.DASH_VERSION_CODE ?? '1';
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 2_100_000_000) {
+    throw new Error(`DASH_VERSION_CODE must be a positive integer — got "${raw}".`);
+  }
+  return value;
+})();
+
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: identity[variant].name,
@@ -73,6 +87,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: identity[variant].id,
+    versionCode,
     // Edge-to-edge is mandatory from Expo SDK 57 / Android 15 — there is no
     // switch; `Screen` owns the insets instead.
     // Foreground location only. Background location for an Online rider needs
@@ -123,6 +138,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         isAndroidBackgroundLocationEnabled: false,
       },
     ],
+    // Signs release builds with the Play upload key when DASH_UPLOAD_* is set
+    // in the build environment; see docs/release/SIGNING.md.
+    './plugins/withReleaseSigning',
   ],
   extra: {
     variant,
