@@ -38,6 +38,7 @@ import { flushOutbox } from '../events/outbox.js';
 import { recordOrderChange } from '../realtime/notify.js';
 import type { QueuePort } from '@dash/domain/ports';
 import { actorOf, requirePermission, requireScope, withIdempotency } from '../http/context.js';
+import { settlePayment } from '../payments/settle.js';
 
 const basketItemSchema = z.object({
   itemId: z.string().min(1),
@@ -529,6 +530,14 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
 
       const body = checkoutSchema.parse(request.body);
 
+      // Card, through the payment provider, is the only method that exists.
+      // Cash on delivery needs riders cleared to carry cash and a way to
+      // settle it; the wallet needs a balance to draw on. Neither is built, and
+      // accepting either here would send a "cash" order to a card checkout.
+      if (body.paymentMethod !== 'card') {
+        throw ApiError.unprocessable('Only card payment is available during early access.');
+      }
+
       // Idempotent: a retried checkout returns the original order rather than
       // placing a second one and charging twice.
       return withIdempotency(request, 'POST /v1/orders', async () => {
@@ -608,13 +617,38 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
         });
 
         // --- Payment ---------------------------------------------------------
-        const intent = await payments.initialize({
-          amount: quote.total,
-          currency: 'NGN',
-          reference: `${order.code}`,
-          customerEmail: `${customerId}@customer.dashapp.test`,
-          idempotencyKey: `order_${order.id}`,
-        });
+        // The provider receives the address the customer proved at signup. It
+        // is where Paystack sends the receipt, and a made-up address there is
+        // a receipt nobody gets.
+        const customerEmail = await emailForPayment(prisma, actor.identityId);
+
+        let intent;
+        try {
+          intent = await payments.initialize({
+            amount: quote.total,
+            currency: 'NGN',
+            reference: `${order.code}`,
+            customerEmail,
+            idempotencyKey: `order_${order.id}`,
+            metadata: { order_id: order.id, order_code: order.code },
+          });
+        } catch (error) {
+          // The provider could not be reached or refused to start a checkout.
+          // Nothing was charged, so the order goes back to a basket — the same
+          // place a declined card leaves it — rather than sitting in
+          // payment_pending with no payment behind it.
+          request.log.error({ orderId: order.id, err: error }, 'payment initialisation failed');
+          await prisma.order.update({
+            where: { id: order.id },
+            data: {
+              status: 'draft',
+              statusEvents: {
+                create: { fromStatus: 'payment_pending', toStatus: 'draft', actorType: 'system', reason: 'payment_unavailable' },
+              },
+            },
+          });
+          throw ApiError.serviceUnavailable('Payment could not be started just now. Nothing was charged — try again in a moment.');
+        }
 
         await prisma.payment.create({
           data: {
@@ -899,6 +933,159 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
       };
     },
   );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/orders/:id/payment/verify — the customer is back from checkout
+  // -------------------------------------------------------------------------
+  // The app calls this when the checkout browser closes. It asks the provider
+  // what happened — the app's own belief about success is never read — and
+  // settles exactly as the webhook would. Whichever arrives first places the
+  // order; the other finds it placed.
+  app.post<{ Params: { id: string } }>(
+    '/v1/orders/:id/payment/verify',
+    {
+      preHandler: requirePermission('order:read:own'),
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    },
+    async (request) => {
+      const actor = actorOf(request);
+      const order = await prisma.order.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, customerId: true },
+      });
+      if (!order) throw ApiError.notFound();
+      requireScope(actor, { customerId: order.customerId });
+
+      const payment = await prisma.payment.findFirst({
+        where: { orderId: order.id },
+        orderBy: { createdAt: 'desc' },
+        select: { providerReference: true },
+      });
+      if (!payment) throw ApiError.notFound('This order has no payment to check.');
+
+      let outcome;
+      try {
+        outcome = await settlePayment({ prisma, payments, queue }, payment.providerReference, actor.identityId);
+      } catch (error) {
+        request.log.error({ orderId: order.id, err: error }, 'payment verification could not reach the provider');
+        throw ApiError.serviceUnavailable('We could not confirm your payment just now. If you paid, it will confirm shortly.');
+      }
+
+      const current = await prisma.order.findUniqueOrThrow({
+        where: { id: order.id },
+        select: { status: true },
+      });
+      return { payment: { outcome }, order: { id: order.id, status: current.status } };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/orders/:id/payment/retry — start a fresh checkout for the order
+  // -------------------------------------------------------------------------
+  // For a checkout the customer abandoned or that declined. A payment still
+  // in flight is not duplicated: its checkout link is handed back instead.
+  // The amount is the order's stored total, never anything the client sends.
+  app.post<{ Params: { id: string } }>(
+    '/v1/orders/:id/payment/retry',
+    {
+      preHandler: requirePermission('order:create'),
+      config: { rateLimit: { max: 10, timeWindow: '10 minutes' } },
+    },
+    async (request) => {
+      const actor = actorOf(request);
+      const order = await prisma.order.findUnique({
+        where: { id: request.params.id },
+        select: {
+          id: true,
+          code: true,
+          customerId: true,
+          status: true,
+          total: true,
+          payments: {
+            orderBy: { createdAt: 'desc' },
+            select: { providerReference: true, status: true, authorizationUrl: true, method: true },
+          },
+        },
+      });
+      if (!order) throw ApiError.notFound();
+      requireScope(actor, { customerId: order.customerId });
+      if (order.status !== 'payment_pending') {
+        throw ApiError.conflict('This order is not waiting for payment.');
+      }
+
+      const latest = order.payments[0];
+      if (latest) {
+        // Settle first: the "abandoned" checkout may in fact have been paid a
+        // moment ago, and a second checkout would charge the customer twice.
+        let outcome;
+        try {
+          outcome = await settlePayment({ prisma, payments, queue }, latest.providerReference, actor.identityId);
+        } catch {
+          throw ApiError.serviceUnavailable('We could not check the earlier payment just now. Try again in a moment.');
+        }
+        if (outcome === 'captured') return { payment: { status: 'captured', authorizationUrl: null } };
+        if (outcome === 'pending' && latest.authorizationUrl) {
+          return { payment: { status: 'pending', authorizationUrl: latest.authorizationUrl } };
+        }
+        if (outcome === 'amount_mismatch' || outcome === 'captured_for_closed_order') {
+          throw ApiError.conflict('This payment needs a person to look at it. Contact support.');
+        }
+      }
+
+      const attempt = order.payments.length + 1;
+      const reference = `${order.code}-P${attempt}`;
+      let intent;
+      try {
+        intent = await payments.initialize({
+          amount: kobo(order.total),
+          currency: 'NGN',
+          reference,
+          customerEmail: await emailForPayment(prisma, actor.identityId),
+          idempotencyKey: `order_${order.id}_attempt_${attempt}`,
+          metadata: { order_id: order.id, order_code: order.code },
+        });
+      } catch (error) {
+        request.log.error({ orderId: order.id, err: error }, 'payment retry could not be initialised');
+        throw ApiError.serviceUnavailable('Payment could not be started just now. Nothing was charged — try again in a moment.');
+      }
+
+      await prisma.payment.create({
+        data: {
+          orderId: order.id,
+          provider: payments.providerName,
+          providerReference: intent.providerReference,
+          amount: order.total,
+          method: latest?.method ?? 'card',
+          status: intent.status,
+          idempotencyKey: `order_${order.id}_attempt_${attempt}`,
+          authorizationUrl: intent.authorizationUrl ?? null,
+          failureReason: intent.providerMessage ?? null,
+          ...(intent.status === 'captured' ? { capturedAt: new Date() } : {}),
+        },
+      });
+      if (intent.status === 'captured') await confirmOrderPaid(prisma, order.id, actor.identityId, queue);
+
+      return { payment: { status: intent.status, authorizationUrl: intent.authorizationUrl ?? null } };
+    },
+  );
+}
+
+/**
+ * The verified email address the payment provider receives for a customer.
+ *
+ * Signup proves an email before an account can place an order, so a missing
+ * or unverified one here means something upstream is wrong — refused rather
+ * than papered over with an invented address.
+ */
+async function emailForPayment(prisma: PrismaClient, identityId: string): Promise<string> {
+  const identity = await prisma.identity.findUnique({
+    where: { id: identityId },
+    select: { email: true, emailVerifiedAt: true },
+  });
+  if (!identity?.email || !identity.emailVerifiedAt) {
+    throw ApiError.forbidden('Verify your email address before paying.');
+  }
+  return identity.email;
 }
 
 /**
@@ -920,7 +1107,7 @@ export async function confirmOrderPaid(
    * scheduled relay — it never loses it.
    */
   queue?: QueuePort,
-): Promise<void> {
+): Promise<ConfirmOutcome> {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     select: {
@@ -944,11 +1131,13 @@ export async function confirmOrderPaid(
       vendor: { select: { commissionBasisPoints: true } },
     },
   });
-  if (!order) return;
+  if (!order) return 'not_payable';
 
   // Idempotent by state: a duplicate webhook finds the order already placed and
   // does nothing, rather than posting the ledger entries a second time.
-  if (order.status !== 'payment_pending') return;
+  if (order.status !== 'payment_pending') {
+    return order.status === 'draft' || order.status === 'cancelled' ? 'not_payable' : 'already_placed';
+  }
 
   const quote = JSON.parse(order.quoteBreakdown) as Parameters<typeof computeSettlement>[0]['quote'];
 
@@ -979,16 +1168,20 @@ export async function confirmOrderPaid(
     riderDeliveryPay: riderPay.deliveryPay,
   });
 
-  await prisma.$transaction(async (tx) => {
-    await tx.order.update({
-      where: { id: order.id },
-      data: {
-        status: 'placed',
-        placedAt: new Date(),
-        statusEvents: {
-          create: { fromStatus: 'payment_pending', toStatus: 'placed', actorType: 'system', actorId },
-        },
-      },
+  const placedNow = await prisma.$transaction(async (tx) => {
+    // The state check above ran outside this transaction, so the webhook and
+    // the customer's return from checkout can both pass it at once. This
+    // conditional update is the real gate: exactly one of them moves the
+    // order, and the other finds nothing to move and leaves quietly instead of
+    // colliding with the first one's ledger entries.
+    const moved = await tx.order.updateMany({
+      where: { id: order.id, status: 'payment_pending' },
+      data: { status: 'placed', placedAt: new Date() },
+    });
+    if (moved.count === 0) return false;
+
+    await tx.orderStatusEvent.create({
+      data: { orderId: order.id, fromStatus: 'payment_pending', toStatus: 'placed', actorType: 'system', actorId },
     });
 
     const draft = buildOrderCapture({
@@ -1029,10 +1222,23 @@ export async function confirmOrderPaid(
     // the placement and the ledger, so a notification can never describe an
     // order that was not actually placed.
     await recordOrderChange(tx, order.id);
+    return true;
   });
+
+  if (!placedNow) return 'already_placed';
 
   // Outside the transaction on purpose: publishing is a network call, and a
   // transaction that waits on Redis holds database locks while a third party is
   // unreachable. Best effort — the row is durable either way.
   if (queue) await flushOutbox(prisma, queue);
+  return 'placed';
 }
+
+/**
+ * What confirming a payment did to its order.
+ *
+ * `not_payable` is the one that needs a person: the money was taken for an
+ * order that no longer exists as something to fulfil (cancelled, or returned
+ * to a basket). It is never resolved by placing the order anyway.
+ */
+export type ConfirmOutcome = 'placed' | 'already_placed' | 'not_payable';

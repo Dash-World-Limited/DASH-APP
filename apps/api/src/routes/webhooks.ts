@@ -16,7 +16,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { confirmOrderPaid } from './orders.js';
+import { settlePayment } from '../payments/settle.js';
 
 export async function registerWebhookRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, payments, queue } = app.services;
@@ -65,8 +65,17 @@ export async function registerWebhookRoutes(app: FastifyInstance): Promise<void>
       }
 
       // --- Replay protection --------------------------------------------------
-      // The unique constraint on (provider, eventId) is what actually enforces
-      // this; the create failing means we have already seen this event.
+      // The unique constraint on (provider, eventId) records every delivery.
+      // An event already *processed* is a replay and does nothing. An event
+      // recorded but never processed is a retry of a delivery that failed part
+      // way — the provider could not be asked, say — and is processed again:
+      // treating it as a replay would drop that payment on the floor for good.
+      //
+      // Exactly one delivery owns an event: the one whose insert succeeds, or
+      // a later one that takes over an event whose earlier attempt failed for
+      // want of the provider. Every other delivery is a duplicate — including
+      // a concurrent one while the owner is still working.
+      let owned = false;
       try {
         await prisma.paymentWebhook.create({
           data: {
@@ -77,63 +86,65 @@ export async function registerWebhookRoutes(app: FastifyInstance): Promise<void>
             rawPayload: rawBody.slice(0, 20_000),
           },
         });
+        owned = true;
       } catch {
+        const retried = await prisma.paymentWebhook.updateMany({
+          where: {
+            provider: payments.providerName,
+            eventId: event.id,
+            processedAt: null,
+            processingError: 'provider_unreachable',
+          },
+          data: { processingError: null },
+        });
+        owned = retried.count === 1;
+      }
+      if (!owned) {
         request.log.info({ eventId: event.id }, 'ignored duplicate webhook');
         return reply.status(200).send({ received: true, duplicate: true });
       }
 
       // --- Never trust the body's own claim about status or amount ------------
-      // A forged-but-correctly-signed body is unlikely, but asking the provider
-      // costs one call and removes the question entirely.
-      const verified = await payments.verify(event.providerReference);
-
-      const payment = await prisma.payment.findUnique({
-        where: { providerReference: event.providerReference },
-        select: { id: true, orderId: true, amount: true, status: true },
-      });
-
-      if (!payment) {
-        request.log.warn(
-          { reference: event.providerReference },
-          'webhook referenced an unknown payment',
-        );
-        return reply.status(200).send({ received: true });
-      }
-
-      // The amount must match what we asked for. A mismatch is either a provider
-      // bug or tampering; either way it must not silently fulfil an order.
-      if (verified.amount !== payment.amount) {
-        request.log.error(
-          { paymentId: payment.id, expected: payment.amount, actual: verified.amount },
-          'webhook amount does not match the payment record',
-        );
+      // `settlePayment` asks the provider and uses only its answer. When the
+      // provider cannot be asked it throws, the event stays unprocessed, and
+      // the non-2xx makes the provider deliver it again later.
+      let outcome;
+      try {
+        outcome = await settlePayment({ prisma, payments, queue }, event.providerReference, 'system');
+      } catch (error) {
+        request.log.error({ eventId: event.id, err: error }, 'webhook could not be settled; awaiting retry');
         await prisma.paymentWebhook.updateMany({
           where: { provider: payments.providerName, eventId: event.id },
-          data: { processingError: 'amount_mismatch' },
+          data: { processingError: 'provider_unreachable' },
+        });
+        return reply.status(503).send({ received: true, processed: false });
+      }
+
+      // Refusals are recorded and answered exactly like a bad signature, so
+      // nobody probing learns whether a reference exists or what it is for.
+      if (outcome === 'unknown_payment' || outcome === 'amount_mismatch') {
+        request.log.warn({ eventId: event.id, outcome }, 'webhook refused');
+        await prisma.paymentWebhook.updateMany({
+          where: { provider: payments.providerName, eventId: event.id },
+          data: { processingError: outcome },
         });
         return reply.status(200).send({ received: true });
       }
-
-      await prisma.payment.update({
-        where: { id: payment.id },
-        data: {
-          status: verified.status,
-          ...(verified.status === 'captured' ? { capturedAt: new Date() } : {}),
-          ...(verified.status === 'failed'
-            ? { failedAt: new Date(), failureReason: verified.providerMessage ?? null }
-            : {}),
-        },
-      });
-
-      if (verified.status === 'captured') {
-        // Idempotent by order state — a second capture event for the same order
-        // finds it already placed and does nothing.
-        await confirmOrderPaid(prisma, payment.orderId, 'system', queue);
+      if (outcome === 'captured_for_closed_order') {
+        request.log.error({ eventId: event.id, outcome }, 'webhook settled into a state that needs a person');
       }
 
+      const payment = await prisma.payment.findUnique({
+        where: { providerReference: event.providerReference },
+        select: { id: true },
+      });
       await prisma.paymentWebhook.updateMany({
         where: { provider: payments.providerName, eventId: event.id },
-        data: { paymentId: payment.id, processedAt: new Date() },
+        data: {
+          paymentId: payment?.id ?? null,
+          processedAt: new Date(),
+          processingError: outcome === 'captured_for_closed_order' ? outcome : null,
+        },
       });
 
       return reply.status(200).send({ received: true, processed: true });

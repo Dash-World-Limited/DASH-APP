@@ -226,6 +226,10 @@ export async function buildWorld(prisma: PrismaClient): Promise<World> {
     const identity = await prisma.identity.create({
       data: {
         email,
+        // Every V1 customer has proved their email: signup demands it, and the
+        // sign-in code is only ever sent to a proved address. Checkout relies
+        // on that, so the fixture has to be a real customer in this respect.
+        emailVerifiedAt: new Date(),
         phone,
         displayName: `Customer ${label}`,
         passwordHash,
