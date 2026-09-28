@@ -26,6 +26,8 @@ interface AuthValue {
   verifyCode: (email: string, code: string) => Promise<void>;
   /** Redeem a new account's email code; proving the address signs the person in. */
   completeRegistration: (email: string, code: string) => Promise<void>;
+  /** Re-read /v1/auth/me after something the server changed (an application, an approval). */
+  refreshViewer: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -69,11 +71,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setViewer(await loadViewer(api));
   }, []);
 
+  const refreshViewer = useCallback(async () => {
+    if (session.state() !== 'authenticated') return;
+    setViewer(await loadViewer(api));
+  }, []);
+
   const signOut = useCallback(() => api.signOut(), []);
 
   const value = useMemo(
-    () => ({ state, viewer, configured: api.configured, requestCode, verifyCode, completeRegistration, signOut }),
-    [state, viewer, requestCode, verifyCode, completeRegistration, signOut],
+    () => ({ state, viewer, configured: api.configured, requestCode, verifyCode, completeRegistration, refreshViewer, signOut }),
+    [state, viewer, requestCode, verifyCode, completeRegistration, refreshViewer, signOut],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

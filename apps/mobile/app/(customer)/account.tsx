@@ -96,6 +96,17 @@ export default function Account() {
           <ListRow icon="help-circle-outline" label="Help & Support" onPress={() => router.push('/support')} />
         </Card>
 
+        {auth.state === 'authenticated' && !offerRider && auth.viewer?.riderStatus !== 'suspended' ? (
+          <Card padded={false} style={{ paddingHorizontal: space.lg }}>
+            <ListRow
+              icon="moped"
+              label={auth.viewer?.riderStatus === 'pending' ? 'Rider application' : 'Become a DASH rider'}
+              value={auth.viewer?.riderStatus === 'pending' ? 'Pending admin approval' : undefined}
+              onPress={() => router.push('/rider-apply')}
+            />
+          </Card>
+        ) : null}
+
         {offerRider ? (
           <Card padded={false} style={{ paddingHorizontal: space.lg }}>
             <ListRow
