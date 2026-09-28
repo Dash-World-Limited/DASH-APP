@@ -308,7 +308,7 @@ function WorkspaceModal({
     try {
       await authedFetch(`/v1/admin/declutter/submissions/${submissionId}/${path}`, {
         method: 'POST',
-        body: JSON.stringify(body),
+        body,
       });
       await load();
       onChanged();
@@ -577,13 +577,13 @@ function ComparableSection({
     try {
       await authedFetch(`/v1/admin/declutter/submissions/${submissionId}/comparables`, {
         method: 'POST',
-        body: JSON.stringify({
+        body: {
           source: source.trim(),
           description: description.trim(),
           ...(asking ? { askingPriceKobo: Math.round(Number(asking) * 100) } : {}),
           ...(sold ? { soldPriceKobo: Math.round(Number(sold) * 100) } : {}),
           observedAt: new Date().toISOString(),
-        }),
+        },
       });
       setSource('');
       setDescription('');

@@ -25,12 +25,90 @@ export const API_BASE =
 export const CSRF_COOKIE = 'dash_csrf';
 export const CSRF_HEADER = 'X-CSRF-Token';
 
-function readCsrfToken(): string | null {
+function readCsrfCookie(): string | null {
   if (typeof document === 'undefined') return null;
   const entry = document.cookie
     .split('; ')
     .find((candidate) => candidate.startsWith(`${CSRF_COOKIE}=`));
   return entry ? decodeURIComponent(entry.slice(CSRF_COOKIE.length + 1)) : null;
+}
+
+/**
+ * The token obtained from the API, when the cookie cannot be read.
+ *
+ * In memory only, like the access token and for the same reason. It is also
+ * per-tab, which is correct: it must match the cookie *this* browser holds.
+ */
+let bootstrappedCsrfToken: string | null = null;
+
+/** Deduplicates concurrent bootstraps — a page that fires three writes at once
+ *  should ask for the token once, not three times. */
+let csrfBootstrap: Promise<string | null> | null = null;
+
+/** Forget the cached token, so the next write fetches a fresh one. */
+export function resetCsrfToken(): void {
+  bootstrappedCsrfToken = null;
+  csrfBootstrap = null;
+}
+
+/**
+ * The token to echo, without going to the network.
+ *
+ * Same-origin — development, and the API behind a path proxy — the cookie is
+ * readable and this is all that is ever needed. Cross-subdomain it returns
+ * whatever a previous bootstrap cached, or nothing the first time.
+ */
+function currentCsrfToken(): string | null {
+  return readCsrfCookie() ?? bootstrappedCsrfToken;
+}
+
+/**
+ * Ask the API for the token this browser is holding.
+ *
+ * Called only after the server has said the token was missing or wrong, never
+ * speculatively. That ordering matters: the cookie is readable on every
+ * deployment shape that already worked, so a proactive fetch would add a round
+ * trip for every user in order to fix the one case that is actually broken —
+ * a returning browser on `declutters.dashworldng.com`, which cannot read a
+ * cookie belonging to `api.dashworldng.com`.
+ *
+ * The rejection it responds to costs nothing: CSRF is enforced in an
+ * `onRequest` hook, so a refused request never reached a handler and had no
+ * effect to undo.
+ *
+ * `GET /v1/auth/csrf` returns the value the browser holds, issuing one if
+ * there is none. Only an allowed origin can read that response, so the token
+ * stays as unreachable to an attacker as the cookie was.
+ *
+ * Deliberately not `apiFetch`: a GET needs no token, and routing it back
+ * through here would risk recursion for no benefit.
+ */
+async function bootstrapCsrfToken(): Promise<string | null> {
+  if (csrfBootstrap) return csrfBootstrap;
+
+  csrfBootstrap = (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/v1/auth/csrf`, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      if (!response.ok) return null;
+
+      const body = (await response.json()) as { csrfToken?: string };
+      bootstrappedCsrfToken = body.csrfToken ?? null;
+      return bootstrappedCsrfToken;
+    } catch {
+      // Offline, or the API is unreachable. The request that needed this will
+      // fail on its own and report the real problem; returning null here keeps
+      // that message rather than replacing it with a confusing CSRF one.
+      return null;
+    } finally {
+      csrfBootstrap = null;
+    }
+  })();
+
+  return csrfBootstrap;
 }
 
 export interface ApiErrorBody {
@@ -73,6 +151,22 @@ export interface RequestOptions {
 }
 
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return sendRequest<T>(path, options, true);
+}
+
+/**
+ * `mayRetryCsrf` guards a single retry.
+ *
+ * A token can go stale for ordinary reasons — the cookie expired, or the
+ * session was rotated — and the honest recovery is to fetch a new one and try
+ * once more. Bounded to one attempt: if the second also fails, something is
+ * genuinely wrong and looping would only hide it.
+ */
+async function sendRequest<T>(
+  path: string,
+  options: RequestOptions,
+  mayRetryCsrf: boolean,
+): Promise<T> {
   const method = options.method ?? 'GET';
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -83,7 +177,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   // it when the request actually carries the refresh cookie, but sending it
   // unconditionally is simpler and costs nothing.
   if (method !== 'GET') {
-    const csrfToken = readCsrfToken();
+    const csrfToken = currentCsrfToken();
     if (csrfToken) headers[CSRF_HEADER] = csrfToken;
   }
 
@@ -121,9 +215,23 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 
   if (!response.ok) {
     const body = payload as Partial<ApiErrorBody>;
+    const code = body.error?.code ?? 'unknown';
+
+    // The token was missing or stale. Fetch the one this browser is actually
+    // holding and try once more.
+    if (
+      mayRetryCsrf &&
+      response.status === 403 &&
+      (code === 'csrf_missing' || code === 'csrf_invalid')
+    ) {
+      resetCsrfToken();
+      const refreshed = await bootstrapCsrfToken();
+      if (refreshed) return sendRequest<T>(path, options, false);
+    }
+
     throw new ApiRequestError(
       response.status,
-      body.error?.code ?? 'unknown',
+      code,
       body.error?.message ?? 'Something went wrong.',
       body.error?.requestId,
       body.error?.details,

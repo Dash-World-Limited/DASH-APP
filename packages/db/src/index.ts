@@ -8,6 +8,8 @@
  * decides what the rows should say.
  */
 
+import { createRequire } from 'node:module';
+
 import { PrismaClient } from '@prisma/client';
 import {
   assertBalanced,
@@ -22,8 +24,69 @@ declare global {
   var __dashPrisma: PrismaClient | undefined;
 }
 
+/**
+ * Where the PostgreSQL client is generated, relative to this file.
+ *
+ * `packages/db/prisma/postgres/schema.prisma` sets `output = "./.client"` so
+ * the two generated clients cannot overwrite each other, and that deliberate
+ * separation is exactly why this lookup has to exist. The `@prisma/client`
+ * imported above is the hoisted one, generated from the SQLite schema, and a
+ * SQLite client refuses a `postgresql://` URL outright:
+ *
+ *     Error validating datasource `db`: the URL must start with the protocol `file:`
+ *
+ * It refuses at the first query rather than at boot, so without this the API
+ * starts cleanly against PostgreSQL and then fails on its first request.
+ */
+const POSTGRES_CLIENT_ENTRY = '../prisma/postgres/.client/index.js';
+
+/** Whether a connection string names PostgreSQL rather than SQLite. */
+export function targetsPostgres(url: string | undefined): boolean {
+  return /^postgres(ql)?:\/\//i.test(url ?? '');
+}
+
+/**
+ * The generated client class this process should construct.
+ *
+ * Chosen from the connection string rather than from `NODE_ENV` or a separate
+ * flag, because the connection string is the thing that actually decides which
+ * client can serve it — and it cannot drift out of step with itself. SQLite
+ * stays the default, so local development, the development seed and every test
+ * keep resolving the hoisted client exactly as before; nothing has to opt out.
+ *
+ * The PostgreSQL client is loaded with `createRequire` rather than a dynamic
+ * `import()` so that this stays synchronous. `prisma` below is a module-level
+ * const that the API imports directly, and making its construction async would
+ * turn every consumer of this package into an async import for the sake of one
+ * branch.
+ */
+export function resolvePrismaConstructor(
+  url: string | undefined = process.env['DATABASE_URL'],
+): typeof PrismaClient {
+  if (!targetsPostgres(url)) return PrismaClient;
+
+  try {
+    const requireFrom = createRequire(import.meta.url);
+    return (requireFrom(POSTGRES_CLIENT_ENTRY) as { PrismaClient: typeof PrismaClient })
+      .PrismaClient;
+  } catch (cause) {
+    // Naming the command matters more than it looks. The failure this replaces
+    // was a datasource validation error about the `file:` protocol, which says
+    // nothing about the client being the wrong one and sends an operator
+    // looking at DATABASE_URL, which is correct.
+    throw new Error(
+      'DATABASE_URL names a PostgreSQL database, but the PostgreSQL Prisma client has not ' +
+        'been generated. Run `npm run db:pg:generate` before starting the API, or before ' +
+        'running a migration or seed against PostgreSQL.',
+      { cause },
+    );
+  }
+}
+
 function createClient(): PrismaClient {
-  return new PrismaClient({
+  const Client = resolvePrismaConstructor();
+
+  return new Client({
     log:
       process.env['NODE_ENV'] === 'development'
         ? [{ emit: 'event', level: 'query' }, 'warn', 'error']

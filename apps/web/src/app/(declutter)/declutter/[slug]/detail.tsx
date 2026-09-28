@@ -273,7 +273,7 @@ function ContactRequest({ listing }: { listing: ListingDetail }) {
     try {
       await authedFetch(`/v1/declutter/listings/${listing.slug}/contact-requests`, {
         method: 'POST',
-        body: JSON.stringify(message.trim() ? { message: message.trim() } : {}),
+        body: message.trim() ? { message: message.trim() } : {},
       });
       setSent(true);
       // The slug and category, never the message. See lib/analytics.ts.
