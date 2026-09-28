@@ -297,6 +297,44 @@ describe('webhook and app together', () => {
   });
 });
 
+describe('the browser returning from Paystack', () => {
+  const returned = (reference: unknown) =>
+    context.app.inject({ method: 'POST', url: '/v1/payments/return', payload: { reference } });
+
+  it('settles a paid order without waiting for the webhook or the app', async () => {
+    const { order } = await placedCheckout();
+    paystack.pay(order.code);
+    const response = await returned(order.code);
+    expect(response.statusCode).toBe(202);
+    expect(await orderStatus(order.id)).toBe('placed');
+    expect(await ledgerCount(order.id)).toBe(1);
+  });
+
+  it('places nothing for a checkout that was not paid', async () => {
+    const { order } = await placedCheckout();
+    await returned(order.code);
+    expect(await orderStatus(order.id)).toBe('payment_pending');
+  });
+
+  it('answers identically whatever the reference, and says nothing about any order', async () => {
+    const { order } = await placedCheckout();
+    paystack.pay(order.code);
+    const bodies = new Set<string>();
+    for (const reference of [order.code, 'DASH-NO-SUCH-ORDER', '../../etc', 42]) {
+      const response = await returned(reference);
+      expect(response.statusCode).toBe(202);
+      bodies.add(response.body);
+    }
+    paystack.down = true;
+    try {
+      bodies.add((await returned('DASH-ANOTHER')).body);
+    } finally {
+      paystack.down = false;
+    }
+    expect([...bodies]).toEqual([JSON.stringify({ checked: true })]);
+  });
+});
+
 describe('retrying payment', () => {
   it('hands back the same checkout while the first is still open', async () => {
     const { order, payment } = await placedCheckout();

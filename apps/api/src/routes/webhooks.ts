@@ -16,6 +16,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { settlePayment } from '../payments/settle.js';
 
 export async function registerWebhookRoutes(app: FastifyInstance): Promise<void> {
@@ -148,6 +149,37 @@ export async function registerWebhookRoutes(app: FastifyInstance): Promise<void>
       });
 
       return reply.status(200).send({ received: true, processed: true });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/payments/return — the customer's browser is back from checkout
+  // -------------------------------------------------------------------------
+  // Paystack sends the browser to the web page at /pay/complete with the
+  // reference in the query string. That page asks for the reference to be
+  // checked now, so the order settles even if the webhook is late and the
+  // customer never reopens the app.
+  //
+  // It is a nudge, not a claim. The body carries only a reference; the
+  // outcome comes from `settlePayment`, which asks Paystack and places an
+  // order only for a capture of the recorded amount — the same single path
+  // the webhook and the app use. The answer is always the same `{ checked:
+  // true }`, whatever happened, so the endpoint tells nobody whether a
+  // reference exists or what state its order is in.
+  app.post(
+    '/v1/payments/return',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const parsed = z.object({ reference: z.string().trim().regex(/^[A-Za-z0-9._-]{4,80}$/) }).safeParse(request.body);
+      if (parsed.success) {
+        try {
+          await settlePayment({ prisma, payments, queue }, parsed.data.reference, 'payment_return');
+        } catch (error) {
+          // Paystack unreachable: the webhook and the app will settle it.
+          request.log.warn({ err: error }, 'payment return could not be checked now');
+        }
+      }
+      return reply.status(202).send({ checked: true });
     },
   );
 }
