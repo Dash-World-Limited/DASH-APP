@@ -127,4 +127,6 @@ approvals on the website (`http://<PC-LAN-IP>:3000/ops/partners`).
 ## 12. At the end
 
 - [ ] No crashes. If there was one, note the time and what you did.
+- [ ] The launcher icon shows the DASH wordmark on the ivory ground (not Expo's default), including when the home screen uses round or squircle icons, and in Android 13 themed icons (Settings → Wallpaper & style → Themed icons) it shows the wordmark silhouette.
+- [ ] Cold start shows the DASH splash — the wordmark centred on ivory, not cropped at the edges — then the app.
 - [ ] Take the store screenshots from real screens during this run (Play needs 2–8).

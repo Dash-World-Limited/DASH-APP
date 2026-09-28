@@ -76,8 +76,8 @@ Text: `STORE-LISTING-DRAFT.md`. Graphics Play requires:
 
 | Asset | Size | Status |
 |---|---|---|
-| App icon | 512 × 512 PNG | **Not yet produced** — from the approved brand artwork |
-| Feature graphic | 1024 × 500 PNG/JPG | **Not yet produced** |
+| App icon | 512 × 512 PNG | `store-assets/play-icon-512.png` (32-bit PNG) — the measured wordmark on the Light ground; **David to approve** |
+| Feature graphic | 1024 × 500 PNG/JPG | `store-assets/feature-graphic-1024x500.png` (24-bit PNG) — the wordmark alone; **David to approve**, or replace with a designed graphic |
 | Phone screenshots | 2–8, 16:9 or 9:16, min 320 px | **Not yet produced** — capture from the A55 during testing (real app, real data) |
 
 ## 4. Internal testing

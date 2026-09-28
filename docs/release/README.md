@@ -71,11 +71,15 @@ proven, what is built but unproven, and what blocks release — nothing more.
    *and* Privacy Policy describe only Declutters, yet signup asks every DASH
    customer to accept them. Drafts of both for the delivery app are here. Both need David's approval (ideally legal review) and publishing
    as new versions.
-7. **Store assets, launcher icon and splash screen.** The app has **no
-   launcher icon or splash image configured** (`app.config.ts` sets neither),
-   so it currently installs with Expo's default icon. Needed: the adaptive
-   launcher icon and splash (from David's approved mark), a 512×512 store
-   icon, a 1024×500 feature graphic, and 2–8 real phone screenshots.
+7. **Store assets, launcher icon and splash screen.** Now configured and
+   generated from the measured wordmark (`npm run brand:assets`): the launcher
+   icon (legacy, adaptive and Android 13 themed), the splash, the 512×512
+   Play icon and the 1024×500 feature graphic, checked through `expo prebuild`
+   and held to the geometry by a test. Still needed: **David's approval** of
+   the wordmark-only icon and feature graphic (or a dedicated symbol), his
+   choice of **S rebalance** (options and one-command apply in
+   `docs/design/boards/2026-09-13/wordmark/README.md`; the icons regenerate
+   with one more command), and 2–8 real phone screenshots from the A55 pass.
 8. **The A55 manual pass**, with any failures fixed.
 9. **CI green** on the pushed branch (check the Actions tab).
 10. **Facts for the listing:** support email, launch area; Data Safety

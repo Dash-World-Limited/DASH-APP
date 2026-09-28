@@ -207,9 +207,25 @@ reported for a director decision rather than silently decided.
   are in
   [`docs/design/boards/2026-09-13/wordmark`](../../docs/design/boards/2026-09-13/wordmark/README.md).
   The Dark variant changes only the graphite letters, to off-white, and is not
-  yet approved. Needed: the master SVG, an approved dark version, and
+  yet approved. Needed: the master SVG, an approved dark version,
   confirmation of the small bronze bar in the A (on four of five board
-  appearances).
+  appearances), and David's choice of S rebalance — four measured options,
+  one command to apply, in the wordmark README.
+- **Launcher icon, splash and store images**: the measured wordmark, filled
+  straight from `src/brand/wordmarkGeometry.ts` in the approved inks on the
+  Light ground by `npm run brand:assets` (`scripts/brand-assets.ts`, run from
+  the repository root; no dependencies). It writes `assets/brand/icon.png`
+  (iOS and pre-Android-8 launchers), `adaptive-icon.png` and
+  `adaptive-icon-monochrome.png` (Android 8+ and Android 13 themed icons, the
+  mark inside the 66 dp safe circle), `splash-icon.png`, and Play's 512 px icon
+  and 1024 × 500 feature graphic in `docs/release/store-assets/`.
+  `app.config.ts` wires them in; `expo prebuild` turns them into the mipmaps
+  and splash drawables. The splash is light on every phone: Light is the app's
+  default and the dark mark is not approved. A test fails if any image is out
+  of date with the geometry, so after a geometry change (an approved S
+  rebalance, David's master SVG) run the script again. The icon is the whole
+  wordmark because that is the only approved artwork; a dedicated symbol would
+  read better at launcher size, and is David's call.
 - **Imagery**: cropped from the boards. Needed: master illustrations for the six
   services, and merchant photography via catalogue upload.
 - **₦**: Inter's Naira sign, subset per weight (OFL, licence in `assets/fonts`).

@@ -55,6 +55,21 @@ const googleMapsApiKey = process.env.GOOGLE_MAPS_ANDROID_API_KEY;
  * bundle uploaded to Play. Set per build with DASH_VERSION_CODE; a build
  * without it is version code 1, which is only ever the first upload.
  */
+/**
+ * The launcher icon and splash: the measured DASH wordmark in its approved
+ * graphite and bronze on the Light ground, generated from the wordmark
+ * geometry by `npm run brand:assets` (apps/mobile/scripts/brand-assets.ts),
+ * never edited by hand. One light splash for every phone: Light is the app's
+ * default, and the dark version of the mark is not yet approved.
+ */
+const BRAND_GROUND = '#F8F7F2';
+/**
+ * The splash mark's width in dp. expo-splash-screen centres it in a 288 dp
+ * canvas that Android 12+ crops to a 192 dp circle; at 176 dp wide the
+ * mark's corners stay inside that circle.
+ */
+export const SPLASH_MARK_WIDTH_DP = 176;
+
 const versionCode = (() => {
   const raw = process.env.DASH_VERSION_CODE ?? '1';
   const value = Number(raw);
@@ -71,12 +86,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   scheme: 'dash',
   version: '0.1.0',
   orientation: 'portrait',
+  icon: './assets/brand/icon.png',
   // The app decides, not the OS: Light is the default, and a person can choose
   // Dark or follow the system under Appearance. `automatic` lets the native
   // root follow whichever the app has resolved.
   userInterfaceStyle: 'automatic',
   // The New Architecture is the only architecture from SDK 57; there is no flag.
-  backgroundColor: '#F8F7F2',
+  backgroundColor: BRAND_GROUND,
   ios: {
     bundleIdentifier: identity[variant].id,
     supportsTablet: false,
@@ -88,6 +104,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   android: {
     package: identity[variant].id,
     versionCode,
+    adaptiveIcon: {
+      foregroundImage: './assets/brand/adaptive-icon.png',
+      // Android 13 themed icons recolour this silhouette.
+      monochromeImage: './assets/brand/adaptive-icon-monochrome.png',
+      backgroundColor: BRAND_GROUND,
+    },
     // Edge-to-edge is mandatory from Expo SDK 57 / Android 15 — there is no
     // switch; `Screen` owns the insets instead.
     // Foreground location only. Background location for an Online rider needs
@@ -130,6 +152,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-font',
     'expo-image',
     'expo-secure-store',
+    [
+      'expo-splash-screen',
+      {
+        image: './assets/brand/splash-icon.png',
+        imageWidth: SPLASH_MARK_WIDTH_DP,
+        resizeMode: 'contain',
+        backgroundColor: BRAND_GROUND,
+      },
+    ],
     [
       'expo-location',
       {

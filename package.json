@@ -44,7 +44,8 @@
     "maintenance:retention": "tsx apps/api/src/jobs/run-retention.ts",
     "maintenance:accounts": "tsx apps/api/src/jobs/run-account-maintenance.ts",
     "maintenance:all": "tsx apps/api/src/jobs/run-maintenance.ts",
-    "e2e:journey": "node scripts/e2e/run.mjs"
+    "e2e:journey": "node scripts/e2e/run.mjs",
+    "brand:assets": "tsx apps/mobile/scripts/brand-assets.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
