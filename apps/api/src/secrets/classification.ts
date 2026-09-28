@@ -206,6 +206,13 @@ export const SECRET_VARIABLES: readonly ConfigVariable[] = [
     purpose: 'Authenticates transactional email sends to Brevo. Required when EMAIL_PROVIDER=brevo.',
   },
   {
+    name: 'BREVO_WEBHOOK_TOKEN',
+    sensitivity: 'secret',
+    production: 'conditional',
+    purpose:
+      'Authenticates Brevo bounce and complaint webhooks; whoever holds it can suppress mail to any address. Unset, the webhook refuses everything.',
+  },
+  {
     name: 'PAYSTACK_SECRET_KEY',
     sensitivity: 'secret',
     production: 'conditional',

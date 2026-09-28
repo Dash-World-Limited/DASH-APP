@@ -43,6 +43,23 @@ No real card is ever charged in test mode.
 | `EMAIL_FROM_ADDRESS` | a sender **verified in that Brevo account** | Brevo → Senders, domains & dedicated IPs. Unverified senders are refused |
 | `EMAIL_FROM_NAME` | `DASH World` (or as you prefer) | |
 | `EMAIL_REPLY_TO` | a mailbox someone reads | The identity-conflict email tells people to reply to it |
+| `BREVO_WEBHOOK_TOKEN` | a long random value you generate: `openssl rand -base64 32` | Lets Brevo report bounces and spam complaints (below). Empty means none is ever acted on |
+
+**Bounces and complaints (do this before launch).** Without it, DASH keeps
+mailing addresses that bounce or complain, Brevo's view of the sender
+worsens, and eventually sign-in codes stop arriving for everybody. In Brevo →
+Transactional → Settings → Webhooks, add a webhook:
+
+- URL: `https://<your API host>/v1/webhooks/brevo-events`
+- Events: **Hard bounce**, **Invalid email**, **Marked as spam** (others are
+  accepted and ignored)
+- Authentication: **Bearer token**, the same value as `BREVO_WEBHOOK_TOKEN`
+  (Basic auth with that value as the password also works)
+
+A hard bounce or invalid address stops all mail to it; a spam complaint stops
+only non-essential mail, never a sign-in code. A soft bounce or a Brevo
+"blocked" changes nothing. This has been tested against simulated Brevo events
+only.
 
 SES is optional and not needed for the release.
 

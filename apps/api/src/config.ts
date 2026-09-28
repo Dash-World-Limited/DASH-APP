@@ -105,6 +105,13 @@ const shape = z
      * SES remains available and optional; nothing in the release needs it.
      */
     BREVO_API_KEY: z.string().optional(),
+    /**
+     * The credential Brevo's webhook sends with bounce and complaint events
+     * (as a bearer token, or Basic auth's password). Unset, the Brevo event
+     * route refuses everything. A secret: whoever holds it can suppress mail
+     * to any address.
+     */
+    BREVO_WEBHOOK_TOKEN: z.string().optional(),
 
     /**
      * Amazon SES, for transactional email.
@@ -514,6 +521,13 @@ const schema = shape
           'The identity-conflict email tells people to reply to it; an unset address leaves them nowhere to go',
         );
       }
+    }
+    if (env.BREVO_WEBHOOK_TOKEN) {
+      const weakness =
+        env.BREVO_WEBHOOK_TOKEN.length < 32
+          ? 'is shorter than 32 characters'
+          : describeSecretWeakness(env.BREVO_WEBHOOK_TOKEN);
+      if (weakness) fail('BREVO_WEBHOOK_TOKEN', `BREVO_WEBHOOK_TOKEN ${weakness}; generate a long random value`);
     }
 
     if (env.NODE_ENV !== 'production') return;

@@ -146,6 +146,8 @@ search bounds are enforced rather than silently ignored.
 | Endpoint | Method | Auth | Cov |
 |---|---|---|---|
 | `/v1/webhooks/payments` | POST | provider signature; CSRF-exempt; replay-protected on `(provider, eventId)` | ✅ |
+| `/v1/webhooks/email-events` | POST | SNS signature from the configured SES topic | ✅ |
+| `/v1/webhooks/brevo-events` | POST | `BREVO_WEBHOOK_TOKEN` as bearer or Basic password, constant-time; unset refuses everything; idempotent per message and event | ✅ `brevo-events.test.ts` (9) |
 
 Covered by `webhooks.test.ts` (24 tests): missing, wrong, and post-signing
 tampered signatures; duplicate and concurrent delivery of one event id;

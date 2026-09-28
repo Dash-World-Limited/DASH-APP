@@ -333,6 +333,15 @@ describe('Brevo email', () => {
     expectRefusal({ ...brevo, EMAIL_FROM_ADDRESS: '' }, 'EMAIL_FROM_ADDRESS');
   });
 
+  it('refuses a short or placeholder webhook token, and accepts a random one', () => {
+    expectRefusal({ ...brevo, BREVO_WEBHOOK_TOKEN: 'too-short' }, 'BREVO_WEBHOOK_TOKEN');
+    expectRefusal({ ...brevo, BREVO_WEBHOOK_TOKEN: 'replace-me-with-a-long-random-brevo-token' }, 'BREVO_WEBHOOK_TOKEN');
+    expectRefusal({ ...brevo, BREVO_WEBHOOK_TOKEN: 'a'.repeat(48) }, 'BREVO_WEBHOOK_TOKEN');
+    resetConfigCache();
+    const token = randomBytes(32).toString('base64url');
+    expect(loadConfig(productionEnv({ ...brevo, BREVO_WEBHOOK_TOKEN: token })).BREVO_WEBHOOK_TOKEN).toBe(token);
+  });
+
   it('is checked outside production too', () => {
     resetConfigCache();
     expect(() =>

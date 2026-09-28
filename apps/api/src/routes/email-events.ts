@@ -1,5 +1,5 @@
 /**
- * Bounce and complaint notifications from SES, via SNS.
+ * Bounce and complaint notifications: from SES via SNS, and from Brevo.
  *
  * ## Why this exists
  *
@@ -31,9 +31,20 @@
  *
  * A soft bounce — a full mailbox, a transient failure — suppresses nothing. The
  * address is fine and will work tomorrow.
+ *
+ * ## Brevo
+ *
+ * Brevo is the V1 provider, so without its events nothing was ever suppressed
+ * in production. Brevo does not sign webhooks the way SNS does; it sends a
+ * credential we choose. So the Brevo route accepts nothing unless
+ * `BREVO_WEBHOOK_TOKEN` is set and the request carries it — as a bearer token,
+ * or as the password of HTTP Basic auth (Brevo offers both) — compared in
+ * constant time. Unset, the route refuses everything: an unauthenticated
+ * suppression endpoint is the denial of service described above.
  */
 
-import type { FastifyInstance } from 'fastify';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
@@ -73,6 +84,58 @@ const sesNotificationSchema = z.object({
     })
     .optional(),
 });
+
+/**
+ * One Brevo transactional event. Parsed loosely: Brevo adds fields, and an
+ * event this does not act on must still be accepted.
+ */
+const brevoEventSchema = z.object({
+  event: z.string().max(40),
+  email: z.string().max(320).optional(),
+  'message-id': z.string().max(300).optional(),
+  ts_event: z.number().optional(),
+  reason: z.string().max(500).optional(),
+});
+
+/** Brevo posts one event, or an array of them when batching is switched on. */
+const brevoBodySchema = z.union([brevoEventSchema, z.array(brevoEventSchema).max(1000)]);
+
+/**
+ * What each Brevo event means for the address. Anything unlisted — delivered,
+ * opened, a soft bounce, a deferral — changes nothing.
+ *
+ * `blocked` is deliberately absent: Brevo refused the send because the address
+ * is on *its* blocklist, which says nothing about why, and suppressing on a
+ * guess could lock somebody out of their account.
+ */
+const BREVO_ACTIONS: Record<string, { reason: 'hard_bounce' | 'complaint'; transactionalAllowed: boolean }> = {
+  // The mailbox does not exist, or the address is malformed: nothing may be sent.
+  hard_bounce: { reason: 'hard_bounce', transactionalAllowed: false },
+  invalid_email: { reason: 'hard_bounce', transactionalAllowed: false },
+  // Marked as spam: marketing stops, a sign-in code does not.
+  spam: { reason: 'complaint', transactionalAllowed: true },
+};
+
+/** The credential Brevo sent, from `Authorization: Bearer …` or Basic auth's password. */
+function presentedBrevoToken(request: FastifyRequest): string | null {
+  const header = request.headers.authorization;
+  if (typeof header !== 'string') return null;
+  const [scheme, value] = header.split(' ', 2);
+  if (!value) return null;
+  if (scheme?.toLowerCase() === 'bearer') return value.trim();
+  if (scheme?.toLowerCase() === 'basic') {
+    const decoded = Buffer.from(value, 'base64').toString('utf8');
+    const colon = decoded.indexOf(':');
+    return colon === -1 ? null : decoded.slice(colon + 1);
+  }
+  return null;
+}
+
+/** Constant time, whatever the lengths: both sides are hashed first. */
+function sameSecret(presented: string, expected: string): boolean {
+  const digest = (value: string) => createHash('sha256').update(value, 'utf8').digest();
+  return timingSafeEqual(digest(presented), digest(expected));
+}
 
 export async function registerEmailEventRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, config } = app.services;
@@ -233,6 +296,54 @@ export async function registerEmailEventRoutes(app: FastifyInstance): Promise<vo
         return { received: true };
       }
 
+      return { received: true };
+    },
+  );
+
+  /**
+   * POST /v1/webhooks/brevo-events
+   *
+   * Brevo's transactional webhook. 401 for anything without the configured
+   * credential — including every request while none is configured — and the
+   * reason is logged, never returned. 200 for anything authenticated, whether
+   * or not it is an event this acts on, so Brevo never stops delivering.
+   */
+  app.post(
+    '/v1/webhooks/brevo-events',
+    { config: { rateLimit: { max: 300, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const expected = config.BREVO_WEBHOOK_TOKEN;
+      const presented = presentedBrevoToken(request);
+      if (!expected || !presented || !sameSecret(presented, expected)) {
+        request.log.warn(
+          { configured: Boolean(expected), credential: presented ? 'wrong' : 'missing' },
+          'Brevo event rejected',
+        );
+        return reply.status(401).send({ received: false });
+      }
+
+      const parsed = brevoBodySchema.safeParse(request.body);
+      if (!parsed.success) {
+        // Authenticated, but not a shape this understands. Accepted so Brevo
+        // keeps delivering, and logged so somebody can look.
+        request.log.warn('Unrecognised Brevo event');
+        return { received: true };
+      }
+
+      const events = Array.isArray(parsed.data) ? parsed.data : [parsed.data];
+      for (const event of events) {
+        const action = BREVO_ACTIONS[event.event];
+        if (!action || !event.email) continue;
+        await suppress({
+          address: event.email,
+          reason: action.reason,
+          transactionalAllowed: action.transactionalAllowed,
+          detail: `brevo:${event.event}`,
+          // Brevo delivers at least once. One message and one kind of event is
+          // one notification, however many times it arrives.
+          notificationId: `brevo:${event['message-id'] ?? event.ts_event ?? 'unknown'}:${event.event}`.slice(0, 300),
+        });
+      }
       return { received: true };
     },
   );
