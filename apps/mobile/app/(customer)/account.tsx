@@ -107,9 +107,26 @@ export default function Account() {
           </Card>
         ) : null}
 
+        {auth.state === 'authenticated' && auth.viewer?.phone?.number ? (
+          // The server's statement about the number, in its words. Nothing in
+          // V1 verifies a phone, so there is no tick and no "verified".
+          <Card>
+            <View style={{ gap: 2 }} testID="phone-status">
+              <Text variant="label">{auth.viewer.phone.number}</Text>
+              {auth.viewer.phone.notice ? (
+                <Text variant="caption" tone="muted">
+                  {auth.viewer.phone.notice}
+                </Text>
+              ) : null}
+            </View>
+          </Card>
+        ) : null}
+
         {auth.state === 'authenticated' ? (
           <Card padded={false} style={{ paddingHorizontal: space.lg }}>
             <ListRow icon="logout" label="Sign out" onPress={() => void auth.signOut()} />
+            <Divider />
+            <ListRow icon="account-remove-outline" label="Delete account" tone="danger" onPress={() => router.push('/delete-account')} />
           </Card>
         ) : null}
       </View>
