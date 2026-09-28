@@ -84,7 +84,7 @@ export const BADGE_LABELS: Record<string, string> = {
 
 /** One line explaining what each badge actually means, for a tooltip or aside. */
 export const BADGE_MEANINGS: Record<string, string> = {
-  dash_reviewed: 'A DASH team member checked this item and approved its price.',
+  dash_reviewed: 'A DASH team member reviewed this listing and approved its price.',
   verified_listing: 'This seller’s identity was verified against government ID.',
   fixed_price: 'The price is set by DASH. There is no haggling.',
   trusted_partner: 'This seller has a standing agreement with DASH.',
@@ -120,7 +120,11 @@ export const AVAILABILITY_LABELS: Record<string, string> = {
 export const TRUST_PROMISES: { title: string; body: string }[] = [
   {
     title: 'DASH Reviewed',
-    body: 'A DASH team member inspects the item and approves what the listing says about it.',
+    // Not "inspects the item": DASH reviews the submission — its photos,
+    // description and price. Physical inspection happens between buyer and
+    // seller (docs/DESIGN-DECLUTTER-DOMAIN.md), and the condition is the
+    // seller's own description.
+    body: 'A DASH team member reviews the photos, description and price, and approves the listing. The condition is as described by the seller.',
   },
   {
     title: 'Verified Listing',

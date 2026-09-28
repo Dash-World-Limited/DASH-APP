@@ -153,7 +153,7 @@ export default async function ListingPage({ params }: PageProps) {
             ₦{(listing.priceKobo / 100).toLocaleString('en-NG')}
           </p>
           <p className="mt-1 text-sm">
-            {CONDITION_LABELS[listing.condition] ?? listing.condition} · {listing.location.label}
+            {CONDITION_LABELS[listing.condition] ?? listing.condition} (as described by the seller) · {listing.location.label}
           </p>
           <p className="mt-3 whitespace-pre-line">{listing.description}</p>
           <p className="mt-3 text-sm">

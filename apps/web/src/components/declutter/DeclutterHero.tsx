@@ -52,8 +52,9 @@ export function DeclutterHero({ featured }: { featured: ListingCard[] }) {
           </h1>
 
           <p className="mt-6 max-w-lg text-base leading-relaxed text-[var(--ink-muted)] sm:text-lg">
-            Every item is inspected by the DASH team and priced once, from real market evidence.
-            Sellers are identity-verified. Nobody haggles, and nobody gets your phone number.
+            Every listing is reviewed by the DASH team — its photos, description and price — before it goes live,
+            and priced once, from real market evidence. Sellers are identity-verified. Nobody haggles, and nobody
+            gets your phone number.
           </p>
 
           <div className="mt-9 flex flex-wrap gap-3">

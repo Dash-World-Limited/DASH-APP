@@ -144,7 +144,7 @@ export function ListingDetailView({ listing }: { listing: ListingDetail }) {
 
           <p className="dcl-display mt-4 text-4xl sm:text-5xl">{formatPrice(listing.priceKobo)}</p>
           <p className="mt-2 text-sm text-[var(--ink-muted)]">
-            {CONDITION_LABELS[listing.condition] ?? listing.condition}
+            {CONDITION_LABELS[listing.condition] ?? listing.condition} (as described by the seller)
             <span aria-hidden> · </span>
             {/* Area and state. Never a distance, never an ETA, never an
                 address — Declutters browsing does not do proximity. */}
@@ -176,7 +176,14 @@ export function ListingDetailView({ listing }: { listing: ListingDetail }) {
           >
             <p className="text-sm font-bold">How this works</p>
             <ul className="mt-3 space-y-2.5 text-sm leading-relaxed text-[var(--ink-muted)]">
-              <li>DASH inspected this item and set the price. It is not negotiable.</li>
+              {/* Not "inspected": DASH reviews the listing — photos,
+                  description, price — and never handles the item. Inspection
+                  is arranged between buyer and seller. */}
+              <li>A DASH team member reviewed this listing and set the price. It is not negotiable.</li>
+              <li>
+                The condition is the seller&rsquo;s own description. Ask about it, or arrange to see
+                the item, before you commit.
+              </li>
               <li>The seller passed identity verification before this went live.</li>
               <li>
                 Ask to be put in touch and a DASH team member arranges it. Your details are not
@@ -196,7 +203,10 @@ export function ListingDetailView({ listing }: { listing: ListingDetail }) {
               ) : null}
             </p>
             <p className="mt-1.5 text-xs text-[var(--ink-muted)]">
-              Identity verified by DASH. Contact details are never published.
+              {/* Only while the badge is earned: publishing required a verified
+                  seller, but verification can lapse after a listing is live. */}
+              {listing.badges.includes('verified_listing') ? 'Identity verified by DASH. ' : ''}
+              Contact details are never published.
             </p>
           </section>
         </div>
