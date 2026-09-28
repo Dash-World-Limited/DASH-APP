@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     # The release-candidate line runs the full gate on every push, before any
-    # pull request exists; `main` is never pushed to from it.
-    branches: [main, claude/playstore-readiness]
+    # pull request exists; `main` is never pushed to from it. The line moved
+    # from claude/playstore-readiness to claude/awesome-bardeen-95lgbd (a
+    # fast-forward) on 28 September; both stay listed.
+    branches: [main, claude/playstore-readiness, claude/awesome-bardeen-95lgbd]
   pull_request:
     branches: [main]
 
@@ -153,9 +155,11 @@ jobs:
       # The retention job is scheduled infrastructure that does not exist yet,
       # so this is the only place it runs against a real database. Dry run:
       # CI asserts it executes and reports, never that it deletes.
+      # Against the database the steps above created and seeded (the job's
+      # DATABASE_URL). This step used to point at `file:./dev.db`, a file no
+      # step creates, so every rule failed on "table does not exist".
       - name: Retention job dry run
         env:
-          DATABASE_URL: file:./dev.db
           JWT_ACCESS_SECRET: ci-only-access-secret-not-used-for-anything-real
           JWT_REFRESH_SECRET: ci-only-refresh-secret-not-used-for-anything-real
           # No ENCRYPTION_KEY, and MFA off to match: config validates key
@@ -213,6 +217,11 @@ jobs:
         env:
           PG_CHECK_URL: postgresql://dash_verify:dash_verify_ci_only@127.0.0.1:5432/dash_verify_ci
         run: npm run check:postgres
+
+      # The shared rate-limit section boots two API instances, which need the
+      # (SQLite) Prisma client this job does not otherwise generate.
+      - name: Generate Prisma client
+        run: npm run db:generate
 
       - name: Redis queue check
         env:

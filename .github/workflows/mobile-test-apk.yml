@@ -5,6 +5,7 @@ on:
     branches:
       - codex/native-mobile-stabilization
       - claude/playstore-readiness
+      - claude/awesome-bardeen-95lgbd
     paths:
       - .github/workflows/mobile-test-apk.yml
       - apps/mobile/**
@@ -48,8 +49,14 @@ jobs:
           java-version: 21
           cache: gradle
 
+      # Only platform-tools: the action's default list also asks for `tools`,
+      # which the runner's cmdline-tools 16 no longer has, and sdkmanager then
+      # fails the job before anything is built. Gradle fetches the platform and
+      # build tools the project names.
       - name: Configure Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install the locked dependencies
         run: |
