@@ -109,8 +109,9 @@ had, by nine variables, before Milestone III.
 | `ENCRYPTION_KEYS_RETIRED` | API | Removed only when the rotation survey is clear | Same as `ENCRYPTION_KEY`; removing one too early makes rows permanently unreadable |
 | `DATABASE_URL` | API, jobs | On staff change | Rotate at the database. Carries the password in its userinfo. |
 | `REDIS_URL` | Queue, rate limiter | On staff change | Rotate at Redis. Carries the password in its userinfo. |
-| `PAYSTACK_SECRET_KEY` | Config only — no integration yet | Per provider policy | Rotate at provider first |
-| `PAYSTACK_WEBHOOK_SECRET` | Config only — no integration yet | Per provider policy | Rotate; unsigned events are already rejected |
+| `PAYSTACK_SECRET_KEY` | API — Paystack adapter: initialise, verify, refund, and webhook signatures (HMAC-SHA512 keyed by this) | Per provider policy | Roll it in the Paystack dashboard first, then update the environment and restart; webhooks signed with the old key stop verifying at that moment |
+| `PAYSTACK_WEBHOOK_SECRET` | Unused — Paystack signs webhooks with the secret key. Config refuses any value that differs from `PAYSTACK_SECRET_KEY` | — | Nothing to rotate; leave empty |
+| `BREVO_API_KEY` | API — Brevo email adapter (`EMAIL_PROVIDER=brevo`): verification and sign-in codes | Per provider policy | Delete the key in Brevo (SMTP & API → API keys), create a new one, update the environment and restart. A leaked key can send mail as DASH |
 | `GOOGLE_MAPS_API_KEY` | Config only — no integration yet | Per provider policy | Rotate at provider; restrict by referrer/IP |
 | `MAPBOX_ACCESS_TOKEN` | Config only — no integration yet | Per provider policy | Rotate at provider |
 
