@@ -844,6 +844,10 @@ async function main(): Promise<void> {
     const ownerIdentity = await prisma.identity.create({
       data: {
         email: `${definition.slug}@dashapp.test`,
+        // Seeded accounts stand for people who already signed up, and signing
+        // up proves the email. Without this none of them could sign in by
+        // emailed code — the only sign-in V1 offers, with SMS off.
+        emailVerifiedAt: SEED_NOW,
         displayName: `${definition.name} Owner`,
         passwordHash,
         // Vendor roles do not require a second factor (see MFA_REQUIRED_ROLES),
@@ -953,6 +957,7 @@ async function main(): Promise<void> {
       data: {
         phone: definition.phone,
         email: definition.email,
+        emailVerifiedAt: SEED_NOW,
         displayName: definition.name,
         roles: { create: { role: 'customer' } },
       },
@@ -1002,6 +1007,7 @@ async function main(): Promise<void> {
   const riderDefinitions = [
     {
       phone: '+2347000000301',
+      email: 'musa@dashapp.test',
       name: 'Musa Ibrahim',
       vehicle: 'motorcycle',
       latitude: 6.4305,
@@ -1011,6 +1017,7 @@ async function main(): Promise<void> {
     },
     {
       phone: '+2347000000302',
+      email: 'grace@dashapp.test',
       name: 'Grace Eze',
       vehicle: 'motorcycle',
       latitude: 6.4490,
@@ -1020,6 +1027,7 @@ async function main(): Promise<void> {
     },
     {
       phone: '+2347000000303',
+      email: 'kunle@dashapp.test',
       name: 'Kunle Balogun',
       vehicle: 'bicycle',
       latitude: 6.5100,
@@ -1029,6 +1037,7 @@ async function main(): Promise<void> {
     },
     {
       phone: '+2347000000304',
+      email: 'peter@dashapp.test',
       name: 'Peter Obi-Nwosu',
       vehicle: 'car',
       latitude: 6.6030,
@@ -1043,6 +1052,10 @@ async function main(): Promise<void> {
     const identity = await prisma.identity.create({
       data: {
         phone: definition.phone,
+        // Riders sign in by emailed code like everyone else (SMS is off in
+        // V1), so each fictional rider has a fictional, verified address.
+        email: definition.email,
+        emailVerifiedAt: SEED_NOW,
         displayName: definition.name,
         roles: { create: { role: 'rider' } },
       },
@@ -1467,10 +1480,12 @@ async function main(): Promise<void> {
     console.warn('  They will be asked to enrol on first sign-in.');
   }
   console.warn('');
-  console.warn('Customers and riders sign in by OTP. In development the code is');
-  console.warn('printed to the API console; production never exposes it.');
-  console.warn(`  Customer  ${customerDefinitions[0]?.phone}`);
-  console.warn(`  Rider     ${riderDefinitions[0]?.phone}\n`);
+  console.warn('Customers, riders and vendor owners sign in with a code sent to their email');
+  console.warn('(SMS is off in V1). In development the code is printed to the API console;');
+  console.warn('production never exposes it.');
+  console.warn(`  Customer      ${customerDefinitions[0]?.email}`);
+  console.warn(`  Rider         ${riderDefinitions[0]?.email}`);
+  console.warn('  Vendor owner  iya-kemi-kitchen@dashapp.test\n');
 }
 
 main()
