@@ -28,6 +28,12 @@ export interface Viewer {
   identity: { id: string; email: string | null; phone: string | null; displayName: string | null };
   roles: string[];
   riderStatus: 'approved' | 'pending' | 'rejected' | 'suspended' | null;
+  /**
+   * The server's statement about the phone number. `verification` is always
+   * `unverified` in V1 — nothing proves a phone yet — and `notice` is the one
+   * sentence to show beside it. Absent from an older server.
+   */
+  phone?: { number: string | null; verification: 'unverified'; required: boolean; notice: string | null };
 }
 
 export interface CodeSent {

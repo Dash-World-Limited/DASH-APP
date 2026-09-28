@@ -176,6 +176,8 @@ export interface StorefrontModel {
   /** "All", then the shop's own shelves in its order. */
   shelves: { id: string; label: string }[];
   products: ProductModel[];
+  /** The branch an order is placed with. Null for staging fixtures, which cannot be ordered from. */
+  branchId?: string | null;
 }
 
 export function storefrontFromDetail(vendor: ApiVendorDetail): StorefrontModel {
@@ -196,6 +198,7 @@ export function storefrontFromDetail(vendor: ApiVendorDetail): StorefrontModel {
     merchant,
     shelves: [{ id: 'all', label: 'All' }, ...shelves.map((c) => ({ id: c.id, label: c.name }))],
     products: shelves.flatMap((c) => c.items.map((item) => productFromItem(item, vendor.slug, c.id, c.name))),
+    branchId: branch?.id ?? null,
   };
 }
 

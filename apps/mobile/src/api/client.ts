@@ -39,6 +39,11 @@ export interface RequestOptions {
   /** Attach the Bearer token. Default true; public catalogue calls pass false. */
   auth?: boolean;
   signal?: AbortSignal;
+  /**
+   * Extra request headers. For `Idempotency-Key` on checkout, so a retried
+   * tap can never place a second order. Cannot override Authorization.
+   */
+  headers?: Readonly<Record<string, string>>;
 }
 
 export interface ApiClient {
@@ -111,7 +116,9 @@ export function createApiClient({ baseUrl, fetch, session, timeoutMs = 15_000 }:
 
   const request = async <T>(path: string, options: RequestOptions = {}, retried = false): Promise<T> => {
     const { method = 'GET', body, auth = true, signal } = options;
-    const headers: Record<string, string> = { Accept: 'application/json' };
+    const headers: Record<string, string> = { ...options.headers, Accept: 'application/json' };
+    delete headers.Authorization;
+    delete headers.authorization;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const token = auth ? session.accessToken() : null;
     if (token) headers.Authorization = `Bearer ${token}`;
