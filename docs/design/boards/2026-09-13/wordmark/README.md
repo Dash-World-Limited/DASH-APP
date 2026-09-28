@@ -114,11 +114,57 @@ which works out to 22.7 pt and 24.7 pt on a 411 pt-wide phone such as the A55.
 replaces `apps/mobile/src/brand/wordmarkGeometry.ts` and the two SVGs in
 `apps/mobile/assets/brand/`, and nothing else changes.
 
+## The S rebalance (28 September): options, not yet applied
+
+David asked for the S to be rebalanced. There is no written description of the
+change and no corrected master, so nothing about the live S has been changed.
+What was done instead:
+
+**The boards do not ask for a different S.** The S was re-measured with one
+more freedom — terminal cuts that may slant, as a residual map of the S
+suggested — starting from the fit above. No board's error moved by more than
+0.0002 and the fitted slopes came out at about zero. The horizontal cuts, and
+the S as a whole, are what the boards show. So a rebalance is a design
+decision, not a measuring error, and it needs David's choice.
+
+**The measured S has two imbalances**, measured against the rest of the mark:
+
+| | Measured S | The H beside it |
+|---|---|---|
+| Ink per unit of width (its "colour") | 0.671 | 0.600 — the S is about 12% heavier |
+| Arm / spine / arm | 22.2 / 22.7 / 23.1, counters about 16 | crossbar 22.4 |
+| Overlap with itself turned 180° | 0.896 (upper bowl 5.4 narrower, unequal arms and hooks) | — |
+
+`s_rebalance.py` corrects one, both or neither, each as a defined operation on
+the measured parameters rather than a drawing. Only the S changes; D, A, H, the
+bar, the colours and the spacing stay as measured:
+
+| Option | What it does | S ink per width | Symmetry |
+|---|---|---|---|
+| `measured` | the live mark | 0.671 | 0.896 |
+| `symmetric` | point-symmetric: bowls at their mean width, equal arms and hooks, spine centred | 0.689 | 0.997 |
+| `lighter` | the three horizontals thinned equally (3.6 units), spine kept centred, until the S matches the H's colour; outline unchanged | 0.600 | 0.887 |
+| `lighter-symmetric` | both (horizontals 4.3 thinner) | 0.600 | 0.995 |
+
+![The four options, large, at the Home-header size on light and dark, and at 24 px](s-rebalance-options.png)
+
+**To apply David's choice** (it rewrites the native and web geometry and the
+two SVG masters, and records the option in the generated file's header):
+
+```bash
+python s_rebalance.py apply lighter-symmetric   # or symmetric, lighter; `measured` puts it back
+```
+
+Then regenerate the launcher icon, splash and store images from the new
+geometry (`node apps/mobile/scripts/brand-assets.mjs`, see
+`apps/mobile/README.md`). A master SVG from David still supersedes all of this.
+
 ## Re-running
 
 ```bash
 python derive_wordmark.py fit    # about 5 minutes; writes measurements.json
 python derive_wordmark.py emit   # writes wordmarkGeometry.ts and the SVG masters
+python s_rebalance.py sheet      # redraws s-rebalance-options.png from them
 ```
 
 This needs Python 3 and Pillow. The fit is deterministic, with fixed seeds.

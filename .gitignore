@@ -115,3 +115,6 @@ apps/android-shell/capacitor.config.json
 apps/android-shell/www/target.json
 *.apk
 .tooling/
+
+# Python bytecode from the design scripts (docs/design/…/wordmark).
+__pycache__/
