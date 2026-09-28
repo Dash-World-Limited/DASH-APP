@@ -26,7 +26,7 @@ import {
 } from '@dash/domain/account';
 import { redactSecretsInText } from '@dash/domain/redaction';
 import { presentSecretValues } from './secrets/classification.js';
-import { capabilitiesFor, DEPLOYMENT_PROFILES } from './deployment/profile.js';
+import { DEPLOYMENT_PROFILES, effectiveCapabilities } from './deployment/profile.js';
 
 const booleanish = z
   .enum(['true', 'false', '1', '0'])
@@ -89,6 +89,12 @@ const shape = z
     MAPBOX_ACCESS_TOKEN: z.string().optional(),
 
     SMS_PROVIDER: z.enum(['console', 'termii', 'twilio']).default('console'),
+    /**
+     * Off in V1. Sign-in is by emailed code and phone numbers are unverified,
+     * so no SMS is ever sent and no SMS provider is required — in production
+     * included. Switched on together with phone verification.
+     */
+    SMS_ENABLED: booleanish.default('false'),
     EMAIL_PROVIDER: z.enum(['console', 'ses']).default('console'),
 
     /**
@@ -542,7 +548,7 @@ const schema = shape
     // handed Paystack keys it will never use and a maps key for addresses it
     // never geocodes, which is how unused credentials end up in production
     // environments.
-    const capabilities = capabilitiesFor(env.DEPLOYMENT_PROFILE);
+    const capabilities = effectiveCapabilities(env);
 
     if (capabilities.has('payments') && env.PAYMENT_PROVIDER === 'mock') {
       fail('PAYMENT_PROVIDER', 'The mock payment provider must never run in production — it settles nothing');

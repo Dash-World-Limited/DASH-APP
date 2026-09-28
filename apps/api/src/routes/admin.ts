@@ -17,6 +17,8 @@ import { buildRefund, buildWalletCredit, verifyLedgerIntegrity } from '@dash/dom
 import { postLedgerTransaction, writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission, requireScope } from '../http/context.js';
+import { effectiveCapabilities } from '../deployment/profile.js';
+import { PHONE_VERIFICATION_FLAG } from '@dash/domain/onboarding';
 import {
   cancelAccountDeletion,
   getAccountDeletion,
@@ -681,6 +683,16 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       const actor = actorOf(request);
       const existing = await prisma.featureFlag.findUnique({ where: { key: request.params.key } });
       if (!existing) throw ApiError.notFound();
+
+      // Requiring phone verification while no SMS can be sent would ask every
+      // account for a code that can never arrive.
+      if (
+        existing.key === PHONE_VERIFICATION_FLAG &&
+        body.isEnabled === true &&
+        !effectiveCapabilities(app.services.config).has('sms')
+      ) {
+        throw ApiError.conflict('Phone verification cannot be required while SMS is disabled (SMS_ENABLED=false).');
+      }
 
       const updated = await prisma.featureFlag.update({
         where: { key: request.params.key },

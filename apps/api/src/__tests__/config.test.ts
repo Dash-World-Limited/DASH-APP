@@ -100,10 +100,17 @@ describe('mock adapters are refused in production', () => {
     expectRefusal({ MAPS_PROVIDER: 'local' }, 'MAPS_PROVIDER');
   });
 
-  it('refuses the console SMS adapter', () => {
-    // The one that matters most: with console SMS, no customer ever receives a
-    // login code, and the platform is unusable in a way that looks like a bug.
-    expectRefusal({ SMS_PROVIDER: 'console' }, 'SMS_PROVIDER');
+  it('refuses the console SMS adapter once SMS is switched on', () => {
+    // With console SMS and SMS enabled, no customer would ever receive a phone
+    // code, and the platform is unusable in a way that looks like a bug.
+    expectRefusal({ SMS_ENABLED: 'true', SMS_PROVIDER: 'console' }, 'SMS_PROVIDER');
+  });
+
+  it('starts without any SMS provider while SMS is off, as in V1', () => {
+    // Sign-in is by emailed code and phones are unverified, so production
+    // must not demand — or pay for — an SMS provider it never uses.
+    const config = loadConfig(productionEnv({ SMS_PROVIDER: 'console' }));
+    expect(config.SMS_ENABLED).toBe(false);
   });
 
   it('refuses the console email adapter', () => {

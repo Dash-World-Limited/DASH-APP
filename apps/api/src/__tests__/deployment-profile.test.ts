@@ -202,7 +202,8 @@ describe('the full DASH APP profile still refuses every mock provider', () => {
   });
 
   it('refuses the console SMS and push adapters', () => {
-    expectFullRefusal({}, 'SMS_PROVIDER');
+    // SMS is refused only once it is switched on; V1 runs with it off.
+    expectFullRefusal({ SMS_ENABLED: 'true' }, 'SMS_PROVIDER');
     expectFullRefusal({}, 'PUSH_PROVIDER');
   });
 

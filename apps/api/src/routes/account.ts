@@ -19,7 +19,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { capabilitiesFor } from '../deployment/profile.js';
+import { effectiveCapabilities } from '../deployment/profile.js';
 import { z } from 'zod';
 import { ApiError } from '../http/errors.js';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
@@ -51,7 +51,7 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
    * production would be lost on the next deploy. Rather than offer a download
    * that quietly disappears, the endpoints are not registered at all.
    */
-  const exportEnabled = capabilitiesFor(app.services.config.DEPLOYMENT_PROFILE).has('dataExport');
+  const exportEnabled = effectiveCapabilities(app.services.config).has('dataExport');
   const { prisma, config, queue } = app.services;
 
   /** Deletion and export are a customer flow. Staff/vendor/rider are out of scope. */

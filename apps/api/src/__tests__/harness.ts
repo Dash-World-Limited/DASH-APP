@@ -72,6 +72,9 @@ function testEnv(databaseUrl: string): NodeJS.ProcessEnv {
     PAYMENT_PROVIDER: 'mock',
     MAPS_PROVIDER: 'local',
     SMS_PROVIDER: 'console',
+    // On, so the phone-code path (built, and switched off in V1 deployments)
+    // stays covered. sms-disabled.test.ts runs the V1 default.
+    SMS_ENABLED: 'true',
     EMAIL_PROVIDER: 'console',
     PUSH_PROVIDER: 'console',
     STORAGE_PROVIDER: 'local',

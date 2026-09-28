@@ -106,6 +106,29 @@ export function capabilitiesFor(profile: DeploymentProfile): ReadonlySet<Capabil
   return CAPABILITY_SETS[profile];
 }
 
+const WITHOUT_SMS: Readonly<Record<DeploymentProfile, ReadonlySet<Capability>>> = {
+  full: new Set(PROFILE_CAPABILITIES.full.filter((capability) => capability !== 'sms')),
+  declutters: new Set(PROFILE_CAPABILITIES.declutters.filter((capability) => capability !== 'sms')),
+};
+
+/**
+ * What this deployment runs, given its profile *and* its switches.
+ *
+ * SMS is the one capability a profile offers but a deployment must also opt
+ * into. V1 signs everyone in by emailed code and treats every phone number
+ * as unverified, so a production deployment with `SMS_ENABLED=false` has no
+ * SMS capability at all: no provider is demanded at boot, the SMS adapter
+ * refuses to send, and a phone number cannot be used to request a code. It
+ * is switched on together with phone verification, not before — which is
+ * also when a paid SMS provider starts costing money.
+ */
+export function effectiveCapabilities(settings: {
+  DEPLOYMENT_PROFILE: DeploymentProfile;
+  SMS_ENABLED: boolean;
+}): ReadonlySet<Capability> {
+  return settings.SMS_ENABLED ? CAPABILITY_SETS[settings.DEPLOYMENT_PROFILE] : WITHOUT_SMS[settings.DEPLOYMENT_PROFILE];
+}
+
 export function hasCapability(profile: DeploymentProfile, capability: Capability): boolean {
   return CAPABILITY_SETS[profile].has(capability);
 }

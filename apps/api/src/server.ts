@@ -31,7 +31,7 @@ import {
   DisabledPushAdapter,
   DisabledSmsAdapter,
 } from './adapters/disabled.js';
-import { capabilitiesFor } from './deployment/profile.js';
+import { effectiveCapabilities } from './deployment/profile.js';
 import { S3StorageAdapter } from './adapters/s3.js';
 import { SesEmailAdapter } from './adapters/ses.js';
 import { PaystackPaymentAdapter } from './adapters/paystack.js';
@@ -137,7 +137,7 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
    * Read once and used for two things: which adapter each port gets, and which
    * routes are registered at all. See `deployment/profile.ts`.
    */
-  const capabilities = capabilitiesFor(config.DEPLOYMENT_PROFILE);
+  const capabilities = effectiveCapabilities(config);
 
   return {
     config,
@@ -370,7 +370,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
    * function. `buildServices` reads the same set to decide which adapters to
    * wire, so the two answers cannot diverge: both come from the profile.
    */
-  const capabilities = capabilitiesFor(config.DEPLOYMENT_PROFILE);
+  const capabilities = effectiveCapabilities(config);
 
   // Captured once. The values do not change while the process runs, and
   // re-reading them per log line would be both slow and a second place secret

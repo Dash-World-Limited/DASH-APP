@@ -45,6 +45,7 @@ import { actorOf, authenticate, requireAuth } from '../http/context.js';
 import { issueAccessFor as issueAccessForShared } from '../auth/issue.js';
 import { describePhone } from '@dash/domain/onboarding';
 import { phoneVerificationRequired } from './onboarding.js';
+import { effectiveCapabilities } from '../deployment/profile.js';
 import {
   createSession,
   SessionError,
@@ -120,6 +121,7 @@ async function getDecoyHash(): Promise<string> {
 
 export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, config, sms, email } = app.services;
+  const smsEnabled = effectiveCapabilities(config).has('sms');
 
   /** Delegates to the shared issuer so both flows mint identical claims. */
   const issueAccessFor = (identityId: string, sessionId: string) =>
@@ -188,6 +190,13 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     async (request) => {
       const body = otpRequestSchema.parse(request.body);
       const destination = destinationOf(body);
+
+      // With SMS off (all of V1), a phone number cannot receive a code. Said
+      // up front, and identically for every number, so it reveals nothing
+      // about which numbers have accounts.
+      if (destination.channel === 'sms' && !smsEnabled) {
+        throw ApiError.badRequest('Sign-in codes are sent by email. Enter your email address instead.');
+      }
 
       const identity = await prisma.identity.findUnique({
         where:
