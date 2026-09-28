@@ -43,7 +43,8 @@
     "clean": "node scripts/clean.mjs",
     "maintenance:retention": "tsx apps/api/src/jobs/run-retention.ts",
     "maintenance:accounts": "tsx apps/api/src/jobs/run-account-maintenance.ts",
-    "maintenance:all": "tsx apps/api/src/jobs/run-maintenance.ts"
+    "maintenance:all": "tsx apps/api/src/jobs/run-maintenance.ts",
+    "e2e:journey": "node scripts/e2e/run.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
