@@ -13,7 +13,9 @@ import {
   ORDER_STATUSES,
   OrderTransitionError,
   phaseOf,
+  REFUND_OVERDUE_MS,
   REFUND_STATES,
+  refundAwaitingPerson,
   vendorRejectionOutcome,
   type OrderStatus,
   type TransitionActor,
@@ -321,5 +323,33 @@ describe('confirming a refund with the provider', () => {
       expect(describeRefund(state).label === 'Refunded', state).toBe(state === 'refunded');
     }
     expect(describeRefund('refund_processing').body).toMatch(/once Paystack confirms/);
+  });
+});
+
+describe('a refund waiting on a person', () => {
+  const now = new Date('2026-09-28T12:00:00Z');
+  const ago = (ms: number) => new Date(now.getTime() - ms);
+  const refund = (status: string, createdAt: Date, providerStatus: string | null = null) => ({ status, providerStatus, createdAt });
+
+  it('is overdue once owed past the deadline and not yet returned at the provider', () => {
+    for (const status of ['pending', 'refund_pending_manual_review']) {
+      expect(refundAwaitingPerson(refund(status, ago(REFUND_OVERDUE_MS - 1)), now), status).toBeNull();
+      expect(refundAwaitingPerson(refund(status, ago(REFUND_OVERDUE_MS + 1)), now), status).toBe('overdue');
+    }
+  });
+
+  it('always needs a person once the provider has failed it, however recent', () => {
+    expect(refundAwaitingPerson(refund('refund_failed', now, 'failed'), now)).toBe('failed');
+  });
+
+  it('needs a person when the provider marks it needs-attention, and not while it is simply processing', () => {
+    const old = ago(10 * REFUND_OVERDUE_MS);
+    expect(refundAwaitingPerson(refund('refund_processing', old, 'needs-attention'), now)).toBe('needs_attention');
+    expect(refundAwaitingPerson(refund('refund_processing', old, 'processing'), now)).toBeNull();
+    expect(refundAwaitingPerson(refund('refund_processing', old, 'pending'), now)).toBeNull();
+  });
+
+  it('never flags a refund that is done', () => {
+    expect(refundAwaitingPerson(refund('refunded', ago(10 * REFUND_OVERDUE_MS), 'processed'), now)).toBeNull();
   });
 });

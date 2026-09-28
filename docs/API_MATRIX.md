@@ -98,7 +98,7 @@ Notes:
 | `/v1/support/cases` | GET | `support:case:read` | global for support roles | — | ✅ |
 | `/v1/support/cases/:id/compensate` | POST | `support:compensation:issue` **+ step-up** | global for support roles | — (credits wallet) | ✅ |
 | `/v1/finance/orders/:id/refund` | POST | `finance:refund:approve` **+ step-up** | global for finance roles | — (books the ledger; records `refund_pending_manual_review`; moves no money) | ✅ |
-| `/v1/finance/refunds` | GET | `finance:payment:read` | global for finance roles | — (refunds owed, with the payment reference to find in Paystack) | ✅ |
+| `/v1/finance/refunds` | GET | `finance:payment:read` | global for finance roles | — (refunds owed, with the payment reference to find in Paystack, and `awaitingPerson`: overdue / failed / needs-attention) | ✅ |
 | `/v1/finance/refunds/:id/confirm` | POST | `finance:refund:approve` **+ step-up** | global for finance roles | links a Paystack refund id; `→ refunded` only when Paystack reports it processed for this payment and amount, else `refund_processing` / `refund_failed` or refused | ✅ |
 | `/v1/finance/ledger/integrity` | GET | `finance:ledger:read` | — | — | ✅ |
 | `/v1/admin/audit` | GET | `admin:audit:read` | — | — | ✅ |

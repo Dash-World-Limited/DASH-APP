@@ -15,6 +15,8 @@
  *     Paystack refund cannot be linked while the first is still in flight;
  *   - "could not ask Paystack" changes nothing;
  *   - the webhook and reconciliation finish a refund that was still processing;
+ *   - a refund still waiting for a person — owed past the deadline, failed or
+ *     needs-attention at Paystack — is reported on every run until someone acts;
  *   - the customer sees "Refunded" only after all that, and never a provider id;
  *   - confirming moves no money in the ledger — it was booked at approval.
  */
@@ -22,7 +24,12 @@
 import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PaystackPaymentAdapter } from '../adapters/paystack.js';
-import { runPaymentReconciliation } from '../jobs/payment-reconciliation.js';
+import { REFUND_OVERDUE_MS } from '@dash/domain/orders';
+import {
+  formatPaymentReconciliationReport,
+  paymentReconciliationNeedsAttention,
+  runPaymentReconciliation,
+} from '../jobs/payment-reconciliation.js';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, type Actor, type World } from './world.js';
 
@@ -460,7 +467,96 @@ describe('who can do this', () => {
     // "Open" leaves out what is already refunded.
     expect(listed.every((refund) => refund.status !== 'refunded')).toBe(true);
 
+    // It says which ones a person must act on now, by the same rule the job uses.
+    await context.prisma.refund.update({
+      where: { id: refunds[0]!.id },
+      data: { createdAt: new Date(Date.now() - 3 * 24 * 60 * 60_000) },
+    });
+    const again = await context.app.inject({ method: 'GET', url: '/v1/finance/refunds', headers: finance.headers });
+    const flagged = again.json<{ refunds: { id: string; awaitingPerson: string | null }[] }>().refunds;
+    expect(flagged.find((refund) => refund.id === refunds[0]!.id)?.awaitingPerson).toBe('overdue');
+
     const asCustomer = await context.app.inject({ method: 'GET', url: '/v1/finance/refunds', headers: customerA.headers });
     expect(asCustomer.statusCode).toBe(403);
+  });
+});
+
+describe('what is still waiting for a person', () => {
+  const reconcile = (now: Date, dryRun = false) =>
+    runPaymentReconciliation({ prisma: context.prisma, payments: context.app.services.payments }, { dryRun, now });
+
+  it('reports an owed refund nobody has returned at Paystack once the deadline passes, and names it', async () => {
+    const { refunds } = await owed([500_000]);
+    // The oldest owed refund in this database, so it is among the named ones.
+    await context.prisma.refund.update({
+      where: { id: refunds[0]!.id },
+      data: { createdAt: new Date(Date.now() - 30 * 24 * 60 * 60_000) },
+    });
+
+    const report = await reconcile(new Date());
+    expect(report.refunds.awaitingPerson.overdue).toBeGreaterThanOrEqual(1);
+    expect(report.refunds.awaitingPerson.refundIds[0]).toBe(refunds[0]!.id);
+    expect(paymentReconciliationNeedsAttention(report)).toBe(true);
+    expect(formatPaymentReconciliationReport(report)).toContain(refunds[0]!.id);
+    expect(formatPaymentReconciliationReport(report)).toContain('/ops/refunds');
+
+    // A dry run reports it too, and changes nothing.
+    const dry = await reconcile(new Date(), true);
+    expect(dry.refunds.awaitingPerson.refundIds).toContain(refunds[0]!.id);
+    expect((await row(refunds[0]!.id)).status).toBe('refund_pending_manual_review');
+  });
+
+  it('does not count an owed refund inside the deadline, a refunded one, or one on another provider', async () => {
+    const now = new Date();
+    const before = (await reconcile(now, true)).refunds.awaitingPerson;
+
+    await owed([500_000]); // owed just now: inside the deadline
+    const done = await owed([500_000]);
+    const id = paystack.refundInDashboard(done.reference, 500_000, 'processed');
+    expect((await confirm(done.refunds[0]!.id, id)).json()).toMatchObject({ status: 'refunded' });
+    const mock = await owed([500_000], { provider: 'mock' });
+    await context.prisma.refund.update({
+      where: { id: mock.refunds[0]!.id },
+      data: { createdAt: new Date(now.getTime() - REFUND_OVERDUE_MS - 60_000) },
+    });
+
+    const after = (await reconcile(now, true)).refunds.awaitingPerson;
+    expect(after.overdue).toBe(before.overdue);
+    expect(after.failed).toBe(before.failed);
+    expect(after.refundIds).not.toContain(mock.refunds[0]!.id);
+  });
+
+  it('keeps reporting a refund that failed at Paystack, however the failure was learned', async () => {
+    const { reference, refunds } = await owed([500_000]);
+    const id = paystack.refundInDashboard(reference, 500_000, 'failed');
+    // Learned from the finance console, not from reconciliation.
+    expect((await confirm(refunds[0]!.id, id)).json()).toMatchObject({ status: 'refund_failed' });
+
+    const first = await reconcile(new Date());
+    expect(first.refunds.failed).toBe(0); // this run moved nothing to failed...
+    expect(first.refunds.awaitingPerson.failed).toBeGreaterThanOrEqual(1); // ...but it is still owed
+    expect(paymentReconciliationNeedsAttention(first)).toBe(true);
+
+    const second = await reconcile(new Date());
+    expect(second.refunds.awaitingPerson.failed).toBe(first.refunds.awaitingPerson.failed);
+
+    // A new Paystack refund, linked and processed, clears it.
+    const retry = paystack.refundInDashboard(reference, 500_000, 'processed');
+    expect((await confirm(refunds[0]!.id, retry)).json()).toMatchObject({ status: 'refunded' });
+    const cleared = await reconcile(new Date());
+    expect(cleared.refunds.awaitingPerson.failed).toBe(first.refunds.awaitingPerson.failed - 1);
+  });
+
+  it('reports a refund Paystack has marked needs-attention, rather than waiting on it for ever', async () => {
+    const { reference, refunds } = await owed([500_000]);
+    const id = paystack.refundInDashboard(reference, 500_000, 'pending');
+    expect((await confirm(refunds[0]!.id, id)).json()).toMatchObject({ status: 'refund_processing' });
+    const before = (await reconcile(new Date(), true)).refunds.awaitingPerson.providerNeedsAttention;
+
+    paystack.refunds.get(id)!.status = 'needs-attention';
+    const report = await reconcile(new Date(Date.now() + 60 * 60_000));
+    expect(await row(refunds[0]!.id)).toMatchObject({ status: 'refund_processing', providerStatus: 'needs-attention' });
+    expect(report.refunds.awaitingPerson.providerNeedsAttention).toBe(before + 1);
+    expect(paymentReconciliationNeedsAttention(report)).toBe(true);
   });
 });

@@ -383,6 +383,49 @@ export function decideRefundConfirmation(
   }
 }
 
+/**
+ * An owed refund not returned at the provider within this long is waiting on
+ * a person. Refunds are made by hand in the Paystack dashboard, so a deadline
+ * is the only thing that notices one nobody made.
+ */
+export const REFUND_OVERDUE_MS = 48 * 60 * 60_000;
+
+/** Owed, and not yet returned at the provider (`pending` is the older default). */
+export const OWED_REFUND_STATES: readonly string[] = ['pending', 'refund_pending_manual_review'];
+
+/** Paystack's word for a refund it cannot finish until someone acts in its dashboard. */
+export const PROVIDER_REFUND_NEEDS_ATTENTION: readonly string[] = ['needs-attention', 'needs_attention'];
+
+/** Why a refund is waiting on a person, if it is. */
+export type RefundAwaitingPerson = 'overdue' | 'failed' | 'needs_attention';
+
+/**
+ * Whether a refund needs a person to act now, and why:
+ *
+ *   - `overdue` — owed for longer than `REFUND_OVERDUE_MS` and nobody has
+ *     returned it at the provider yet;
+ *   - `failed` — the provider reported the refund failed; the customer is
+ *     still owed, and a new refund has to be issued and linked;
+ *   - `needs_attention` — linked, but the provider cannot finish it until
+ *     someone acts in its dashboard.
+ *
+ * The maintenance job reports these on every run until they clear, and the
+ * finance console marks them. Neither changes the refund.
+ */
+export function refundAwaitingPerson(
+  refund: { readonly status: string; readonly providerStatus: string | null; readonly createdAt: Date },
+  now: Date,
+): RefundAwaitingPerson | null {
+  if (refund.status === 'refund_failed') return 'failed';
+  if (refund.status === 'refund_processing' && refund.providerStatus !== null) {
+    return PROVIDER_REFUND_NEEDS_ATTENTION.includes(refund.providerStatus) ? 'needs_attention' : null;
+  }
+  if (OWED_REFUND_STATES.includes(refund.status) && now.getTime() - refund.createdAt.getTime() > REFUND_OVERDUE_MS) {
+    return 'overdue';
+  }
+  return null;
+}
+
 /** What the customer is told about how a refund reaches them. */
 export const REFUND_PROCESS =
   'Refunds are checked by the DASH team and returned to your card through Paystack. We will tell you when it has been returned.';

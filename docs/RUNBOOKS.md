@@ -96,14 +96,24 @@ refund sits at `refund_pending_manual_review`, which the customer sees as
      sees "Refunded";
    - still pending / processing / needs-attention → `refund_processing`; the
      `refund.*` webhook or the `payments` maintenance job completes it;
-   - failed → `refund_failed`; the maintenance job reports it for a person.
-     Issue a new refund in Paystack and link its ID.
+   - failed → `refund_failed`. Issue a new refund in Paystack and link its ID.
 4. There is no way to mark a refund done without Paystack's answer, and one
    Paystack refund can settle only one DASH refund (unique index). A refund
    linked to a Paystack refund that is still processing cannot be re-linked
    until that one fails.
 
 If Paystack cannot be reached, nothing changes; try again later.
+
+**What gets flagged.** A refund is waiting on a person when it is owed for
+more than 48 hours and not yet linked to a Paystack refund, when Paystack
+reported its refund failed, or when Paystack marks it `needs-attention` (it
+cannot finish until someone acts in the Paystack dashboard — often the
+customer's bank details). The rule is `refundAwaitingPerson` in
+`packages/domain/src/orders`. `/ops/refunds` marks each one with what to do,
+and the `payments` maintenance job lists them (the oldest ten by id) and
+fails the run as needing a person, **on every run until they clear** —
+however the state was reached: the console, the webhook, or the job itself.
+The customer is owed that money, so the alert does not go quiet on its own.
 
 ### After
 

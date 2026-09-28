@@ -13,7 +13,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { describeRefund, REFUND_STATES } from '@dash/domain/orders';
+import { describeRefund, refundAwaitingPerson, REFUND_STATES } from '@dash/domain/orders';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission } from '../http/context.js';
 import {
@@ -94,6 +94,7 @@ export async function registerFinanceRefundRoutes(app: FastifyInstance): Promise
       },
     });
 
+    const now = new Date();
     return {
       refunds: refunds.map((refund) => ({
         id: refund.id,
@@ -109,6 +110,9 @@ export async function registerFinanceRefundRoutes(app: FastifyInstance): Promise
         paymentProvider: refund.payment.provider,
         paymentReference: refund.payment.providerReference,
         order: refund.payment.order,
+        // Why a person has to act on it now, if they do: overdue, failed, or
+        // needs-attention at Paystack. The same rule the maintenance job reports.
+        awaitingPerson: refundAwaitingPerson(refund, now),
       })),
     };
   });

@@ -36,7 +36,25 @@ interface Refund {
   paymentProvider: string;
   paymentReference: string;
   order: { id: string; code: string };
+  /** Set when a person has to act on it now; decided by the server. */
+  awaitingPerson: 'overdue' | 'failed' | 'needs_attention' | null;
 }
+
+/** What to do about a refund that is waiting on a person. */
+const AWAITING: Record<NonNullable<Refund['awaitingPerson']>, { badge: string; text: string }> = {
+  overdue: {
+    badge: 'Overdue',
+    text: 'Owed for more than two days and not yet refunded in Paystack. Refund it there, then enter its ID below.',
+  },
+  failed: {
+    badge: 'Failed at Paystack',
+    text: 'Paystack could not complete this refund, so the customer is still owed. Issue a new refund in Paystack and enter its ID below.',
+  },
+  needs_attention: {
+    badge: 'Needs attention in Paystack',
+    text: 'Paystack cannot finish this refund until someone acts on it in the Paystack dashboard. DASH will mark it refunded once Paystack processes it.',
+  },
+};
 
 const FILTERS: { value: Filter; label: string }[] = [
   { value: 'open', label: 'Still owed' },
@@ -224,8 +242,14 @@ function RefundCard({
             Order {refund.order.code} · {refund.reason}
           </p>
         </div>
-        <Badge>{refund.label}</Badge>
+        <div className="flex flex-wrap gap-2">
+          {refund.awaitingPerson ? <Badge tone="danger">{AWAITING[refund.awaitingPerson].badge}</Badge> : null}
+          <Badge>{refund.label}</Badge>
+        </div>
       </div>
+      {refund.awaitingPerson ? (
+        <p className="text-sm font-medium text-[var(--danger)]">{AWAITING[refund.awaitingPerson].text}</p>
+      ) : null}
       <dl className="grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
         <Detail label="Payment reference" value={refund.paymentReference} mono />
         <Detail label="Taken through" value={refund.paymentProvider} />
