@@ -31,6 +31,15 @@ export default defineConfig({
     // Domain tests are pure and must never depend on the wall clock or on each
     // other. Any test that needs "now" injects a clock from @dash/domain/ports.
     restoreMocks: true,
+    // The integration suites drive a real Fastify + Prisma stack, several
+    // requests per test. On a loaded machine — a shared CI runner, or a
+    // developer's laptop compiling Android at the same time — one of them
+    // can pass 5 s, Vitest's default, and a correct feature reads as broken.
+    // Set here rather than per file: a `vi.setConfig` inside `beforeAll` does
+    // not reliably reach tests already collected. A genuinely hung request
+    // still fails, just after 30 s instead of 5.
+    testTimeout: 30_000,
+    hookTimeout: 180_000,
     coverage: {
       provider: 'v8',
       include: ['packages/domain/src/**/*.ts'],
