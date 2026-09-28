@@ -46,6 +46,8 @@ export interface RiderDelivery {
   address: { line1: string; landmark: string | null; instructions: string | null; contactPhone: string; latitude: number; longitude: number } | null;
   items: { nameSnapshot: string; quantity: number }[];
   vendor: { name: string };
+  /** Shown at the counter so the shop hands the food to the right rider; null once picked up. */
+  pickupCode?: string | null;
 }
 
 // ---------------------------------------------------------------- the sequence

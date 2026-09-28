@@ -173,6 +173,17 @@ function LiveJob() {
           {job.branch.phone ? <IconButton icon="phone" label={`Call ${job.vendor.name}`} plate="surface" size={20} onPress={() => void Linking.openURL(`tel:${job.branch.phone}`)} /> : null}
         </Card>
 
+        {job.pickupCode ? (
+          <Card tone="sand" testID="pickup-code">
+            <Text variant="caption" tone="muted">
+              Pickup code — show it at the counter
+            </Text>
+            <Text variant="title" weight="extrabold" accessibilityLabel={`Pickup code ${job.pickupCode.split('').join(' ')}`}>
+              {job.pickupCode}
+            </Text>
+          </Card>
+        ) : null}
+
         <RouteStops
           pickup={{ title: job.vendor.name, detail: job.branch.address }}
           dropoff={{ title: 'Customer', detail: job.address ? `${job.address.line1}${job.address.landmark ? ` · ${job.address.landmark}` : ''}` : 'Collected at the shop' }}

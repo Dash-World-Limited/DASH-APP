@@ -8,7 +8,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { verifyOtp } from '@dash/domain/crypto';
+import { pickupCodeMatches } from '../orders/pickup-code.js';
 import { assertTransition, type OrderStatus } from '@dash/domain/orders';
 import { writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
@@ -23,7 +23,7 @@ import {
 } from '../http/context.js';
 
 export async function registerVendorRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma, queue } = app.services;
+  const { prisma, queue, config } = app.services;
 
   /** Load an order and prove it belongs to the acting vendor. */
   async function loadScopedOrder(request: Parameters<typeof actorOf>[0], orderId: string) {
@@ -656,6 +656,25 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       const body = z.object({ to: z.enum(['preparing', 'ready']) }).parse(request.body);
       const { actor, order } = await loadScopedOrder(request, request.params.id);
 
+      // Food ready after a rider has already accepted.
+      //
+      // Dispatch starts at `preparing`, so a rider usually accepts while the
+      // kitchen is still cooking and the order moves on to `rider_assigned`.
+      // The kitchen finishing is then a fact about the food, not a move in
+      // the delivery: the status is the rider's, and `rider_assigned → ready`
+      // is reserved for ops reassignment, which re-enters dispatch. Refusing
+      // it — as this route did — made the vendor's Ready button fail for
+      // most orders and lost the signal entirely. It is recorded as `readyAt`
+      // (once) and announced, and the status is left where the rider put it.
+      if (body.to === 'ready' && (order.status === 'rider_assigned' || order.status === 'rider_arrived')) {
+        await prisma.$transaction(async (tx) => {
+          await tx.order.updateMany({ where: { id: order.id, readyAt: null }, data: { readyAt: new Date() } });
+          await recordOrderChange(tx, order.id);
+        });
+        await flushOutbox(prisma, queue);
+        return { status: order.status, foodReady: true };
+      }
+
       const actingAs = transitionActorFor(actor);
       assertTransition(order.status as OrderStatus, body.to, actingAs);
 
@@ -755,10 +774,10 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       const body = z.object({ code: z.string().trim().regex(/^\d{4}$/) }).parse(request.body);
       const { order } = await loadScopedOrder(request, request.params.id);
 
-      if (!order.pickupCodeHash) throw ApiError.conflict('This order has no pickup code.');
-
-      const matches = await verifyOtp(body.code, order.pickupCodeHash);
-      if (!matches) throw ApiError.badRequest('That pickup code is not correct.');
+      // The code the assigned rider is shown (see orders/pickup-code.ts).
+      if (!pickupCodeMatches(order.id, body.code, config.JWT_ACCESS_SECRET)) {
+        throw ApiError.badRequest('That pickup code is not correct.');
+      }
 
       return { verified: true };
     },

@@ -31,6 +31,7 @@ import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission, requireScope } from '../http/context.js';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import { recordOrderChange } from '../realtime/notify.js';
+import { PICKUP_CODE_VISIBLE, pickupCodeFor } from '../orders/pickup-code.js';
 
 /**
  * The fastest plausible sustained speed for a Lagos rider, in metres/second.
@@ -626,7 +627,14 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
       // riders who merely guessed the id.
       requireScope(actor, { riderId: order.riderId ?? undefined });
 
-      return { delivery: order };
+      return {
+        delivery: {
+          ...order,
+          // Shown at the counter; the vendor types it in. Only to the assigned
+          // rider, and only until the order is picked up.
+          pickupCode: PICKUP_CODE_VISIBLE.has(order.status) ? pickupCodeFor(order.id, app.services.config.JWT_ACCESS_SECRET) : null,
+        },
+      };
     },
   );
 
