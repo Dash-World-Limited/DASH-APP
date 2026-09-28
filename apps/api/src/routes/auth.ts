@@ -318,12 +318,20 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       const body = otpVerifySchema.parse(request.body);
       const destination = destinationOf(body);
 
+      // A step-up elevates the session presenting it, so the code must have
+      // been issued to that session's own identity. Without this, whoever
+      // holds a borrowed session could request a step-up code to an address
+      // *they* control, redeem it with the borrowed token, and elevate the
+      // victim's session — the exact thing step-up exists to prevent.
+      const stepUpActor = body.purpose === 'step_up' ? await authenticate(request) : null;
+
       const challenge = await prisma.otpChallenge.findFirst({
         where: {
           destination: destination.value,
           purpose: body.purpose,
           consumedAt: null,
           expiresAt: { gt: new Date() },
+          ...(stepUpActor ? { identityId: stepUpActor.identityId } : {}),
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -353,8 +361,8 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         data: { consumedAt: new Date() },
       });
 
-      if (body.purpose === 'step_up') {
-        const actor = await authenticate(request);
+      if (stepUpActor) {
+        const actor = stepUpActor;
         await markSteppedUp(prisma, actor.sessionId);
         await writeAudit(prisma, {
           identityId: actor.identityId,
