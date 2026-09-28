@@ -76,6 +76,7 @@ import { registerCatalogRoutes } from './routes/catalog.js';
 import { registerOrderRoutes } from './routes/orders.js';
 import { registerVendorRoutes } from './routes/vendor.js';
 import { registerRiderRoutes } from './routes/rider.js';
+import { registerOnboardingRoutes } from './routes/onboarding.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerDeclutterRoutes } from './routes/declutter.js';
 import { registerValueCheckRoutes } from './routes/valuecheck.js';
@@ -619,6 +620,10 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     await registerOrderRoutes(app);
     await registerVendorRoutes(app);
     await registerRiderRoutes(app);
+    // Applying to sell or ride, and the founder's approval of it. Part of the
+    // delivery product: a Declutters-only deployment has no storefronts or
+    // riders to approve.
+    await registerOnboardingRoutes(app);
   }
 
   // The Paystack webhook. Without payments there is nothing for it to confirm,

@@ -203,6 +203,11 @@ export const STEP_UP_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>(
   // Authorising the price a stranger will pay. Consequential enough to want a
   // live elevation behind it — and a single step-up covers a whole queue.
   'declutter:pricing:authorize',
+  // Approving a vendor lets them receive orders and money; approving a rider
+  // lets them collect other people's food and see where they live. Either is
+  // "who can do what", and suspending one is the same decision in reverse.
+  'admin:vendor:approve',
+  'admin:rider:approve',
 ]);
 
 /** A step-up is valid for 15 minutes. After that, re-authenticate. */

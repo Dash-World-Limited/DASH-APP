@@ -43,6 +43,8 @@ import { revokeAllDeviceTokens, revokeDeviceToken } from '../push/registration.j
 import { ApiError } from '../http/errors.js';
 import { actorOf, authenticate, requireAuth } from '../http/context.js';
 import { issueAccessFor as issueAccessForShared } from '../auth/issue.js';
+import { describePhone } from '@dash/domain/onboarding';
+import { phoneVerificationRequired } from './onboarding.js';
 import {
   createSession,
   SessionError,
@@ -638,6 +640,9 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       vendorId: actor.vendorId ?? null,
       riderId: riderState?.id ?? null,
       riderAvailability: riderState?.availability ?? null,
+      // Never "verified": nothing in V1 proves a phone number. The notice is
+      // the one sentence every surface shows beside it.
+      phone: describePhone(identity.phone, await phoneVerificationRequired(prisma)),
       // Whether this identity may actually work as a rider, which is not the
       // same question as whether it has a rider profile. A pending, suspended
       // or rejected rider still has a `riderId`; only `approved` may switch
