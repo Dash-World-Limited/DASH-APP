@@ -73,6 +73,7 @@ export type PaymentOutcome =
   | 'refunded'
   | 'amount_mismatch'
   | 'captured_for_closed_order'
+  | 'order_closed'
   | 'unknown_payment';
 
 export interface VerifyResult {
@@ -187,6 +188,13 @@ export function describeOutcome(outcome: PaymentOutcome): { title: string; body:
       return {
         title: 'We need to check this payment',
         body: 'Something about this payment needs a person to look at it. Your money is safe — contact support with your order code.',
+        tone: 'problem',
+        canRetry: false,
+      };
+    case 'order_closed':
+      return {
+        title: 'This order was cancelled',
+        body: 'Any refund it is owed has been recorded. Do not pay again.',
         tone: 'problem',
         canRetry: false,
       };

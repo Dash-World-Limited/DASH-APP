@@ -445,3 +445,66 @@ describe('retrying payment', () => {
     expect(response.statusCode).toBe(404);
   });
 });
+
+describe('money for a closed order', () => {
+  const cancel = (orderId: string) =>
+    context.app.inject({ method: 'POST', url: `/v1/orders/${orderId}/cancel`, headers: customerA.headers, payload: {} });
+  const paymentOf = (orderId: string) => context.prisma.payment.findFirstOrThrow({ where: { orderId }, select: { id: true } });
+  const alarms = (paymentId: string) =>
+    context.prisma.auditLog.count({ where: { action: 'payment.captured_for_closed_order', resourceId: paymentId } });
+  const signed = (raw: string) => ({ raw, signature: createHmac('sha512', SECRET).update(raw).digest('hex') });
+
+  it('raises no alarm for a refund event on an order cancelled after it was paid', async () => {
+    const { order } = await placedCheckout();
+    paystack.pay(order.code);
+    await postWebhook(paystack.webhook(order.code));
+    expect(await orderStatus(order.id)).toBe('placed');
+    expect((await cancel(order.id)).statusCode).toBe(200);
+    const payment = await paymentOf(order.id);
+    expect(await context.prisma.refund.count({ where: { paymentId: payment.id } })).toBe(1);
+
+    // Paystack starts the refund a person issued, and tells us.
+    const tx = paystack.transactions.get(order.code)!;
+    const event = signed(
+      JSON.stringify({
+        event: 'refund.pending',
+        data: { id: 88_001, transaction_reference: order.code, status: 'pending', amount: tx.amount, currency: 'NGN' },
+      }),
+    );
+    const response = await postWebhook(event);
+    expect(response.json()).toMatchObject({ received: true, processed: true });
+
+    expect(await alarms(payment.id)).toBe(0);
+    const delivery = await context.prisma.paymentWebhook.findFirstOrThrow({ where: { eventId: 'refund.pending:88001' } });
+    expect(delivery.processingError).toBeNull();
+    expect(await orderStatus(order.id)).toBe('cancelled');
+  });
+
+  it('still flags money that arrives after the order was closed', async () => {
+    const { order } = await placedCheckout();
+    expect((await cancel(order.id)).statusCode).toBe(200);
+    expect(await orderStatus(order.id)).toBe('cancelled');
+
+    // The customer finishes the old checkout anyway.
+    paystack.pay(order.code);
+    expect((await postWebhook(paystack.webhook(order.code))).statusCode).toBe(200);
+
+    const payment = await paymentOf(order.id);
+    expect(await alarms(payment.id)).toBe(1);
+    expect(await orderStatus(order.id)).toBe('cancelled');
+    const delivery = await context.prisma.paymentWebhook.findFirstOrThrow({ where: { paymentId: payment.id } });
+    expect(delivery.processingError).toBe('captured_for_closed_order');
+  });
+
+  it('still flags it after a crash between recording the capture and raising the alarm', async () => {
+    const { order } = await placedCheckout();
+    expect((await cancel(order.id)).statusCode).toBe(200);
+    paystack.pay(order.code);
+    // The first attempt recorded the capture and died before the alarm.
+    const payment = await paymentOf(order.id);
+    await context.prisma.payment.update({ where: { id: payment.id }, data: { status: 'captured', capturedAt: new Date() } });
+
+    expect((await postWebhook(paystack.webhook(order.code))).statusCode).toBe(200);
+    expect(await alarms(payment.id)).toBe(1);
+  });
+});

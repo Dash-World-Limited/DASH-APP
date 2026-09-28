@@ -1072,6 +1072,8 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
         if (outcome === 'amount_mismatch' || outcome === 'captured_for_closed_order') {
           throw ApiError.conflict('This payment needs a person to look at it. Contact support.');
         }
+        // Cancelled while this request was in flight: never a new checkout.
+        if (outcome === 'order_closed') throw ApiError.conflict('This order is not waiting for payment.');
       }
 
       const attempt = order.payments.length + 1;

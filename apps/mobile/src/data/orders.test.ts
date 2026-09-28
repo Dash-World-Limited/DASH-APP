@@ -74,7 +74,16 @@ describe('checkout', () => {
 });
 
 describe('what the customer is told', () => {
-  const outcomes: PaymentOutcome[] = ['captured', 'pending', 'failed', 'refunded', 'amount_mismatch', 'captured_for_closed_order', 'unknown_payment'];
+  const outcomes: PaymentOutcome[] = [
+    'captured',
+    'pending',
+    'failed',
+    'refunded',
+    'amount_mismatch',
+    'captured_for_closed_order',
+    'order_closed',
+    'unknown_payment',
+  ];
 
   it('calls only a captured payment a success', () => {
     for (const outcome of outcomes) {
@@ -85,6 +94,7 @@ describe('what the customer is told', () => {
   it('never tells someone to pay again when the money may already be taken', () => {
     expect(describeOutcome('amount_mismatch').canRetry).toBe(false);
     expect(describeOutcome('captured_for_closed_order').canRetry).toBe(false);
+    expect(describeOutcome('order_closed').canRetry).toBe(false);
     expect(describeOutcome('captured').canRetry).toBe(false);
   });
 });

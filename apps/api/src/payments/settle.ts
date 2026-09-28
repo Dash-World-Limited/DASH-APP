@@ -27,8 +27,14 @@ export type SettleOutcome =
   | 'refunded'
   /** Captured, but not for the amount recorded. The order is not placed. */
   | 'amount_mismatch'
-  /** Captured for an order that was cancelled or returned to a basket. Needs a refund. */
+  /** Newly captured for an order that was cancelled or returned to a basket. Needs a refund. */
   | 'captured_for_closed_order'
+  /**
+   * Captured for an order closed since, whose refund was recorded when it
+   * closed. A later event about the same payment (a refund starting, a
+   * repeated delivery) brings no new money and needs nobody.
+   */
+  | 'order_closed'
   /** No payment with that reference exists here. */
   | 'unknown_payment';
 
@@ -87,6 +93,17 @@ export async function settlePayment(
 
   if (effective === 'captured') {
     const outcome = await confirmOrderPaid(prisma, payment.orderId, actorId, queue);
+    // Money for a closed order that is already accounted for is not news.
+    // Cancelling a paid order records the refund it owes in the same
+    // transaction, so a refund on this payment means the closure already
+    // handled it. Without this, every `refund.*` webhook for a cancelled paid
+    // order re-verified the payment, found it captured, and raised the alarm
+    // below. Deliberately not "was the payment already captured": a crash
+    // between recording a capture and raising the alarm would then silence
+    // the alarm on the retry.
+    if (outcome === 'not_payable' && (await prisma.refund.count({ where: { paymentId: payment.id } })) > 0) {
+      return 'order_closed';
+    }
     if (outcome === 'not_payable') {
       // Money arrived for an order nobody will fulfil. Placing it anyway would
       // cook food for a customer who cancelled; ignoring it would keep their
