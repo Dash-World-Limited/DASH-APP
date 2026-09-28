@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - codex/native-mobile-stabilization
+      - claude/playstore-readiness
     paths:
       - .github/workflows/mobile-test-apk.yml
       - apps/mobile/**
@@ -28,7 +29,7 @@ jobs:
       NODE_ENV: development
 
     steps:
-      - name: Check out the stabilization branch
+      - name: Check out the pushed commit
         uses: actions/checkout@v4
 
       - name: Use Node 22

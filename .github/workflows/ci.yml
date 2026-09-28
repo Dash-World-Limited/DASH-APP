@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # The release-candidate line runs the full gate on every push, before any
+    # pull request exists; `main` is never pushed to from it.
+    branches: [main, claude/playstore-readiness]
   pull_request:
     branches: [main]
 
@@ -162,6 +164,60 @@ jobs:
           # nothing, so it needs no key.
           MFA_ENABLED: 'false'
         run: npm run maintenance:retention -- --dry-run
+
+  # Production runs PostgreSQL + PostGIS and Redis, which no development
+  # machine here has. This applies the whole PostgreSQL migration history to a
+  # disposable database, checks `migrate status` and `migrate diff` report no
+  # drift, proves PostGIS containment agrees with the in-process adapter, and
+  # exercises the Redis queue. The database name follows the `dash_verify`
+  # convention the script enforces, so it can never be pointed at anything
+  # that holds data.
+  postgres:
+    name: PostgreSQL migrations, PostGIS and Redis (disposable)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: dash_verify
+          POSTGRES_PASSWORD: dash_verify_ci_only
+          POSTGRES_DB: dash_verify_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U dash_verify -d dash_verify_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: The PostgreSQL schema is generated from the SQLite one, and current
+        run: node scripts/sync-postgres-schema.mjs --check
+
+      - name: Migrate a disposable database from zero and check it
+        env:
+          PG_CHECK_URL: postgresql://dash_verify:dash_verify_ci_only@127.0.0.1:5432/dash_verify_ci
+        run: npm run check:postgres
+
+      - name: Redis queue check
+        env:
+          REDIS_CHECK_URL: redis://127.0.0.1:6379
+        run: npm run check:redis
 
   build:
     name: Production build
