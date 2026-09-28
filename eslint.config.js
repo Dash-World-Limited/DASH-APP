@@ -145,8 +145,9 @@ export default tseslint.config(
   },
   {
     // Metro's configuration, which Metro loads with `require` — CommonJS by
-    // the bundler's contract, not by choice.
-    files: ['apps/mobile/metro.config.js'],
+    // the bundler's contract, not by choice. Expo config plugins are loaded
+    // the same way, by `expo prebuild`.
+    files: ['apps/mobile/metro.config.js', 'apps/mobile/plugins/**/*.js'],
     languageOptions: {
       sourceType: 'commonjs',
       globals: { require: 'readonly', module: 'writable', __dirname: 'readonly' },
