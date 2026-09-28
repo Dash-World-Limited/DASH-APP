@@ -100,6 +100,11 @@ describe('food ready after a rider accepted', () => {
     const after = await context.prisma.order.findUniqueOrThrow({ where: { id: order.id } });
     expect(after.status).toBe(status);
     expect(after.readyAt).not.toBeNull();
+
+    // The console can see it, so it can stop offering the button.
+    const list = await context.app.inject({ method: 'GET', url: '/v1/vendor/orders?status=active', headers: vendorA.headers });
+    const listed = list.json<{ orders: { id: string; readyAt: string | null }[] }>().orders.find((row) => row.id === order.id);
+    expect(listed?.readyAt).toBeTruthy();
   });
 
   it('is recorded once: a second tap changes nothing', async () => {

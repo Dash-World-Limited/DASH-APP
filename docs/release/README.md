@@ -18,13 +18,19 @@ proven, what is built but unproven, and what blocks release — nothing more.
 
 ## Proven (with the evidence)
 
-- **Automated suite:** 2,453 tests passing on `4f21045` (the pushed
-  checkpoint), plus later native/app tests — re-run before every push. Lint,
-  five typechecks, Prisma validation (SQLite and PostgreSQL schemas), SQLite
-  migrations applied from zero with no drift, secret hygiene, a key-shape
-  scan of the branch diff, and the key-custody drill all pass locally.
+- **Automated suite:** 2,512 of 2,512 tests passing on `c681bdd`, re-run
+  before every push. Lint, five typechecks, the mobile typecheck, Prisma
+  validation (SQLite and PostgreSQL schemas), SQLite migrations applied from
+  zero with no drift, secret hygiene, a key-shape scan of the branch diff,
+  and the key-custody drill all pass locally.
+- **End-to-end journey against a real API process** (`npm run e2e:journey`):
+  31 of 31 steps on `64f6a2e` — a customer registers and orders, the vendor
+  accepts and prepares, a rider is dispatched, collects with the pickup code
+  and delivers with the customer's PIN, access control and account deletion
+  hold. Mock payment and console email; a throwaway database.
 - **Android debug APK** (arm64, `com.dashworldng.dash.dev`) built locally from
-  `33761dc`; JS bundle embedded; targetSdk 36.
+  `64f6a2e`, pointed at this PC's API over Wi-Fi for the A55 run; JS bundle
+  embedded; targetSdk 36. It has not been installed on a phone yet.
 - **Android release App Bundle** built locally from `29a9ff6` (staging
   variant): all four ABIs, targetSdk 36, minSdk 24, six permissions (location
   coarse/fine, internet, network state, vibrate, wake lock). Signed with the
@@ -65,8 +71,11 @@ proven, what is built but unproven, and what blocks release — nothing more.
    *and* Privacy Policy describe only Declutters, yet signup asks every DASH
    customer to accept them. Drafts of both for the delivery app are here. Both need David's approval (ideally legal review) and publishing
    as new versions.
-7. **Store assets:** 512×512 icon, 1024×500 feature graphic, 2–8 real phone
-   screenshots.
+7. **Store assets, launcher icon and splash screen.** The app has **no
+   launcher icon or splash image configured** (`app.config.ts` sets neither),
+   so it currently installs with Expo's default icon. Needed: the adaptive
+   launcher icon and splash (from David's approved mark), a 512×512 store
+   icon, a 1024×500 feature graphic, and 2–8 real phone screenshots.
 8. **The A55 manual pass**, with any failures fixed.
 9. **CI green** on the pushed branch (check the Actions tab).
 10. **Facts for the listing:** support email, launch area; Data Safety

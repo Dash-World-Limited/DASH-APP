@@ -18,6 +18,7 @@ import {
   useSessionState,
 } from '@/lib/session';
 import { liveLabel, useLive } from '@/lib/useLive';
+import { prepTimeChoices, vendorActions } from '@/lib/vendor-orders';
 import styles from './vendor.module.css';
 import { DashWordmark as BrandWordmark } from '@/components/brand/DashWordmark';
 
@@ -62,6 +63,8 @@ interface VendorOrder {
   createdAt: string;
   placedAt: string | null;
   estimatedReadyAt: string | null;
+  /** Optional: absent from servers older than the ready-after-assignment fix. */
+  readyAt?: string | null;
   instructions: string | null;
   items: {
     nameSnapshot: string;
@@ -909,6 +912,8 @@ export default function VendorConsolePage() {
   const [orders, setOrders] = useState<Record<OrderTab, VendorOrder[]> | null>(null);
   const [orderTab, setOrderTab] = useState<OrderTab>('incoming');
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  // The prep time chosen for the order being accepted; null = the branch default.
+  const [acceptPrepMinutes, setAcceptPrepMinutes] = useState<number | null>(null);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -1021,6 +1026,13 @@ export default function VendorConsolePage() {
       .find((order) => order.id === selectedOrderId) ??
     currentOrders[0] ??
     null;
+  const selectedOrderKey = selectedOrder?.id ?? null;
+  const selectedActions = selectedOrder ? vendorActions(selectedOrder) : null;
+  const prepChoices = prepTimeChoices(selectedBranch?.defaultPrepMinutes);
+  useEffect(() => {
+    // A prep time chosen for one order is never carried to the next.
+    setAcceptPrepMinutes(null);
+  }, [selectedOrderKey]);
   const incomingCount = orders?.incoming.length ?? 0;
   const activeCount = orders?.active.length ?? 0;
   const unavailableCount = allItems.filter((item) => !item.isAvailable).length;
@@ -1081,7 +1093,7 @@ export default function VendorConsolePage() {
       await run(order.id, () =>
         authedFetch('/v1/vendor/orders/' + order.id + '/accept', {
           method: 'POST',
-          body: { prepMinutes: selectedBranch?.defaultPrepMinutes ?? 20 },
+          body: { prepMinutes: acceptPrepMinutes ?? prepTimeChoices(selectedBranch?.defaultPrepMinutes).initial },
         }),
       );
       return;
@@ -1429,20 +1441,48 @@ export default function VendorConsolePage() {
                       <footer className={styles.orderTotal}>
                         <span>Product subtotal</span><strong>{formatNaira(selectedOrder.itemsSubtotal)}</strong>
                       </footer>
+                      {selectedActions?.stopped ? (
+                        <p className={styles.stopBanner} role="alert">
+                          {selectedOrder.status === 'cancelled'
+                            ? 'This order was cancelled. Stop preparing it and do not hand it to a rider.'
+                            : 'This order was rejected. Do not prepare it.'}
+                        </p>
+                      ) : null}
+                      {selectedActions?.foodReadyRecorded ? (
+                        <p className={styles.readyLine} role="status">
+                          Food ready — recorded at {formatTime(selectedOrder.readyAt ?? null)}. The rider has been told.
+                        </p>
+                      ) : null}
                       <div className={styles.orderActions}>
-                        {['placed', 'vendor_reviewing'].includes(selectedOrder.status) ? (
+                        {selectedActions?.accept ? (
                           <>
+                            <label className={styles.prepPicker}>
+                              <span>Ready in</span>
+                              <select
+                                value={acceptPrepMinutes ?? prepChoices.initial}
+                                aria-label="Preparation time for this order"
+                                onChange={(event) => setAcceptPrepMinutes(Number(event.target.value))}
+                              >
+                                {prepChoices.choices.map((minutes) => (
+                                  <option key={minutes} value={minutes}>{minutes} min</option>
+                                ))}
+                              </select>
+                            </label>
                             <button className={styles.primaryButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => void orderAction(selectedOrder, 'accept')}>Accept order</button>
-                            <button className={styles.dangerButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => setRejecting(selectedOrder)}>Reject</button>
                           </>
                         ) : null}
-                        {selectedOrder.status === 'accepted' ? (
+                        {selectedActions?.reject ? (
+                          <button className={styles.dangerButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => setRejecting(selectedOrder)}>Reject</button>
+                        ) : null}
+                        {selectedActions?.startPreparing ? (
                           <button className={styles.primaryButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => void orderAction(selectedOrder, 'prepare')}>Start preparing</button>
                         ) : null}
-                        {selectedOrder.status === 'preparing' ? (
-                          <button className={styles.primaryButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => void orderAction(selectedOrder, 'ready')}>Mark ready</button>
+                        {selectedActions?.markReady ? (
+                          <button className={styles.primaryButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => void orderAction(selectedOrder, 'ready')}>
+                            {selectedOrder.status === 'preparing' ? 'Mark ready' : 'Food is ready'}
+                          </button>
                         ) : null}
-                        {['ready', 'rider_assigned'].includes(selectedOrder.status) ? (
+                        {selectedActions?.verifyPickup ? (
                           <button className={styles.primaryButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => setVerifying(selectedOrder)}>Verify pickup code</button>
                         ) : null}
                       </div>

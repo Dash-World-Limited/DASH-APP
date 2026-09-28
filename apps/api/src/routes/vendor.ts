@@ -421,6 +421,9 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
           createdAt: true,
           placedAt: true,
           estimatedReadyAt: true,
+          // Whether the kitchen has said the food is ready — the only signal
+          // once a rider has taken the order and the status is theirs.
+          readyAt: true,
           instructions: true,
           items: {
             select: {

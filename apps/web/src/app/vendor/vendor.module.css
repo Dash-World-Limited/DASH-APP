@@ -1223,6 +1223,49 @@
   margin-top: 18px;
 }
 
+/* Prep time, chosen when accepting. */
+.prepPicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--vendor-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.prepPicker select {
+  min-height: 40px;
+  border: 1px solid var(--vendor-line-strong);
+  border-radius: 10px;
+  color: var(--vendor-ink);
+  background: var(--vendor-surface);
+  padding: 0 10px;
+  font: inherit;
+}
+
+/* Food ready recorded on an order a rider already holds. */
+.readyLine {
+  margin-top: 8px;
+  border-radius: 11px;
+  color: var(--vendor-green);
+  background: var(--vendor-green-soft);
+  padding: 10px 13px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+/* The order was cancelled or rejected: stop preparing. */
+.stopBanner {
+  margin-top: 8px;
+  border: 1px solid #efc7c3;
+  border-radius: 11px;
+  color: #8f2924;
+  background: var(--vendor-red-soft);
+  padding: 11px 13px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .searchBox {
   width: min(100%, 360px);
 }

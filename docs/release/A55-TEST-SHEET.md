@@ -20,7 +20,14 @@ Use **Paystack test mode** only; no real card is ever used.
 **The app:** a debug APK built with
 `EXPO_PUBLIC_API_URL=http://<PC-LAN-IP>:4000` (ask Claude to build it for your
 IP, or see `SIGNING.md` for building). Debug builds may use `http://` on
-your Wi-Fi; release builds require HTTPS.
+your Wi-Fi; release builds require HTTPS. The PC's LAN IP can change when the
+router hands out a new one; if `/health` stops answering from the phone,
+check `ipconfig` and rebuild for the new IP.
+
+**Before the Paystack and Brevo keys are in `.env`:** sign-in codes are not
+emailed — they print in the API's window on the PC — and payments are the
+mock (every checkout is "paid" at once). Sections 2–5 and 7–11 can still be
+run; 2.3 and the Paystack steps in 6 need the keys.
 
 **Accounts you need:** two email inboxes you can open on the phone (customer
 and rider), and the founder staff account with its authenticator app, for
@@ -78,8 +85,11 @@ approvals on the website (`http://<PC-LAN-IP>:3000/ops/partners`).
 
 - [ ] 7.1 On the website, sign in with a third inbox and open `/vendor/apply`. Apply (capture the location at the store). The page shows "Pending admin approval"; `/vendor` refuses access.
 - [ ] 7.2 Founder at `/ops/partners` → asked for the authenticator code → Approve. The vendor console now opens for that account without signing in again.
-- [ ] 7.3 The paid order from 6.2 appears in the vendor console → Accept → set preparation time → Mark preparing → Ready.
-- [ ] 7.4 Suspend the vendor at `/ops/partners` (reason required) → the vendor console refuses at once; the store disappears from the app. Reinstate → works again.
+- [ ] 7.3 The paid order from 6.2 appears in the vendor console → choose "Ready in" (e.g. 30 min) → Accept → the order shows that ready-by time → Start preparing.
+- [ ] 7.4 While it is preparing, a rider accepts (section 8.4). The console now shows the rider, and still offers **"Food is ready"**. Tap it → "Food ready — recorded at …" appears and the button goes.
+- [ ] 7.5 When the rider marks "arrived at the shop", the console **still** shows "Verify pickup code". Enter a wrong code → refused. Enter the 4-digit code shown on the rider's job screen → verified.
+- [ ] 7.6 Cancel another order from the customer app while the shop is preparing it → the console shows "This order was cancelled. Stop preparing it…".
+- [ ] 7.7 Suspend the vendor at `/ops/partners` (reason required) → the vendor console refuses at once; the store disappears from the app. Reinstate → works again.
 
 ## 8. Rider
 
@@ -88,7 +98,7 @@ approvals on the website (`http://<PC-LAN-IP>:3000/ops/partners`).
 - [ ] 8.3 Go Online → Android asks for location (foreground) → allow. "Online". Deny instead → the app stays Offline and says why.
 - [ ] 8.4 When an order is being prepared nearby, an offer opens with a countdown. Decline → it goes away. Next offer → Accept → the job opens with the customer's address (not shown before accepting).
 - [ ] 8.5 Two riders online, both accept the same offer at the same moment → one gets it; the other is told someone else took it.
-- [ ] 8.6 Navigate to the shop (Google Maps opens) → "arrived at the shop" → "picked up" → "start the delivery" → "arrived at the customer".
+- [ ] 8.6 Navigate to the shop (Google Maps opens) → "arrived at the shop" → the job shows a 4-digit **pickup code**; read it to the shop (7.5) → "picked up" → "start the delivery" → "arrived at the customer".
 - [ ] 8.7 On the customer phone, the order shows each step. The rider's name and vehicle appear while on the way.
 - [ ] 8.8 Rider enters a wrong PIN → refused. The customer's PIN → Delivered. The customer's order shows delivered.
 - [ ] 8.9 Put the rider app in the background for 20 minutes while online → the rider stops being offered orders (no background tracking). Reopen → reports again.
@@ -96,8 +106,10 @@ approvals on the website (`http://<PC-LAN-IP>:3000/ops/partners`).
 
 ## 9. Cancellation and refunds
 
-- [ ] 9.1 Cancel a paid order before the shop accepts → the app says the full amount is owed back and is returned after review through Paystack. It never says "refunded".
+- [ ] 9.1 Cancel a paid order before the shop accepts → the app says the full amount is owed back and is returned after review through Paystack. The order shows "Refund pending review". It never says "refunded".
 - [ ] 9.2 Cancel an unpaid order → "No payment was taken".
+- [ ] 9.3 (Needs the Paystack test key.) Finance account at `/ops/refunds` → the refund from 9.1 is listed with its payment reference. In the Paystack **test** dashboard, refund that transaction for exactly that amount. Enter a **wrong** refund ID → refused, nothing changes. Enter Paystack's refund ID → "Paystack confirmed…" (or "processing" — tap "Check with Paystack again" later).
+- [ ] 9.4 The customer's order now shows "Refunded" — and only after 9.3 was confirmed.
 
 ## 10. Permissions, network, lifecycle
 
