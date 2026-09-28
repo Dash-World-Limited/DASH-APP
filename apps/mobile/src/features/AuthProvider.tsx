@@ -13,6 +13,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { api, session, type SessionState } from '../api';
+import { verifyRegistration } from './register';
 import { loadViewer, requestSignInCode, verifySignInCode, type CodeSent, type Viewer } from './signIn';
 
 interface AuthValue {
@@ -23,6 +24,8 @@ interface AuthValue {
   requestCode: (email: string) => Promise<CodeSent>;
   /** Resolves once the session is adopted and the viewer loaded. Throws ApiError on refusal. */
   verifyCode: (email: string, code: string) => Promise<void>;
+  /** Redeem a new account's email code; proving the address signs the person in. */
+  completeRegistration: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -61,11 +64,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setViewer(await loadViewer(api));
   }, []);
 
+  const completeRegistration = useCallback(async (email: string, code: string) => {
+    await verifyRegistration(api, session, email, code);
+    setViewer(await loadViewer(api));
+  }, []);
+
   const signOut = useCallback(() => api.signOut(), []);
 
   const value = useMemo(
-    () => ({ state, viewer, configured: api.configured, requestCode, verifyCode, signOut }),
-    [state, viewer, requestCode, verifyCode, signOut],
+    () => ({ state, viewer, configured: api.configured, requestCode, verifyCode, completeRegistration, signOut }),
+    [state, viewer, requestCode, verifyCode, completeRegistration, signOut],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

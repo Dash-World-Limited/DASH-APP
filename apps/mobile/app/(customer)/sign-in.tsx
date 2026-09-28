@@ -156,6 +156,14 @@ export default function SignIn() {
                 testID="sign-in-send"
               />
 
+              <Button
+                variant="outline"
+                label="New to DASH? Create an account"
+                onPress={() => router.push('/register')}
+                disabled={!auth.configured}
+                testID="sign-in-register"
+              />
+
               {buildVariant !== 'production' ? (
                 <Text variant="caption" tone="muted">
                   Test build: while DASH email is in its test period, codes reach only addresses approved for testing.
