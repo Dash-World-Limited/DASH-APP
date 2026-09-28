@@ -305,9 +305,83 @@ export type CancellationReasonCode =
  * and it becomes `refunded` only once Paystack confirms the refund exists
  * and has been processed. Nothing — no screen, no email, no API answer —
  * says "refunded" before that.
+ *
+ * `refund_processing` is a refund Paystack has accepted and not yet finished:
+ * linked to a real Paystack refund, but the money is not back yet.
  */
-export const REFUND_STATES = ['refund_pending_manual_review', 'refunded', 'refund_failed'] as const;
+export const REFUND_STATES = [
+  'refund_pending_manual_review',
+  'refund_processing',
+  'refunded',
+  'refund_failed',
+] as const;
 export type RefundState = (typeof REFUND_STATES)[number];
+
+/**
+ * States from which a refund may be linked to the provider's refund and
+ * checked. `pending` is the table default, kept for rows written before the
+ * states above existed. `refund_failed` is included so a second attempt made
+ * at Paystack can be linked after the first one failed.
+ */
+const CONFIRMABLE_REFUND_STATES: ReadonlySet<string> = new Set([
+  'pending',
+  'refund_pending_manual_review',
+  'refund_processing',
+  'refund_failed',
+]);
+
+/** What the payment provider says about one refund, in provider-neutral terms. */
+export interface ProviderRefundFacts {
+  /** The refund exists at the provider and was made against this payment's transaction. */
+  readonly matchesPayment: boolean;
+  /** `processed` is the only state meaning the money has gone back. */
+  readonly status: 'processed' | 'pending' | 'failed';
+  /** Integer kobo. */
+  readonly amount: number;
+  readonly currency: string;
+}
+
+export type RefundConfirmation =
+  | { readonly kind: 'move'; readonly to: 'refunded' | 'refund_processing' | 'refund_failed' }
+  | {
+      readonly kind: 'refuse';
+      readonly reason: 'not_confirmable' | 'not_this_payment' | 'currency_mismatch' | 'amount_mismatch';
+    };
+
+/**
+ * Whether the provider's account of a refund lets our refund move, and where to.
+ *
+ * The only road to `refunded` runs through here, and it needs the provider to
+ * say three things at once: this refund is against *our* transaction, for
+ * *exactly* the amount we recorded (and booked in the ledger), and it has been
+ * processed. A person cannot declare a refund done; they can only point at the
+ * provider's refund and let the provider answer.
+ *
+ * An amount that differs is refused rather than accepted as partial. The
+ * ledger was booked for the recorded amount when the refund was approved, and
+ * silently accepting a different figure would leave the books and the bank
+ * disagreeing with nobody told.
+ */
+export function decideRefundConfirmation(
+  current: { readonly status: string; readonly amount: number },
+  facts: ProviderRefundFacts,
+): RefundConfirmation {
+  if (!CONFIRMABLE_REFUND_STATES.has(current.status)) return { kind: 'refuse', reason: 'not_confirmable' };
+  if (!facts.matchesPayment) return { kind: 'refuse', reason: 'not_this_payment' };
+  if (facts.currency !== 'NGN') return { kind: 'refuse', reason: 'currency_mismatch' };
+  if (!Number.isInteger(facts.amount) || facts.amount !== current.amount) {
+    return { kind: 'refuse', reason: 'amount_mismatch' };
+  }
+
+  switch (facts.status) {
+    case 'processed':
+      return { kind: 'move', to: 'refunded' };
+    case 'failed':
+      return { kind: 'move', to: 'refund_failed' };
+    default:
+      return { kind: 'move', to: 'refund_processing' };
+  }
+}
 
 /** What the customer is told about how a refund reaches them. */
 export const REFUND_PROCESS =
@@ -318,6 +392,11 @@ export function describeRefund(state: string): { label: string; body: string } {
   switch (state) {
     case 'refunded':
       return { label: 'Refunded', body: 'Paystack has confirmed this refund to your card. Banks can take a few days to show it.' };
+    case 'refund_processing':
+      return {
+        label: 'Refund on its way',
+        body: 'Paystack has accepted this refund and is processing it. It will show as refunded here once Paystack confirms it.',
+      };
     case 'refund_failed':
       return { label: 'Refund needs attention', body: 'This refund could not be completed. The DASH team will contact you.' };
     default:

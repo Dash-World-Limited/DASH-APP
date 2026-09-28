@@ -28,6 +28,20 @@ export type PaymentStatus =
   | 'refunded'
   | 'partially_refunded';
 
+/** The provider's account of one refund. See `PaymentPort.lookupRefund`. */
+export interface RefundLookup {
+  /** The provider's id for the refund, normalised; stored against our refund. */
+  readonly refundReference: string;
+  /** False when the provider has no such refund, or it is for another transaction. */
+  readonly matchesPayment: boolean;
+  /** `processed` is the only state meaning the money has gone back. */
+  readonly status: 'processed' | 'pending' | 'failed';
+  readonly amount: Kobo;
+  readonly currency: string;
+  /** The provider's own word for the state (e.g. `needs-attention`), for staff. */
+  readonly providerStatus: string;
+}
+
 export interface PaymentIntent {
   readonly providerReference: string;
   readonly status: PaymentStatus;
@@ -75,6 +89,17 @@ export interface PaymentPort {
     reason: string;
     idempotencyKey: string;
   }): Promise<{ refundReference: string; status: PaymentStatus }>;
+
+  /**
+   * Ask the provider about one refund, and whether it belongs to this payment.
+   *
+   * `refundReference` is what a person copied from the provider's dashboard;
+   * `providerReference` is our payment's reference. A refund the provider does
+   * not know, or one made against a different transaction, comes back with
+   * `matchesPayment: false`. Throws when the provider cannot be asked — "could
+   * not ask" must never read as "not found".
+   */
+  lookupRefund(input: { refundReference: string; providerReference: string }): Promise<RefundLookup>;
 
   /**
    * Verify a webhook's signature and parse it.

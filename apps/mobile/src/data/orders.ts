@@ -119,6 +119,18 @@ export interface OrderDetail {
   items: { nameSnapshot: string; quantity: number; lineTotal: Kobo }[];
   statusEvents: { toStatus: string; createdAt: string }[];
   rider: { name: string | null; vehicleType: string; latitude: number | null; longitude: number | null; reportedAt: string | null; isStale: boolean } | null;
+  /**
+   * Refunds owed on this order, worded by the server. "Refunded" appears only
+   * once Paystack has confirmed the refund. Optional: older servers omit it.
+   */
+  refunds?: { amount: Kobo; status: string; label: string; body: string; refundedAt: string | null; createdAt: string }[];
+}
+
+/** How a refund's state reads at a glance. Only a confirmed refund is green. */
+export function refundTone(status: string): 'success' | 'danger' | 'accent' {
+  if (status === 'refunded') return 'success';
+  if (status === 'refund_failed') return 'danger';
+  return 'accent';
 }
 
 export interface OrderDetailResult {

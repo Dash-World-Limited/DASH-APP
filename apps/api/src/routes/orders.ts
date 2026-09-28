@@ -808,6 +808,16 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
           address: { select: { line1: true, landmark: true, instructions: true, latitude: true, longitude: true } },
           items: { select: { nameSnapshot: true, priceSnapshot: true, quantity: true, modifiers: true, lineTotal: true, instructions: true } },
           statusEvents: { select: { toStatus: true, createdAt: true, actorType: true }, orderBy: { createdAt: 'asc' } },
+          // Refunds owed on this order, so the customer can see one arrive.
+          // Only what the customer is told — never provider references.
+          payments: {
+            select: {
+              refunds: {
+                select: { amount: true, status: true, refundedAt: true, createdAt: true },
+                orderBy: { createdAt: 'asc' },
+              },
+            },
+          },
           // The rider's live position, but only their name and coarse location —
           // never their phone number or identity id.
           rider: {
@@ -833,6 +843,18 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
           ...order,
           // Never leak the customer id back out in the payload shape.
           customerId: undefined,
+          payments: undefined,
+          // "Refunded" appears only once Paystack has confirmed it; see
+          // payments/refund-confirmation.ts.
+          refunds: order.payments.flatMap((payment) =>
+            payment.refunds.map((refund) => ({
+              amount: refund.amount,
+              status: refund.status,
+              ...describeRefund(refund.status),
+              refundedAt: refund.refundedAt,
+              createdAt: refund.createdAt,
+            })),
+          ),
           statusLabel: customerLabel(status, order.vendor.category),
           phase: phaseOf(status),
           quoteBreakdown: JSON.parse(order.quoteBreakdown) as unknown,

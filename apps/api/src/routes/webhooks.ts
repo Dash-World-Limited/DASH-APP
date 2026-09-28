@@ -18,6 +18,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { settlePayment } from '../payments/settle.js';
+import { confirmRefundWithProvider } from '../payments/refund-confirmation.js';
 
 export async function registerWebhookRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, payments, queue } = app.services;
@@ -139,6 +140,28 @@ export async function registerWebhookRoutes(app: FastifyInstance): Promise<void>
         where: { providerReference: event.providerReference },
         select: { id: true },
       });
+
+      // A refund event re-checks refunds a person has already linked to a
+      // Paystack refund on this payment — through Paystack, never from this
+      // body. One not linked yet waits for a person: which refund of ours a
+      // Paystack refund settles is their call, not a guess. A failure here
+      // does not fail the delivery; reconciliation checks again later.
+      if (payment && event.type.startsWith('refund.')) {
+        const linked = await prisma.refund.findMany({
+          where: { paymentId: payment.id, status: 'refund_processing', providerReference: { not: null } },
+          select: { id: true },
+        });
+        for (const refund of linked) {
+          try {
+            await confirmRefundWithProvider(
+              { prisma, payments },
+              { refundId: refund.id, actorId: null, source: 'webhook' },
+            );
+          } catch (error) {
+            request.log.warn({ eventId: event.id, refundId: refund.id, err: error }, 'refund re-check deferred');
+          }
+        }
+      }
       await prisma.paymentWebhook.updateMany({
         where: { provider: payments.providerName, eventId: event.id },
         data: {

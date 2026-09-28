@@ -79,6 +79,7 @@ import { registerVendorRoutes } from './routes/vendor.js';
 import { registerRiderRoutes } from './routes/rider.js';
 import { registerOnboardingRoutes } from './routes/onboarding.js';
 import { registerAdminRoutes } from './routes/admin.js';
+import { registerFinanceRefundRoutes } from './routes/finance-refunds.js';
 import { registerDeclutterRoutes } from './routes/declutter.js';
 import { registerValueCheckRoutes } from './routes/valuecheck.js';
 import { registerDeclutterPricingRoutes } from './routes/declutter-pricing.js';
@@ -646,6 +647,8 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   // on is an invitation.
   if (capabilities.has('payments')) {
     await registerWebhookRoutes(app);
+    // Linking an owed refund to the Paystack refund that returned it.
+    await registerFinanceRefundRoutes(app);
   }
 
   // Device tokens exist to be pushed to.

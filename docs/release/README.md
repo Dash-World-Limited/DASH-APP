@@ -35,9 +35,11 @@ proven, what is built but unproven, and what blocks release — nothing more.
 ## Built and tested against simulated providers — not yet run for real
 
 - **Paystack** (test mode): real adapter, server-side verification, webhook
-  signature/replay, the webhook-and-app race, retries, reconciliation —
-  tested end to end through the API against an in-memory Paystack. **No
-  request has been made to Paystack yet**; that needs David's `sk_test_` key.
+  signature/replay, the webhook-and-app race, retries, reconciliation, and
+  refund confirmation (`GET /refund/:id`, matched to our transaction by
+  Paystack's transaction id) — tested end to end through the API against an
+  in-memory Paystack shaped from Paystack's published API docs. **No request
+  has been made to Paystack yet**; that needs David's `sk_test_` key.
 - **Brevo** email: adapter tested against a simulated Brevo. **No real email
   has been sent**; needs a key and a verified sender.
 - **The native flows** (registration, checkout, Paystack return, order
@@ -77,7 +79,7 @@ proven, what is built but unproven, and what blocks release — nothing more.
 | Rides (passenger transport) | No foundations exist — no model, pricing, routes or screens. Not presented anywhere in the app |
 | Cash on delivery, DASH Wallet, saved cards | Not built; hidden (no Wallet tab, no such payment options) |
 | SMS / phone verification | Off (`SMS_ENABLED=false`); phones shown as unverified; the flag cannot be switched on while SMS is off |
-| Automatic refunds | Owed refunds are recorded as `refund_pending_manual_review` and returned through Paystack by a person; nothing says "refunded" before Paystack confirms |
+| Automatic refunds | Owed refunds are recorded as `refund_pending_manual_review`; a person refunds in the Paystack dashboard and links the refund ID at `/ops/refunds`; DASH marks it refunded only when Paystack reports it processed for that payment and amount (see `docs/RUNBOOKS.md`, "Returning an owed refund") |
 | Background rider location / push notifications | Rider reports and offers work only with the app open; offers are polled every 5 s, not pushed |
 | Live map for the customer | Status and the rider's name/vehicle are shown; no map |
 | Product photographs | The API cannot serve product images yet; designed placeholders are shown |

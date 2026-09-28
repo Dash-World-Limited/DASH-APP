@@ -22,6 +22,7 @@
 import { writeAudit, type PrismaClient } from '@dash/db';
 import type { PaymentPort, QueuePort } from '@dash/domain/ports';
 import { settlePayment, type SettleOutcome } from '../payments/settle.js';
+import { confirmRefundWithProvider } from '../payments/refund-confirmation.js';
 
 /** Give the webhook and the app their chance first. */
 export const RECONCILE_AFTER_MS = 10 * 60_000;
@@ -35,6 +36,8 @@ export interface PaymentReconciliationReport {
   outcomes: Partial<Record<SettleOutcome, number>>;
   unreachable: number;
   closedUnpaid: number;
+  /** Refunds linked to a Paystack refund that was still processing. */
+  refunds: { examined: number; refunded: number; failed: number; unreachable: number };
   dryRun: boolean;
 }
 
@@ -56,8 +59,46 @@ export async function runPaymentReconciliation(
     select: { id: true, orderId: true, providerReference: true, createdAt: true },
   });
 
-  const report: PaymentReconciliationReport = { examined: pending.length, outcomes: {}, unreachable: 0, closedUnpaid: 0, dryRun: options.dryRun };
+  // Refunds a person has linked to a Paystack refund that had not finished
+  // when last checked. Paystack's `refund.*` webhook normally completes them;
+  // this is for the one that never arrived.
+  const processingRefunds = await prisma.refund.findMany({
+    where: {
+      status: 'refund_processing',
+      providerReference: { not: null },
+      payment: { provider: payments.providerName },
+      OR: [
+        { providerCheckedAt: null },
+        { providerCheckedAt: { lt: new Date(now.getTime() - RECONCILE_AFTER_MS) } },
+      ],
+    },
+    orderBy: { createdAt: 'asc' },
+    take: BATCH,
+    select: { id: true },
+  });
+
+  const report: PaymentReconciliationReport = {
+    examined: pending.length,
+    outcomes: {},
+    unreachable: 0,
+    closedUnpaid: 0,
+    refunds: { examined: processingRefunds.length, refunded: 0, failed: 0, unreachable: 0 },
+    dryRun: options.dryRun,
+  };
   if (options.dryRun) return report;
+
+  for (const refund of processingRefunds) {
+    try {
+      const result = await confirmRefundWithProvider(
+        { prisma, payments },
+        { refundId: refund.id, actorId: null, source: 'reconciliation', now },
+      );
+      if (result.ok && result.status === 'refunded') report.refunds.refunded += 1;
+      if (result.ok && result.status === 'refund_failed') report.refunds.failed += 1;
+    } catch {
+      report.refunds.unreachable += 1;
+    }
+  }
 
   for (const payment of pending) {
     let outcome: SettleOutcome;
@@ -110,21 +151,30 @@ export async function runPaymentReconciliation(
 }
 
 export function formatPaymentReconciliationReport(report: PaymentReconciliationReport): string {
-  if (report.dryRun) return `would examine ${report.examined} pending payment(s)`;
+  if (report.dryRun) {
+    return `would examine ${report.examined} pending payment(s) and ${report.refunds.examined} processing refund(s)`;
+  }
   const outcomes = Object.entries(report.outcomes)
     .map(([outcome, count]) => `${outcome} ${count}`)
     .join(', ');
+  const refunds = report.refunds;
   return [
     `examined ${report.examined}${outcomes ? ` (${outcomes})` : ''}`,
     `closed unpaid ${report.closedUnpaid}`,
     `provider unreachable ${report.unreachable}`,
+    `refunds examined ${refunds.examined} (refunded ${refunds.refunded}, failed ${refunds.failed}, unreachable ${refunds.unreachable})`,
   ].join('\n');
 }
 
 /**
  * What needs a person. An unreachable provider is retried next run and is
- * not a failure; money captured for a closed order or for the wrong amount is.
+ * not a failure; money captured for a closed order or for the wrong amount
+ * is, and so is a refund Paystack reports failed — the customer is still owed.
  */
 export function paymentReconciliationNeedsAttention(report: PaymentReconciliationReport): boolean {
-  return (report.outcomes.amount_mismatch ?? 0) > 0 || (report.outcomes.captured_for_closed_order ?? 0) > 0;
+  return (
+    (report.outcomes.amount_mismatch ?? 0) > 0 ||
+    (report.outcomes.captured_for_closed_order ?? 0) > 0 ||
+    report.refunds.failed > 0
+  );
 }

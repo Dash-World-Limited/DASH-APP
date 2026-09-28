@@ -43,6 +43,7 @@ import type {
   PaymentPort,
   PaymentStatus,
   PaymentWebhookEvent,
+  RefundLookup,
 } from '@dash/domain/ports';
 
 export interface PaystackOptions {
@@ -83,6 +84,35 @@ interface PaystackTransaction {
   amount?: number;
   currency?: string;
   gateway_response?: string;
+}
+
+/**
+ * A refund as `GET /refund/:id` returns it. `transaction` is Paystack's
+ * numeric transaction id there — an object in the create response — never
+ * our reference, which is why matching needs the transaction's id too.
+ */
+interface PaystackRefund {
+  id?: number;
+  transaction?: number | { id?: number; reference?: string } | null;
+  amount?: number;
+  currency?: string;
+  status?: string;
+}
+
+/**
+ * Paystack's refund states: `pending`, `processing`, `needs-attention`,
+ * `failed`, `processed`. Only `processed` means the money has gone back;
+ * anything unrecognised is treated as still in progress, never as done.
+ */
+export function mapPaystackRefundStatus(status: string | undefined): RefundLookup['status'] {
+  switch (status) {
+    case 'processed':
+      return 'processed';
+    case 'failed':
+      return 'failed';
+    default:
+      return 'pending';
+  }
 }
 
 /**
@@ -242,6 +272,62 @@ export class PaystackPaymentAdapter implements PaymentPort {
     return {
       refundReference: `paystack_refund_${String(response.data?.id ?? input.idempotencyKey)}`,
       status: refundStatus === 'processed' ? 'refunded' : 'pending',
+    };
+  }
+
+  async lookupRefund(input: { refundReference: string; providerReference: string }): Promise<RefundLookup> {
+    // The dashboard shows a bare number; our own records say
+    // `paystack_refund_<n>`. Anything else is not a Paystack refund id, and
+    // is never put into a URL.
+    const id = /^(?:paystack_refund_)?(\d{1,18})$/.exec(input.refundReference.trim())?.[1];
+    const unknown: RefundLookup = {
+      refundReference: id ? `paystack_refund_${id}` : input.refundReference,
+      matchesPayment: false,
+      status: 'pending',
+      amount: kobo(0),
+      currency: 'NGN',
+      providerStatus: 'not_found',
+    };
+    if (!id) return unknown;
+
+    const refund = await this.request<PaystackRefund>('GET', `/refund/${id}`);
+    if (!refund.ok) {
+      if (refund.httpStatus === 404 || /not found/i.test(refund.message)) return unknown;
+      throw new PaymentProviderError(`Paystack refund lookup failed: ${refund.message}`, refund.httpStatus);
+    }
+
+    // Our transaction's Paystack id, which is what a refund points at.
+    const transaction = await this.request<PaystackTransaction>(
+      'GET',
+      `/transaction/verify/${encodeURIComponent(input.providerReference)}`,
+    );
+    if (!transaction.ok) {
+      if (transaction.httpStatus === 404 || /not found/i.test(transaction.message)) return unknown;
+      throw new PaymentProviderError(`Paystack verification failed: ${transaction.message}`, transaction.httpStatus);
+    }
+
+    const data = refund.data ?? {};
+    const linked = data.transaction;
+    const linkedId = typeof linked === 'number' ? linked : linked && typeof linked === 'object' ? linked.id : undefined;
+    const linkedReference = linked && typeof linked === 'object' ? linked.reference : undefined;
+    const ours = transaction.data ?? {};
+
+    const matchesPayment =
+      String(data.id) === id &&
+      ours.reference === input.providerReference &&
+      typeof ours.id === 'number' &&
+      linkedId === ours.id &&
+      // When Paystack includes the reference as well, it must agree too.
+      (linkedReference === undefined || linkedReference === input.providerReference);
+
+    const providerStatus = typeof data.status === 'string' ? data.status.slice(0, 40) : 'unknown';
+    return {
+      refundReference: `paystack_refund_${id}`,
+      matchesPayment,
+      status: mapPaystackRefundStatus(data.status),
+      amount: kobo(typeof data.amount === 'number' && Number.isInteger(data.amount) ? data.amount : 0),
+      currency: typeof data.currency === 'string' ? data.currency : 'unknown',
+      providerStatus,
     };
   }
 

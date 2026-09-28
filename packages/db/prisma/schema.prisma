@@ -1299,8 +1299,16 @@ model Refund {
   reason String
   status String @default("pending")
 
-  providerReference String?
-  idempotencyKey    String @unique
+  /// The provider's refund (`paystack_refund_<id>`), linked by a person and
+  /// confirmed by asking the provider. Unique: one provider refund can settle
+  /// one refund of ours, never two.
+  providerReference String?   @unique
+  /// The provider's own word for the refund's state at the last check.
+  providerStatus    String?
+  providerCheckedAt DateTime?
+  /// Set only when the provider reports the refund processed.
+  refundedAt        DateTime?
+  idempotencyKey    String    @unique
 
   requestedBy String
   approvedBy  String?

@@ -243,3 +243,112 @@ describe('live and test keys', () => {
     expect(new PaystackPaymentAdapter({ secretKey: LIVE_SECRET }).isLive).toBe(true);
   });
 });
+
+describe('lookupRefund', () => {
+  // Shapes from Paystack's Refund API: `GET /refund/:id` names the transaction
+  // by its numeric id; the create response nests a transaction object.
+  const refund = (overrides: Record<string, unknown> = {}) => ({
+    status: 200,
+    json: {
+      status: true,
+      message: 'Refund retrieved',
+      data: { id: 3018284, transaction: 4099, amount: 500_000, currency: 'NGN', status: 'processed', ...overrides },
+    },
+  });
+  const ask = (adapter: PaystackPaymentAdapter, refundReference = '3018284') =>
+    adapter.lookupRefund({ refundReference, providerReference: 'DASH-1' });
+
+  it('matches a refund to our payment by Paystack transaction id, and reports processed', async () => {
+    const paystack = fakePaystack({ '/refund/3018284': () => refund(), '/transaction/verify/': () => transaction() });
+    const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl });
+
+    expect(await ask(adapter)).toEqual({
+      refundReference: 'paystack_refund_3018284',
+      matchesPayment: true,
+      status: 'processed',
+      amount: kobo(500_000),
+      currency: 'NGN',
+      providerStatus: 'processed',
+    });
+    // The stored form is accepted back, for re-checks.
+    expect((await ask(adapter, 'paystack_refund_3018284')).matchesPayment).toBe(true);
+  });
+
+  it('does not match a refund made against a different transaction', async () => {
+    const paystack = fakePaystack({
+      '/refund/3018284': () => refund({ transaction: 5555 }),
+      '/transaction/verify/': () => transaction(),
+    });
+    expect((await ask(new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl }))).matchesPayment).toBe(false);
+  });
+
+  it('accepts the nested transaction object, but only when its reference agrees too', async () => {
+    const nested = (reference: string) =>
+      fakePaystack({
+        '/refund/3018284': () => refund({ transaction: { id: 4099, reference } }),
+        '/transaction/verify/': () => transaction(),
+      });
+    const good = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: nested('DASH-1').impl });
+    expect((await ask(good)).matchesPayment).toBe(true);
+    const bad = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: nested('DASH-2').impl });
+    expect((await ask(bad)).matchesPayment).toBe(false);
+  });
+
+  it('does not match when Paystack answers for a different refund id', async () => {
+    const paystack = fakePaystack({ '/refund/3018284': () => refund({ id: 1 }), '/transaction/verify/': () => transaction() });
+    expect((await ask(new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl }))).matchesPayment).toBe(false);
+  });
+
+  it('maps every Paystack refund state, and only processed means done', async () => {
+    for (const [paystackStatus, ours] of [
+      ['processed', 'processed'],
+      ['failed', 'failed'],
+      ['pending', 'pending'],
+      ['processing', 'pending'],
+      ['needs-attention', 'pending'],
+      ['something-new', 'pending'],
+    ] as const) {
+      const paystack = fakePaystack({
+        '/refund/3018284': () => refund({ status: paystackStatus }),
+        '/transaction/verify/': () => transaction(),
+      });
+      const found = await ask(new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl }));
+      expect(found.status, paystackStatus).toBe(ours);
+      expect(found.providerStatus).toBe(paystackStatus);
+    }
+  });
+
+  it('treats a refund id Paystack does not know as not ours', async () => {
+    const paystack = fakePaystack({ '/transaction/verify/': () => transaction() });
+    const found = await ask(new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl }), '42');
+    expect(found).toMatchObject({ matchesPayment: false, providerStatus: 'not_found' });
+  });
+
+  it('never puts anything but digits into the URL', async () => {
+    const paystack = fakePaystack({});
+    const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl });
+    for (const hostile of ['../transaction/export', '12/../../customer', 'abc', '1 2', '']) {
+      expect((await ask(adapter, hostile)).matchesPayment, hostile).toBe(false);
+    }
+    expect(paystack.calls).toHaveLength(0);
+  });
+
+  it('throws — rather than answering "not found" — when Paystack is down or erroring', async () => {
+    const down = fakePaystack({ '/refund/': () => 'network' });
+    await expect(ask(new PaystackPaymentAdapter({ secretKey: SECRET, fetch: down.impl }), '1')).rejects.toBeInstanceOf(
+      PaymentProviderError,
+    );
+    const erroring = fakePaystack({ '/refund/': () => ({ status: 500, json: { status: false, message: 'Server error' } }) });
+    await expect(ask(new PaystackPaymentAdapter({ secretKey: SECRET, fetch: erroring.impl }), '1')).rejects.toBeInstanceOf(
+      PaymentProviderError,
+    );
+  });
+
+  it('never reports a fractional amount', async () => {
+    const paystack = fakePaystack({
+      '/refund/3018284': () => refund({ amount: 499_999.5 }),
+      '/transaction/verify/': () => transaction(),
+    });
+    expect((await ask(new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl }))).amount).toBe(0);
+  });
+});

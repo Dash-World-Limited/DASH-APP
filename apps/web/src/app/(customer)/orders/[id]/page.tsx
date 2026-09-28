@@ -53,6 +53,8 @@ interface OrderDetail {
     reportedAt: string | null;
     isStale: boolean;
   } | null;
+  /** Optional: absent from servers older than refund confirmation. */
+  refunds?: { amount: number; status: string; label: string; body: string; refundedAt: string | null; createdAt: string }[];
 }
 
 interface Cancellation {
@@ -223,6 +225,20 @@ export default function OrderTrackingPage() {
             ) : null}
           </Card>
         )}
+
+        {/* --- Refunds ------------------------------------------------------- */}
+        {/* Worded by the server: "Refunded" only once Paystack has confirmed it. */}
+        {(order.refunds ?? []).map((refund, index) => (
+          <Card key={`${refund.createdAt}-${index}`} className="mt-6 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-bold">Refund of {formatNaira(refund.amount)}</p>
+              <Badge>{refund.label}</Badge>
+            </div>
+            <p className="mt-1 text-sm text-graphite-600" aria-live="polite">
+              {refund.body}
+            </p>
+          </Card>
+        ))}
 
         {/* --- Delivery PIN -------------------------------------------------- */}
         {pin && !stopped && order.phase !== 'complete' ? (

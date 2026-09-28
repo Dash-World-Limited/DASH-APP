@@ -30,6 +30,7 @@ import {
   getOrder,
   isActiveOrder,
   quoteRows,
+  refundTone,
   retryPayment,
   verifyPayment,
   type OrderDetailResult,
@@ -227,6 +228,22 @@ export default function OrderScreen() {
             </View>
           </Card>
         ) : null}
+
+        {(order.refunds ?? []).map((refund, index) => (
+          <Card key={`${refund.createdAt}-${index}`} testID="refund">
+            <View style={{ gap: space.sm }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm }}>
+                <Text variant="bodyStrong" weight="bold" style={{ flex: 1 }}>
+                  Refund of {formatNairaCompact(refund.amount)}
+                </Text>
+                <StatusPill label={refund.label} tone={refundTone(refund.status)} />
+              </View>
+              <Text variant="caption" tone="muted" accessibilityLiveRegion="polite">
+                {refund.body}
+              </Text>
+            </View>
+          </Card>
+        ))}
 
         {order.rider && moving ? (
           <Card testID="rider">

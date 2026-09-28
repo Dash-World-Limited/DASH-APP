@@ -4,6 +4,8 @@ import {
   assertTransition,
   canTransition,
   customerLabel,
+  decideRefundConfirmation,
+  describeRefund,
   evaluateCustomerCancellation,
   isActive,
   isPaid,
@@ -11,6 +13,7 @@ import {
   ORDER_STATUSES,
   OrderTransitionError,
   phaseOf,
+  REFUND_STATES,
   vendorRejectionOutcome,
   type OrderStatus,
   type TransitionActor,
@@ -276,5 +279,47 @@ describe('the cancellation policy and the state machine must agree', () => {
       expect(canTransition(status, 'cancelled', 'customer'), status).toBe(false);
       expect(evaluateCustomerCancellation(status).allowed, status).toBe(false);
     }
+  });
+});
+
+describe('confirming a refund with the provider', () => {
+  const owed = { status: 'refund_pending_manual_review', amount: 150_000 };
+  const processed = { matchesPayment: true, status: 'processed', amount: 150_000, currency: 'NGN' } as const;
+
+  it('moves to refunded only when the provider reports it processed, for this payment and amount', () => {
+    expect(decideRefundConfirmation(owed, processed)).toEqual({ kind: 'move', to: 'refunded' });
+    expect(decideRefundConfirmation(owed, { ...processed, status: 'pending' })).toEqual({
+      kind: 'move',
+      to: 'refund_processing',
+    });
+    expect(decideRefundConfirmation(owed, { ...processed, status: 'failed' })).toEqual({ kind: 'move', to: 'refund_failed' });
+  });
+
+  it('refuses a refund for another payment, another currency or another amount', () => {
+    const refused = (reason: string) => ({ kind: 'refuse', reason });
+    expect(decideRefundConfirmation(owed, { ...processed, matchesPayment: false })).toEqual(refused('not_this_payment'));
+    expect(decideRefundConfirmation(owed, { ...processed, currency: 'USD' })).toEqual(refused('currency_mismatch'));
+    for (const amount of [149_999, 300_000, 150_000.5, 0]) {
+      expect(decideRefundConfirmation(owed, { ...processed, amount }), String(amount)).toEqual(refused('amount_mismatch'));
+    }
+  });
+
+  it('can be checked from every open state, and from none that is closed', () => {
+    for (const status of ['pending', 'refund_pending_manual_review', 'refund_processing', 'refund_failed']) {
+      expect(decideRefundConfirmation({ ...owed, status }, processed).kind, status).toBe('move');
+    }
+    for (const status of ['refunded', 'failed', 'anything_else']) {
+      expect(decideRefundConfirmation({ ...owed, status }, processed), status).toEqual({
+        kind: 'refuse',
+        reason: 'not_confirmable',
+      });
+    }
+  });
+
+  it('tells the customer "Refunded" only in the confirmed state', () => {
+    for (const state of REFUND_STATES) {
+      expect(describeRefund(state).label === 'Refunded', state).toBe(state === 'refunded');
+    }
+    expect(describeRefund('refund_processing').body).toMatch(/once Paystack confirms/);
   });
 });

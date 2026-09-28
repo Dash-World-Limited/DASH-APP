@@ -62,9 +62,10 @@ deciding what the exposed value could already have been used for — see the
 
 ### Payment incidents
 
-The mock adapter cannot move money, so **any real payment incident implies a
-live integration exists** — which, as of this milestone, it does not. When it
-does:
+The mock adapter cannot move money, so **any real payment incident implies the
+Paystack adapter is live**. That adapter exists but, as of this writing, has
+only ever run against a simulated Paystack in tests — never against Paystack's
+test mode, and never live. When it does run for real:
 
 1. Stop the dispatch worker before stopping the API. An order captured but never
    dispatched is recoverable; a rider sent to collect food for a payment that
@@ -75,6 +76,34 @@ does:
 3. Corrections are **reversing transactions, never edits.** The ledger is
    append-only by design (ADR-0006).
 4. **[CODEX]** Notify the payment provider per their incident terms.
+
+### Returning an owed refund
+
+DASH does not send refunds by itself. A refund is owed when a paid order is
+cancelled (recorded at cancellation) or finance approves one
+(`POST /v1/finance/orders/:id/refund`). Either way the ledger is booked and the
+refund sits at `refund_pending_manual_review`, which the customer sees as
+"Refund pending review".
+
+1. Open `/ops/refunds` (finance roles). Each refund shows its amount and the
+   **payment reference**.
+2. In the Paystack dashboard, find that transaction by the reference and
+   refund **exactly** the amount shown. A different amount is refused in step
+   3 — the ledger was booked for this one.
+3. Copy the refund ID Paystack shows, enter it on `/ops/refunds`, and press
+   *Confirm with Paystack* (step-up required). DASH asks Paystack about that ID:
+   - processed, this payment, this amount, NGN → `refunded`; the customer now
+     sees "Refunded";
+   - still pending / processing / needs-attention → `refund_processing`; the
+     `refund.*` webhook or the `payments` maintenance job completes it;
+   - failed → `refund_failed`; the maintenance job reports it for a person.
+     Issue a new refund in Paystack and link its ID.
+4. There is no way to mark a refund done without Paystack's answer, and one
+   Paystack refund can settle only one DASH refund (unique index). A refund
+   linked to a Paystack refund that is still processing cannot be re-linked
+   until that one fails.
+
+If Paystack cannot be reached, nothing changes; try again later.
 
 ### After
 

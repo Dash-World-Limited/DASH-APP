@@ -289,6 +289,20 @@ export default function OpsPage() {
                 Declutters
               </Button>
             </Link>
+            {permissions.has('admin:vendor:approve') || permissions.has('admin:rider:approve') ? (
+              <Link href="/ops/partners">
+                <Button variant="ghost" size="sm">
+                  Partners
+                </Button>
+              </Link>
+            ) : null}
+            {permissions.has('finance:payment:read') ? (
+              <Link href="/ops/refunds">
+                <Button variant="ghost" size="sm">
+                  Refunds
+                </Button>
+              </Link>
+            ) : null}
             <Button variant="ghost" size="sm" onClick={() => void load()}>
               Refresh
             </Button>

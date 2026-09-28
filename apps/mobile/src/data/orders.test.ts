@@ -11,7 +11,17 @@ import { describe, expect, it } from 'vitest';
 
 import type { ApiClient, RequestOptions } from '../api/client';
 import { EMPTY_CART, cartReducer } from '../features/cart';
-import { basketFromCart, describeOutcome, newIdempotencyKey, placeOrder, quoteRows, verifyPayment, type PaymentOutcome, type Quote } from './orders';
+import {
+  basketFromCart,
+  describeOutcome,
+  newIdempotencyKey,
+  placeOrder,
+  quoteRows,
+  refundTone,
+  verifyPayment,
+  type PaymentOutcome,
+  type Quote,
+} from './orders';
 
 function fakeClient(answer: unknown = {}) {
   const calls: { path: string; options: RequestOptions }[] = [];
@@ -96,6 +106,14 @@ describe('what the customer is told', () => {
     expect(describeOutcome('captured_for_closed_order').canRetry).toBe(false);
     expect(describeOutcome('order_closed').canRetry).toBe(false);
     expect(describeOutcome('captured').canRetry).toBe(false);
+  });
+
+  it('shows a refund as done only once it is confirmed', () => {
+    expect(refundTone('refunded')).toBe('success');
+    for (const status of ['refund_pending_manual_review', 'refund_processing', 'pending', 'anything_new']) {
+      expect(refundTone(status), status).toBe('accent');
+    }
+    expect(refundTone('refund_failed')).toBe('danger');
   });
 });
 

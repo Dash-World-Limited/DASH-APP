@@ -573,6 +573,10 @@ for a clone of `main`:
 | Every ledger transaction sums to zero after every money operation | `finance.test.ts` |
 | A refund cannot exceed the captured amount cumulatively | `finance.test.ts` |
 | A duplicate refund or compensation posts no second effect | `finance.test.ts` |
+| A refund becomes `refunded` only when Paystack reports it processed, for this payment, amount and currency | `refund-confirmation.test.ts` |
+| One Paystack refund cannot settle two refunds; concurrent confirmations settle once | `refund-confirmation.test.ts` |
+| A refund webhook body is never evidence — Paystack is asked | `refund-confirmation.test.ts` |
+| A person-entered refund id never reaches a Paystack URL unless it is digits | `paystack-adapter.test.ts`, `refund-confirmation.test.ts` |
 | No endpoint edits or deletes a ledger entry | `finance.test.ts` |
 | An invalid checkout leaves no partial financial state | `finance.test.ts` |
 | An admin acting on a vendor order is recorded as ops, not the vendor | `staff.test.ts` |

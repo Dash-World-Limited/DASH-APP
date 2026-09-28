@@ -27,6 +27,7 @@ import type {
   PaymentWebhookEvent,
   PushPort,
   PushReceipt,
+  RefundLookup,
   RouteEstimate,
   SmsPort,
 } from '@dash/domain/ports';
@@ -47,6 +48,10 @@ export class DisabledPaymentAdapter implements PaymentPort {
   }
 
   async refund(): Promise<{ refundReference: string; status: PaymentStatus }> {
+    throw new CapabilityDisabledError('payments');
+  }
+
+  async lookupRefund(): Promise<RefundLookup> {
     throw new CapabilityDisabledError('payments');
   }
 
