@@ -35,7 +35,7 @@ import { Button, Card, Icon, Screen, StatusPill, Text } from '../../../../src/ui
 export default function RiderOnline() {
   const router = useRouter();
   const { palette } = useTheme();
-  const { setOnline } = useRiderShift();
+  const { setOnline, live } = useRiderShift();
   const pulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -139,7 +139,7 @@ export default function RiderOnline() {
           </Card>
         </Pressable>
 
-        {buildVariant !== 'production' ? (
+        {buildVariant !== 'production' && !live ? (
           <Button
             label="Preview an incoming order"
             variant="outline"

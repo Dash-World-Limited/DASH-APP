@@ -28,6 +28,8 @@ export interface Viewer {
   identity: { id: string; email: string | null; phone: string | null; displayName: string | null };
   roles: string[];
   riderStatus: 'approved' | 'pending' | 'rejected' | 'suspended' | null;
+  /** The server's record of the rider's shift, so the app resumes it after a restart. */
+  riderAvailability?: 'offline' | 'idle' | 'on_delivery' | 'on_break' | null;
   /**
    * The server's statement about the phone number. `verification` is always
    * `unverified` in V1 — nothing proves a phone yet — and `notice` is the one
