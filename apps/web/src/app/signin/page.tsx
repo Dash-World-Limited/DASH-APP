@@ -5,6 +5,7 @@ import { Suspense, useState } from 'react';
 import { AppHeader } from '@/components/AppHeader';
 import { Button, Card, ErrorState, Field, Input, Wordmark } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
+import { safeNext } from '@/lib/safe-next';
 import { requestOtp, signInWithPassword, verifyMfa, verifyOtp } from '@/lib/session';
 
 type Mode = 'otp' | 'password';
@@ -12,10 +13,11 @@ type Mode = 'otp' | 'password';
 function SignInForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const next = params.get('next') ?? '/browse';
+  const next = safeNext(params.get('next'));
 
   const [mode, setMode] = useState<Mode>('otp');
-  const [phone, setPhone] = useState('+2347000000201');
+  // Codes go to email: SMS is off in V1 and phone numbers are unverified.
+  const [codeEmail, setCodeEmail] = useState('');
   const [code, setCode] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -52,7 +54,7 @@ function SignInForm() {
       <Wordmark className="text-2xl" />
       <h1 className="mt-8 text-3xl font-extrabold tracking-tight">Sign in</h1>
       <p className="mt-2 text-sm text-graphite-600">
-        Customers and riders use a code. Vendors and staff use a password.
+        Customers, vendors and riders use a code sent to their email. Staff use a password.
       </p>
 
       <div className="mt-6 flex gap-1 rounded-xl border p-1" role="tablist">
@@ -70,7 +72,7 @@ function SignInForm() {
               mode === option ? 'bg-graphite-900 text-white' : 'hover:bg-[var(--surface-raised)]'
             }`}
           >
-            {option === 'otp' ? 'Phone code' : 'Password'}
+            {option === 'otp' ? 'Email code' : 'Password'}
           </button>
         ))}
       </div>
@@ -93,25 +95,22 @@ function SignInForm() {
               onSubmit={(event) => {
                 event.preventDefault();
                 void run(async () => {
-                  const result = await requestOtp({ phone });
+                  const result = await requestOtp({ email: codeEmail.trim().toLowerCase() });
                   setDevCode(result.devCode ?? null);
                   setStage('verify');
                 });
               }}
             >
-              <Field
-                label="Phone number"
-                htmlFor="phone"
-                hint="Include the country code, e.g. +234…"
-              >
+              <Field label="Email" htmlFor="code-email" hint="The address on your DASH account.">
                 <Input
-                  id="phone"
-                  type="tel"
-                  inputMode="tel"
-                  autoComplete="tel"
+                  id="code-email"
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
                   required
-                  value={phone}
-                  onChange={(event) => setPhone(event.target.value)}
+                  value={codeEmail}
+                  onChange={(event) => setCodeEmail(event.target.value)}
+                  placeholder="you@example.com"
                 />
               </Field>
               <Button type="submit" size="lg" className="w-full" disabled={busy}>
@@ -124,7 +123,7 @@ function SignInForm() {
               onSubmit={(event) => {
                 event.preventDefault();
                 void run(async () => {
-                  await verifyOtp({ phone }, code);
+                  await verifyOtp({ email: codeEmail.trim().toLowerCase() }, code);
                   router.push(next);
                 });
               }}
@@ -132,7 +131,7 @@ function SignInForm() {
               <Field
                 label="6-digit code"
                 htmlFor="code"
-                hint={`Sent to ${phone}. It expires in 5 minutes.`}
+                hint={`Sent to ${codeEmail.trim()}. It expires in 5 minutes.`}
               >
                 <Input
                   id="code"
@@ -172,7 +171,7 @@ function SignInForm() {
                 className="w-full text-sm text-graphite-600 underline"
                 onClick={() => setStage('enter')}
               >
-                Use a different number
+                Use a different email
               </button>
             </form>
           )
