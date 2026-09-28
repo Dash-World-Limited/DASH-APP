@@ -222,13 +222,20 @@ describe('state that changed while the rider was asleep', () => {
       data: { status: 'suspended' },
     });
 
-    expect((await respond(riderA, offer.id)).statusCode).toBe(409);
-    expect((await orderRow(order.id)).riderId).toBeNull();
-
-    await context.prisma.rider.update({
-      where: { id: world.riderA.riderId },
-      data: { status: 'approved' },
-    });
+    try {
+      // 403, not 409: a suspended rider holds no rider permissions at all, so
+      // the request is refused before the offer is even looked at — the
+      // suspension is enforced on every rider route, not only this one. (The
+      // administrator's suspend action is what withdraws their open offers;
+      // see onboarding.test.ts.)
+      expect((await respond(riderA, offer.id)).statusCode).toBe(403);
+      expect((await orderRow(order.id)).riderId).toBeNull();
+    } finally {
+      await context.prisma.rider.update({
+        where: { id: world.riderA.riderId },
+        data: { status: 'approved' },
+      });
+    }
   });
 
   it('refuses a rider who went offline after the offer was made', async () => {

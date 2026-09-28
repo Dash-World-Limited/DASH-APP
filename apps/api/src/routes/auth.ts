@@ -620,12 +620,14 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     // Everything gated on that flag — the offer subscription and the GPS
     // reporting loop — then stopped silently, and the rider was invisible to
     // dispatch while their own screen looked normal.
-    const riderState = actor.riderId
-      ? await prisma.rider.findUnique({
-          where: { id: actor.riderId },
-          select: { availability: true, status: true },
-        })
-      : null;
+    //
+    // Read from the profile, not the actor: the actor carries a rider only
+    // while that rider is approved (it is what grants permissions), but the
+    // app still needs to say "your application is pending" to everyone else.
+    const riderState = await prisma.rider.findUnique({
+      where: { identityId: actor.identityId },
+      select: { id: true, availability: true, status: true },
+    });
 
     return {
       identity,
@@ -634,7 +636,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       // convenience only — every permission is re-checked server-side.
       permissions: [...actor.permissions],
       vendorId: actor.vendorId ?? null,
-      riderId: actor.riderId ?? null,
+      riderId: riderState?.id ?? null,
       riderAvailability: riderState?.availability ?? null,
       // Whether this identity may actually work as a rider, which is not the
       // same question as whether it has a rider profile. A pending, suspended
