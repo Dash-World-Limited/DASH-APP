@@ -92,3 +92,42 @@ export function cartReducer(state: CartState, action: CartAction): CartState {
 export function itemCount(state: CartState): number {
   return state.lines.reduce((total, line) => total + line.quantity, 0);
 }
+
+/**
+ * A cart read back from the phone's storage, or null.
+ *
+ * Everything is re-validated: the stored text is outside the app's control
+ * once written, so a line that is not a well-formed choice drops the whole
+ * cart rather than being patched. Quantities are re-clamped, keys rebuilt,
+ * and nothing but choices is carried over — no price can ride along.
+ */
+export function parseStoredCart(raw: string | null): CartState | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const { merchantSlug, lines } = parsed as { merchantSlug?: unknown; lines?: unknown };
+  if (typeof merchantSlug !== 'string' || merchantSlug.length === 0 || !Array.isArray(lines) || lines.length === 0) return null;
+
+  const clean: CartLine[] = [];
+  for (const line of lines as unknown[]) {
+    if (typeof line !== 'object' || line === null) return null;
+    const { productId, quantity, options } = line as { productId?: unknown; quantity?: unknown; options?: unknown };
+    if (typeof productId !== 'string' || productId.length === 0) return null;
+    if (typeof quantity !== 'number' || !Number.isFinite(quantity) || quantity < 1) return null;
+    const opts: Record<string, string> = {};
+    if (options !== undefined) {
+      if (typeof options !== 'object' || options === null) return null;
+      for (const [group, choice] of Object.entries(options as Record<string, unknown>)) {
+        if (typeof choice !== 'string') return null;
+        opts[group] = choice;
+      }
+    }
+    clean.push({ key: lineKey(productId, opts), productId, quantity: clampQuantity(quantity), options: opts });
+  }
+  return { merchantSlug, lines: clean };
+}

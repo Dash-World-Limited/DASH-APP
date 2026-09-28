@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { EMPTY_CART, MAX_LINE_QUANTITY, cartReducer, itemCount, lineKey, refusalFor, type CartState } from './cart';
+import { EMPTY_CART, MAX_LINE_QUANTITY, cartReducer, itemCount, lineKey, parseStoredCart, refusalFor, type CartState } from './cart';
 import { quickAddPlan } from './quickAdd';
 
 const add = (state: CartState, productId: string, quantity = 1, options?: Record<string, string>, merchantSlug = 'techworld'): CartState =>
@@ -103,5 +103,37 @@ describe('the plus on a product card', () => {
   it('adds directly when there is nothing to choose', () => {
     expect(quickAddPlan({ optionGroups: [] })).toEqual({ kind: 'add', options: {} });
     expect(quickAddPlan({ optionGroups: [group('colour', 1)] })).toEqual({ kind: 'add', options: { colour: 'colour-0' } });
+  });
+});
+
+describe('a cart restored from the phone', () => {
+  it('comes back as the same choices', () => {
+    const cart = add(add(EMPTY_CART, 'iphone', 2, { storage: '256gb' }), 'case', 1);
+    expect(parseStoredCart(JSON.stringify(cart))).toEqual(cart);
+  });
+
+  it('carries no price, whatever was stored', () => {
+    const stored = JSON.stringify({ merchantSlug: 'techworld', lines: [{ productId: 'iphone', quantity: 1, price: 1, total: 1 }] });
+    const restored = parseStoredCart(stored)!;
+    expect(Object.keys(restored.lines[0]!)).not.toContain('price');
+    expect(Object.keys(restored.lines[0]!)).not.toContain('total');
+  });
+
+  it('is discarded, not repaired, when anything is malformed', () => {
+    for (const raw of [
+      'not json',
+      '{}',
+      JSON.stringify({ merchantSlug: 'x', lines: [] }),
+      JSON.stringify({ merchantSlug: 'x', lines: [{ productId: 'p', quantity: 0 }] }),
+      JSON.stringify({ merchantSlug: 'x', lines: [{ productId: 'p', quantity: 1, options: { size: 3 } }] }),
+      JSON.stringify({ merchantSlug: 'x', lines: [{ quantity: 1 }] }),
+    ]) {
+      expect(parseStoredCart(raw), raw).toBeNull();
+    }
+  });
+
+  it('re-clamps a stored quantity', () => {
+    const restored = parseStoredCart(JSON.stringify({ merchantSlug: 'x', lines: [{ productId: 'p', quantity: 999 }] }))!;
+    expect(restored.lines[0]!.quantity).toBe(MAX_LINE_QUANTITY);
   });
 });
