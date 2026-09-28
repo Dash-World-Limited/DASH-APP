@@ -594,9 +594,18 @@ Ordered by severity. Each is tracked in [`ROADMAP.md`](ROADMAP.md).
    advisories publish against unchanged trees, so a previously green run turns
    red with no code change.
 
-   As of the last check: **11 vulnerabilities — 2 critical, 5 high, 4
-   moderate.** Four root advisories account for all of them; the rest are
-   packages that merely depend on a vulnerable one.
+   As of 28 September 2026: **17 vulnerabilities — 2 critical, 5 high, 10
+   moderate.** The four root advisories below account for all the critical
+   and high ones; the rest are packages that merely depend on a vulnerable one.
+   The six moderates added since the previous count (11) are one new root
+   advisory, `uuid` (missing buffer bounds check in v3/v5/v6 when the caller
+   supplies a buffer), reached through `firebase-admin` →
+   `@google-cloud/storage` → `gaxios` / `teeny-request` / `retry-request`. The
+   API uses only `firebase-admin/app` and `/messaging` and never calls `uuid`
+   itself. `npm audit fix` (no `--force`) clears that chain within semver
+   ranges, but it re-resolves about 800 packages, the AWS SDK among them, and
+   still leaves every high and critical finding; it was tried and reverted
+   rather than shipped without its own verification pass.
 
    | Root advisory | Sev | Reached via | Where it runs | Also flags |
    |---|---|---|---|---|
