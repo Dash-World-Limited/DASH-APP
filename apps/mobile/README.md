@@ -1,6 +1,7 @@
 # DASH — native Customer and Rider app
 
-React Native · TypeScript · Expo SDK 57 development builds · Expo Router.
+React Native · TypeScript · Expo SDK 57 development builds · one React root,
+no native navigator.
 
 One app, two faces of one account: every consumer identity is a **Customer**,
 and an approved rider also has the **Rider** face, switched from the profile.
@@ -58,14 +59,13 @@ cart, plus search and a missing shop, in Light and Dark. **Not yet verified on t
 after the stabilization fix, sign-in and the Android cookie jar (no build has
 yet pointed at a reachable API), and the native map with a key.
 
-**Navigation rule.** The root layout is a `Slot`, not a stack, so the two faces
-never share one native stack (the source of the Android Fabric "child already
-has a parent" crash). A screen shared by both faces must therefore live inside
-each face's own stack (see `app/(customer)/settings` and `app/rider/settings`);
-a root-level screen would replace the whole face and Back would have nowhere to
-go. Face switches are one navigation, owned by the switch buttons; the only
-other redirect is the one-time launch redirect for a remembered rider
-(`modeReducer` in `src/features/mode.ts`).
+**Navigation rule.** There is no native navigator. `index.js` registers a
+single React root and `src/v2/navigation/model.ts` holds the current route and
+face as plain state, so changing screen or face is a re-render, never a
+re-parented native fragment — which is what produced the Android Fabric "child
+already has a parent" crash under Expo Router. Nothing reachable from the entry
+point may import `expo-router` or `react-native-screens`; neither is a
+dependency any more, and the release workflow fails if either returns.
 
 ---
 
@@ -124,22 +124,22 @@ never says whether an account exists.
 ## How it is built
 
 ```
-app/                    Expo Router — files are routes
-  _layout.tsx           fonts, theme, remembered mode, cart; holds the splash until all are known
-  (customer)/           the Customer face (group — no URL segment)
-    (tabs)/             Home · Orders · Wallet · Support  (Customer board)
-      (home)/           a stack inside the Home tab: Home, Shops, service screens
-    store/[slug]  product/[id]  cart  checkout  account  search  notifications
-  rider/                the Rider face, under /rider
-    (tabs)/             Home · Earnings · Orders · Inbox · Profile  (Rider board)
-    offer/[id]          incoming offer — full-screen modal
-    job/[id]  route/[id]
-  settings/[section]    account settings shared by both faces
+index.js                registers one React root — the whole app
+src/v2/                 the app
+  App.tsx               faces, tabs, rider home, account; holds the splash
+                        until fonts, theme and session are known
+  navigation/model.ts    routes, tabs and face as plain state (tested)
+  catalog/              service, merchant and product screens
+  orders/               cart, checkout, order tracking
+  rider/                rider screens and RiderFlowProvider (online, offers,
+                        delivery, PIN completion)
+  auth/                 session provider and the account/sign-in card
+  artwork/  brand/      category illustrations and the measured wordmark
 src/
   theme/                tokens (Light + Dark), appearance, ThemeProvider
-  ui/                   primitives: Text, Button, IconButton, AppBar, Screen, Card,
+  ui/                   primitives: Text, Button, IconButton, Screen, Card,
                         Chip, SegmentedControl, SearchField, Toggle, QuantityStepper,
-                        StatusPill, Avatar, ListRow, Skeleton, Empty/Error/Offline, TabBar
+                        StatusPill, Avatar, ListRow, Skeleton, Empty/Error/Offline
   commerce/             ServiceTile, merchant cards, ProductCard, PromoCard, CategoryBubble
   rider/                CountdownRing, RouteStops, MapShell (.native / web fallback)
   api/                  client, session, errors — dependencies injected, tested
@@ -148,7 +148,15 @@ src/
 assets/brand/           SVG masters of the DASH wordmark, light and dark (see below)
 assets/fonts/           the Naira-sign faces (Manrope has no ₦)
 assets/staging/         interim imagery cropped from the boards (see its README)
+assets/v2/categories/   the six service photographs
 ```
+
+**Modules v2 does not import yet.** Parts of `src/data` and `src/features` —
+sign-in, register, orders, catalogue, service tiles from the API — were written
+for the Expo Router app and are not reachable from `index.js`, so Metro does
+not bundle them. They are kept on purpose: they are the source for porting
+those features into v2 (see `docs/release/V2-HANDOFF.md`), they still
+typecheck, and their tests still run.
 
 **Why a standalone project, not an npm workspace.** React Native refuses to run
 unless React matches its renderer exactly; Expo SDK 57 pins React 19.2.3 and

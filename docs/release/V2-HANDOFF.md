@@ -37,17 +37,38 @@ anywhere in `logcat -b all`.
 
 1. ~~**Verify** the standalone v2 release APK on the A55.~~ **Done** — see
    above.
-2. **Integrate on the release line** (`claude/awesome-bardeen-95lgbd`):
-   `apps/mobile` = v2 (`src/v2`, `assets/v2`, `index.js`, `main: index.js`,
-   no `expo-router` plugin) + the release line's shared modules and fixes
-   (lockfile/worklets override, `withReleaseSigning`, `versionCode`,
-   blocked permissions, icon/splash via `npm run brand:assets`). Remove the
-   old `app/` screens and, if nothing needs them, the `expo-router` and
-   `react-native-screens` dependencies. Replace the old APK workflow with v2's
-   release workflow and its bundle checks. Reconcile v2's vendor console
-   (`apps/web/src/app/vendor/*`, `apps/api/src/routes/vendor.ts`) with the
-   release line's later vendor changes (`7b7f860` handoff actions, `b6933dc`
-   wordmark).
+2. ~~**Integrate on the release line**~~ **Done** (29 September), in four
+   commits: v2 becomes the app, the Expo Router app is deleted, the APK
+   workflow becomes a release build, and CI can build a connected APK.
+
+   How it landed, where it differs from the sketch above:
+
+   - v2 compiled against this branch's shared modules unchanged, so no v2
+     source had to be rewritten. The branch's Play-readiness config is intact:
+     `versionCode`, adaptive icon, splash, blocked permissions,
+     `withReleaseSigning`, and the worklets override.
+   - Removing `expo-router` and `react-native-screens` also removed
+     `react-native-reanimated`, `react-native-worklets`,
+     `react-native-gesture-handler` and `masked-view`, which existed only as
+     expo-router's dependencies — six fewer native compiles per build, and no
+     way to create an `RNSScreen` at all.
+   - `src/data/services.ts` survived the removal by typing `href` as `string`
+     instead of expo-router's `Href`, which is what all its values already
+     were. `src/navigation/tabs.ts` and its test went: they asserted that the
+     deleted `app/` route files exist, and v2 defines its own tabs.
+   - The rest of the old `src/data` and `src/features` is deliberately kept as
+     the porting source for step 3 — unreachable from `index.js`, so unbundled,
+     but still typechecked and tested.
+   - v2's colours had to be declared against this branch's token discipline.
+     Two entries deserve a decision rather than a permanent exception: the
+     delivery-PIN border wants a stronger line than `palette.line` and no token
+     carries that weight, and `CatalogScreens`' accents belong to a placeholder
+     merchant list.
+   - **The vendor console needed no work.** The v2 branch's
+     "Build approved Vendor operations console" (`4da0b81`) is already on this
+     branch as `4dbfd05` — identical patch-id — and `b6933dc` (wordmark),
+     `f75a3c0`, `880abc8` and `7b7f860` (handoff actions) are layered on top.
+     This branch strictly supersedes the v2 branch's copy; nothing was ported.
 3. **Port into v2, one at a time**, in v2's existing screens and patterns,
    each with tests and a typecheck (sources are the old app on the release
    line):
