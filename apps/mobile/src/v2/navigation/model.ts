@@ -13,7 +13,11 @@ export type CustomerRoute =
   | 'customer.product'
   | 'customer.cart'
   | 'customer.checkout'
-  | 'customer.track-order';
+  | 'customer.track-order'
+  | 'customer.register'
+  | 'customer.delete-account'
+  | 'customer.legal'
+  | 'customer.rider-apply';
 
 export type RiderRoute =
   | 'rider.home'

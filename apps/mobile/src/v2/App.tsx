@@ -27,8 +27,12 @@ import { Text } from '../ui/Text';
 import type { ServiceId } from './artwork/CategoryArtwork';
 import { CategoryPhoto } from './artwork/CategoryPhoto';
 import { AccountSessionCard } from './auth/AccountSessionCard';
+import { DeleteAccountScreen } from './account/DeleteAccountScreen';
 import { AppSessionProvider, useAppSession } from './auth/AppSessionProvider';
+import { RegisterScreen } from './auth/RegisterScreen';
 import { viewerFirstName, viewerInitials } from './auth/viewerName';
+import { LegalScreen } from './legal/LegalScreen';
+import { RiderApplyScreen } from './rider/RiderApplyScreen';
 import { CartScreen, CategoryDashboard, CustomerSearchScreen, ProductDetail, Storefront } from './catalog/CatalogScreens';
 import {
   CUSTOMER_TABS,
@@ -177,7 +181,7 @@ function RouteView({
     case 'customer.support':
       return <EmptyPage title="Support" icon="message-question-outline" body="Get help with an order or speak with DASH support." />;
     case 'customer.account':
-      return <CustomerAccount onBack={onBack} onSwitch={() => onSwitchFace('rider')} />;
+      return <CustomerAccount onBack={onBack} onSwitch={() => onSwitchFace('rider')} onPush={onPush} />;
     case 'customer.notifications':
       return <DetailPage title="Notifications" onBack={onBack}><EmptyState icon="bell-outline" title="You’re all caught up" body="Order and account updates will arrive here." /></DetailPage>;
     case 'customer.search':
@@ -193,7 +197,15 @@ function RouteView({
     case 'customer.checkout':
       return <CustomerCheckoutScreen onBack={onBack} onAccount={() => onPush({ name: 'customer.account' })} onTrack={(id) => onPush({ name: 'customer.track-order', params: { id } })} />;
     case 'customer.track-order':
-      return <CustomerTrackingScreen orderId={route.params?.id ?? 'preview-order-active'} onBack={onBack} />;
+      return <CustomerTrackingScreen orderId={route.params?.id ?? ''} onBack={onBack} />;
+    case 'customer.register':
+      return <RegisterScreen onBack={onBack} onDone={onBack} onLegal={(slug) => onPush({ name: 'customer.legal', params: { slug } })} />;
+    case 'customer.delete-account':
+      return <DeleteAccountScreen onBack={onBack} onAccount={() => onPush({ name: 'customer.account' })} />;
+    case 'customer.legal':
+      return <LegalScreen slug={route.params?.slug ?? 'terms-of-service'} onBack={onBack} />;
+    case 'customer.rider-apply':
+      return <RiderApplyScreen onBack={onBack} onAccount={() => onPush({ name: 'customer.account' })} />;
     case 'rider.home':
       return <RiderHome onPush={onPush} />;
     case 'rider.earnings':
@@ -398,10 +410,30 @@ function RiderProfile({ onSwitch }: { onSwitch: () => void }) {
   return <Page><Header /><Text variant="title">Profile & Settings</Text><ProfileHero initials={viewerInitials(viewer)} title={name || 'Your rider profile'} subtitle={name ? 'Rider details arrive with onboarding and approval.' : 'Sign in to see your rider profile.'} /><AppearanceControl /><SettingsRow icon="account-outline" title="Personal profile" note="Onboarding milestone" /><SettingsRow icon="bank-outline" title="Bank account" note="Payout milestone" /><SettingsRow icon="bell-outline" title="Notifications" note="Push milestone" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Customer" icon="account-switch-outline" onPress={onSwitch} /></Page>;
 }
 
-function CustomerAccount({ onBack, onSwitch }: { onBack: () => void; onSwitch: () => void }) {
-  const { viewer } = useAppSession();
+function CustomerAccount({ onBack, onSwitch, onPush }: { onBack: () => void; onSwitch: () => void; onPush: (route: AppRoute) => void }) {
+  const { viewer, state } = useAppSession();
   const name = viewer?.identity.displayName?.trim();
-  return <DetailPage title="Account" onBack={onBack}><ProfileHero initials={viewerInitials(viewer)} title={name || 'Welcome to DASH'} subtitle="Your customer account, preferences and Rider access stay in one app." /><AccountSessionCard /><AppearanceControl /><SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" /><SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" /><SettingsRow icon="bell-outline" title="Notifications" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} /></DetailPage>;
+  const signedIn = state === 'authenticated';
+  return (
+    <DetailPage title="Account" onBack={onBack}>
+      <ProfileHero initials={viewerInitials(viewer)} title={name || 'Welcome to DASH'} subtitle="Your customer account, preferences and Rider access stay in one app." />
+      <AccountSessionCard />
+      {/* Creating an account is only offered to someone who has not got one. */}
+      {!signedIn ? <PrimaryAction label="Create a DASH account" icon="account-plus-outline" onPress={() => onPush({ name: 'customer.register' })} /> : null}
+      <AppearanceControl />
+      <SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" />
+      <SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" />
+      <SettingsRow icon="bell-outline" title="Notifications" />
+      <SettingsRow icon="motorbike" title="Apply to ride with DASH" onPress={() => onPush({ name: 'customer.rider-apply' })} />
+      <SettingsRow icon="lifebuoy" title="Help & support" />
+      {/* Play requires both documents and account deletion to be reachable
+          from inside the app, not only from a website. */}
+      <SettingsRow icon="file-document-outline" title="Terms of Service" onPress={() => onPush({ name: 'customer.legal', params: { slug: 'terms-of-service' } })} />
+      <SettingsRow icon="shield-account-outline" title="Privacy Policy" onPress={() => onPush({ name: 'customer.legal', params: { slug: 'privacy-policy' } })} />
+      {signedIn ? <SettingsRow icon="account-remove-outline" title="Delete my account" onPress={() => onPush({ name: 'customer.delete-account' })} /> : null}
+      <PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} />
+    </DetailPage>
+  );
 }
 
 function EmptyPage({ title, icon, body }: { title: string; icon: IconName; body: string }) {
@@ -452,9 +484,11 @@ function ProfileHero({ initials, title, subtitle }: { initials: string | null; t
   return <View style={{ alignItems: 'center', gap: space.sm, paddingVertical: space.md }}><View style={{ width: 76, height: 76, borderRadius: 38, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}>{initials ? <Text variant="heading" tone="onInverse">{initials}</Text> : <Icon name="account-outline" size={38} color={palette.textOnInverse} />}</View><Text variant="heading">{title}</Text><Text variant="caption" tone="muted" align="center">{subtitle}</Text></View>;
 }
 
-function SettingsRow({ icon, title, note }: { icon: IconName; title: string; note?: string }) {
+/** A row that goes somewhere when `onPress` is given, and reads as a label when not. */
+function SettingsRow({ icon, title, note, onPress }: { icon: IconName; title: string; note?: string; onPress?: () => void }) {
   const { palette } = useTheme();
-  return <Surface row><Icon name={icon} color={palette.accent} /><View style={{ flex: 1 }}><Text variant="label" weight="bold">{title}</Text>{note ? <Text variant="micro" tone="muted">{note}</Text> : null}</View><Icon name="chevron-right" color={palette.textSubtle} /></Surface>;
+  const body = <Surface row><Icon name={icon} color={palette.accent} /><View style={{ flex: 1 }}><Text variant="label" weight="bold">{title}</Text>{note ? <Text variant="micro" tone="muted">{note}</Text> : null}</View><Icon name="chevron-right" color={palette.textSubtle} /></Surface>;
+  return onPress ? <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={title}>{body}</Pressable> : body;
 }
 
 function AppearanceControl() {
