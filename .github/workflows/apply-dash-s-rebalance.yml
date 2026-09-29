@@ -1,0 +1,61 @@
+name: Apply DASH S rebalance
+
+on:
+  push:
+    branches: [chatgpt/dash-next-release]
+    paths:
+      - .github/workflows/apply-dash-s-rebalance.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/dash-next-release
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install generators
+        run: |
+          python -m pip install --disable-pip-version-check Pillow
+          npm ci
+
+      - name: Apply the approved S correction
+        run: |
+          python docs/design/boards/2026-09-13/wordmark/s_rebalance.py apply lighter-symmetric
+          npm run brand:assets
+
+      - name: Commit generated brand sources and assets
+        run: |
+          git config user.name "DASH Brand Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add \
+            apps/mobile/src/brand/wordmarkGeometry.ts \
+            apps/web/src/components/brand/wordmarkGeometry.ts \
+            apps/mobile/assets/brand/dash-wordmark.svg \
+            apps/mobile/assets/brand/dash-wordmark-on-dark.svg \
+            apps/mobile/assets/brand/icon.png \
+            apps/mobile/assets/brand/adaptive-icon.png \
+            apps/mobile/assets/brand/adaptive-icon-monochrome.png \
+            apps/mobile/assets/brand/splash-icon.png \
+            docs/release/store-assets/play-icon-512.png \
+            docs/release/store-assets/feature-graphic-1024x500.png
+          if git diff --cached --quiet; then
+            echo "Brand assets already current."
+            exit 0
+          fi
+          git commit -m "fix(brand): rebalance DASH S across app identity"
+          git push origin HEAD:chatgpt/dash-next-release
