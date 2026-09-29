@@ -114,11 +114,9 @@ which works out to 22.7 pt and 24.7 pt on a 411 pt-wide phone such as the A55.
 replaces `apps/mobile/src/brand/wordmarkGeometry.ts` and the two SVGs in
 `apps/mobile/assets/brand/`, and nothing else changes.
 
-## The S rebalance (28 September): options, not yet applied
+## The S rebalance (29 September): lighter-symmetric applied
 
-David asked for the S to be rebalanced. There is no written description of the
-change and no corrected master, so nothing about the live S has been changed.
-What was done instead:
+David asked for the S to align naturally with D, A and H without being squeezed or looking pasted in. The `lighter-symmetric` option is now applied: its outline stays full-size, its bowls/hooks are balanced, and its visual ink weight matches the H.
 
 **The boards do not ask for a different S.** The S was re-measured with one
 more freedom — terminal cuts that may slant, as a residual map of the S
