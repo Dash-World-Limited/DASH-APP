@@ -9,14 +9,16 @@ import {
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { BackHandler, Pressable, ScrollView, Switch, TextInput, View } from 'react-native';
+import { ActivityIndicator, BackHandler, Pressable, ScrollView, Switch, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 
 import naira400 from '../../assets/fonts/DashNairaSign-400.ttf';
 import naira500 from '../../assets/fonts/DashNairaSign-500.ttf';
 import naira600 from '../../assets/fonts/DashNairaSign-600.ttf';
 import naira700 from '../../assets/fonts/DashNairaSign-700.ttf';
 import naira800 from '../../assets/fonts/DashNairaSign-800.ttf';
+import { api, ApiError } from '../api';
 import { Wordmark } from '../brand/Wordmark';
 import { CartProvider } from '../features/CartProvider';
 import { ModeProvider, useAppMode } from '../features/ModeProvider';
@@ -176,10 +178,14 @@ function RouteView({
       return <CustomerHome onPush={onPush} />;
     case 'customer.orders':
       return <CustomerOrdersScreen onTrack={(id) => onPush({ name: 'customer.track-order', params: { id } })} onAccount={() => onPush({ name: 'customer.account' })} />;
+    // Wallet and Support have no customer-facing endpoint: there is no wallet
+    // API at all, and /v1/support/cases is an administrator route behind
+    // `support:case:read`. Saying so beats implying a connection that would
+    // arrive if only the build were pointed at a server.
     case 'customer.wallet':
-      return <EmptyPage title="DASH Wallet" icon="wallet-outline" body="Your balance, refunds, credits and payment methods appear after sign-in is connected." />;
+      return <EmptyPage title="DASH Wallet" icon="wallet-outline" body="A DASH balance is not available yet. Orders are paid for by card, transfer or USSD through Paystack at checkout, and any refund appears on the order itself." />;
     case 'customer.support':
-      return <EmptyPage title="Support" icon="message-question-outline" body="Get help with an order or speak with DASH support." />;
+      return <EmptyPage title="Support" icon="message-question-outline" body="In-app support cases are not available yet. For help with an order, contact DASH with your order code." />;
     case 'customer.account':
       return <CustomerAccount onBack={onBack} onSwitch={() => onSwitchFace('rider')} onPush={onPush} />;
     case 'customer.notifications':
@@ -395,9 +401,80 @@ function RiderHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   );
 }
 
+/**
+ * Earnings, read from /v1/rider/earnings — which reads the ledger rather than
+ * a running total, so the balance shown is the one DASH actually owes.
+ *
+ * The screen showed a hardcoded ₦0 and three ₦0 metrics before this. The
+ * endpoint has always existed; nothing was calling it.
+ */
 function RiderEarnings() {
   const { palette } = useTheme();
-  return <Page><Header /><Text variant="title">Earnings</Text><Surface><Text variant="caption" tone="muted">Available balance</Text><Text variant="display">₦0</Text></Surface><View style={{ flexDirection: 'row', gap: space.sm }}><Metric value="₦0" label="Today" /><Metric value="₦0" label="This week" /><Metric value="₦0" label="This month" /></View><EmptyState icon="chart-line" title="No earnings yet" body="Completed deliveries and payout status will appear here." /><Text variant="caption" tone="muted" style={{ color: palette.textMuted }}>Figures remain server-owned; the app never invents payout totals.</Text></Page>;
+  const { state: authState } = useAppSession();
+  const [earnings, setEarnings] = useState<RiderEarnings | null>(null);
+  const [busy, setBusy] = useState(api.configured);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!api.configured || authState !== 'authenticated') {
+      setBusy(false);
+      return;
+    }
+    let live = true;
+    setBusy(true);
+    api.request<RiderEarnings>('/v1/rider/earnings')
+      .then((result) => live && (setEarnings(result), setError(null)))
+      .catch((caught: unknown) => live && setError(caught instanceof ApiError ? caught.message : 'Could not load your earnings.'))
+      .finally(() => live && setBusy(false));
+    return () => {
+      live = false;
+    };
+  }, [authState]);
+
+  return (
+    <Page>
+      <Header />
+      <Text variant="title">Earnings</Text>
+      {busy ? <View style={{ minHeight: 160, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={palette.accent} /></View> : null}
+      {!api.configured ? <EmptyState icon="cloud-off-outline" title="Not connected to DASH" body="This build has no DASH API address, so there are no earnings to load." /> : null}
+      {api.configured && authState !== 'authenticated' ? <EmptyState icon="account-lock-outline" title="Sign in to see your earnings" body="Earnings belong to your approved rider account." /> : null}
+      {earnings ? (
+        <>
+          <Surface>
+            <Text variant="caption" tone="muted">Balance owed to you</Text>
+            <Text variant="display">{formatNairaCompact(earnings.balanceOwed as Kobo)}</Text>
+          </Surface>
+          <View style={{ flexDirection: 'row', gap: space.sm }}>
+            <Metric value={String(earnings.completedDeliveries)} label="Deliveries" />
+          </View>
+          {earnings.recentEntries.length === 0 ? (
+            <EmptyState icon="chart-line" title="No earnings yet" body="Completed deliveries and payout status will appear here." />
+          ) : (
+            <Surface>
+              <Text variant="label" weight="bold">Recent</Text>
+              {earnings.recentEntries.map((entry, index) => (
+                <View key={`${entry.at}-${index}`} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: space.md }}>
+                  <View style={{ flex: 1 }}>
+                    <Text variant="caption">{entry.memo ?? 'Delivery'}</Text>
+                    <Text variant="micro" tone="muted">{new Date(entry.at).toLocaleDateString()}</Text>
+                  </View>
+                  <Text variant="caption" weight="bold">{formatNairaCompact(entry.amount as Kobo)}</Text>
+                </View>
+              ))}
+            </Surface>
+          )}
+        </>
+      ) : null}
+      {error ? <Surface row><Icon name="alert-circle-outline" color={palette.danger} /><Text variant="caption" style={{ flex: 1, color: palette.danger }}>{error}</Text></Surface> : null}
+      <Text variant="caption" tone="muted">Figures are the server's, read from the payout ledger. The app never computes a payout total.</Text>
+    </Page>
+  );
+}
+
+interface RiderEarnings {
+  balanceOwed: number;
+  completedDeliveries: number;
+  recentEntries: Array<{ amount: number; memo: string | null; at: string }>;
 }
 
 function RiderInbox() {
