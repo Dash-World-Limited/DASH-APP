@@ -147,7 +147,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     output: 'single',
   },
   plugins: [
-    'expo-router',
     'expo-status-bar',
     'expo-font',
     'expo-image',
