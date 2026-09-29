@@ -1,16 +1,25 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, AppState, Linking, Pressable, ScrollView, View } from 'react-native';
 import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 
 import { api, ApiError } from '../../api';
-import { refundTone } from '../../data/orders';
+import {
+  cancelOrder,
+  describeOutcome,
+  isActiveOrder,
+  refundTone,
+  retryPayment,
+  verifyPayment,
+  type PaymentOutcome,
+} from '../../data/orders';
+import { recallOrder, rememberOrder, type RememberedOrder } from '../../features/orderMemory';
 import { MapShell } from '../../rider/MapShell';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space } from '../../theme/tokens';
 import { Icon } from '../../ui/Icon';
 import { Text } from '../../ui/Text';
 import { useAppSession } from '../auth/AppSessionProvider';
-import { BackHeader, Card, Empty, Notice, OrderPage } from './parts';
+import { BackHeader, Card, Empty, Notice, OrderPage, PrimaryCheckoutButton, SecondaryButton } from './parts';
 
 interface OrderSummary {
   id: string;
@@ -87,8 +96,18 @@ export function CustomerTrackingScreen({ orderId, onBack }: { orderId: string; o
   const { palette } = useTheme();
   const auth = useAppSession();
   const [order, setOrder] = useState<OrderDetail | null>(null);
+  const [cancellation, setCancellation] = useState<{ allowed: boolean; explanation: string } | null>(null);
   const [busy, setBusy] = useState(api.configured);
   const [error, setError] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<PaymentOutcome | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [payProblem, setPayProblem] = useState<string | null>(null);
+  const [acting, setActing] = useState(false);
+  const [cancelNotice, setCancelNotice] = useState<string | null>(null);
+  const [memory, setMemory] = useState<RememberedOrder>({});
+  // The poll and the AppState listener need the current status without
+  // re-subscribing every time it changes.
+  const statusRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     if (!api.configured || auth.state !== 'authenticated') return;
@@ -99,10 +118,13 @@ export function CustomerTrackingScreen({ orderId, onBack }: { orderId: string; o
       setError('No order was selected.');
       return;
     }
-    setBusy(true);
     try {
-      const response = await api.request<{ order: OrderDetail }>(`/v1/orders/${encodeURIComponent(orderId)}`);
+      const response = await api.request<{ order: OrderDetail; cancellation?: { allowed: boolean; explanation: string } }>(
+        `/v1/orders/${encodeURIComponent(orderId)}`,
+      );
       setOrder(response.order);
+      setCancellation(response.cancellation ?? null);
+      statusRef.current = response.order.status;
       setError(null);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not refresh this delivery.');
@@ -111,12 +133,95 @@ export function CustomerTrackingScreen({ orderId, onBack }: { orderId: string; o
     }
   }, [auth.state, orderId]);
 
+  /**
+   * Ask the server — which asks Paystack — whether this order is paid. The
+   * app never decides this for itself, and only ever asks about an order the
+   * server still calls `payment_pending`.
+   */
+  const check = useCallback(async () => {
+    if (!orderId || statusRef.current !== 'payment_pending') return;
+    setChecking(true);
+    setPayProblem(null);
+    try {
+      const result = await verifyPayment(api, orderId);
+      setOutcome(result.payment.outcome);
+      await load();
+    } catch (caught) {
+      setPayProblem(caught instanceof ApiError ? caught.message : 'Could not check this payment.');
+    } finally {
+      setChecking(false);
+    }
+  }, [orderId, load]);
+
   useEffect(() => {
-    void load();
+    if (!orderId) return;
+    void recallOrder(orderId).then(setMemory);
+    void load().then(() => check());
+  }, [orderId, load, check]);
+
+  // Back from Paystack's page, or reopened after being closed: check now.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') return;
+      if (statusRef.current === 'payment_pending') void check();
+      else void load();
+    });
+    return () => subscription.remove();
+  }, [check, load]);
+
+  useEffect(() => {
     if (!api.configured || auth.state !== 'authenticated') return;
-    const timer = setInterval(() => void load(), 12_000);
+    const timer = setInterval(() => {
+      if (AppState.currentState === 'active' && statusRef.current && isActiveOrder(statusRef.current)) void load();
+    }, 12_000);
     return () => clearInterval(timer);
   }, [auth.state, load]);
+
+  const payAgain = async () => {
+    if (!orderId) return;
+    setActing(true);
+    setPayProblem(null);
+    try {
+      const result = await retryPayment(api, orderId);
+      if (result.payment.status === 'captured') {
+        await load();
+        return;
+      }
+      if (result.payment.authorizationUrl) {
+        await rememberOrder(orderId, { authorizationUrl: result.payment.authorizationUrl });
+        setOutcome(null);
+        await Linking.openURL(result.payment.authorizationUrl);
+      }
+    } catch (caught) {
+      setPayProblem(caught instanceof ApiError ? caught.message : 'Could not start a new payment.');
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const cancel = () => {
+    Alert.alert('Cancel this order?', cancellation?.explanation ?? 'This cannot be undone.', [
+      { text: 'Keep my order', style: 'cancel' },
+      {
+        text: 'Cancel order',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            setActing(true);
+            try {
+              const result = await cancelOrder(api, orderId);
+              setCancelNotice(result.refund?.explanation ?? 'Your order was cancelled.');
+              await load();
+            } catch (caught) {
+              setCancelNotice(caught instanceof ApiError ? caught.message : 'Could not cancel this order.');
+            } finally {
+              setActing(false);
+            }
+          })();
+        },
+      },
+    ]);
+  };
 
   if (busy && !order) return <OrderPage><BackHeader title="Track order" onBack={onBack} /><View style={{ minHeight: 300, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={palette.accent} /></View></OrderPage>;
   if (!order) {
@@ -146,12 +251,89 @@ export function CustomerTrackingScreen({ orderId, onBack }: { orderId: string; o
         {!api.configured ? <Notice icon="flask-outline" text="Interactive tracking preview. The real screen polls the protected order endpoint and uses only server-accepted rider coordinates." /> : null}
         <View><Text variant="title">{order.statusLabel}</Text><Text variant="caption" tone="muted">{order.vendor.name} · {order.items.reduce((total, item) => total + item.quantity, 0)} items</Text></View>
         {order.rider ? <Card><View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}><View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}><Icon name="moped" color={palette.textOnInverse} /></View><View style={{ flex: 1 }}><Text variant="label" weight="bold">{order.rider.name ?? 'Your DASH rider'}</Text><Text variant="caption" tone={order.rider.isStale ? 'muted' : 'success'}>{order.rider.isStale ? 'Location temporarily delayed' : 'Location updated recently'}</Text></View></View></Card> : null}
+        <PaymentSection
+          status={order.status}
+          outcome={outcome}
+          checking={checking}
+          acting={acting}
+          problem={payProblem}
+          onCheck={() => void check()}
+          onPayAgain={() => void payAgain()}
+        />
         <ProgressTimeline current={order.status} />
+        {/* Shown once, from the placement response, to read to the rider at
+            the door. It is never fetched again. */}
+        {memory.deliveryPin && isActiveOrder(order.status) ? (
+          <View style={{ padding: space.lg, borderRadius: radius.lg, backgroundColor: palette.inverse, alignItems: 'center', gap: space.xs }}>
+            <Text variant="micro" tone="onInverse">DELIVERY PIN</Text>
+            <Text variant="display" tone="onInverse" accessibilityLabel={`Delivery PIN ${memory.deliveryPin.split('').join(' ')}`}>{memory.deliveryPin}</Text>
+            <Text variant="micro" tone="onInverse">Share only when the order reaches you</Text>
+          </View>
+        ) : null}
         <RefundSection refunds={order.refunds} />
+        {cancelNotice ? <Notice icon="information-outline" text={cancelNotice} /> : null}
+        {cancellation?.allowed && !cancelNotice ? (
+          <>
+            <Text variant="micro" tone="muted">{cancellation.explanation}</Text>
+            <SecondaryButton label={acting ? 'Working…' : 'Cancel this order'} onPress={cancel} disabled={acting} />
+          </>
+        ) : null}
         {order.address ? <Card><Text variant="micro" tone="muted">Delivering to</Text><Text variant="label" weight="bold">{order.address.line1}</Text>{order.address.landmark ? <Text variant="caption" tone="muted">{order.address.landmark}</Text> : null}</Card> : null}
         {error ? <Notice icon="alert-circle-outline" text={error} danger /> : null}
       </View>
     </ScrollView>
+  );
+}
+
+/**
+ * Payment, while the server still calls the order `payment_pending`.
+ *
+ * The app decides nothing here. "Check payment" asks the server, which asks
+ * Paystack, and the answer is worded by `describeOutcome` — tested in
+ * src/data/orders.ts — so only `captured` reads as success. "Pay again" is
+ * offered only where that wording says a retry is the right move, which is
+ * what keeps a customer from paying twice for an order that is merely slow
+ * to settle.
+ */
+function PaymentSection({
+  status,
+  outcome,
+  checking,
+  acting,
+  problem,
+  onCheck,
+  onPayAgain,
+}: {
+  status: string;
+  outcome: PaymentOutcome | null;
+  checking: boolean;
+  acting: boolean;
+  problem: string | null;
+  onCheck: () => void;
+  onPayAgain: () => void;
+}) {
+  const { palette } = useTheme();
+  if (status !== 'payment_pending' && !outcome) return null;
+  const said = outcome ? describeOutcome(outcome) : null;
+  const tone = said?.tone === 'success' ? palette.success : said?.tone === 'problem' ? palette.danger : palette.accent;
+  return (
+    <Card>
+      <Text variant="label" weight="bold">Payment</Text>
+      {said ? (
+        <>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+            <Icon name={said.tone === 'success' ? 'check-decagram-outline' : said.tone === 'waiting' ? 'clock-outline' : 'alert-circle-outline'} color={tone} size={18} />
+            <Text variant="label" weight="bold" style={{ flex: 1, color: tone }}>{said.title}</Text>
+          </View>
+          <Text variant="caption" tone="muted">{said.body}</Text>
+        </>
+      ) : (
+        <Text variant="caption" tone="muted">This order is waiting for payment. If you have already paid, check below — do not pay again.</Text>
+      )}
+      {problem ? <Notice icon="alert-circle-outline" text={problem} danger /> : null}
+      {status === 'payment_pending' ? <SecondaryButton label={checking ? 'Checking…' : 'Check payment'} onPress={onCheck} disabled={checking || acting} /> : null}
+      {said?.canRetry ? <PrimaryCheckoutButton label={acting ? 'Opening Paystack…' : 'Pay again'} onPress={onPayAgain} disabled={acting || checking} busy={acting} /> : null}
+    </Card>
   );
 }
 
