@@ -2,7 +2,6 @@
  * The DASH native primitives. Screens compose these; they do not restyle them.
  */
 
-export { AppBar } from './AppBar';
 export { Button, type ButtonVariant } from './Button';
 export { Chip, QuantityStepper, SearchField, SegmentedControl, Toggle } from './Controls';
 export { Avatar, EmptyState, ErrorState, ListRow, OfflineBanner, SectionHeader, Skeleton, StatusPill } from './Display';

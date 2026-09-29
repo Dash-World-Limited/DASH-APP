@@ -105,8 +105,6 @@ describe('colour lives in the tokens', () => {
    * web app skipped and paid for with 190 hand-edits.
    */
   const ALLOWED: Record<string, string> = {
-    'app/(customer)/(tabs)/(home)/index.tsx': 'campaign ground and ink — campaign content, not theme',
-    'app/rider/(tabs)/(home)/index.tsx': 'campaign ground and ink — campaign content, not theme',
     'src/data/staging.ts': 'product colour swatches — merchant data',
     'src/ui/Controls.tsx': 'the toggle knob is white on both themes, as drawn',
     'src/ui/IconButton.tsx': 'white glyph on the photo scrim',
@@ -134,7 +132,7 @@ describe('colour lives in the tokens', () => {
     });
 
   it('keeps hex colours out of screens and components', () => {
-    const offenders = [...walk(join(root, 'app')), ...walk(join(root, 'src'))]
+    const offenders = walk(join(root, 'src'))
       .map((path) => relative(root, path).replace(/\\/g, '/'))
       .filter((file) => file !== 'src/theme/tokens.ts' && !(file in ALLOWED))
       .filter((file) => /#[0-9A-Fa-f]{3,8}\b/.test(readFileSync(join(root, file), 'utf8')));

@@ -18,7 +18,6 @@ import {
   type ServiceCategoryDefinition,
   type ServiceCategoryId,
 } from '@dash/domain/services';
-import type { Href } from 'expo-router';
 import type { ImageSourcePropType } from 'react-native';
 
 // Photography, not the board's drawings; source and licence to confirm (assets/services/README.md).
@@ -34,7 +33,8 @@ export interface ServicePresentation {
   label: string;
   sublabel: string;
   art: ImageSourcePropType;
-  href: Href;
+  /** Path of the destination. A plain string so this stays router-agnostic. */
+  href: string;
   /**
    * Whether this checkpoint has a designed flow behind the tile. Declutter and
    * Logistics are separate domains still being defined — their tiles open an
