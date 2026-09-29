@@ -319,6 +319,12 @@ function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: stri
   );
 }
 
+function greetingForHour(hour: number): string {
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
 function RiderHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   const { palette } = useTheme();
   const flow = useRiderFlow();
@@ -333,8 +339,7 @@ function RiderHome({ onPush }: { onPush: (route: AppRoute) => void }) {
     <Page testID="rider-home-v2">
       <Header right={<AvatarButton label="Open rider profile" initials="DR" onPress={() => onPush({ name: 'rider.profile' })} />} />
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-        <View><Text tone="muted">Good evening,</Text><Text variant="title">DASH Rider</Text></View>
-        <Metric compact value="4.9 ★" label="128 trips" />
+        <View><Text tone="muted">{greetingForHour(new Date().getHours())},</Text><Text variant="title">DASH Rider</Text></View>
       </View>
       <Pressable onPress={() => onPush({ name: 'rider.earnings' })}>
         <Surface>
