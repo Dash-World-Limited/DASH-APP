@@ -60,7 +60,7 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
         select: {
           id: true,
           messages: {
-            orderBy: { createdAt: 'asc' },
+            orderBy: { createdAt: 'desc' },
             take: 200,
             select: {
               id: true,
@@ -91,7 +91,7 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
       return {
         orderId,
         canSend: !CLOSED_STATUSES.has(order.status),
-        messages: conversation.messages.map((message) => ({
+        messages: [...conversation.messages].reverse().map((message) => ({
           id: message.id,
           senderRole: message.senderRole,
           body: message.body,
