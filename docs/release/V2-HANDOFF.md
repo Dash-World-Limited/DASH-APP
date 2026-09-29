@@ -78,26 +78,35 @@ anywhere in `logcat -b all`.
    empty, and no `RNSScreen` or "child already has a parent" anywhere in
    logcat. The rider header shows the greeting for the actual hour and no
    longer claims a 4.9 rating over 128 trips it has never measured.
-3. **Port into v2, one at a time**, in v2's existing screens and patterns,
-   each with tests and a typecheck (sources are the old app on the release
-   line):
+3. ~~**Port into v2, one at a time**~~ **Done** (29 September, cloud session
+   on `claude/awesome-bardeen-95lgbd`). The table below is how it landed.
+   Sources were the old app on this branch and its surviving data layer; no
+   feature was reinvented.
 
-| Feature | Old app (release line) | v2 today |
+| Feature | Old app | v2 now |
 |---|---|---|
-| Sign in by emailed code | `(customer)/sign-in.tsx`, `features/signIn.ts` | has it |
-| Create account (emailed code) | `(customer)/register.tsx`, `features/register.ts` | missing |
-| Paystack checkout + return | `(customer)/checkout.tsx`, `data/orders.ts` | quote + order only, no payment |
-| Real order history + tracking | `(tabs)/orders.tsx`, `order/[id].tsx` | partial |
-| Refund status on the order | `order/[id].tsx` (`refundTone`) | missing |
-| Cart kept across launches | `features/CartProvider.tsx`, `cart.ts` | check |
-| Delete account (Play requirement) | `(customer)/delete-account.tsx` | missing |
-| Honest phone / no wallet or cash | `account.tsx`, `checkout.tsx` | v2 shows a Wallet tab — **product decision** before hiding |
-| Legal pages | `legal/[slug].tsx` | missing |
-| Apply to ride | `rider-apply.tsx` | missing |
-| Rider shift / offers / deliveries | `features/RiderShift.tsx`, `rider/*` | has most; compare |
-| Services from the API, bundled fallback | `data/services.ts`, `useServiceTiles.ts` | check |
-| Release signing, versionCode, permissions | `plugins/withReleaseSigning.js`, `app.config.ts` | missing |
-| Launcher icon + splash | `scripts/brand-assets.ts`, `assets/brand/*` | missing |
+| Sign in by emailed code | `features/signIn.ts` | had it |
+| Create account (emailed code) | `features/register.ts` | **ported** — `v2/auth/RegisterScreen.tsx` |
+| Paystack checkout + return | `data/orders.ts` | **ported** — `v2/orders/CheckoutScreen.tsx` |
+| Real order history + tracking | `(tabs)/orders.tsx` | wired; invented preview orders removed |
+| Refund status on the order | `refundTone` | **ported** — `RefundSection` |
+| Cart kept across launches | `features/CartProvider.tsx` | already worked; line names now come from the live storefront |
+| Delete account (Play requirement) | `delete-account.tsx` | **ported** — `v2/account/DeleteAccountScreen.tsx` |
+| Legal pages (Play requirement) | `legal/[slug].tsx` | **ported** — `v2/legal/LegalScreen.tsx` |
+| Apply to ride | `rider-apply.tsx` | **ported** — `v2/rider/RiderApplyScreen.tsx` |
+| Rider shift / offers / deliveries | `features/RiderShift.tsx` | `RiderFlowProvider` already complete |
+| Rider earnings | — | **connected** — `/v1/rider/earnings` existed, nothing called it |
+| Rider header name | — | **fixed** — first name from `/v1/auth/me`, greeting removed |
+| Wordmark | `src/brand/Wordmark.tsx` | **fixed** — v2's rejected hand-drawn mark deleted; the approved measured one is rendered |
+| Catalogue | `data/catalog.ts` | **fixed** — invented merchants, ratings and ETAs removed; honest empty/loading/not-connected states |
+| Search | — | **connected** — `/v1/search` existed, nothing called it |
+| Release signing, versionCode, permissions | `withReleaseSigning.js` | already intact |
+| Launcher icon + splash | `scripts/brand-assets.ts` | already intact, generated from the measured geometry and test-verified |
+
+   Per-screen detail, including what has no endpoint at all, is in
+   [`V2-FEATURE-AUDIT.md`](V2-FEATURE-AUDIT.md). Customer-rider chat was
+   **not** built; the report on what it would take is in
+   [`../design/customer-rider-messaging.md`](../design/customer-rider-messaging.md).
 
 4. **Build and inspect** a release APK from the integrated line (manifest,
    bundle markers, icons) before each device test.
@@ -147,3 +156,40 @@ testing can only exercise UI, navigation and offline/preview paths; sign-in,
 ordering, payment and real dispatch cannot be verified on the phone, and the
 rider stats stay placeholders. Treat any "works on the A55" claim as covering
 the client only.
+
+### What a device test can show now (updated 29 September, cloud session)
+
+The sentence above still holds for a build with no API URL — but the "preview
+paths" it refers to are gone. A disconnected build no longer shows invented
+merchants, ratings, ETAs, orders or riders; every such screen now says it is
+not connected and names `EXPO_PUBLIC_API_URL` as the build setting. So a
+device test on a disconnected APK exercises navigation, theming, typography,
+the wordmark, the launcher icon and the startup screen, and nothing else —
+which is a narrower but honest surface than before.
+
+**With `EXPO_PUBLIC_API_URL` set** at build time to a reachable DASH API with a
+seeded database, the whole path is now exercisable on the phone: create an
+account, confirm the emailed code, browse real vendors, add to cart, take the
+server's quote, pay through Paystack, watch the order, see a refund, apply to
+ride, read the Terms and Privacy Policy, and delete the account.
+
+Paystack and Brevo keys are needed on the **server**, not in the app. The app
+holds no secret: it opens whatever authorization URL the server returns.
+
+### Cloud phase complete — what is left for the laptop
+
+Nothing in this pass was verified on a device, and no such claim is made
+anywhere in it. What the cloud could verify (typecheck, lint, the full test
+suite, the brand-asset render check) is recorded in the commits. What it
+could not:
+
+1. Build the release APK in WSL2 (see above) and install it on the A55.
+2. Confirm on the phone: the launcher icon and its adaptive/themed variants,
+   the startup screen, the DASH wordmark in the header, the rider's first name
+   in place of the greeting, and that nothing crashes.
+3. With a staging API URL compiled in, walk the flow end to end, including a
+   real Paystack test transaction.
+4. `npx expo-doctor` — two of its 21 checks could not run in the cloud because
+   the environment's network policy denies `cdp.expo.dev` and the React Native
+   Directory. Both are remote-metadata checks, not project defects; re-run
+   locally to confirm.
