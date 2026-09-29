@@ -69,6 +69,15 @@ anywhere in `logcat -b all`.
      branch as `4dbfd05` — identical patch-id — and `b6933dc` (wordmark),
      `f75a3c0`, `880abc8` and `7b7f860` (handoff actions) are layered on top.
      This branch strictly supersedes the v2 branch's copy; nothing was ported.
+
+   **The integrated build was then run on the A55** (29 September, 17:05).
+   It compiles in 19m 22s against the previous 49m, 388 Gradle tasks against
+   604, and the APK is 36 MB against 49 MB — the six native libraries really
+   are gone. On the phone: Go Online works, ten rider-tab switches while
+   online and repeated face switches leave the process alive, the crash buffer
+   empty, and no `RNSScreen` or "child already has a parent" anywhere in
+   logcat. The rider header shows the greeting for the actual hour and no
+   longer claims a 4.9 rating over 128 trips it has never measured.
 3. **Port into v2, one at a time**, in v2's existing screens and patterns,
    each with tests and a typecheck (sources are the old app on the release
    line):
