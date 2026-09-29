@@ -73,4 +73,32 @@ describe('native-v2 navigation model', () => {
   it('refuses cross-face navigation', () => {
     expect(() => navigate(createNavigationState('customer'), { name: 'rider.home' })).toThrow(/customer face/);
   });
+
+  /**
+   * The four release-critical screens ported from the old app. Two of them
+   * are Play requirements, so the thing worth pinning is that each is
+   * reachable from Account and that backing out returns there rather than
+   * dropping to Home.
+   */
+  it('reaches account, legal, deletion and rider apply, and comes back', () => {
+    const account = navigate(createNavigationState('customer'), { name: 'customer.account' });
+    for (const route of [
+      { name: 'customer.register' } as const,
+      { name: 'customer.delete-account' } as const,
+      { name: 'customer.rider-apply' } as const,
+      { name: 'customer.legal', params: { slug: 'privacy-policy' } } as const,
+      { name: 'customer.legal', params: { slug: 'terms-of-service' } } as const,
+    ]) {
+      const pushed = navigate(account, route);
+      expect(currentRoute(pushed).name).toBe(route.name);
+      expect(goBack(pushed)).toEqual(account);
+    }
+  });
+
+  it('opens a legal document from inside registration and returns to it', () => {
+    const register = navigate(navigate(createNavigationState('customer'), { name: 'customer.account' }), { name: 'customer.register' });
+    const legal = navigate(register, { name: 'customer.legal', params: { slug: 'terms-of-service' } });
+    expect(currentRoute(legal).params).toEqual({ slug: 'terms-of-service' });
+    expect(goBack(legal)).toEqual(register);
+  });
 });
