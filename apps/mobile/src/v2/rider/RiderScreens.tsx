@@ -109,7 +109,7 @@ export function RiderOfferScreen({ onBack, onPush }: ScreenProps) {
   );
 }
 
-export function RiderDeliveryScreen({ onBack, onPush }: ScreenProps) {
+export function RiderDeliveryScreen({ onBack, onPush, onChat }: ScreenProps & { onChat: (orderId: string) => void }) {
   const flow = useRiderFlow();
   const delivery = flow.delivery;
 
@@ -127,7 +127,7 @@ export function RiderDeliveryScreen({ onBack, onPush }: ScreenProps) {
       <Card>
         <RouteStops pickup={{ title: delivery.branch.name, detail: delivery.branch.address }} dropoff={{ title: delivery.address.line1, detail: delivery.address.landmark }} />
       </Card>
-      <ContactRow phone={delivery.address.contactPhone} />
+      <ContactRow phone={delivery.address.contactPhone} onMessage={() => onChat(delivery.id)} />
       <Card>
         <Text variant="label" weight="bold">Order items ({delivery.items.reduce((total, item) => total + item.quantity, 0)})</Text>
         {delivery.items.map((item) => <View key={item.name} style={{ flexDirection: 'row', gap: space.sm }}><Text variant="caption" tone="accent">{item.quantity}×</Text><Text variant="caption" style={{ flex: 1 }}>{item.name}</Text></View>)}
@@ -247,9 +247,8 @@ function Metric({ icon, value, label }: { icon: IconName; value: string; label: 
   return <View style={{ flex: 1, minHeight: 78, borderRadius: radius.md, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center', gap: 2 }}><Icon name={icon} size={18} color={palette.accent} /><Text variant="label" weight="bold">{value}</Text><Text variant="micro" tone="muted">{label}</Text></View>;
 }
 
-function ContactRow({ phone }: { phone: string | null }) {
-  if (!phone) return null;
-  return <View style={{ flexDirection: 'row', gap: space.sm }}><View style={{ flex: 1 }}><SecondaryButton label="Call customer" onPress={() => void Linking.openURL(`tel:${phone.replace(/\s/g, '')}`)} /></View><View style={{ flex: 1 }}><SecondaryButton label="Message" onPress={() => void Linking.openURL(`sms:${phone.replace(/\s/g, '')}`)} /></View></View>;
+function ContactRow({ phone, onMessage }: { phone: string | null; onMessage: () => void }) {
+  return <View style={{ flexDirection: 'row', gap: space.sm }}>{phone ? <View style={{ flex: 1 }}><SecondaryButton label="Call customer" onPress={() => void Linking.openURL(`tel:${phone.replace(/\s/g, '')}`)} /></View> : null}<View style={{ flex: 1 }}><SecondaryButton label="Chat in DASH" onPress={onMessage} /></View></View>;
 }
 
 function PrimaryButton({ label, icon, onPress, disabled = false }: { label: string; icon: IconName; onPress: () => void; disabled?: boolean }) {
