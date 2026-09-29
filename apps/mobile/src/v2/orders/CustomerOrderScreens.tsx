@@ -92,6 +92,13 @@ export function CustomerTrackingScreen({ orderId, onBack }: { orderId: string; o
 
   const load = useCallback(async () => {
     if (!api.configured || auth.state !== 'authenticated') return;
+    // No id means nothing to ask about — reached only if a route arrives
+    // without params, and a request to /v1/orders/ would just 404.
+    if (!orderId) {
+      setBusy(false);
+      setError('No order was selected.');
+      return;
+    }
     setBusy(true);
     try {
       const response = await api.request<{ order: OrderDetail }>(`/v1/orders/${encodeURIComponent(orderId)}`);
