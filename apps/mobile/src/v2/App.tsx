@@ -34,6 +34,7 @@ import { AppSessionProvider, useAppSession } from './auth/AppSessionProvider';
 import { RegisterScreen } from './auth/RegisterScreen';
 import { viewerFirstName, viewerInitials } from './auth/viewerName';
 import { LegalScreen } from './legal/LegalScreen';
+import { WalletScreen } from './wallet/WalletScreen';
 import { RiderApplyScreen } from './rider/RiderApplyScreen';
 import { CartScreen, CategoryDashboard, CustomerSearchScreen, ProductDetail, Storefront } from './catalog/CatalogScreens';
 import {
@@ -178,12 +179,8 @@ function RouteView({
       return <CustomerHome onPush={onPush} />;
     case 'customer.orders':
       return <CustomerOrdersScreen onTrack={(id) => onPush({ name: 'customer.track-order', params: { id } })} onAccount={() => onPush({ name: 'customer.account' })} />;
-    // Wallet and Support have no customer-facing endpoint: there is no wallet
-    // API at all, and /v1/support/cases is an administrator route behind
-    // `support:case:read`. Saying so beats implying a connection that would
-    // arrive if only the build were pointed at a server.
     case 'customer.wallet':
-      return <EmptyPage title="DASH Wallet" icon="wallet-outline" body="A DASH balance is not available yet. Orders are paid for by card, transfer or USSD through Paystack at checkout, and any refund appears on the order itself." />;
+      return <WalletScreen onAccount={() => onPush({ name: 'customer.account' })} />;
     case 'customer.support':
       return <EmptyPage title="Support" icon="message-question-outline" body="In-app support cases are not available yet. For help with an order, contact DASH with your order code." />;
     case 'customer.account':
