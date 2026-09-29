@@ -5,7 +5,6 @@ import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 import { api, ApiError } from '../../api';
 import { useTheme } from '../../theme/ThemeProvider';
 import { space } from '../../theme/tokens';
-import { Icon } from '../../ui/Icon';
 import { Text } from '../../ui/Text';
 import { useAppSession } from '../auth/AppSessionProvider';
 import { Card, Empty, Notice, OrderPage } from '../orders/parts';
