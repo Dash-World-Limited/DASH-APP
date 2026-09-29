@@ -84,6 +84,14 @@ what blocks release — nothing more.
 
 ## Release blockers
 
+0. **The native client is now v2, and it does not yet carry every flow Play
+   needs.** On 29 September `apps/mobile` was switched to the v2 app and the
+   Expo Router app was deleted (`V2-HANDOFF.md`). v2 fixed the crash that made
+   the old app unusable, but it has no create-account flow, no Paystack
+   checkout, no legal pages and — this one is a Play requirement —
+   **no account-deletion screen**. The previous implementations are in git
+   history on this branch and porting them is step 3 of the handoff. Until
+   then no build of this client is submittable, whatever else is green.
 1. **Paystack test key** in `.env`, and one real test-mode checkout end to end.
 2. **Brevo key and verified sender**, and one real code to an approved inbox;
    and the bounce/complaint webhook configured with `BREVO_WEBHOOK_TOKEN`.

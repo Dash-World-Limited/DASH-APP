@@ -4,6 +4,30 @@ Tick each box only after you have seen it happen on the phone. Write down
 anything that differs, with the time, so it can be matched to the server log.
 Use **Paystack test mode** only; no real card is ever used.
 
+> ## What this sheet can test today (29 September 2026)
+>
+> The native app is now v2 (see `V2-HANDOFF.md`). v2 does not yet carry every
+> flow the previous app had, so parts of this sheet have nothing to exercise
+> and must not be ticked. Checked against `apps/mobile/src/v2`:
+>
+> | Section | Status against v2 |
+> |---|---|
+> | 1 Install · 4 Browse and cart · 5 Address and location · 10 Permissions, network, lifecycle | runnable |
+> | 3 Sign in, sign out, session | runnable — v2 has the emailed-code sign-in |
+> | 8 Rider | mostly runnable — online/offline, offers and delivery exist; applying to ride does not |
+> | 7 Vendor (website) | unaffected; this is the web app, not the phone |
+> | 2 Registration | **no screen yet** — v2 has no create-account flow |
+> | 6 Checkout and Paystack | **not yet** — v2 quotes and places an order but has no payment step |
+> | 9 Cancellation and refunds | **not yet** — no refund status in v2 |
+> | 11 Account deletion | **no screen yet** — and this one is a Play requirement |
+>
+> Porting these into v2 is step 3 of `V2-HANDOFF.md`; the previous
+> implementations are in git history on this branch.
+>
+> **Every section also needs an APK built with `EXPO_PUBLIC_API_URL` set.**
+> Without it the app has no backend at all and says so on the Account screen —
+> only layout and navigation can be judged.
+
 ## 0. Setup (once)
 
 **On the PC** (`C:\Users\admin\Desktop\dash-app`):
