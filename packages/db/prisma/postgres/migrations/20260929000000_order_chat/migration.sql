@@ -1,18 +1,18 @@
 -- Order-scoped customer/rider chat.
 --
--- A conversation exists only for a real order. Participants are resolved from
--- the order at request time, so the database never duplicates customer/rider
--- ownership that could drift when an assignment changes.
+-- Participants are resolved from Order at request time. The conversation table
+-- deliberately stores no duplicate customer/rider ids that could drift when
+-- dispatch changes an assignment.
 
-CREATE TABLE "order_conversations" (
+CREATE TABLE "OrderConversation" (
     "id" TEXT NOT NULL,
     "orderId" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
-    CONSTRAINT "order_conversations_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "OrderConversation_pkey" PRIMARY KEY ("id")
 );
 
-CREATE TABLE "chat_messages" (
+CREATE TABLE "ChatMessage" (
     "id" TEXT NOT NULL,
     "conversationId" TEXT NOT NULL,
     "senderIdentityId" TEXT NOT NULL,
@@ -20,21 +20,21 @@ CREATE TABLE "chat_messages" (
     "body" TEXT NOT NULL,
     "readAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "chat_messages_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "ChatMessage_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "order_conversations_orderId_key"
-ON "order_conversations"("orderId");
+CREATE UNIQUE INDEX "OrderConversation_orderId_key"
+ON "OrderConversation"("orderId");
 
-CREATE INDEX "chat_messages_conversationId_createdAt_idx"
-ON "chat_messages"("conversationId", "createdAt");
+CREATE INDEX "ChatMessage_conversationId_createdAt_idx"
+ON "ChatMessage"("conversationId", "createdAt");
 
-ALTER TABLE "order_conversations"
-ADD CONSTRAINT "order_conversations_orderId_fkey"
+ALTER TABLE "OrderConversation"
+ADD CONSTRAINT "OrderConversation_orderId_fkey"
 FOREIGN KEY ("orderId") REFERENCES "Order"("id")
 ON DELETE CASCADE ON UPDATE CASCADE;
 
-ALTER TABLE "chat_messages"
-ADD CONSTRAINT "chat_messages_conversationId_fkey"
-FOREIGN KEY ("conversationId") REFERENCES "order_conversations"("id")
+ALTER TABLE "ChatMessage"
+ADD CONSTRAINT "ChatMessage_conversationId_fkey"
+FOREIGN KEY ("conversationId") REFERENCES "OrderConversation"("id")
 ON DELETE CASCADE ON UPDATE CASCADE;
