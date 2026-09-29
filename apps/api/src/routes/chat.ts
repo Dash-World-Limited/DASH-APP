@@ -111,7 +111,7 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const { orderId } = request.params;
-      const { actor, order, role } = await participantFor(request, orderId);
+      const { actor, order, role } = await participantFor(request, orderId, prisma);
       if (CLOSED_STATUSES.has(order.status)) {
         throw ApiError.conflict('This delivery is complete. The conversation is now read-only.');
       }
