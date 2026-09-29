@@ -51,6 +51,7 @@ import {
   type NavigationState,
 } from './navigation/model';
 import { CustomerCheckoutScreen } from './orders/CheckoutScreen';
+import { OrderChatScreen } from './chat/OrderChatScreen';
 import { CustomerOrdersScreen, CustomerTrackingScreen } from './orders/CustomerOrderScreens';
 import { RiderFlowProvider, useRiderFlow } from './rider/RiderFlowProvider';
 import { RiderCompleteScreen, RiderDeliveryScreen, RiderOfferScreen, RiderOnlineScreen, RiderOrdersScreen, RiderRouteScreen } from './rider/RiderScreens';
@@ -200,7 +201,9 @@ function RouteView({
     case 'customer.checkout':
       return <CustomerCheckoutScreen onBack={onBack} onAccount={() => onPush({ name: 'customer.account' })} onTrack={(id) => onPush({ name: 'customer.track-order', params: { id } })} />;
     case 'customer.track-order':
-      return <CustomerTrackingScreen orderId={route.params?.id ?? ''} onBack={onBack} />;
+      return <CustomerTrackingScreen orderId={route.params?.id ?? ''} onBack={onBack} onChat={(id) => onPush({ name: 'customer.chat', params: { id } })} />;
+    case 'customer.chat':
+      return <OrderChatScreen orderId={route.params?.id ?? ''} onBack={onBack} />;
     case 'customer.register':
       return <RegisterScreen onBack={onBack} onDone={onBack} onLegal={(slug) => onPush({ name: 'customer.legal', params: { slug } })} />;
     case 'customer.delete-account':
@@ -224,7 +227,9 @@ function RouteView({
     case 'rider.offer':
       return <RiderOfferScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} />;
     case 'rider.delivery':
-      return <RiderDeliveryScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} />;
+      return <RiderDeliveryScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} onChat={(id) => onPush({ name: 'rider.chat', params: { id } })} />;
+    case 'rider.chat':
+      return <OrderChatScreen orderId={route.params?.id ?? ''} onBack={onBack} />;
     case 'rider.route':
       return <RiderRouteScreen onBack={onBack} />;
     case 'rider.complete':
