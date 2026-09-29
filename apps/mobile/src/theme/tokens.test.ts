@@ -112,7 +112,6 @@ describe('colour lives in the tokens', () => {
     'src/rider/MapFallback.tsx': 'white marker rings, matching the native map',
     'src/v2/App.tsx': 'the six service identity colours from the approved board — category identity, not theme',
     'src/v2/artwork/CategoryArtwork.tsx': 'drawn category illustrations — artwork, not theme',
-    'src/v2/brand/Wordmark.tsx': 'the wordmark’s graphite lead on the light ground, fixed by the approved mark',
     'src/v2/catalog/CatalogScreens.tsx':
       'accents on the placeholder merchant list, which is stand-in content awaiting real catalogue data',
     'src/v2/orders/CustomerOrderScreens.tsx':

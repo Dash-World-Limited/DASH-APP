@@ -17,6 +17,7 @@ import naira500 from '../../assets/fonts/DashNairaSign-500.ttf';
 import naira600 from '../../assets/fonts/DashNairaSign-600.ttf';
 import naira700 from '../../assets/fonts/DashNairaSign-700.ttf';
 import naira800 from '../../assets/fonts/DashNairaSign-800.ttf';
+import { Wordmark } from '../brand/Wordmark';
 import { CartProvider } from '../features/CartProvider';
 import { ModeProvider, useAppMode } from '../features/ModeProvider';
 import { ThemeProvider, useTheme } from '../theme/ThemeProvider';
@@ -26,8 +27,8 @@ import { Text } from '../ui/Text';
 import type { ServiceId } from './artwork/CategoryArtwork';
 import { CategoryPhoto } from './artwork/CategoryPhoto';
 import { AccountSessionCard } from './auth/AccountSessionCard';
-import { AppSessionProvider } from './auth/AppSessionProvider';
-import { Wordmark } from './brand/Wordmark';
+import { AppSessionProvider, useAppSession } from './auth/AppSessionProvider';
+import { viewerFirstName, viewerInitials } from './auth/viewerName';
 import { CartScreen, CategoryDashboard, CustomerSearchScreen, ProductDetail, Storefront } from './catalog/CatalogScreens';
 import {
   CUSTOMER_TABS,
@@ -217,6 +218,7 @@ function RouteView({
 
 function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   const { palette } = useTheme();
+  const { viewer } = useAppSession();
   const [campaign, setCampaign] = useState(0);
 
   useEffect(() => {
@@ -228,7 +230,7 @@ function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   return (
     <Page testID="customer-home-v2">
       <Header
-        right={<AvatarButton label="Open your profile" initials="DU" onPress={() => onPush({ name: 'customer.account' })} />}
+        right={<AvatarButton label="Open your profile" initials={viewerInitials(viewer)} onPress={() => onPush({ name: 'customer.account' })} />}
       />
 
       <Pressable
@@ -319,15 +321,11 @@ function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: stri
   );
 }
 
-function greetingForHour(hour: number): string {
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good afternoon';
-  return 'Good evening';
-}
-
 function RiderHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   const { palette } = useTheme();
   const flow = useRiderFlow();
+  const { viewer } = useAppSession();
+  const firstName = viewerFirstName(viewer);
   const changeAvailability = (next: boolean) => {
     if (next) {
       void flow.goOnline().then((ok) => ok && onPush({ name: 'rider.online' }));
@@ -337,10 +335,18 @@ function RiderHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   };
   return (
     <Page testID="rider-home-v2">
-      <Header right={<AvatarButton label="Open rider profile" initials="DR" onPress={() => onPush({ name: 'rider.profile' })} />} />
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-        <View><Text tone="muted">{greetingForHour(new Date().getHours())},</Text><Text variant="title">DASH Rider</Text></View>
-      </View>
+      <Header right={<AvatarButton label="Open rider profile" initials={viewerInitials(viewer)} onPress={() => onPush({ name: 'rider.profile' })} />} />
+      {/*
+        The rider's own first name, from /v1/auth/me and nowhere else. No
+        greeting: it dated the screen to the hour and said nothing. When the
+        profile has no name — signed out, or a build with no API origin — the
+        line is omitted rather than filled with a stand-in.
+      */}
+      {firstName ? (
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+          <Text variant="title" testID="rider-first-name">{firstName}</Text>
+        </View>
+      ) : null}
       <Pressable onPress={() => onPush({ name: 'rider.earnings' })}>
         <Surface>
           <Text variant="caption" tone="muted">Today’s Earnings</Text>
@@ -386,11 +392,15 @@ function RiderInbox() {
 }
 
 function RiderProfile({ onSwitch }: { onSwitch: () => void }) {
-  return <Page><Header /><Text variant="title">Profile & Settings</Text><ProfileHero initials="DR" title="DASH Rider" subtitle="Rider details arrive with onboarding and approval." /><AppearanceControl /><SettingsRow icon="account-outline" title="Personal profile" note="Onboarding milestone" /><SettingsRow icon="bank-outline" title="Bank account" note="Payout milestone" /><SettingsRow icon="bell-outline" title="Notifications" note="Push milestone" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Customer" icon="account-switch-outline" onPress={onSwitch} /></Page>;
+  const { viewer } = useAppSession();
+  const name = viewer?.identity.displayName?.trim();
+  return <Page><Header /><Text variant="title">Profile & Settings</Text><ProfileHero initials={viewerInitials(viewer)} title={name || 'Your rider profile'} subtitle={name ? 'Rider details arrive with onboarding and approval.' : 'Sign in to see your rider profile.'} /><AppearanceControl /><SettingsRow icon="account-outline" title="Personal profile" note="Onboarding milestone" /><SettingsRow icon="bank-outline" title="Bank account" note="Payout milestone" /><SettingsRow icon="bell-outline" title="Notifications" note="Push milestone" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Customer" icon="account-switch-outline" onPress={onSwitch} /></Page>;
 }
 
 function CustomerAccount({ onBack, onSwitch }: { onBack: () => void; onSwitch: () => void }) {
-  return <DetailPage title="Account" onBack={onBack}><ProfileHero initials="DU" title="Welcome to DASH" subtitle="Your customer account, preferences and Rider access stay in one app." /><AccountSessionCard /><AppearanceControl /><SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" /><SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" /><SettingsRow icon="bell-outline" title="Notifications" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} /></DetailPage>;
+  const { viewer } = useAppSession();
+  const name = viewer?.identity.displayName?.trim();
+  return <DetailPage title="Account" onBack={onBack}><ProfileHero initials={viewerInitials(viewer)} title={name || 'Welcome to DASH'} subtitle="Your customer account, preferences and Rider access stay in one app." /><AccountSessionCard /><AppearanceControl /><SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" /><SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" /><SettingsRow icon="bell-outline" title="Notifications" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} /></DetailPage>;
 }
 
 function EmptyPage({ title, icon, body }: { title: string; icon: IconName; body: string }) {
@@ -411,9 +421,14 @@ function Header({ right }: { right?: ReactNode }) {
   return <View style={{ height: 54, alignItems: 'center', justifyContent: 'center' }}><Wordmark />{right ? <View style={{ position: 'absolute', right: 0 }}>{right}</View> : null}</View>;
 }
 
-function AvatarButton({ label, initials, onPress }: { label: string; initials: string; onPress: () => void }) {
+/**
+ * `initials` is null whenever the signed-in name is unknown. The avatar then
+ * shows a neutral person glyph — never stand-in letters, which read as a real
+ * account's initials.
+ */
+function AvatarButton({ label, initials, onPress }: { label: string; initials: string | null; onPress: () => void }) {
   const { palette } = useTheme();
-  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}><Text variant="micro" tone="onInverse">{initials}</Text></Pressable>;
+  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}>{initials ? <Text variant="micro" tone="onInverse">{initials}</Text> : <Icon name="account-outline" size={22} color={palette.textOnInverse} />}</Pressable>;
 }
 
 function Surface({ children, row = false }: { children: ReactNode; row?: boolean }) {
@@ -431,9 +446,9 @@ function EmptyState({ icon, title, body }: { icon: IconName; title: string; body
   return <View style={{ minHeight: 250, alignItems: 'center', justifyContent: 'center', padding: space.xxl, gap: space.sm }}><View style={{ width: 70, height: 70, borderRadius: 24, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name={icon} color={palette.accent} size={34} /></View><Text variant="heading" align="center">{title}</Text><Text tone="muted" align="center">{body}</Text></View>;
 }
 
-function ProfileHero({ initials, title, subtitle }: { initials: string; title: string; subtitle: string }) {
+function ProfileHero({ initials, title, subtitle }: { initials: string | null; title: string; subtitle: string }) {
   const { palette } = useTheme();
-  return <View style={{ alignItems: 'center', gap: space.sm, paddingVertical: space.md }}><View style={{ width: 76, height: 76, borderRadius: 38, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}><Text variant="heading" tone="onInverse">{initials}</Text></View><Text variant="heading">{title}</Text><Text variant="caption" tone="muted" align="center">{subtitle}</Text></View>;
+  return <View style={{ alignItems: 'center', gap: space.sm, paddingVertical: space.md }}><View style={{ width: 76, height: 76, borderRadius: 38, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}>{initials ? <Text variant="heading" tone="onInverse">{initials}</Text> : <Icon name="account-outline" size={38} color={palette.textOnInverse} />}</View><Text variant="heading">{title}</Text><Text variant="caption" tone="muted" align="center">{subtitle}</Text></View>;
 }
 
 function SettingsRow({ icon, title, note }: { icon: IconName; title: string; note?: string }) {
