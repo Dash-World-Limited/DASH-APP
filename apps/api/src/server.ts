@@ -91,6 +91,7 @@ import { registerEmailEventRoutes } from './routes/email-events.js';
 import { DeterministicValuationAdapter } from '@dash/domain/valuecheck';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAccountRoutes } from './routes/account.js';
+import { registerWalletRoutes } from './routes/wallet.js';
 import { registerDeviceRoutes } from './routes/devices.js';
 import { registerDispatchWorker } from './workers/dispatch.js';
 import { registerAccountExportWorker } from './workers/account-export.js';
@@ -618,6 +619,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerSignupRoutes(app);
   await registerEmailEventRoutes(app);
   await registerAccountRoutes(app);
+  await registerWalletRoutes(app);
 
   /**
    * Registered only where the capability exists.
