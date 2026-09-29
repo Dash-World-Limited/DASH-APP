@@ -14,6 +14,7 @@ export type CustomerRoute =
   | 'customer.cart'
   | 'customer.checkout'
   | 'customer.track-order'
+  | 'customer.chat'
   | 'customer.register'
   | 'customer.delete-account'
   | 'customer.legal'
@@ -29,7 +30,8 @@ export type RiderRoute =
   | 'rider.offer'
   | 'rider.delivery'
   | 'rider.route'
-  | 'rider.complete';
+  | 'rider.complete'
+  | 'rider.chat';
 
 export type RouteName = CustomerRoute | RiderRoute;
 
