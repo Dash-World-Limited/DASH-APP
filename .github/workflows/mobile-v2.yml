@@ -55,41 +55,41 @@ jobs:
           NODE_ENV: production
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Embed standalone JavaScript and assets
-        working-directory: apps/mobile
-        env:
-          APP_VARIANT: development
-          NODE_ENV: production
-        run: |
-          mkdir -p android/app/src/main/assets
-          npx expo export:embed \
-            --entry-file index.js \
-            --platform android \
-            --dev false \
-            --reset-cache \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res
-
-      - name: Build A55 debug APK
+      # A release build, not a debug one. A debug APK loads its JavaScript
+      # from a Metro dev server whenever it can reach one (a saved dev-server
+      # address, or `adb reverse`), and only falls back to the embedded bundle.
+      # On a phone that has had the old Expo Router app (same package id) run
+      # against a PC's Metro, the "v2" debug APK ran the old app's JavaScript:
+      # the A55 crash dump showed an RNSScreen, which v2's bundle cannot
+      # create. A release build has no dev support and runs only the bundle
+      # the React Native Gradle plugin embeds from index.js. Signed with the
+      # template's debug key: installable for testing, not for Play.
+      - name: Build A55 release APK (embedded bundle only)
         working-directory: apps/mobile/android
         env:
           NODE_ENV: production
-        run: ./gradlew app:assembleDebug -PreactNativeArchitectures=arm64-v8a --no-daemon
+        run: ./gradlew app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon
 
       - name: Verify APK payload
         working-directory: apps/mobile
         run: |
-          test -s android/app/build/outputs/apk/debug/app-debug.apk
-          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep -q 'assets/index.android.bundle'
-          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep -q 'lib/arm64-v8a/'
-          sha256sum android/app/build/outputs/apk/debug/app-debug.apk | tee DASH-native-v2.sha256
-          cp android/app/build/outputs/apk/debug/app-debug.apk DASH-native-v2-arm64-debug.apk
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          test -s "$apk"
+          unzip -l "$apk" | grep -q 'assets/index.android.bundle'
+          unzip -l "$apk" | grep -q 'lib/arm64-v8a/'
+          # The embedded JavaScript is v2's: it carries v2's screen markers and
+          # nothing from Expo Router / react-native-screens.
+          unzip -p "$apk" assets/index.android.bundle > embedded.bundle
+          if ! grep -a -q 'rider-home-v2' embedded.bundle; then echo "Embedded bundle is not v2" >&2; exit 1; fi
+          if grep -a -q 'RNSScreen' embedded.bundle; then echo "Embedded bundle renders react-native-screens" >&2; exit 1; fi
+          sha256sum "$apk" | tee DASH-native-v2.sha256
+          cp "$apk" DASH-native-v2-arm64-release.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DASH-native-v2-arm64-debug
+          name: DASH-native-v2-arm64-release
           path: |
-            apps/mobile/DASH-native-v2-arm64-debug.apk
+            apps/mobile/DASH-native-v2-arm64-release.apk
             apps/mobile/DASH-native-v2.sha256
           if-no-files-found: error
           retention-days: 14
