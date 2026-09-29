@@ -17,9 +17,13 @@ const messageSchema = z.object({
 
 const CLOSED_STATUSES = new Set(['delivered', 'cancelled', 'rejected', 'refunded']);
 
-async function participantFor(request: FastifyRequest, orderId: string) {
+async function participantFor(
+  request: FastifyRequest,
+  orderId: string,
+  prisma: FastifyInstance['services']['prisma'],
+) {
   const actor = actorOf(request);
-  const order = await request.services.prisma.order.findUnique({
+  const order = await prisma.order.findUnique({
     where: { id: orderId },
     select: { id: true, customerId: true, riderId: true, status: true },
   });
@@ -49,7 +53,7 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireAuth },
     async (request) => {
       const { orderId } = request.params;
-      const { actor, order } = await participantFor(request, orderId);
+      const { actor, order } = await participantFor(request, orderId, prisma);
 
       const conversation = await prisma.orderConversation.findUnique({
         where: { orderId },
