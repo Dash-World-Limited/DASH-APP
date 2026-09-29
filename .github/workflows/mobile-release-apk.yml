@@ -32,6 +32,13 @@ jobs:
       # app's JavaScript. A release build has no dev support and can only run
       # the bundle the React Native Gradle plugin embeds from index.js.
       NODE_ENV: production
+      # The API origin is compiled into the bundle, so it has to be present for
+      # both prebuild and the Gradle bundle task. It is a repository variable,
+      # not a secret: an API origin is public the moment the app ships. Leave it
+      # unset and the APK is a client-only build — normaliseBaseUrl rejects an
+      # empty value, so the app shows its "not connected" state rather than
+      # pointing at nothing.
+      EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
 
     steps:
       - name: Check out the pushed commit
@@ -93,6 +100,16 @@ jobs:
               if (name in deps) { console.error(name + ' is a dependency again'); process.exit(1); }
             }
           "
+
+      # Says plainly which kind of artifact this run produces, so nobody tests
+      # sign-in against a build that was never given an API.
+      - name: Report whether this build is connected to an API
+        run: |
+          if [ -n "${EXPO_PUBLIC_API_URL:-}" ]; then
+            echo "Connected build: API origin is set."
+          else
+            echo "Client-only build: EXPO_PUBLIC_API_URL is unset, so sign-in, ordering and dispatch cannot be exercised on the device."
+          fi
 
       - name: Generate the Android project
         working-directory: apps/mobile
