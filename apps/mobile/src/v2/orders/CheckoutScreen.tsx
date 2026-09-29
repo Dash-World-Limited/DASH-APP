@@ -21,7 +21,7 @@
 
 import { formatNairaCompact } from '@dash/domain/money';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, TextInput, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, TextInput, View } from 'react-native';
 
 import { api, ApiError } from '../../api';
 import {
@@ -237,18 +237,24 @@ function SignedInCheckout({ merchantSlug, onBack, onTrack }: { merchantSlug: str
         <View style={{ gap: space.sm }} accessibilityRole="radiogroup">
           {addresses.map((address) => {
             const active = address.id === selected;
+            const label = `${address.label ? `${address.label} · ` : ''}${address.line1}`;
+            // One Pressable carrying the radio role, rather than a button
+            // nested inside a radio — which reads as two controls.
             return (
-              <View
+              <Pressable
                 key={address.id}
+                onPress={() => setSelected(address.id)}
                 accessibilityRole="radio"
                 accessibilityState={{ selected: active }}
-                style={{ borderRadius: radius.lg, borderWidth: 1, borderColor: active ? palette.accent : palette.line, backgroundColor: active ? palette.accentSoft : palette.surface }}
+                accessibilityLabel={label}
+                style={{ minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: space.md, paddingHorizontal: space.lg, borderRadius: radius.lg, borderWidth: 1, borderColor: active ? palette.accent : palette.line, backgroundColor: active ? palette.accentSoft : palette.surface }}
               >
-                <SecondaryButton
-                  label={`${address.label ? `${address.label} · ` : ''}${address.line1}`}
-                  onPress={() => setSelected(address.id)}
-                />
-              </View>
+                <Icon name={active ? 'radiobox-marked' : 'radiobox-blank'} color={active ? palette.accent : palette.textMuted} />
+                <View style={{ flex: 1, paddingVertical: space.sm }}>
+                  <Text variant="caption" weight="bold">{label}</Text>
+                  {address.landmark ? <Text variant="micro" tone="muted">{address.landmark}</Text> : null}
+                </View>
+              </Pressable>
             );
           })}
           {adding ? (
