@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Alert, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { useEffect, useState, type ReactNode } from 'react';
+import { ActivityIndicator, Alert, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 
-import { api } from '../../api';
+import { api, ApiError } from '../../api';
 import { useCart } from '../../features/CartProvider';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../../theme/tokens';
@@ -12,12 +12,22 @@ import type { ServiceId } from '../artwork/CategoryArtwork';
 import { CategoryPhoto } from '../artwork/CategoryPhoto';
 import type { AppRoute } from '../navigation/model';
 
+/**
+ * A merchant as the DASH API reports it.
+ *
+ * `rating` and `eta` are nullable on purpose. A vendor the server has no
+ * ratings for has no rating, and one with no branch estimate has no ETA — the
+ * screen says "New" and "Nearby" rather than printing a number nobody
+ * measured. `accent` is the category's colour, not the merchant's: it is
+ * chosen by which of the six services the card sits under, so it carries no
+ * claim about the business.
+ */
 interface Merchant {
   id: string;
   name: string;
   description: string;
-  rating: string;
-  eta: string;
+  rating: string | null;
+  eta: string | null;
   accent: string;
 }
 
@@ -29,6 +39,20 @@ interface Product {
   badge?: string;
   available?: boolean;
 }
+
+/**
+ * What a catalogue screen knows right now.
+ *
+ * There is deliberately no "preview" arm carrying stand-in merchants. A build
+ * with no `EXPO_PUBLIC_API_URL` is `not-connected` and says so; a reachable
+ * server with nothing to show is `ready` with an empty list and says that.
+ * Neither invents a business, a rating or a delivery time.
+ */
+type Feed<T> =
+  | { status: 'not-connected' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; data: T };
 
 interface ApiVendorSummary {
   slug: string;
@@ -64,72 +88,12 @@ const SERVICE_COPY: Record<ServiceId, { title: string; intro: string; search: st
   logistics: { title: 'Logistics', intro: 'Send packages by bike, car or van with upfront quotes.', search: 'What are you sending?' },
 };
 
-const MERCHANTS: Record<ServiceId, readonly Merchant[]> = {
-  food: [
-    { id: 'urban-bites', name: 'Urban Bites', description: 'Rice, grills and everyday favourites', rating: '4.8', eta: '25–35 min', accent: '#D88F67' },
-    { id: 'mamas-kitchen', name: 'Mama’s Kitchen', description: 'Nigerian soups and swallows', rating: '4.7', eta: '30–40 min', accent: '#E3B85F' },
-    { id: 'chop-corner', name: 'Chop Corner', description: 'Quick meals and combos', rating: '4.6', eta: '20–30 min', accent: '#9EB47C' },
-  ],
-  shops: [
-    { id: 'tech-world', name: 'TechWorld', description: 'Phones, audio and accessories', rating: '4.9', eta: '35–50 min', accent: '#87A9CC' },
-    { id: 'style-hub', name: 'StyleHub', description: 'Fashion and everyday style', rating: '4.7', eta: '40–55 min', accent: '#C0A0CD' },
-    { id: 'home-essentials', name: 'Home Essentials', description: 'Useful things for every room', rating: '4.8', eta: '35–50 min', accent: '#91AD8A' },
-  ],
-  pharmacy: [
-    { id: 'wellspring', name: 'Wellspring Pharmacy', description: 'Wellness and personal care', rating: '4.9', eta: '20–35 min', accent: '#83B998' },
-    { id: 'carepoint', name: 'CarePoint Pharmacy', description: 'Trusted everyday health essentials', rating: '4.8', eta: '25–40 min', accent: '#8CB9B0' },
-  ],
-  'local-market': [
-    { id: 'fresh-basket', name: 'Fresh Basket', description: 'Vegetables, fruit and pantry staples', rating: '4.7', eta: '30–45 min', accent: '#D48C63' },
-    { id: 'market-square', name: 'Market Square Seller', description: 'Measured and packed to order', rating: '4.6', eta: '35–50 min', accent: '#D6A552' },
-  ],
-  declutter: [
-    { id: 'home-reset', name: 'Home Reset Finds', description: 'Furniture and home items', rating: '4.8', eta: 'Arrange delivery', accent: '#B89CC8' },
-    { id: 'second-life-tech', name: 'Second Life Tech', description: 'Inspected pre-owned devices', rating: '4.7', eta: 'Arrange delivery', accent: '#8EA8C4' },
-  ],
-  logistics: [
-    { id: 'bike-delivery', name: 'Bike Delivery', description: 'Documents and small packages', rating: 'Live quote', eta: 'Same day', accent: '#8FA987' },
-    { id: 'car-van', name: 'Car & Van Delivery', description: 'Larger items and careful handling', rating: 'Live quote', eta: 'Scheduled', accent: '#D2A45C' },
-  ],
-};
-
-const PRODUCTS: Record<ServiceId, readonly Product[]> = {
-  food: [
-    { id: 'jollof-chicken', name: 'Jollof Rice & Chicken', price: '₦5,500', description: 'Smoky jollof rice with grilled chicken.', badge: 'Popular' },
-    { id: 'egusi-swallow', name: 'Egusi Soup & Swallow', price: '₦6,200', description: 'Rich egusi soup with your choice of swallow.' },
-    { id: 'grill-combo', name: 'DASH Grill Combo', price: '₦8,900', description: 'Chicken, plantain, slaw and pepper sauce.' },
-  ],
-  shops: [
-    { id: 'iphone-15-pro', name: 'iPhone 15 Pro', price: '₦1,250,000', description: 'Brand-new device with selectable storage.', badge: 'Featured' },
-    { id: 'wireless-buds', name: 'Wireless Earbuds', price: '₦185,000', description: 'Noise cancellation and charging case.' },
-    { id: 'home-lamp', name: 'Minimal Table Lamp', price: '₦38,500', description: 'Warm light for bedside or workspace.' },
-  ],
-  pharmacy: [
-    { id: 'first-aid-kit', name: 'Home First Aid Kit', price: '₦24,500', description: 'Everyday first-aid essentials in one case.' },
-    { id: 'vitamin-c', name: 'Vitamin C', price: '₦8,900', description: 'Daily wellness supplement.' },
-    { id: 'personal-care', name: 'Personal Care Pack', price: '₦16,500', description: 'Care essentials packed together.' },
-  ],
-  'local-market': [
-    { id: 'tomato-basket', name: 'Fresh Tomato Basket', price: '₦12,000', description: 'Freshly selected and packed.' },
-    { id: 'pepper-mix', name: 'Pepper Mix', price: '₦6,500', description: 'Tomato, pepper and onion mix.' },
-    { id: 'fruit-box', name: 'Seasonal Fruit Box', price: '₦18,000', description: 'A practical mix of fresh fruit.' },
-  ],
-  declutter: [
-    { id: 'reading-chair', name: 'Accent Reading Chair', price: '₦95,000', description: 'Clean fabric chair with light signs of use.', badge: 'Good' },
-    { id: 'used-phone', name: 'Pre-owned Smartphone', price: '₦220,000', description: 'Inspected device; battery and condition disclosed.', badge: 'Like new' },
-    { id: 'bookshelf', name: 'Compact Bookshelf', price: '₦45,000', description: 'Sturdy shelf suitable for a small room.', badge: 'Fair' },
-  ],
-  logistics: [
-    { id: 'small-package', name: 'Small Package', price: 'Get quote', description: 'Bike delivery for documents and small parcels.' },
-    { id: 'large-item', name: 'Large Item', price: 'Get quote', description: 'Car or van delivery for larger items.' },
-  ],
-};
-
 export function CategoryDashboard({ id, onBack, onPush }: { id: string; onBack: () => void; onPush: (route: AppRoute) => void }) {
   const service = isServiceId(id) ? id : 'food';
   const copy = SERVICE_COPY[service];
   const { palette } = useTheme();
-  const { merchants, live } = useMerchantList(service);
+  const { state, reload } = useMerchantList(service);
+  const merchants = state.status === 'ready' ? state.data : [];
   return (
     <CatalogPage>
       <BackHeader title={copy.title} onBack={onBack} cart={() => onPush({ name: 'customer.cart' })} />
@@ -137,39 +101,85 @@ export function CategoryDashboard({ id, onBack, onPush }: { id: string; onBack: 
         <View style={{ flex: 1, gap: space.xs }}><Text variant="title">{copy.title}</Text><Text variant="caption" tone="muted">{copy.intro}</Text></View>
         <CategoryPhoto id={service} size={112} accessibilityLabel={`${copy.title} category photo`} />
       </View>
-      <SearchShell label={copy.search} />
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text variant="heading">Near you</Text><Text variant="caption" tone="accent">See all</Text></View>
-      {merchants.map((merchant) => <MerchantCard key={merchant.id} merchant={merchant} service={service} onPress={() => onPush({ name: 'customer.store', params: { category: service, id: merchant.id } })} />)}
-      <DataSourceNote live={live} />
+      {service === 'logistics' ? (
+        <LogisticsNotYet />
+      ) : (
+        <>
+          <SearchShell label={copy.search} />
+          {state.status === 'ready' ? (
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text variant="heading">Near you</Text></View>
+          ) : null}
+          {merchants.map((merchant) => <MerchantCard key={merchant.id} merchant={merchant} service={service} onPress={() => onPush({ name: 'customer.store', params: { category: service, id: merchant.id } })} />)}
+          {state.status === 'ready' && merchants.length === 0 ? (
+            <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.sm, padding: space.lg }}>
+              <View style={{ width: 70, height: 70, borderRadius: 24, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name="storefront-outline" size={34} color={palette.accent} /></View>
+              <Text variant="heading" align="center">No {copy.title.toLowerCase()} merchants yet</Text>
+              <Text variant="caption" tone="muted" align="center">DASH has not opened this category in your area. It appears here as soon as a seller is live.</Text>
+            </View>
+          ) : null}
+          <FeedState state={state} subject={`${copy.title.toLowerCase()} merchants`} onRetry={reload} />
+        </>
+      )}
     </CatalogPage>
+  );
+}
+
+/**
+ * Logistics has no merchants to list: it is a quote for a journey, and the
+ * booking flow (pickup, destination, package details) is its own milestone.
+ * Listing invented couriers here was the old behaviour and is what this
+ * replaces.
+ */
+function LogisticsNotYet() {
+  const { palette } = useTheme();
+  return (
+    <View style={{ minHeight: 240, alignItems: 'center', justifyContent: 'center', gap: space.sm, padding: space.lg }}>
+      <View style={{ width: 70, height: 70, borderRadius: 24, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name="truck-outline" size={34} color={palette.accent} /></View>
+      <Text variant="heading" align="center">Logistics booking is not open yet</Text>
+      <Text variant="caption" tone="muted" align="center">Sending a package needs pickup, destination and package details, and a quote priced by DASH. That flow arrives with the logistics milestone.</Text>
+    </View>
   );
 }
 
 export function Storefront({ category, merchantId, onBack, onPush }: { category: string; merchantId: string; onBack: () => void; onPush: (route: AppRoute) => void }) {
   const service = isServiceId(category) ? category : 'food';
-  const { merchant, products, live } = useStorefront(service, merchantId);
-  const { palette } = useTheme();
+  const { state, reload } = useStorefront(service, merchantId);
+  const merchant = state.status === 'ready' ? state.data.merchant : null;
+  const products = state.status === 'ready' ? state.data.products : [];
   return (
     <CatalogPage>
       <BackHeader title={merchant?.name ?? SERVICE_COPY[service].title} onBack={onBack} cart={() => onPush({ name: 'customer.cart' })} />
-      <View style={{ minHeight: 174, borderRadius: radius.xl, backgroundColor: merchant?.accent ?? palette.accentSoft, padding: space.xl, justifyContent: 'flex-end', overflow: 'hidden' }}>
-        <View style={{ position: 'absolute', right: -16, top: -10, opacity: 0.96 }}><CategoryPhoto id={service} size={168} accessibilityLabel={`${SERVICE_COPY[service].title} store photo`} /></View>
-        <View style={{ maxWidth: '67%' }}><Text variant="title" style={{ color: '#15171A' }}>{merchant?.name}</Text><Text variant="caption" style={{ color: '#33312D' }}>{merchant?.description}</Text></View>
-      </View>
-      <View style={{ flexDirection: 'row', gap: space.sm }}><InfoChip icon="star" text={merchant?.rating ?? 'New'} /><InfoChip icon="clock-outline" text={merchant?.eta ?? 'Nearby'} /><InfoChip icon="bike-fast" text="Delivery" /></View>
-      <Text variant="heading">Available now</Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
-        {products.map((product) => <ProductCard key={product.id} product={product} service={service} onPress={() => onPush({ name: 'customer.product', params: { category: service, store: merchant?.id ?? '', id: product.id } })} />)}
-      </View>
-      <DataSourceNote live={live} />
+      {merchant ? (
+        <>
+          <View style={{ minHeight: 174, borderRadius: radius.xl, backgroundColor: merchant.accent, padding: space.xl, justifyContent: 'flex-end', overflow: 'hidden' }}>
+            <View style={{ position: 'absolute', right: -16, top: -10, opacity: 0.96 }}><CategoryPhoto id={service} size={168} accessibilityLabel={`${SERVICE_COPY[service].title} store photo`} /></View>
+            <View style={{ maxWidth: '67%' }}><Text variant="title" style={{ color: '#15171A' }}>{merchant.name}</Text><Text variant="caption" style={{ color: '#33312D' }}>{merchant.description}</Text></View>
+          </View>
+          {/* Only the chips the server actually filled. "New" is a fact about
+              an unrated vendor; a number here would not be. */}
+          <View style={{ flexDirection: 'row', gap: space.sm }}>
+            <InfoChip icon="star" text={merchant.rating ?? 'New'} />
+            {merchant.eta ? <InfoChip icon="clock-outline" text={merchant.eta} /> : null}
+            <InfoChip icon="bike-fast" text="Delivery" />
+          </View>
+          <Text variant="heading">Available now</Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
+            {products.map((product) => <ProductCard key={product.id} product={product} service={service} onPress={() => onPush({ name: 'customer.product', params: { category: service, store: merchant.id, id: product.id } })} />)}
+          </View>
+          {products.length === 0 ? <Notice icon="storefront-outline" text="This merchant has nothing listed right now." /> : null}
+        </>
+      ) : null}
+      <FeedState state={state} subject="this store" onRetry={reload} />
     </CatalogPage>
   );
 }
 
 export function ProductDetail({ category, merchantId, productId, onBack, onCart }: { category: string; merchantId: string; productId: string; onBack: () => void; onCart: () => void }) {
   const service = isServiceId(category) ? category : 'food';
-  const { products } = useStorefront(service, merchantId);
-  const product = products.find((item) => item.id === productId) ?? products[0];
+  const { state, reload } = useStorefront(service, merchantId);
+  // The item asked for, and no substitute. Showing the store's first item
+  // under another item's name is how a customer buys the wrong thing.
+  const product = state.status === 'ready' ? state.data.products.find((item) => item.id === productId) ?? null : null;
   const { palette } = useTheme();
   const { dispatch, refusalFor } = useCart();
   const [quantity, setQuantity] = useState(1);
@@ -179,10 +189,6 @@ export function ProductDetail({ category, merchantId, productId, onBack, onCart 
 
   const addToCart = () => {
     if (!product || product.available === false) return;
-    if (product.price === 'Get quote') {
-      Alert.alert('Logistics quote', 'Pickup, destination and package details are collected in the logistics booking milestone.');
-      return;
-    }
     const action = {
       merchantSlug: merchantId,
       productId: product.id,
@@ -203,18 +209,28 @@ export function ProductDetail({ category, merchantId, productId, onBack, onCart 
     dispatch({ type: 'add', ...action });
     onCart();
   };
+  if (!product) {
+    return (
+      <CatalogPage>
+        <BackHeader title="Item details" onBack={onBack} cart={onCart} />
+        {state.status === 'ready'
+          ? <Notice icon="alert-circle-outline" text="This item is no longer listed by the merchant." />
+          : <FeedState state={state} subject="this item" onRetry={reload} />}
+      </CatalogPage>
+    );
+  }
   return (
     <CatalogPage>
       <BackHeader title="Item details" onBack={onBack} cart={onCart} />
       <View style={{ height: 280, borderRadius: radius.xl, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center' }}><CategoryPhoto id={service} size={238} accessibilityLabel={`${SERVICE_COPY[service].title} product photo`} /></View>
-      {product?.badge ? <View style={{ alignSelf: 'flex-start', backgroundColor: palette.accentSoft, paddingHorizontal: space.md, paddingVertical: space.xs, borderRadius: radius.pill }}><Text variant="micro" tone="accent">{product.badge}</Text></View> : null}
-      <Text variant="title">{product?.name}</Text>
-      <Text variant="heading" tone="accent">{product?.price}</Text>
-      <Text tone="muted">{product?.description}</Text>
+      {product.badge ? <View style={{ alignSelf: 'flex-start', backgroundColor: palette.accentSoft, paddingHorizontal: space.md, paddingVertical: space.xs, borderRadius: radius.pill }}><Text variant="micro" tone="accent">{product.badge}</Text></View> : null}
+      <Text variant="title">{product.name}</Text>
+      <Text variant="heading" tone="accent">{product.price}</Text>
+      <Text tone="muted">{product.description}</Text>
       {optionTitle ? <OptionRow title={optionTitle} options={optionValues} selected={selectedOption} onSelect={setSelectedOption} /> : null}
       {service === 'declutter' ? <Notice icon="shield-check-outline" text="Condition, defects and seller verification must be disclosed before checkout." /> : null}
-      {product?.price !== 'Get quote' ? <QuantityControl value={quantity} onChange={setQuantity} /> : null}
-      <PrimaryButton label={product?.available === false ? 'Currently unavailable' : product?.price === 'Get quote' ? 'Start delivery quote' : `Add ${quantity} to cart`} onPress={addToCart} disabled={product?.available === false} />
+      <QuantityControl value={quantity} onChange={setQuantity} />
+      <PrimaryButton label={product.available === false ? 'Currently unavailable' : `Add ${quantity} to cart`} onPress={addToCart} disabled={product.available === false} />
     </CatalogPage>
   );
 }
@@ -222,6 +238,12 @@ export function ProductDetail({ category, merchantId, productId, onBack, onCart 
 export function CartScreen({ onBack, onCheckout }: { onBack: () => void; onCheckout: () => void }) {
   const { palette } = useTheme();
   const { cart, count, dispatch } = useCart();
+  // The cart holds slugs and ids only, so the merchant's own storefront is
+  // what turns a line into a name and a price. Until it loads — or on a build
+  // with no API — a line shows its identifiers and says the price is the
+  // server's, which is true at checkout either way.
+  const { state: storefront } = useStorefront('shops', cart.merchantSlug ?? '');
+  const catalogue = storefront.status === 'ready' ? storefront.data : null;
   return (
     <CatalogPage>
       <BackHeader title="Your cart" onBack={onBack} />
@@ -229,14 +251,14 @@ export function CartScreen({ onBack, onCheckout }: { onBack: () => void; onCheck
         <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.sm }}><View style={{ width: 72, height: 72, borderRadius: 24, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name="cart-outline" size={34} color={palette.accent} /></View><Text variant="heading">Your cart is empty</Text><Text tone="muted" align="center">Choose an item from a restaurant, shop, pharmacy or market seller.</Text></View>
       ) : (
         <>
-          <Notice icon="storefront-outline" text={`${count} item${count === 1 ? '' : 's'} from ${merchantLabel(cart.merchantSlug)}. One merchant is kept per order.`} />
+          <Notice icon="storefront-outline" text={`${count} item${count === 1 ? '' : 's'} from ${merchantLabel(cart.merchantSlug, catalogue?.merchant.name ?? null)}. One merchant is kept per order.`} />
           {cart.lines.map((line) => {
-            const product = findPreviewProduct(line.productId);
+            const product = catalogue?.products.find((item) => item.id === line.productId);
             return (
               <View key={line.key} style={{ padding: space.lg, gap: space.md, borderRadius: radius.lg, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line }}>
                 <View style={{ flexDirection: 'row', gap: space.md, alignItems: 'center' }}>
-                  <View style={{ width: 68, height: 68, borderRadius: radius.md, overflow: 'hidden', backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center' }}><CategoryPhoto id={product?.service ?? 'shops'} size={64} accessibilityLabel={`${product?.name ?? 'Cart item'} photo`} /></View>
-                  <View style={{ flex: 1, gap: 2 }}><Text variant="label" weight="bold">{product?.name ?? 'DASH item'}</Text><Text variant="caption" tone="accent">{product?.price ?? 'Price confirmed by server'}</Text>{Object.values(line.options).length ? <Text variant="micro" tone="muted">{Object.values(line.options).join(' · ')}</Text> : null}</View>
+                  <View style={{ width: 68, height: 68, borderRadius: radius.md, overflow: 'hidden', backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center' }}><CategoryPhoto id="shops" size={64} accessibilityLabel={`${product?.name ?? 'Cart item'} photo`} /></View>
+                  <View style={{ flex: 1, gap: 2 }}><Text variant="label" weight="bold">{product?.name ?? 'Item'}</Text><Text variant="caption" tone="accent">{product?.price ?? 'Price confirmed at checkout'}</Text>{Object.values(line.options).length ? <Text variant="micro" tone="muted">{Object.values(line.options).join(' · ')}</Text> : null}</View>
                   <Pressable onPress={() => dispatch({ type: 'remove', key: line.key })} accessibilityRole="button" accessibilityLabel={`Remove ${product?.name ?? 'item'}`} hitSlop={10}><Icon name="delete-outline" color={palette.danger} /></Pressable>
                 </View>
                 <QuantityControl value={line.quantity} onChange={(quantity) => dispatch({ type: 'setQuantity', key: line.key, quantity })} compact />
@@ -255,7 +277,8 @@ export function CartScreen({ onBack, onCheckout }: { onBack: () => void; onCheck
 export function CustomerSearchScreen({ onBack, onPush }: { onBack: () => void; onPush: (route: AppRoute) => void }) {
   const { palette } = useTheme();
   const [query, setQuery] = useState('');
-  const results = useMemo(() => searchPreview(query), [query]);
+  const { state, reload } = useCustomerSearch(query);
+  const results = state.status === 'ready' ? state.data : [];
   return (
     <CatalogPage>
       <BackHeader title="Search DASH" onBack={onBack} />
@@ -264,15 +287,18 @@ export function CustomerSearchScreen({ onBack, onPush }: { onBack: () => void; o
         <TextInput autoFocus value={query} onChangeText={setQuery} placeholder="Food, shops, products…" placeholderTextColor={palette.textSubtle} accessibilityLabel="Search DASH" style={{ flex: 1, color: palette.text, fontFamily: 'Manrope_500Medium', fontSize: 15 }} />
         {query ? <Pressable onPress={() => setQuery('')} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="close-circle" color={palette.textMuted} /></Pressable> : null}
       </View>
-      {!query.trim() ? <Notice icon="magnify" text="Search across all six DASH categories. Results below are interactive development data until the API URL is configured." /> : null}
-      <Text variant="heading">{query.trim() ? `${results.length} result${results.length === 1 ? '' : 's'}` : 'Popular now'}</Text>
+      {query.trim().length >= 2 && state.status === 'ready' ? <Text variant="heading">{`${results.length} result${results.length === 1 ? '' : 's'}`}</Text> : null}
       {results.map((entry) => (
-        <Pressable key={`${entry.service}-${entry.kind}-${entry.id}`} onPress={() => onPush(entry.route)} accessibilityRole="button" style={({ pressed }) => ({ minHeight: 78, padding: space.md, borderRadius: radius.lg, flexDirection: 'row', alignItems: 'center', gap: space.md, backgroundColor: pressed ? palette.surfaceMuted : palette.surface, borderWidth: 1, borderColor: palette.line })}>
+        <Pressable key={entry.id} onPress={() => onPush(entry.route)} accessibilityRole="button" style={({ pressed }) => ({ minHeight: 78, padding: space.md, borderRadius: radius.lg, flexDirection: 'row', alignItems: 'center', gap: space.md, backgroundColor: pressed ? palette.surfaceMuted : palette.surface, borderWidth: 1, borderColor: palette.line })}>
           <View style={{ width: 58, height: 58, borderRadius: radius.md, overflow: 'hidden', backgroundColor: palette.surfaceMuted }}><CategoryPhoto id={entry.service} size={56} accessibilityLabel={`${entry.title} photo`} /></View>
           <View style={{ flex: 1 }}><Text variant="label" weight="bold">{entry.title}</Text><Text variant="caption" tone="muted">{entry.subtitle}</Text></View><Icon name="chevron-right" color={palette.accent} />
         </Pressable>
       ))}
-      {query.trim() && results.length === 0 ? <View style={{ minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: space.sm }}><Icon name="magnify-close" size={36} color={palette.textMuted} /><Text variant="heading">No matching result</Text><Text variant="caption" tone="muted">Try a category, shop or product name.</Text></View> : null}
+      {state.status === 'ready' && query.trim().length < 2 ? (
+        <View style={{ minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: space.sm }}><Icon name="magnify" size={36} color={palette.textMuted} /><Text variant="heading" align="center">Search DASH</Text><Text variant="caption" tone="muted" align="center">Type at least two letters to search merchants and items.</Text></View>
+      ) : null}
+      {state.status === 'ready' && query.trim().length >= 2 && results.length === 0 ? <View style={{ minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: space.sm }}><Icon name="magnify-close" size={36} color={palette.textMuted} /><Text variant="heading">No matching result</Text><Text variant="caption" tone="muted">Try a merchant or item name.</Text></View> : null}
+      <FeedState state={state} subject="search results" onRetry={reload} />
     </CatalogPage>
   );
 }
@@ -334,74 +360,145 @@ function PrimaryButton({ label, onPress, disabled = false, secondary = false }: 
   return <Pressable disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} style={({ pressed }) => ({ minHeight: 52, borderRadius: radius.md, opacity: disabled ? 0.55 : 1, backgroundColor: secondary ? (pressed ? palette.surfaceMuted : palette.surface) : (pressed ? palette.accentPressed : palette.accent), borderWidth: secondary ? 1 : 0, borderColor: palette.line, alignItems: 'center', justifyContent: 'center' })}><Text variant="label" tone={secondary ? 'default' : 'onAccent'} weight="bold">{label}</Text></Pressable>;
 }
 
-function DataSourceNote({ live }: { live: boolean }) {
+/**
+ * What a screen shows instead of a list, whenever there is no list to show.
+ *
+ * Each arm names the actual situation rather than blaming the person: a build
+ * with no API origin is a build problem, an unreachable server is a network
+ * problem, and an empty category is simply empty.
+ */
+function FeedState({ state, subject, onRetry }: { state: Feed<unknown>; subject: string; onRetry?: () => void }) {
   const { palette } = useTheme();
-  return <View style={{ flexDirection: 'row', gap: space.sm, padding: space.md, borderRadius: radius.md, borderWidth: 1, borderColor: palette.line }}><Icon name={live ? 'cloud-check-outline' : 'flask-outline'} color={live ? palette.success : palette.textMuted} size={18} /><Text variant="micro" tone={live ? 'success' : 'muted'} style={{ flex: 1 }}>{live ? 'Live merchants, availability and prices from the DASH API.' : 'Interface preview. Configure EXPO_PUBLIC_API_URL to load the live DASH catalogue.'}</Text></View>;
+  if (state.status === 'ready') return null;
+  if (state.status === 'loading') {
+    return (
+      <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.sm }}>
+        <ActivityIndicator color={palette.accent} />
+        <Text variant="caption" tone="muted">Loading {subject}…</Text>
+      </View>
+    );
+  }
+  const notConnected = state.status === 'not-connected';
+  return (
+    <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.sm, padding: space.lg }}>
+      <View style={{ width: 70, height: 70, borderRadius: 24, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}>
+        <Icon name={notConnected ? 'cloud-off-outline' : 'alert-circle-outline'} size={34} color={palette.accent} />
+      </View>
+      <Text variant="heading" align="center">{notConnected ? 'Not connected to DASH' : `Could not load ${subject}`}</Text>
+      <Text variant="caption" tone="muted" align="center">
+        {notConnected
+          ? 'This build has no DASH API address, so there are no merchants to show. It is a build setting (EXPO_PUBLIC_API_URL), not something to fix on the phone.'
+          : state.status === 'error'
+            ? state.message
+            : ''}
+      </Text>
+      {!notConnected && onRetry ? <PrimaryButton label="Try again" onPress={onRetry} secondary /> : null}
+    </View>
+  );
 }
 
-function useMerchantList(service: ServiceId): { merchants: readonly Merchant[]; live: boolean } {
-  const [state, setState] = useState<{ merchants: readonly Merchant[]; live: boolean }>({ merchants: MERCHANTS[service], live: false });
+/** The one place a failed catalogue request becomes something to read. */
+function feedError(caught: unknown): Feed<never> {
+  return { status: 'error', message: caught instanceof ApiError ? caught.message : 'Something went wrong. Please try again.' };
+}
+
+/**
+ * A rating only when the server has actually counted one. A vendor with no
+ * ratings gets `null`, never "0.0" and never a borrowed number.
+ */
+function ratingLabel(rating: { average: number; count: number } | null | undefined): string | null {
+  if (!rating || rating.count <= 0 || !Number.isFinite(rating.average)) return null;
+  return rating.average.toFixed(1);
+}
+
+function useMerchantList(service: ServiceId): { state: Feed<readonly Merchant[]>; reload: () => void } {
+  const [state, setState] = useState<Feed<readonly Merchant[]>>({ status: 'loading' });
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    setState({ merchants: MERCHANTS[service], live: false });
-    if (!api.configured || service === 'logistics') return;
+    if (!api.configured) {
+      setState({ status: 'not-connected' });
+      return;
+    }
+    setState({ status: 'loading' });
     const controller = new AbortController();
     const query = service === 'declutter' ? 'category=declutter' : `service=${service === 'local-market' ? 'local_market' : service}`;
     api.request<{ vendors: ApiVendorSummary[] }>(`/v1/vendors?${query}&limit=20`, { auth: false, signal: controller.signal })
       .then(({ vendors }) => {
-        if (vendors.length === 0) return;
         setState({
-          live: true,
-          merchants: vendors.map((vendor) => ({
+          status: 'ready',
+          data: vendors.map((vendor) => ({
             id: vendor.slug,
             name: vendor.name,
             description: vendor.description,
-            rating: vendor.rating.average.toFixed(1),
-            eta: vendor.branch ? `${vendor.branch.estimatedMinutes} min estimate` : 'See store',
+            rating: ratingLabel(vendor.rating),
+            eta: vendor.branch ? `${vendor.branch.estimatedMinutes} min estimate` : null,
             accent: serviceAccent(service),
           })),
         });
       })
-      .catch(() => undefined);
+      .catch((caught: unknown) => {
+        if (controller.signal.aborted) return;
+        setState(feedError(caught));
+      });
     return () => controller.abort();
-  }, [service]);
-  return state;
+  }, [service, attempt]);
+  return { state, reload: () => setAttempt((value) => value + 1) };
 }
 
-function useStorefront(service: ServiceId, merchantId: string): { merchant: Merchant | undefined; products: readonly Product[]; live: boolean } {
-  const fallbackMerchant = MERCHANTS[service].find((item) => item.id === merchantId) ?? MERCHANTS[service][0];
-  const [state, setState] = useState<{ merchant: Merchant | undefined; products: readonly Product[]; live: boolean }>({ merchant: fallbackMerchant, products: PRODUCTS[service], live: false });
+interface StorefrontData {
+  merchant: Merchant;
+  products: readonly Product[];
+}
+
+function useStorefront(service: ServiceId, merchantId: string): { state: Feed<StorefrontData>; reload: () => void } {
+  const [state, setState] = useState<Feed<StorefrontData>>({ status: 'loading' });
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    const preview = MERCHANTS[service].find((item) => item.id === merchantId) ?? MERCHANTS[service][0];
-    setState({ merchant: preview, products: PRODUCTS[service], live: false });
-    if (!api.configured || !merchantId || service === 'logistics') return;
+    if (!api.configured) {
+      setState({ status: 'not-connected' });
+      return;
+    }
+    if (!merchantId) {
+      setState({ status: 'error', message: 'No merchant was selected.' });
+      return;
+    }
+    setState({ status: 'loading' });
     const controller = new AbortController();
     api.request<{ vendor: ApiVendorDetail }>(`/v1/vendors/${encodeURIComponent(merchantId)}`, { auth: false, signal: controller.signal })
       .then(({ vendor }) => {
         const items = vendor.categories.flatMap((category) => category.items);
         setState({
-          live: true,
-          merchant: {
-            id: vendor.slug,
-            name: vendor.name,
-            description: vendor.description,
-            rating: vendor.ratingAverage.toFixed(1),
-            eta: 'Live availability',
-            accent: serviceAccent(service),
+          status: 'ready',
+          data: {
+            merchant: {
+              id: vendor.slug,
+              name: vendor.name,
+              description: vendor.description,
+              // The detail endpoint sends an average with no count, so a zero
+              // is indistinguishable from "never rated". Both show as no
+              // rating, which is the honest reading of either.
+              rating: Number.isFinite(vendor.ratingAverage) && vendor.ratingAverage > 0 ? vendor.ratingAverage.toFixed(1) : null,
+              eta: null,
+              accent: serviceAccent(service),
+            },
+            products: items.map((item) => ({
+              id: item.id,
+              name: item.name,
+              description: item.description,
+              price: formatNairaCompact(item.price as Kobo),
+              badge: item.condition ? conditionLabel(item.condition) : item.isAvailable ? undefined : 'Unavailable',
+              available: item.isAvailable,
+            })),
           },
-          products: items.map((item) => ({
-            id: item.id,
-            name: item.name,
-            description: item.description,
-            price: formatNairaCompact(item.price as Kobo),
-            badge: item.condition ? conditionLabel(item.condition) : item.isAvailable ? undefined : 'Unavailable',
-            available: item.isAvailable,
-          })),
         });
       })
-      .catch(() => undefined);
+      .catch((caught: unknown) => {
+        if (controller.signal.aborted) return;
+        setState(feedError(caught));
+      });
     return () => controller.abort();
-  }, [merchantId, service]);
-  return state;
+  }, [merchantId, service, attempt]);
+  return { state, reload: () => setAttempt((value) => value + 1) };
 }
 
 function serviceAccent(service: ServiceId): string {
@@ -416,35 +513,97 @@ function isServiceId(value: string): value is ServiceId {
   return value === 'food' || value === 'shops' || value === 'pharmacy' || value === 'local-market' || value === 'declutter' || value === 'logistics';
 }
 
-function findPreviewProduct(productId: string): (Product & { service: ServiceId }) | undefined {
-  for (const service of Object.keys(PRODUCTS) as ServiceId[]) {
-    const product = PRODUCTS[service].find((item) => item.id === productId);
-    if (product) return { ...product, service };
-  }
-  return undefined;
-}
 
-function merchantLabel(slug: string | null): string {
+/**
+ * The cart stores a merchant slug and nothing else — names and prices belong
+ * to the server, so the cart cannot go stale against them. Until the store
+ * loads, the slug read back as words is the most the app honestly knows.
+ */
+function merchantLabel(slug: string | null, live: string | null): string {
+  if (live) return live;
   if (!slug) return 'this merchant';
-  for (const service of Object.keys(MERCHANTS) as ServiceId[]) {
-    const merchant = MERCHANTS[service].find((item) => item.id === slug);
-    if (merchant) return merchant.name;
-  }
   return slug.replace(/-/g, ' ');
 }
 
-function searchPreview(query: string): Array<{ id: string; service: ServiceId; kind: 'merchant' | 'product'; title: string; subtitle: string; route: AppRoute }> {
-  const needle = query.trim().toLowerCase();
-  const entries: Array<{ id: string; service: ServiceId; kind: 'merchant' | 'product'; title: string; subtitle: string; route: AppRoute }> = [];
-  for (const service of Object.keys(MERCHANTS) as ServiceId[]) {
-    for (const merchant of MERCHANTS[service]) {
-      entries.push({ id: merchant.id, service, kind: 'merchant', title: merchant.name, subtitle: `${SERVICE_COPY[service].title} · ${merchant.description}`, route: { name: 'customer.store', params: { category: service, id: merchant.id } } });
+interface SearchHit {
+  id: string;
+  service: ServiceId;
+  title: string;
+  subtitle: string;
+  route: AppRoute;
+}
+
+/** `GET /v1/search`, which answers with approved vendors and available items. */
+interface ApiSearchResponse {
+  vendors: Array<{ id: string; name: string; slug: string; category: string; ratingAverage: number; serviceCategory: string | null }>;
+  items: Array<{ id: string; name: string; price: number; vendor: { id: string; name: string; slug: string } }>;
+}
+
+/**
+ * The API's `serviceCategory` in the client's spelling. The server uses
+ * `local_market`; the six category screens use `local-market`. A vendor whose
+ * category maps to neither (Declutter is persisted as a legacy vendor row)
+ * falls back to Shops, which is where its storefront renders.
+ */
+function serviceIdFor(serviceCategory: string | null): ServiceId {
+  if (serviceCategory === 'local_market') return 'local-market';
+  return isServiceId(serviceCategory ?? '') ? (serviceCategory as ServiceId) : 'shops';
+}
+
+/**
+ * Search asks the server and shows what comes back. There is no local index
+ * to fall back on: an app that answers "Urban Bites" to a search when no such
+ * merchant exists is worse than one that says it cannot search yet.
+ *
+ * The server needs two characters, and the keystrokes are debounced, so
+ * typing a word is one request rather than one per letter.
+ */
+function useCustomerSearch(query: string): { state: Feed<readonly SearchHit[]>; reload: () => void } {
+  const [state, setState] = useState<Feed<readonly SearchHit[]>>({ status: 'ready', data: [] });
+  const [attempt, setAttempt] = useState(0);
+  const needle = query.trim();
+  useEffect(() => {
+    if (!api.configured) {
+      setState({ status: 'not-connected' });
+      return;
     }
-    const store = MERCHANTS[service][0];
-    for (const product of PRODUCTS[service]) {
-      entries.push({ id: product.id, service, kind: 'product', title: product.name, subtitle: `${SERVICE_COPY[service].title} · ${product.price}`, route: { name: 'customer.product', params: { category: service, store: store?.id ?? '', id: product.id } } });
+    if (needle.length < 2) {
+      setState({ status: 'ready', data: [] });
+      return;
     }
-  }
-  const filtered = needle ? entries.filter((entry) => `${entry.title} ${entry.subtitle}`.toLowerCase().includes(needle)) : entries.filter((entry) => entry.kind === 'product');
-  return filtered.slice(0, needle ? 20 : 8);
+    setState({ status: 'loading' });
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      api.request<ApiSearchResponse>(`/v1/search?q=${encodeURIComponent(needle)}&limit=15`, { auth: false, signal: controller.signal })
+        .then((response) => {
+          const vendors: SearchHit[] = response.vendors.map((vendor) => {
+            const service = serviceIdFor(vendor.serviceCategory);
+            return {
+              id: `vendor-${vendor.slug}`,
+              service,
+              title: vendor.name,
+              subtitle: SERVICE_COPY[service].title,
+              route: { name: 'customer.store', params: { category: service, id: vendor.slug } },
+            };
+          });
+          const items: SearchHit[] = response.items.map((item) => ({
+            id: `item-${item.id}`,
+            service: 'shops',
+            title: item.name,
+            subtitle: `${item.vendor.name} · ${formatNairaCompact(item.price as Kobo)}`,
+            route: { name: 'customer.product', params: { category: 'shops', store: item.vendor.slug, id: item.id } },
+          }));
+          setState({ status: 'ready', data: [...vendors, ...items] });
+        })
+        .catch((caught: unknown) => {
+          if (controller.signal.aborted) return;
+          setState(feedError(caught));
+        });
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [needle, attempt]);
+  return { state, reload: () => setAttempt((value) => value + 1) };
 }
