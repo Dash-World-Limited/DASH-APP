@@ -23,12 +23,20 @@ It was not v2's code. v2's bundle has no react-native-screens module and no
 `RNSScreen`; the crash dump had one. The debug APK loaded the old app's JS from
 the PC's Metro (same package id `com.dashworldng.dash.dev`). Use the release
 APK, uninstall the old app first, and stop any Metro for the old app.
-**Not yet verified on the A55.**
+
+**Verified on the A55 on 29 September 2026 — the crash does not reproduce.**
+A release APK built from `claude/v2-a55-standalone` (bundle checked: carries
+`rider-home-v2`, contains no `RNSScreen`) was installed after uninstalling the
+old app. Switching to the Rider face, tapping Go Online, cycling every rider
+tab repeatedly while online, switching faces back and forth, and a
+package-restricted 400-event monkey run all left the process alive with an
+empty crash buffer, and no `RNSScreen` or "child already has a parent" appears
+anywhere in `logcat -b all`.
 
 ## Plan
 
-1. **Verify** the standalone v2 release APK on the A55 (install, Go Online,
-   switch screens hard; `adb logcat` if anything fails).
+1. ~~**Verify** the standalone v2 release APK on the A55.~~ **Done** — see
+   above.
 2. **Integrate on the release line** (`claude/awesome-bardeen-95lgbd`):
    `apps/mobile` = v2 (`src/v2`, `assets/v2`, `index.js`, `main: index.js`,
    no `expo-router` plugin) + the release line's shared modules and fixes
@@ -80,3 +88,32 @@ adb devices         # the A55 should be listed
 
 `DATABASE_URL` in `.env` should end in `?connection_limit=1` for SQLite (see
 `.env.example`).
+
+### Building the APK: use WSL, not Windows
+
+A native Windows Gradle build **cannot** produce this APK. It fails in
+`:app:buildCMakeRelWithDebInfo` with
+`ninja: error: Stat(...): Filename longer than 260 characters`, because React
+Native's Fabric codegen mirrors each source file's full absolute path inside
+the `.cxx` object tree, reaching ~389 characters. Shortening the repo root
+(`subst`, a junction) saves only ~60 of those characters, so it cannot help.
+This is a Windows `MAX_PATH` limit, not a defect in the app, and CI does not
+hit it because CI is Linux.
+
+Build in WSL2 instead, with the monorepo synced there (sync the whole repo, not
+just `apps/mobile`, or the typecheck fails because `@dash/domain` and `vitest`
+resolve through the root workspace install). Keep `adb` on the Windows side,
+since the phone is attached to the host. On an 8 GB laptop the build is also
+memory-bound: `--max-workers` alone does not help because ninja spawns one
+clang per core, so cap WSL in `%USERPROFILE%\.wslconfig` (`processors=3`,
+`swap=12GB`) or the Linux OOM killer will silently kill Gradle mid-build. A
+full clean build takes roughly 50 minutes.
+
+### What a device test can and cannot show today
+
+The development APK has **no DASH API URL compiled into it** — the Account
+screen says so on the device. Until a staging endpoint is supplied, on-device
+testing can only exercise UI, navigation and offline/preview paths; sign-in,
+ordering, payment and real dispatch cannot be verified on the phone, and the
+rider stats stay placeholders. Treat any "works on the A55" claim as covering
+the client only.
