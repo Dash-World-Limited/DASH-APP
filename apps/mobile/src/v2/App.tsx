@@ -43,7 +43,8 @@ import {
   type AppRoute,
   type NavigationState,
 } from './navigation/model';
-import { CustomerCheckoutScreen, CustomerOrdersScreen, CustomerTrackingScreen } from './orders/CustomerOrderScreens';
+import { CustomerCheckoutScreen } from './orders/CheckoutScreen';
+import { CustomerOrdersScreen, CustomerTrackingScreen } from './orders/CustomerOrderScreens';
 import { RiderFlowProvider, useRiderFlow } from './rider/RiderFlowProvider';
 import { RiderCompleteScreen, RiderDeliveryScreen, RiderOfferScreen, RiderOnlineScreen, RiderOrdersScreen, RiderRouteScreen } from './rider/RiderScreens';
 
