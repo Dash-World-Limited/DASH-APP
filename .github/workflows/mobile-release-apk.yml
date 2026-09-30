@@ -72,8 +72,10 @@ jobs:
 
       - name: Install the locked dependencies
         run: |
-          npm ci
-          npm ci --prefix apps/mobile
+          # NODE_ENV=production is required for the release bundle below, but
+          # typecheck/tests still need the repository dev tools (Vitest).
+          npm ci --include=dev
+          npm ci --prefix apps/mobile --include=dev
 
       - name: Typecheck the native app
         run: npm run typecheck --prefix apps/mobile
