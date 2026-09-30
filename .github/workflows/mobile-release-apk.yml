@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - claude/awesome-bardeen-95lgbd
+      - chatgpt/dash-next-release
     paths:
       - .github/workflows/mobile-release-apk.yml
       - apps/mobile/**
