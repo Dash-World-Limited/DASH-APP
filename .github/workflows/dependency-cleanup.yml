@@ -50,14 +50,16 @@ jobs:
         continue-on-error: true
         run: npm audit fix --package-lock-only --ignore-scripts --prefix apps/mobile
 
-      - name: Upgrade Vitest security boundary
-        run: npm install --package-lock-only --ignore-scripts --save-dev vitest@5.0.3 @vitest/coverage-v8@5.0.3
+      - name: Set audited major versions in manifests
+        run: |
+          node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.devDependencies.vitest='^5.0.3'; p.devDependencies['@vitest/coverage-v8']='^5.0.3'; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');"
+          node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('apps/web/package.json','utf8')); p.dependencies.next='^16.3.8'; fs.writeFileSync('apps/web/package.json', JSON.stringify(p,null,2)+'\n');"
 
-      - name: Upgrade Next security boundary
-        run: npm install --package-lock-only --ignore-scripts --workspace @dash/web next@16.3.8
+      - name: Regenerate the root lock from the updated manifests
+        run: npm install --package-lock-only --ignore-scripts
 
       - name: Refresh Prisma within major 6
-        run: npm install --package-lock-only --ignore-scripts --workspace @dash/db prisma@6 @prisma/client@6
+        run: npm update --package-lock-only --ignore-scripts --workspace @dash/db prisma @prisma/client
 
       - name: Reinstall exactly from the refreshed locks
         run: |
