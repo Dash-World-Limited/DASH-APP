@@ -38,7 +38,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
           <Wordmark />
           {auth.error ? (
             <>
-              <Icon name="cloud-alert-outline" color={palette.danger} size={36} />
+              <Icon name="alert-circle-outline" color={palette.danger} size={36} />
               <View style={{ gap: space.xs }}>
                 <Text variant="heading" align="center">Could not reach DASH</Text>
                 <Text variant="caption" tone="muted" align="center">{auth.error}</Text>
