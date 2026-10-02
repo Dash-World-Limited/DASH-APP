@@ -202,7 +202,7 @@ export async function createTestContext(
       phone: TEST_CUSTOMER_PHONE,
       displayName: 'Harness Customer',
       roles: { create: { role: 'customer' } },
-      customer: { create: {} },
+      customer: { create: { referralCode: 'HARNESS-CUSTOMER-9002' } },
     },
   });
 
