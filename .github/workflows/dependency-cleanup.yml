@@ -43,9 +43,11 @@ jobs:
           npm ci --prefix apps/mobile
 
       - name: Refresh non-breaking root fixes
+        continue-on-error: true
         run: npm audit fix --package-lock-only --ignore-scripts
 
       - name: Refresh non-breaking native fixes
+        continue-on-error: true
         run: npm audit fix --package-lock-only --ignore-scripts --prefix apps/mobile
 
       - name: Reinstall exactly from the refreshed locks
