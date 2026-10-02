@@ -207,7 +207,13 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         // `emailVerifiedAt` gates the email channel only. An address nobody has
         // proved must not be able to receive a sign-in code, or signup would be
         // a way to take over an account by claiming somebody else's address.
-        select: { id: true, status: true, emailVerifiedAt: true, displayName: true },
+        select: {
+          id: true,
+          status: true,
+          emailVerifiedAt: true,
+          displayName: true,
+          roles: { select: { role: true } },
+        },
       });
 
       // Always return the same shape, account or not.
