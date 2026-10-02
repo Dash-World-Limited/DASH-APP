@@ -222,7 +222,8 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       const usable =
         identity !== null &&
         identity.status === 'active' &&
-        (destination.channel === 'sms' || identity.emailVerifiedAt !== null);
+        (destination.channel === 'sms' || identity.emailVerifiedAt !== null) &&
+        !requiresMfa(identity.roles.map((row) => row.role as Role));
 
       // Per-destination throttle (see OTP_RESEND_COOLDOWN_SECONDS). Only an
       // account can have codes, so only an account can be throttled, and a
@@ -380,6 +381,20 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
           requestId: request.id,
         });
         return { steppedUp: true };
+      }
+      // An OTP may have been issued while this identity was still a customer
+      // and the account may have gained a privileged role before redemption.
+      // Re-check now: privileged identities must finish password + MFA, and an
+      // old OTP must never mint a privileged session.
+      const otpIdentity = await prisma.identity.findUnique({
+        where: { id: challenge.identityId },
+        select: { roles: { select: { role: true } } },
+      });
+      if (
+        !otpIdentity ||
+        requiresMfa(otpIdentity.roles.map((row) => row.role as Role))
+      ) {
+        throw ApiError.unauthorized('Use staff sign-in for this account.');
       }
 
       // Accounts verified before signup granted the customer role — including
