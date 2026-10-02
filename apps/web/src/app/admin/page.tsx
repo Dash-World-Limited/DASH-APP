@@ -134,9 +134,6 @@ export default function AdminOverviewPage() {
                 <Link href="/admin/partners" className="rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-extrabold text-[var(--on-primary)] transition hover:opacity-90">
                   Review applications
                 </Link>
-                <Link href="/ops" className="rounded-xl border border-white/15 bg-white/[0.06] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white/10">
-                  Open live operations
-                </Link>
               </div>
             </div>
           </div>
@@ -190,14 +187,6 @@ export default function AdminOverviewPage() {
                 <span className="text-xl text-[var(--ink-muted)]">→</span>
               </Link>
 
-              <Link href="/ops/refunds" className="flex items-center gap-4 py-4 last:pb-0">
-                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--surface-sunken)] text-[var(--ink)]">₦</div>
-                <div className="min-w-0 flex-1">
-                  <p className="font-bold">Finance & refunds</p>
-                  <p className="mt-0.5 text-sm text-[var(--ink-muted)]">Review payment cases with audit protection</p>
-                </div>
-                <span className="text-xl text-[var(--ink-muted)]">→</span>
-              </Link>
             </div>
           </div>
 
