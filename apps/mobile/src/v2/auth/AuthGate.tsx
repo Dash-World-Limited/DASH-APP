@@ -36,8 +36,21 @@ export function AuthGate({ children }: { children: ReactNode }) {
       <SafeAreaView style={{ flex: 1, backgroundColor: palette.background }}>
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.lg, padding: space.xl }}>
           <Wordmark />
-          <ActivityIndicator color={palette.accent} />
-          <Text variant="caption" tone="muted">Checking your DASH session…</Text>
+          {auth.error ? (
+            <>
+              <Icon name="cloud-alert-outline" color={palette.danger} size={36} />
+              <View style={{ gap: space.xs }}>
+                <Text variant="heading" align="center">Could not reach DASH</Text>
+                <Text variant="caption" tone="muted" align="center">{auth.error}</Text>
+              </View>
+              <AuthButton label={auth.busy ? 'Retrying…' : 'Try again'} onPress={() => void auth.restore()} />
+            </>
+          ) : (
+            <>
+              <ActivityIndicator color={palette.accent} />
+              <Text variant="caption" tone="muted">Checking your DASH session…</Text>
+            </>
+          )}
         </View>
       </SafeAreaView>
     );
