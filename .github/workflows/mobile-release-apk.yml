@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 90
 
     env:
-      APP_VARIANT: development
+      APP_VARIANT: staging
       # A release build, not a debug one. A debug APK loads its JavaScript from
       # a Metro dev server whenever it can reach one and only falls back to the
       # embedded bundle, so on a phone that has run the old Expo Router app
@@ -114,12 +114,20 @@ jobs:
 
       # Says plainly which kind of artifact this run produces, so nobody tests
       # sign-in against a build that was never given an API.
+      - name: Require an API address for a manual staging build
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ -z "${EXPO_PUBLIC_API_URL:-}" ]; then
+            echo "EXPO_PUBLIC_API_URL is unset. Set the repository variable before building a connected staging APK." >&2
+            exit 1
+          fi
+
       - name: Report whether this build is connected to an API
         run: |
           if [ -n "${EXPO_PUBLIC_API_URL:-}" ]; then
-            echo "Connected build: API origin is set."
+            echo "Connected staging build: API origin is set."
           else
-            echo "Client-only build: EXPO_PUBLIC_API_URL is unset, so sign-in, ordering and dispatch cannot be exercised on the device."
+            echo "Client-only staging build: EXPO_PUBLIC_API_URL is unset, so sign-in, ordering and dispatch cannot be exercised on the device."
           fi
 
       - name: Generate the Android project
