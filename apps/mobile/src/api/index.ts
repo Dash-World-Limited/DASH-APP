@@ -11,6 +11,7 @@ import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
+import { COMPILED_API_URL } from './buildConfig';
 import { createApiClient, normaliseBaseUrl } from './client';
 import { createSession, type CsrfStore } from './session';
 
@@ -53,7 +54,10 @@ export const api = createApiClient({
   // The app config's value on a device. The web build's manifest carries the
   // key but not the string (it arrives as `{}`), so fall back to the same
   // variable, which Expo inlines into every bundle at build time.
-  baseUrl: normaliseBaseUrl(extra.apiUrl) ?? normaliseBaseUrl(process.env.EXPO_PUBLIC_API_URL),
+  baseUrl:
+    normaliseBaseUrl(COMPILED_API_URL) ??
+    normaliseBaseUrl(extra.apiUrl) ??
+    normaliseBaseUrl(process.env.EXPO_PUBLIC_API_URL),
   fetch: (input, init) => fetch(input, init),
   session,
 });
