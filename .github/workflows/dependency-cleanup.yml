@@ -55,6 +55,9 @@ jobs:
           node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.devDependencies.vitest='^5.0.3'; p.devDependencies['@vitest/coverage-v8']='^5.0.3'; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');"
           node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('apps/web/package.json','utf8')); p.dependencies.next='^16.3.8'; fs.writeFileSync('apps/web/package.json', JSON.stringify(p,null,2)+'\n');"
 
+      - name: Remove the old installed root graph
+        run: rm -rf node_modules
+
       - name: Regenerate the root lock from the updated manifests
         run: npm install --package-lock-only --ignore-scripts
 
