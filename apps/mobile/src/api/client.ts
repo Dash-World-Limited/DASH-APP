@@ -147,10 +147,10 @@ export function createApiClient({ baseUrl, fetch, session, timeoutMs = 15_000 }:
       try {
         await refresh();
       } catch (error) {
-        // Could not reach the server. The session may well be valid; saying
-        // "signed out" now would be a guess. Stay `restoring` and let the
-        // screen offer a retry — the web client's rule, kept.
-        if (error instanceof ApiError && error.isNetwork) return session.state();
+        // Could not reach the server. Preserve the stored CSRF/session hint,
+        // but surface the network error so the native auth boundary can offer
+        // an explicit retry instead of spinning forever or guessing "signed out".
+        if (error instanceof ApiError && error.isNetwork) throw error;
         throw error;
       }
       return session.state();
