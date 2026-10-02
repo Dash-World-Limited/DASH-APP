@@ -99,7 +99,7 @@ function PartnerQueue() {
       <div className="mx-auto max-w-3xl px-5 py-16">
         <div className="admin-card rounded-3xl p-8 text-center">
           <h1 className="text-2xl font-extrabold">Staff sign-in required</h1>
-          <Link href="/signin?next=/admin/partners" className="mt-5 inline-flex rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-extrabold text-[var(--on-primary)]">
+          <Link href="/admin/signin" className="mt-5 inline-flex rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-extrabold text-[var(--on-primary)]">
             Sign in
           </Link>
         </div>
