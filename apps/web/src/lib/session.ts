@@ -408,6 +408,43 @@ export async function verifyMfa(challengeToken: string, code: string): Promise<S
   return session;
 }
 
+export interface MfaEnrolmentOffer {
+  secret: string;
+  otpauthUri: string;
+}
+
+export interface MfaEnrolmentResult extends Session {
+  recoveryCodes: string[];
+}
+
+/** Begin first-time staff MFA using the password-stage challenge, not a session. */
+export async function beginMfaEnrolment(challengeToken: string): Promise<MfaEnrolmentOffer> {
+  return apiFetch<MfaEnrolmentOffer>('/v1/auth/mfa/enrol/start', {
+    method: 'POST',
+    body: { challengeToken },
+  });
+}
+
+/**
+ * Prove the new authenticator and finish the first privileged sign-in.
+ * Recovery codes are returned exactly once by the API; the session is adopted
+ * in memory like every other completed sign-in.
+ */
+export async function confirmMfaEnrolment(
+  challengeToken: string,
+  code: string,
+): Promise<MfaEnrolmentResult> {
+  const result = await apiFetch<MfaEnrolmentResult>('/v1/auth/mfa/enrol/confirm', {
+    method: 'POST',
+    body: { challengeToken, code },
+  });
+  if (!result.accessToken) {
+    throw new ApiRequestError(0, 'unknown', 'Authenticator setup did not complete. Please try again.');
+  }
+  storeAccess(result);
+  return result;
+}
+
 /**
  * Where a code should be sent: a phone number, or an email address.
  *
