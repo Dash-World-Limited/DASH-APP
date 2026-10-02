@@ -104,7 +104,7 @@ export default function AdminOverviewPage() {
           <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[var(--ink-muted)]">
             This surface can approve partners, inspect live operations and perform audited actions.
           </p>
-          <Link href="/signin?next=/admin" className="mt-6 inline-block">
+          <Link href="/admin/signin" className="mt-6 inline-block">
             <Button size="lg">Sign in securely</Button>
           </Link>
         </div>
