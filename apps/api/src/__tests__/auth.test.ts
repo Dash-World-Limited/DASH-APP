@@ -280,6 +280,62 @@ describe('OTP login', () => {
     });
     expect(replayed.statusCode).toBe(400);
   });
+
+
+  it('does not issue an email OTP to an identity that requires staff MFA', async () => {
+    const email = 'privileged-otp-block@dashapp.test';
+    await context.prisma.identity.create({
+      data: {
+        email,
+        emailVerifiedAt: new Date(),
+        displayName: 'Privileged OTP Block',
+        roles: { create: { role: 'super_admin' } },
+      },
+    });
+
+    const request = await context.app.inject({
+      method: 'POST',
+      url: '/v1/auth/otp/request',
+      payload: { email },
+    });
+
+    expect(request.statusCode).toBe(200);
+    expect(request.json<{ devCode?: string }>().devCode).toBeUndefined();
+  });
+
+  it('refuses an old customer OTP if the identity becomes privileged before redemption', async () => {
+    const email = 'otp-elevated-before-redeem@dashapp.test';
+    const identity = await context.prisma.identity.create({
+      data: {
+        email,
+        emailVerifiedAt: new Date(),
+        displayName: 'Elevated Before Redeem',
+      },
+      select: { id: true },
+    });
+
+    const request = await context.app.inject({
+      method: 'POST',
+      url: '/v1/auth/otp/request',
+      payload: { email },
+    });
+    const code = request.json<{ devCode?: string }>().devCode;
+    expect(code).toMatch(/^\d{6}$/);
+
+    await context.prisma.identityRole.create({
+      data: { identityId: identity.id, role: 'super_admin' },
+    });
+
+    const verify = await context.app.inject({
+      method: 'POST',
+      url: '/v1/auth/otp/verify',
+      payload: { email, code },
+    });
+
+    expect(verify.statusCode).toBe(401);
+    expect(findCookie(verify.headers['set-cookie'], REFRESH_COOKIE)).toBeUndefined();
+    expect(verify.json<{ error: { message: string } }>().error.message).toContain('staff sign-in');
+  });
 });
 
 // ---------------------------------------------------------------------------
