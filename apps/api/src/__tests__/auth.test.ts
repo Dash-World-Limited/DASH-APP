@@ -21,7 +21,7 @@ import {
   TEST_PHONE,
   type TestContext,
 } from './harness.js';
-import { CSRF_COOKIE, REFRESH_COOKIE } from '../auth/cookies.js';
+import { CSRF_COOKIE, REFRESH_COOKIE, csrfCookieOptions, refreshCookieOptions } from '../auth/cookies.js';
 
 let context: TestContext;
 
@@ -153,6 +153,16 @@ describe('login', () => {
     expect(cookie.maxAge).toBe(2_592_000);
     // Not Secure here only because NODE_ENV is `test`; production is asserted
     // separately in config.test.ts and by assertSecureCookieConfig().
+  });
+
+  it('marks auth cookies Secure on an HTTPS staging origin even outside production', () => {
+    const staging = { ...context.config, PUBLIC_WEB_URL: 'https://staging.dashworldng.com' };
+    expect(refreshCookieOptions(staging).secure).toBe(true);
+    expect(csrfCookieOptions(staging).secure).toBe(true);
+
+    const local = { ...context.config, PUBLIC_WEB_URL: 'http://127.0.0.1:3000' };
+    expect(refreshCookieOptions(local).secure).toBe(false);
+    expect(csrfCookieOptions(local).secure).toBe(false);
   });
 
   it('sets the CSRF cookie readable by script, site-wide', async () => {
