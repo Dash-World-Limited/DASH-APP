@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   refresh:
-    name: Refresh safe dependency fixes
+    name: Validate required dependency majors
     runs-on: ubuntu-24.04
     timeout-minutes: 35
 
@@ -49,6 +49,15 @@ jobs:
       - name: Refresh non-breaking native fixes
         continue-on-error: true
         run: npm audit fix --package-lock-only --ignore-scripts --prefix apps/mobile
+
+      - name: Upgrade Vitest security boundary
+        run: npm install --package-lock-only --ignore-scripts --save-dev vitest@5.0.3 @vitest/coverage-v8@5.0.3
+
+      - name: Upgrade Next security boundary
+        run: npm install --package-lock-only --ignore-scripts --workspace @dash/web next@16.3.8
+
+      - name: Refresh Prisma within major 6
+        run: npm install --package-lock-only --ignore-scripts --workspace @dash/db prisma@6 @prisma/client@6
 
       - name: Reinstall exactly from the refreshed locks
         run: |
@@ -90,12 +99,12 @@ jobs:
       - name: Commit verified lockfile fixes
         run: |
           set -euo pipefail
-          git add package-lock.json apps/mobile/package-lock.json
+          git add package.json package-lock.json apps/web/package.json packages/db/package.json apps/mobile/package-lock.json
           if git diff --cached --quiet; then
             echo "No non-breaking lockfile changes were available."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore(deps): apply verified non-breaking security fixes"
+          git commit -m "chore(deps): upgrade audited web and test dependencies"
           git push origin HEAD:chatgpt/dash-next-release
