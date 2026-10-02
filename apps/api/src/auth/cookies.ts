@@ -53,11 +53,11 @@ export interface CookieOptions {
 /**
  * Cookie attributes.
  *
- * `secure` is on in production and off in development. This is not laziness:
- * the dev stack is plain HTTP, and browsers refuse to store a `Secure` cookie
- * over `http://` on anything but localhost. Making it conditional keeps
- * development working while guaranteeing production is TLS-only —
- * `assertSecureCookieConfig()` below fails the boot if that ever inverts.
+ * `secure` is on whenever the configured public origin is HTTPS (and always
+ * in production). Local development stays plain HTTP, but an HTTPS staging
+ * deployment does not lose transport protection merely because NODE_ENV is
+ * deliberately kept out of production mode while unfinished providers remain
+ * mocked. `assertSecureCookieConfig()` below still makes production TLS-only.
  *
  * `sameSite: 'lax'` rather than `'strict'` because the web app and the API run
  * on different ports during development. Ports do not affect same-site
@@ -69,7 +69,7 @@ export interface CookieOptions {
 export function refreshCookieOptions(config: Config): CookieOptions {
   return {
     httpOnly: true,
-    secure: config.NODE_ENV === 'production',
+    secure: config.NODE_ENV === 'production' || config.PUBLIC_WEB_URL.startsWith('https://'),
     sameSite: 'lax',
     path: REFRESH_COOKIE_PATH,
     maxAge: config.REFRESH_TOKEN_TTL_SECONDS,
@@ -80,7 +80,7 @@ export function csrfCookieOptions(config: Config): CookieOptions {
   return {
     // Readable by script by design — see the constant's comment.
     httpOnly: false,
-    secure: config.NODE_ENV === 'production',
+    secure: config.NODE_ENV === 'production' || config.PUBLIC_WEB_URL.startsWith('https://'),
     sameSite: 'lax',
     // Site-wide, because any state-changing request may need to echo it.
     path: '/',
