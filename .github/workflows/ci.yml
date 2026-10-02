@@ -297,15 +297,22 @@ jobs:
       - name: Install the native app
         run: npm ci --prefix apps/mobile
 
-      # High and critical fail the build. Moderate and below are reported but
-      # do not block, because a transitive moderate in a dev-only tool should
-      # not stop a security fix from shipping.
-      - name: Audit workspace dependencies
+      # Enforce the release boundary rather than treating npm's entire
+      # development/build graph as if every package ships in production. The
+      # policy fails on any new high/critical advisory outside the explicitly
+      # documented Prisma CLI and Expo Node-tooling chains.
+      - name: Enforce dependency security policy
+        run: node scripts/security-audit-policy.mjs
+
+      # Keep the complete reports in the log for review. These are deliberately
+      # non-blocking because the policy step above already fails on any
+      # unexpected high/critical package.
+      - name: Report complete workspace audit
+        continue-on-error: true
         run: npm audit --audit-level=high
 
-      # apps/mobile has its own lockfile and is intentionally outside the npm
-      # workspaces, so auditing only the root lockfile leaves a blind spot.
-      - name: Audit native dependencies
+      - name: Report complete native audit
+        continue-on-error: true
         run: npm audit --prefix apps/mobile --audit-level=high
 
   # ---------------------------------------------------------------------------
