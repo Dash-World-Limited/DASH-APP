@@ -4,9 +4,10 @@ on:
   push:
     # The release-candidate line runs the full gate on every push, before any
     # pull request exists; `main` is never pushed to from it. The line moved
-    # from claude/playstore-readiness to claude/awesome-bardeen-95lgbd (a
-    # fast-forward) on 28 September; both stay listed.
-    branches: [main, claude/playstore-readiness, claude/awesome-bardeen-95lgbd]
+    # from claude/playstore-readiness to claude/awesome-bardeen-95lgbd and
+    # now to chatgpt/dash-next-release. Keep every active release-candidate
+    # line explicit so a direct push cannot bypass the full gate.
+    branches: [main, claude/playstore-readiness, claude/awesome-bardeen-95lgbd, chatgpt/dash-next-release]
   pull_request:
     branches: [main]
 
@@ -257,6 +258,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    # gitleaks asks GitHub for pull-request metadata when this workflow runs
+    # for a PR. The default workflow permission is intentionally read-only,
+    # so grant only the extra read scope the scanner needs.
+    permissions:
+      contents: read
+      pull-requests: read
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -264,7 +272,9 @@ jobs:
           fetch-depth: 0
 
       - name: Scan for committed secrets
-        uses: gitleaks/gitleaks-action@v2
+        # Pin the third-party scanner to the exact revision already exercised
+        # by this repository instead of trusting a movable major-version tag.
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -284,11 +294,19 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Install the native app
+        run: npm ci --prefix apps/mobile
+
       # High and critical fail the build. Moderate and below are reported but
       # do not block, because a transitive moderate in a dev-only tool should
       # not stop a security fix from shipping.
-      - name: Audit
+      - name: Audit workspace dependencies
         run: npm audit --audit-level=high
+
+      # apps/mobile has its own lockfile and is intentionally outside the npm
+      # workspaces, so auditing only the root lockfile leaves a blind spot.
+      - name: Audit native dependencies
+        run: npm audit --prefix apps/mobile --audit-level=high
 
   # ---------------------------------------------------------------------------
   # Static analysis
@@ -300,6 +318,12 @@ jobs:
   # ---------------------------------------------------------------------------
   sast:
     name: CodeQL
+    # GitHub CodeQL upload is available for public repositories and for
+    # private repositories with GitHub Advanced Security enabled. This repo is
+    # private, so do not report a configuration limitation as an application
+    # failure. If GHAS is enabled later, set the repository variable
+    # GHAS_ENABLED=true and this gate becomes active without another code edit.
+    if: ${{ github.event.repository.private == false || vars.GHAS_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -330,7 +354,9 @@ jobs:
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    # Dependency Review has the same private-repository GHAS requirement.
+    # npm audit remains mandatory regardless of this optional GitHub feature.
+    if: ${{ github.event_name == 'pull_request' && (github.event.repository.private == false || vars.GHAS_ENABLED == 'true') }}
     timeout-minutes: 10
 
     permissions:
