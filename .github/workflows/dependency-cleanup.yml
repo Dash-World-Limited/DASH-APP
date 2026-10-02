@@ -55,6 +55,10 @@ jobs:
           node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.devDependencies.vitest='^5.0.3'; p.devDependencies['@vitest/coverage-v8']='^5.0.3'; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');"
           node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('apps/web/package.json','utf8')); p.dependencies.next='^16.3.8'; fs.writeFileSync('apps/web/package.json', JSON.stringify(p,null,2)+'\n');"
 
+      - name: Migrate the Vitest JSX transform to Oxc
+        run: |
+          node --input-type=module -e "import fs from 'node:fs'; const f='vitest.config.ts'; let s=fs.readFileSync(f,'utf8'); s=s.replace(\"  esbuild: { jsx: 'automatic' },\", \"  oxc: { jsx: { runtime: 'automatic' } },\"); fs.writeFileSync(f,s);"
+
       - name: Remove the old root dependency graph
         # This is the disposable runner checkout only. The tracked lockfile is
         # regenerated immediately below and is never committed unless the full
@@ -107,7 +111,7 @@ jobs:
       - name: Commit verified lockfile fixes
         run: |
           set -euo pipefail
-          git add package.json package-lock.json apps/web/package.json packages/db/package.json apps/mobile/package-lock.json
+          git add package.json package-lock.json apps/web/package.json packages/db/package.json vitest.config.ts apps/mobile/package-lock.json
           if git diff --cached --quiet; then
             echo "No non-breaking lockfile changes were available."
             exit 0
