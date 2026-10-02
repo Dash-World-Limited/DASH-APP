@@ -16,7 +16,7 @@ export default defineConfig({
   // defaults to the classic transform, so without this a component test fails
   // with "React is not defined" for a reason that has nothing to do with the
   // test.
-  esbuild: { jsx: 'automatic' },
+  oxc: { jsx: { runtime: 'automatic' } },
   test: {
     // `.tsx` as well as `.ts`: the web client's realtime integration is tested
     // through a real component, because "the UI never renders anything from a
