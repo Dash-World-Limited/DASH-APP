@@ -13,7 +13,7 @@ const NAV = [
   { href: '/admin/partners', label: 'Partners', icon: 'people' },
 ] as const;
 
-function NavIcon({ name }: { name: (typeof NAV)[number]['icon'] }) {
+function NavIcon({ name }: { name: 'grid' | 'people' | 'pulse' | 'wallet' | 'box' }) {
   const common = {
     viewBox: '0 0 24 24',
     fill: 'none',
