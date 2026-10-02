@@ -19,6 +19,7 @@ import {
   TEST_EMAIL,
   TEST_PASSWORD,
   TEST_PHONE,
+  TEST_CUSTOMER_PHONE,
   type TestContext,
 } from './harness.js';
 import { CSRF_COOKIE, REFRESH_COOKIE, csrfCookieOptions, refreshCookieOptions } from '../auth/cookies.js';
@@ -209,7 +210,7 @@ describe('OTP login', () => {
     const request = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/request',
-      payload: { phone: TEST_PHONE },
+      payload: { phone: TEST_CUSTOMER_PHONE },
     });
     const code = request.json<{ devCode?: string }>().devCode;
     expect(code).toMatch(/^\d{6}$/);
@@ -217,7 +218,7 @@ describe('OTP login', () => {
     const verify = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/verify',
-      payload: { phone: TEST_PHONE, code },
+      payload: { phone: TEST_CUSTOMER_PHONE, code },
     });
 
     expect(verify.statusCode).toBe(200);
@@ -229,7 +230,7 @@ describe('OTP login', () => {
     const known = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/request',
-      payload: { phone: TEST_PHONE },
+      payload: { phone: TEST_CUSTOMER_PHONE },
     });
     const unknown = await context.app.inject({
       method: 'POST',
@@ -254,21 +255,21 @@ describe('OTP login', () => {
     const request = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/request',
-      payload: { phone: TEST_PHONE },
+      payload: { phone: TEST_CUSTOMER_PHONE },
     });
     const code = request.json<{ devCode: string }>().devCode;
 
     const wrong = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/verify',
-      payload: { phone: TEST_PHONE, code: code === '000000' ? '111111' : '000000' },
+      payload: { phone: TEST_CUSTOMER_PHONE, code: code === '000000' ? '111111' : '000000' },
     });
     expect(wrong.statusCode).toBe(400);
 
     const right = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/verify',
-      payload: { phone: TEST_PHONE, code },
+      payload: { phone: TEST_CUSTOMER_PHONE, code },
     });
     expect(right.statusCode).toBe(200);
 
@@ -276,7 +277,7 @@ describe('OTP login', () => {
     const replayed = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/verify',
-      payload: { phone: TEST_PHONE, code },
+      payload: { phone: TEST_CUSTOMER_PHONE, code },
     });
     expect(replayed.statusCode).toBe(400);
   });
