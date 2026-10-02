@@ -29,6 +29,7 @@ import { Text } from '../ui/Text';
 import type { ServiceId } from './artwork/CategoryArtwork';
 import { CategoryPhoto } from './artwork/CategoryPhoto';
 import { AccountSessionCard } from './auth/AccountSessionCard';
+import { AuthGate } from './auth/AuthGate';
 import { DeleteAccountScreen } from './account/DeleteAccountScreen';
 import { AppSessionProvider, useAppSession } from './auth/AppSessionProvider';
 import { RegisterScreen } from './auth/RegisterScreen';
@@ -119,13 +120,16 @@ function Bootstrap() {
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
       <StatusBar style={palette.statusBar} />
-      <Navigator />
+      <AuthGate>
+        <Navigator />
+      </AuthGate>
     </View>
   );
 }
 
 function Navigator() {
   const { mode, setMode } = useAppMode();
+  const { viewer } = useAppSession();
   const [state, setState] = useState<NavigationState>(() => createNavigationState(mode));
   const route = currentRoute(state);
 
@@ -134,11 +138,19 @@ function Navigator() {
   const back = useCallback(() => setState((current) => goBack(current)), []);
   const changeFace = useCallback(
     (face: AppFace) => {
+      if (face === 'rider' && viewer?.riderStatus !== 'approved') return;
       setMode(face);
       setState((current) => switchFace(current, face));
     },
-    [setMode],
+    [setMode, viewer?.riderStatus],
   );
+
+  useEffect(() => {
+    if (mode === 'rider' && viewer?.riderStatus !== 'approved') {
+      setMode('customer');
+      setState(createNavigationState('customer'));
+    }
+  }, [mode, setMode, viewer?.riderStatus]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -503,14 +515,15 @@ function CustomerAccount({ onBack, onSwitch, onPush }: { onBack: () => void; onS
       <SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" />
       <SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" />
       <SettingsRow icon="bell-outline" title="Notifications" />
-      <SettingsRow icon="motorbike" title="Apply to ride with DASH" onPress={() => onPush({ name: 'customer.rider-apply' })} />
+      {viewer?.riderStatus === 'approved'
+        ? <PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} />
+        : <SettingsRow icon="motorbike" title="Apply to ride with DASH" onPress={() => onPush({ name: 'customer.rider-apply' })} />}
       <SettingsRow icon="lifebuoy" title="Help & support" />
       {/* Play requires both documents and account deletion to be reachable
           from inside the app, not only from a website. */}
       <SettingsRow icon="file-document-outline" title="Terms of Service" onPress={() => onPush({ name: 'customer.legal', params: { slug: 'terms-of-service' } })} />
       <SettingsRow icon="shield-account-outline" title="Privacy Policy" onPress={() => onPush({ name: 'customer.legal', params: { slug: 'privacy-policy' } })} />
       {signedIn ? <SettingsRow icon="account-remove-outline" title="Delete my account" onPress={() => onPush({ name: 'customer.delete-account' })} /> : null}
-      <PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} />
     </DetailPage>
   );
 }
