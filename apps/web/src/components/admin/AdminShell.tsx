@@ -1,11 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { type ReactNode, useState } from 'react';
 
 import { DashWordmark } from '@/components/brand/DashWordmark';
-import { useMe } from '@/lib/session';
+import { signOut, useMe } from '@/lib/session';
 import { AdminThemeToggle, useAdminTheme } from './AdminTheme';
 
 const NAV = [
@@ -36,9 +36,45 @@ function NavIcon({ name }: { name: (typeof NAV)[number]['icon'] }) {
 
 export function AdminShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { me } = useMe();
+  const router = useRouter();
+  const { me, loaded } = useMe();
   const { theme, setTheme } = useAdminTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // The sign-in screen uses the same palette but deliberately no privileged
+  // navigation chrome: no dashboard information is mounted before auth.
+  if (pathname === '/admin/signin') {
+    return (
+      <div data-surface="admin" data-admin-theme={theme} className="min-h-screen bg-[var(--surface)] text-[var(--ink)]">
+        {children}
+      </div>
+    );
+  }
+
+  // UI gate only; every API action still authorises independently. Keeping a
+  // customer or ordinary staff session out of this shell avoids presenting
+  // controls they can never use and makes "Super Admin" mean exactly that.
+  if (loaded && me && !me.roles.includes('super_admin')) {
+    return (
+      <div data-surface="admin" data-admin-theme={theme} className="min-h-screen bg-[var(--surface)] px-5 py-16 text-[var(--ink)]">
+        <div className="admin-card mx-auto max-w-xl rounded-3xl p-8 text-center">
+          <DashWordmark height="1.2rem" />
+          <p className="admin-kicker mt-8">Restricted</p>
+          <h1 className="mt-2 text-2xl font-extrabold">Super Admin access only</h1>
+          <p className="mt-3 text-sm leading-6 text-[var(--ink-muted)]">
+            This signed-in account does not hold the Super Admin role.
+          </p>
+          <button
+            type="button"
+            onClick={() => void signOut().then(() => router.replace('/admin/signin'))}
+            className="mt-6 min-h-11 rounded-xl bg-[var(--primary)] px-5 text-sm font-extrabold text-[var(--on-primary)]"
+          >
+            Use another account
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const name = me?.identity.displayName ?? me?.identity.email ?? 'DASH administrator';
   const initials = name
@@ -96,6 +132,13 @@ export function AdminShell({ children }: { children: ReactNode }) {
         <p className="text-[10px] leading-4 text-[var(--admin-sidebar-muted)]">
           Sensitive actions are audited and may require MFA step-up.
         </p>
+        <button
+          type="button"
+          onClick={() => void signOut().then(() => router.replace('/admin/signin'))}
+          className="mt-3 w-full rounded-xl border border-white/10 px-3 py-2.5 text-left text-xs font-bold text-[var(--admin-sidebar-muted)] transition hover:bg-white/[0.05] hover:text-[var(--admin-sidebar-ink)]"
+        >
+          Sign out
+        </button>
       </div>
     </div>
   );
