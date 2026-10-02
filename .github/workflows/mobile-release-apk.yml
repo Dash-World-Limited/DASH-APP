@@ -7,6 +7,10 @@ on:
       - chatgpt/dash-next-release
     paths:
       - .github/workflows/mobile-release-apk.yml
+      # Root test-tooling changes (for example Vitest security upgrades) affect
+      # the native verification steps even when apps/mobile itself is unchanged.
+      - package.json
+      - package-lock.json
       - apps/mobile/**
       - packages/domain/**
   workflow_dispatch:
