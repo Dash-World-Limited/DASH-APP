@@ -64,12 +64,24 @@ const PROBLEM_FIELD: Record<SignupProfileProblem, { field: RegistrationField; me
 /** E.164, as the server requires. */
 export const PHONE_E164 = /^\+[1-9]\d{7,14}$/;
 
+/**
+ * Let people type a phone number the way the UI itself displays it.
+ *
+ * The server stores canonical E.164, but rejecting harmless spaces, dashes or
+ * parentheses on the device made the form contradict its own placeholder
+ * (`+234 801 234 5678`). Normalise formatting before both validation and
+ * submission; a local-only `080...` number still fails because it has no +country code.
+ */
+export function normalisePhone(value: string): string {
+  return value.trim().replace(/[\s()-]/g, '');
+}
+
 /** Every problem with the form, by field. Empty when it can be sent. */
 export function registrationProblems(form: RegistrationForm): Partial<Record<RegistrationField, string>> {
   const problems: Partial<Record<RegistrationField, string>> = {};
   const email = emailProblem(form.email);
   if (email) problems.email = email;
-  if (!PHONE_E164.test(form.phone.trim())) problems.phone = 'Enter your phone number with the country code, e.g. +234…';
+  if (!PHONE_E164.test(normalisePhone(form.phone))) problems.phone = 'Enter your phone number with the country code, e.g. +234…';
   for (const problem of signupProfileProblems({
     fullName: form.fullName,
     state: form.state,
@@ -93,7 +105,7 @@ export function signupBody(form: RegistrationForm): Record<string, unknown> {
   return {
     name: form.fullName.trim(),
     email: normaliseEmail(form.email),
-    phone: form.phone.trim(),
+    phone: normalisePhone(form.phone),
     state: form.state,
     cityArea: form.cityArea.trim(),
     usageIntent: form.usageIntent,
