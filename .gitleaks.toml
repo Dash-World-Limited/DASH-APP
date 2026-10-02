@@ -1,0 +1,13 @@
+title = "DASH APP secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic credential-shaped literals used by redaction tests"
+regexTarget = "secret"
+regexes = [
+  '''gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH''',
+  '''unique-apikey-3d81f5c0a94e2b''',
+  '''deep-apikey-4f19c7a2e05b83'''
+]
