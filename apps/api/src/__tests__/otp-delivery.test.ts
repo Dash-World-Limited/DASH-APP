@@ -9,7 +9,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DeliveryReceipt, EmailPort, SmsPort } from '@dash/domain/ports';
-import { createTestContext, TEST_EMAIL, TEST_PHONE, type TestContext } from './harness.js';
+import { createTestContext, TEST_CUSTOMER_EMAIL, TEST_CUSTOMER_PHONE, type TestContext } from './harness.js';
 import { describeDeliveryFailure, otpEmailContent, otpSmsBody } from '../auth/otp-delivery.js';
 
 const UNKNOWN_PHONE = '+2347000009999';
@@ -105,12 +105,12 @@ describe('per-destination cooldown', () => {
   afterAll(async () => context?.close());
 
   it('sends once, then holds for the cooldown, and the first code still works', async () => {
-    const first = await requestCode(context, { phone: TEST_PHONE });
+    const first = await requestCode(context, { phone: TEST_CUSTOMER_PHONE });
     const code = first.json<{ devCode?: string }>().devCode;
     expect(code).toMatch(/^\d{6}$/);
     expect(sms.sent).toHaveLength(1);
 
-    const again = await requestCode(context, { phone: TEST_PHONE });
+    const again = await requestCode(context, { phone: TEST_CUSTOMER_PHONE });
     expect(again.statusCode).toBe(200);
     expect(sms.sent).toHaveLength(1); // nothing sent inside the cooldown
     expect(again.json<{ devCode?: string }>().devCode).toBeUndefined();
@@ -118,13 +118,13 @@ describe('per-destination cooldown', () => {
     const verify = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/verify',
-      payload: { phone: TEST_PHONE, code },
+      payload: { phone: TEST_CUSTOMER_PHONE, code },
     });
     expect(verify.statusCode).toBe(200);
   });
 
   it('answers a held request exactly like a number with no account', async () => {
-    const held = await requestCode(context, { phone: TEST_PHONE });
+    const held = await requestCode(context, { phone: TEST_CUSTOMER_PHONE });
     const unknown = await requestCode(context, { phone: UNKNOWN_PHONE });
     expect(held.statusCode).toBe(unknown.statusCode);
     expect(publicShape(held.body)).toBe(publicShape(unknown.body));
@@ -136,11 +136,10 @@ describe('per-destination cooldown', () => {
   });
 
   it('emails a verified address through the email port, not the SMS one', async () => {
-    await context.prisma.identity.update({ where: { id: context.identityId }, data: { emailVerifiedAt: new Date() } });
-    const response = await requestCode(context, { email: TEST_EMAIL });
+    const response = await requestCode(context, { email: TEST_CUSTOMER_EMAIL });
     const code = response.json<{ devCode?: string }>().devCode;
     expect(email.sent).toHaveLength(1);
-    expect(email.sent[0]?.to).toBe(TEST_EMAIL);
+    expect(email.sent[0]?.to).toBe(TEST_CUSTOMER_EMAIL);
     expect(email.sent[0]?.subject).toBe(`${code} is your DASH sign-in code`);
     expect(email.sent[0]?.reference).toBe('otp_login');
   });
@@ -158,7 +157,7 @@ describe('hourly cap per destination', () => {
 
   it('stops sending to one destination after the cap, however many requests arrive', async () => {
     for (let i = 0; i < 4; i += 1) {
-      const response = await requestCode(context, { phone: TEST_PHONE });
+      const response = await requestCode(context, { phone: TEST_CUSTOMER_PHONE });
       expect(response.statusCode).toBe(200);
     }
     expect(sms.sent).toHaveLength(2);
@@ -178,7 +177,7 @@ describe('a delivery that fails', () => {
   afterAll(async () => context?.close());
 
   it('is answered like any other request, so it cannot reveal the account', async () => {
-    const failed = await requestCode(context, { phone: TEST_PHONE });
+    const failed = await requestCode(context, { phone: TEST_CUSTOMER_PHONE });
     const unknown = await requestCode(context, { phone: UNKNOWN_PHONE });
     expect(failed.statusCode).toBe(200);
     expect(failed.json<{ devCode?: string }>().devCode).toBeUndefined();
@@ -187,7 +186,7 @@ describe('a delivery that fails', () => {
 
   it('leaves no code that could be used', async () => {
     const outstanding = await context.prisma.otpChallenge.count({
-      where: { destination: TEST_PHONE, consumedAt: null },
+      where: { destination: TEST_CUSTOMER_PHONE, consumedAt: null },
     });
     expect(outstanding).toBe(0);
   });
