@@ -34,8 +34,10 @@ describe('the registration form', () => {
     }
   });
 
-  it('requires the phone in international format, and never claims to verify it', () => {
+  it('requires the phone in international format, accepts harmless formatting, and never claims to verify it', () => {
     expect(registrationProblems({ ...complete, phone: '08031234567' })).toHaveProperty('phone');
+    expect(registrationProblems({ ...complete, phone: '+234 803 123 4567' })).toEqual({});
+    expect(signupBody({ ...complete, phone: '+234 803-123-4567' })).toMatchObject({ phone: '+2348031234567' });
     expect(JSON.stringify(signupBody(complete))).not.toMatch(/verif/i);
   });
 
