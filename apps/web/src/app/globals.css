@@ -445,3 +445,84 @@ body {
   background: linear-gradient(to right, transparent, var(--line-strong), transparent);
   border: 0;
 }
+
+
+/* ============================================================================
+   DASH Super Admin — mirrors the approved native app palette.
+   ============================================================================ */
+[data-surface='admin'] {
+  --surface: #F8F7F2;
+  --surface-raised: #FFFFFF;
+  --surface-sunken: #F4F2EC;
+  --ink: #0B0D10;
+  --ink-muted: #6E6B64;
+  --ink-inverted: #FFFFFF;
+  --line: #ECE7DD;
+  --line-strong: #DDD5C6;
+  --primary: #A67834;
+  --primary-hover: #8C6429;
+  --primary-soft: #F3E8D6;
+  --on-primary: #FFFFFF;
+  --accent: #A67834;
+  --accent-soft: #F3E8D6;
+  --success: #1F6B3B;
+  --success-soft: #E5F0E8;
+  --danger: #C8372F;
+  --danger-soft: #F9E7E5;
+  --dash-wordmark-bronze: #B18546;
+  --admin-sidebar: #111214;
+  --admin-sidebar-ink: #F4F1EA;
+  --admin-sidebar-muted: #9D988F;
+  --admin-card-shadow: 0 1px 2px rgb(11 13 16 / 0.03), 0 14px 34px -24px rgb(11 13 16 / 0.22);
+
+  color: var(--ink);
+  background: var(--surface);
+}
+
+[data-surface='admin'][data-admin-theme='dark'] {
+  --surface: #0E0F11;
+  --surface-raised: #17181B;
+  --surface-sunken: #1D1E21;
+  --ink: #F4F1EA;
+  --ink-muted: #A8A399;
+  --ink-inverted: #0B0D10;
+  --line: #2B2A27;
+  --line-strong: #3B3934;
+  --primary: #C4924A;
+  --primary-hover: #AE8040;
+  --primary-soft: #2E2517;
+  --on-primary: #0B0D10;
+  --accent: #C4924A;
+  --accent-soft: #2E2517;
+  --success: #4CAF74;
+  --success-soft: #16281D;
+  --danger: #E5605A;
+  --danger-soft: #2E1715;
+  --dash-wordmark-bronze: #B18546;
+  --admin-sidebar: #090A0B;
+  --admin-sidebar-ink: #F4F1EA;
+  --admin-sidebar-muted: #8E8A82;
+  --admin-card-shadow: 0 1px 0 rgb(255 255 255 / 0.025) inset, 0 20px 48px -34px rgb(0 0 0 / 0.95);
+}
+
+.admin-card {
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  box-shadow: var(--admin-card-shadow);
+}
+
+.admin-kicker {
+  color: var(--primary);
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.admin-grid-glow {
+  background-image:
+    radial-gradient(circle at 15% 0%, color-mix(in srgb, var(--primary) 10%, transparent), transparent 34%),
+    linear-gradient(color-mix(in srgb, var(--line) 50%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--line) 50%, transparent) 1px, transparent 1px);
+  background-size: auto, 36px 36px, 36px 36px;
+}
