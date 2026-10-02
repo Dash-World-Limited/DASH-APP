@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   refresh:
-    name: Validate required dependency majors
+    name: Final safe audit refresh
     runs-on: ubuntu-24.04
     timeout-minutes: 35
 
@@ -37,41 +37,20 @@ jobs:
             package-lock.json
             apps/mobile/package-lock.json
 
-      - name: Install the current locks
+      - name: Install the verified locks
         run: |
           npm ci
           npm ci --prefix apps/mobile
 
-      - name: Refresh non-breaking root fixes
+      - name: Apply remaining non-breaking root fixes
         continue-on-error: true
         run: npm audit fix --package-lock-only --ignore-scripts
 
-      - name: Refresh non-breaking native fixes
+      - name: Apply remaining non-breaking native fixes
         continue-on-error: true
         run: npm audit fix --package-lock-only --ignore-scripts --prefix apps/mobile
 
-      - name: Set audited major versions in manifests
-        run: |
-          node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.devDependencies.vitest='^5.0.3'; p.devDependencies['@vitest/coverage-v8']='^5.0.3'; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');"
-          node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('apps/web/package.json','utf8')); p.dependencies.next='^16.3.8'; p.scripts.dev='next dev --webpack --port 3000'; p.scripts.build='next build --webpack'; fs.writeFileSync('apps/web/package.json', JSON.stringify(p,null,2)+'\n');"
-
-      - name: Migrate the Vitest JSX transform to Oxc
-        run: |
-          node --input-type=module -e "import fs from 'node:fs'; const f='vitest.config.ts'; let s=fs.readFileSync(f,'utf8'); s=s.replace(\"  esbuild: { jsx: 'automatic' },\", \"  oxc: { jsx: { runtime: 'automatic' } },\"); fs.writeFileSync(f,s);"
-
-      - name: Remove the old root dependency graph
-        # This is the disposable runner checkout only. The tracked lockfile is
-        # regenerated immediately below and is never committed unless the full
-        # verification suite passes.
-        run: rm -rf node_modules package-lock.json
-
-      - name: Regenerate the root lock from the updated manifests
-        run: npm install --package-lock-only --ignore-scripts
-
-      - name: Refresh Prisma within major 6
-        run: npm update --package-lock-only --ignore-scripts --workspace @dash/db prisma @prisma/client
-
-      - name: Reinstall exactly from the refreshed locks
+      - name: Reinstall exactly from candidate locks
         run: |
           npm ci
           npm ci --prefix apps/mobile
@@ -104,19 +83,23 @@ jobs:
         continue-on-error: true
         run: npm audit --audit-level=high
 
-      - name: Report remaining native advisories
+      - name: Report native production advisories
+        continue-on-error: true
+        run: npm audit --prefix apps/mobile --omit=dev --audit-level=high
+
+      - name: Report full native toolchain advisories
         continue-on-error: true
         run: npm audit --prefix apps/mobile --audit-level=high
 
-      - name: Commit verified lockfile fixes
+      - name: Commit verified safe fixes
         run: |
           set -euo pipefail
-          git add package.json package-lock.json apps/web/package.json packages/db/package.json vitest.config.ts apps/mobile/package-lock.json
+          git add package-lock.json apps/mobile/package-lock.json
           if git diff --cached --quiet; then
-            echo "No non-breaking lockfile changes were available."
+            echo "No additional safe lockfile fixes were available."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore(deps): upgrade audited web and test dependencies"
+          git commit -m "chore(deps): apply remaining safe audit fixes"
           git push origin HEAD:chatgpt/dash-next-release
