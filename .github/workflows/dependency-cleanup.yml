@@ -1,4 +1,4 @@
-name: Dependency audit classification (one-shot)
+name: Dependency audit keys (one-shot)
 
 on:
   push:
@@ -6,25 +6,22 @@ on:
       - chatgpt/dash-next-release
     paths:
       - .github/workflows/dependency-cleanup.yml
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   classify:
-    name: Classify remaining advisories
+    name: Enumerate residual audit keys
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
-      - name: Check out the release branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: chatgpt/dash-next-release
 
-      - name: Use Node 22
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -32,38 +29,16 @@ jobs:
             package-lock.json
             apps/mobile/package-lock.json
 
-      - name: Install locked dependencies
+      - name: Install
         run: |
           npm ci
           npm ci --prefix apps/mobile
 
-      - name: Root shipped runtime audit
-        continue-on-error: true
-        run: npm audit --omit=dev --omit=optional --audit-level=high
-
-      - name: Root runtime including optional integrations
-        continue-on-error: true
-        run: npm audit --omit=dev --audit-level=high
-
-      - name: Root complete toolchain audit
-        continue-on-error: true
-        run: npm audit --audit-level=high
-
-      - name: Explain remaining root chains
-        continue-on-error: true
+      - name: Capture audit JSON
         run: |
-          npm explain deepmerge-ts
-          npm explain gaxios
-          npm explain uuid
+          npm audit --json > root-audit.json || true
+          npm audit --prefix apps/mobile --json > mobile-audit.json || true
 
-      - name: Native shipped runtime audit
-        continue-on-error: true
-        run: npm audit --prefix apps/mobile --omit=dev --omit=optional --audit-level=high
-
-      - name: Native runtime including optional integrations
-        continue-on-error: true
-        run: npm audit --prefix apps/mobile --omit=dev --audit-level=high
-
-      - name: Native complete toolchain audit
-        continue-on-error: true
-        run: npm audit --prefix apps/mobile --audit-level=high
+      - name: Print vulnerability package keys
+        run: |
+          node --input-type=module -e "import fs from 'node:fs'; for (const [label,file] of [['root','root-audit.json'],['mobile','mobile-audit.json']]) { const j=JSON.parse(fs.readFileSync(file,'utf8')); const rows=Object.entries(j.vulnerabilities ?? {}).map(([name,v])=>({name,severity:v.severity,direct:v.isDirect,range:v.range,fix:typeof v.fixAvailable==='object' ? v.fixAvailable.name+'@'+v.fixAvailable.version : v.fixAvailable})); console.log(label, JSON.stringify(rows)); }"
