@@ -1,0 +1,99 @@
+name: Dependency cleanup (one-shot)
+
+on:
+  push:
+    branches:
+      - chatgpt/dash-next-release
+    paths:
+      - .github/workflows/dependency-cleanup.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dependency-cleanup-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh safe dependency fixes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out the release branch
+        uses: actions/checkout@v4
+        with:
+          ref: chatgpt/dash-next-release
+          fetch-depth: 0
+
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/mobile/package-lock.json
+
+      - name: Install the current locks
+        run: |
+          npm ci
+          npm ci --prefix apps/mobile
+
+      - name: Refresh non-breaking root fixes
+        run: npm audit fix --package-lock-only --ignore-scripts
+
+      - name: Refresh non-breaking native fixes
+        run: npm audit fix --package-lock-only --ignore-scripts --prefix apps/mobile
+
+      - name: Reinstall exactly from the refreshed locks
+        run: |
+          npm ci
+          npm ci --prefix apps/mobile
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Coverage thresholds
+        run: npx vitest run --coverage packages/domain
+
+      - name: Build web
+        run: npm run build --workspace @dash/web
+
+      - name: Typecheck native app
+        run: npm run typecheck --prefix apps/mobile
+
+      - name: Native unit tests
+        run: npx vitest run apps/mobile/src
+
+      - name: Report remaining root advisories
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
+      - name: Report remaining native advisories
+        continue-on-error: true
+        run: npm audit --prefix apps/mobile --audit-level=high
+
+      - name: Commit verified lockfile fixes
+        run: |
+          set -euo pipefail
+          git add package-lock.json apps/mobile/package-lock.json
+          if git diff --cached --quiet; then
+            echo "No non-breaking lockfile changes were available."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(deps): apply verified non-breaking security fixes"
+          git push origin HEAD:chatgpt/dash-next-release
