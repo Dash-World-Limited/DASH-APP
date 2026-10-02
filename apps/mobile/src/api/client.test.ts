@@ -78,11 +78,12 @@ describe('restoring a session on a cold start', () => {
     expect(store.value).toBeNull();
   });
 
-  it('stays `restoring` when the server cannot be reached — no flash of "Sign in"', async () => {
+  it('surfaces a retryable network error without throwing the stored session away', async () => {
     const { api, session, store } = harness(() => Promise.reject(new TypeError('Network request failed')), 'csrf-1');
-    expect(await api.restore()).toBe('restoring');
+    await expect(api.restore()).rejects.toMatchObject({ status: 0, code: 'network' });
     expect(session.state()).toBe('restoring');
-    // Nothing thrown away: the session may be perfectly valid.
+    // Nothing thrown away: the session may be perfectly valid and can be
+    // restored when the person taps Retry.
     expect(store.value).toBe('csrf-1');
   });
 });
