@@ -14,5 +14,6 @@ regexes = [
   # Exact values only: do not broaden this to a file/path/rule exemption.
   '''YpTt1KNH1JtX0eaiUaPNFWHApAQl8BggrrhxcNgy604=''',
   '''k9Xm2Qp7Rt4Vw8Zb1Nc5Hj3Lf6Yg0Ds-aVbNmQwErTyUi''',
-  '''Pq3Wz8Rx1Ty6Ui4Op9As2Df7Gh5Jk0Lm-zXcVbNmQwErT'''
+  '''Pq3Wz8Rx1Ty6Ui4Op9As2Df7Gh5Jk0Lm-zXcVbNmQwErT''',
+  '''MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY='''
 ]
