@@ -47,6 +47,7 @@ jobs:
       # unset and the APK is a client-only build — normaliseBaseUrl rejects an
       # empty value, so the app shows its "not connected" state rather than
       # pointing at nothing.
+      # Repository variable set for connected staging device builds.
       EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
 
     steps:
