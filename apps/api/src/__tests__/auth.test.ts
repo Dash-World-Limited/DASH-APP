@@ -18,7 +18,6 @@ import {
   signInWithPassword,
   TEST_EMAIL,
   TEST_PASSWORD,
-  TEST_PHONE,
   TEST_CUSTOMER_PHONE,
   type TestContext,
 } from './harness.js';
