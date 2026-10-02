@@ -530,6 +530,21 @@ const schema = shape
       if (weakness) fail('BREVO_WEBHOOK_TOKEN', `BREVO_WEBHOOK_TOKEN ${weakness}; generate a long random value`);
     }
 
+    // A remotely reachable full DASH deployment is already handling real
+    // identities even when it deliberately keeps NODE_ENV=development so some
+    // unfinished providers can remain non-production. HTTPS is the boundary:
+    // local HTTP development may disable MFA; connected staging may not.
+    if (
+      env.DEPLOYMENT_PROFILE === 'full' &&
+      env.PUBLIC_WEB_URL.startsWith('https://') &&
+      !env.MFA_ENABLED
+    ) {
+      fail(
+        'MFA_ENABLED',
+        'Administrator MFA cannot be disabled on an HTTPS full deployment',
+      );
+    }
+
     if (env.NODE_ENV !== 'production') return;
 
     // --- Production-only guards ---------------------------------------------
