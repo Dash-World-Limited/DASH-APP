@@ -53,7 +53,7 @@ jobs:
       - name: Set audited major versions in manifests
         run: |
           node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.devDependencies.vitest='^5.0.3'; p.devDependencies['@vitest/coverage-v8']='^5.0.3'; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');"
-          node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('apps/web/package.json','utf8')); p.dependencies.next='^16.3.8'; fs.writeFileSync('apps/web/package.json', JSON.stringify(p,null,2)+'\n');"
+          node --input-type=module -e "import fs from 'node:fs'; const p=JSON.parse(fs.readFileSync('apps/web/package.json','utf8')); p.dependencies.next='^16.3.8'; p.scripts.dev='next dev --webpack --port 3000'; p.scripts.build='next build --webpack'; fs.writeFileSync('apps/web/package.json', JSON.stringify(p,null,2)+'\n');"
 
       - name: Migrate the Vitest JSX transform to Oxc
         run: |
