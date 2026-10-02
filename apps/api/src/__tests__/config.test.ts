@@ -465,6 +465,39 @@ describe('reporting', () => {
 });
 
 describe('MFA and encryption configuration', () => {
+  it('refuses HTTPS full staging with MFA turned off', () => {
+    resetConfigCache();
+    let message = '';
+    try {
+      loadConfig({
+        NODE_ENV: 'development',
+        DATABASE_URL: 'postgresql://dash_runtime:pw@db.internal:5432/dashdb_staging',
+        JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+        JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+        PUBLIC_WEB_URL: 'https://staging.dashworldng.com',
+        DEPLOYMENT_PROFILE: 'full',
+        MFA_ENABLED: 'false',
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('MFA_ENABLED');
+  });
+
+  it('still permits MFA-off for local HTTP development', () => {
+    resetConfigCache();
+    const config = loadConfig({
+      NODE_ENV: 'development',
+      DATABASE_URL: 'file:./local-dev.db',
+      JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+      JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+      PUBLIC_WEB_URL: 'http://127.0.0.1:3000',
+      DEPLOYMENT_PROFILE: 'full',
+      MFA_ENABLED: 'false',
+    });
+    expect(config.MFA_ENABLED).toBe(false);
+  });
+
   it('refuses production with MFA turned off', () => {
     // A single leaked staff password would otherwise reach the money.
     expectRefusal({ MFA_ENABLED: 'false' }, 'MFA_ENABLED');
