@@ -36,6 +36,8 @@ const totp = new TOTP({
 export const TEST_PASSWORD = 'HarnessOnly!2026';
 export const TEST_EMAIL = 'harness-staff@dashapp.test';
 export const TEST_PHONE = '+2347000009001';
+export const TEST_CUSTOMER_EMAIL = 'harness-customer@dashapp.test';
+export const TEST_CUSTOMER_PHONE = '+2347000009002';
 
 export interface TestContext {
   app: FastifyInstance;
@@ -189,6 +191,19 @@ export async function createTestContext(
       roles: { create: { role: 'support_agent' } },
     },
     select: { id: true },
+  });
+
+  // Keep OTP tests on a genuine customer identity. Staff OTP is intentionally
+  // forbidden because staff must complete password + MFA instead.
+  await prisma.identity.create({
+    data: {
+      email: TEST_CUSTOMER_EMAIL,
+      emailVerifiedAt: new Date(),
+      phone: TEST_CUSTOMER_PHONE,
+      displayName: 'Harness Customer',
+      roles: { create: { role: 'customer' } },
+      customer: { create: {} },
+    },
   });
 
   resetConfigCache();
