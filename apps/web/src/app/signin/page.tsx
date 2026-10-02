@@ -298,29 +298,31 @@ function SignInForm() {
         )}
       </Card>
 
-      <details className="mt-6 rounded-xl border p-4 text-sm">
-        <summary className="cursor-pointer font-semibold">Development accounts</summary>
-        <ul className="mt-3 space-y-1 text-graphite-600">
-          <li>
-            <strong>Customer</strong> — code to <code>+2347000000201</code>
-          </li>
-          <li>
-            <strong>Rider</strong> — code to <code>+2347000000301</code>
-          </li>
-          <li>
-            <strong>Vendor</strong> — <code>iya-kemi-kitchen@dashapp.test</code>
-          </li>
-          <li>
-            <strong>Ops</strong> — <code>ops@dashapp.test</code>
-          </li>
-          <li>
-            <strong>Admin</strong> — <code>admin@dashapp.test</code>
-          </li>
-        </ul>
-        <p className="mt-3 text-graphite-400">
-          All passwords are <code>DashDev!2026</code>. Every account is fictional.
-        </p>
-      </details>
+      {process.env.NODE_ENV !== 'production' ? (
+        <details className="mt-6 rounded-xl border p-4 text-sm">
+          <summary className="cursor-pointer font-semibold">Development accounts</summary>
+          <ul className="mt-3 space-y-1 text-graphite-600">
+            <li>
+              <strong>Customer</strong> — code to <code>+2347000000201</code>
+            </li>
+            <li>
+              <strong>Rider</strong> — code to <code>+2347000000301</code>
+            </li>
+            <li>
+              <strong>Vendor</strong> — <code>iya-kemi-kitchen@dashapp.test</code>
+            </li>
+            <li>
+              <strong>Ops</strong> — <code>ops@dashapp.test</code>
+            </li>
+            <li>
+              <strong>Admin</strong> — <code>admin@dashapp.test</code>
+            </li>
+          </ul>
+          <p className="mt-3 text-graphite-400">
+            All passwords are <code>DashDev!2026</code>. Every account is fictional.
+          </p>
+        </details>
+      ) : null}
     </main>
   );
 }
