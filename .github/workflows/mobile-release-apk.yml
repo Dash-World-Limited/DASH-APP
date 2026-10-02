@@ -15,6 +15,10 @@ on:
       - packages/domain/**
   workflow_dispatch:
 
+# A dependency-refresh workflow may commit with GITHUB_TOKEN. GitHub suppresses
+# follow-on workflow triggers for those bot pushes to prevent recursive loops,
+# so after an automated dependency commit this workflow must be dispatched
+# explicitly or retriggered by a later qualifying human/app commit.
 concurrency:
   group: mobile-release-apk-${{ github.ref }}
   cancel-in-progress: true
