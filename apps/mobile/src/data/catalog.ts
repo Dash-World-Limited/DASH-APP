@@ -25,6 +25,8 @@ import type { Kobo } from '@dash/domain/money';
 import type { ImageSourcePropType } from 'react-native';
 
 import type { ApiClient } from '../api/client';
+import { COMPILED_API_URL } from '../api/buildConfig';
+import { normaliseBaseUrl } from '../api/client';
 import type { MerchantModel, ProductModel, ProductOptionGroup, ShopCategoryModel } from './models';
 
 // ---------------------------------------------------------------- API shapes (only what is used)
@@ -80,7 +82,20 @@ export interface ApiSearchResult {
 
 /** An image the app can load, or null. `https` URLs only: keys are not resolvable yet. */
 export function imageSource(key: string | null | undefined): ImageSourcePropType | null {
-  return typeof key === 'string' && /^https:\/\//i.test(key.trim()) ? { uri: key.trim() } : null;
+  if (typeof key !== 'string') return null;
+  const value = key.trim();
+  if (/^https:\/\//i.test(value)) return { uri: value };
+
+  // Local staging storage signs through the API itself and therefore returns
+  // a relative /v1/files/... URL. The connected staging APK has its API origin
+  // compiled into the bundle, so resolve only that known internal path against
+  // that trusted origin. Raw storage keys are never rendered.
+  if (/^\/v1\/files\//i.test(value)) {
+    const base = normaliseBaseUrl(COMPILED_API_URL);
+    return base ? { uri: `${base}${value}` } : null;
+  }
+
+  return null;
 }
 
 /** The vendor categories the Shops service holds, in words. */
