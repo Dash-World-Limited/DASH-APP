@@ -55,7 +55,7 @@ import { CustomerCheckoutScreen } from './orders/CheckoutScreen';
 import { OrderChatScreen } from './chat/OrderChatScreen';
 import { CustomerOrdersScreen, CustomerTrackingScreen } from './orders/CustomerOrderScreens';
 import { RiderFlowProvider, useRiderFlow } from './rider/RiderFlowProvider';
-import { RiderCompleteScreen, RiderDeliveryScreen, RiderOfferScreen, RiderOnlineScreen, RiderOrdersScreen, RiderRouteScreen } from './rider/RiderScreens';
+import { RiderCompleteScreen, RiderDeliveryScreen, RiderHistoryDetailScreen, RiderOfferScreen, RiderOnlineScreen, RiderOrdersScreen, RiderRouteScreen } from './rider/RiderScreens';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -233,7 +233,7 @@ function RouteView({
     case 'rider.earnings':
       return <RiderEarnings />;
     case 'rider.orders':
-      return <RiderOrdersScreen onOpen={() => onPush({ name: 'rider.delivery' })} />;
+      return <RiderOrdersScreen onOpen={() => onPush({ name: 'rider.delivery' })} onOpenHistory={(id) => onPush({ name: 'rider.history-detail', params: { id } })} />;
     case 'rider.inbox':
       return <RiderInbox />;
     case 'rider.profile':
@@ -244,6 +244,8 @@ function RouteView({
       return <RiderOfferScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} />;
     case 'rider.delivery':
       return <RiderDeliveryScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} onChat={(id) => onPush({ name: 'rider.chat', params: { id } })} />;
+    case 'rider.history-detail':
+      return <RiderHistoryDetailScreen orderId={route.params?.id ?? ''} onBack={onBack} />;
     case 'rider.chat':
       return <OrderChatScreen orderId={route.params?.id ?? ''} onBack={onBack} />;
     case 'rider.route':
