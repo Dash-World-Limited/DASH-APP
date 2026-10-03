@@ -38,52 +38,51 @@ function blockingNames(report) {
 }
 
 /**
- * Resolve npm audit's propagated parent entries to the packages that
- * actually carry high/critical advisory objects.
+ * Return only packages that carry an actual high/critical advisory object.
  *
- * npm marks every parent in a vulnerable dependency chain with the child's
- * severity. Walking the string links in `via` lets the policy allow only a
- * known advisory root instead of allowlisting broad parents such as
- * `react-native`, which would hide a future unrelated runtime advisory.
- * Unknown audit shapes fail closed by treating the package itself as a root.
+ * npm audit propagates severity up the dependency graph. A package such as
+ * react-native can therefore be labelled "high" solely because a build-time
+ * dependency beneath it is vulnerable. The advisory objects inside `via` are
+ * the source of truth: propagated parents contain string links, while the
+ * package that actually owns the advisory contains the advisory object.
+ *
+ * This keeps the exception narrow. A future direct React Native advisory would
+ * appear here as `react-native` and fail the gate even if React Native is also
+ * a parent of an already-known tooling advisory.
  */
-function advisoryRoots(report, packageName, seen = new Set()) {
-  if (seen.has(packageName)) return new Set();
-  seen.add(packageName);
-
-  const vulnerability = report.vulnerabilities[packageName];
-  if (!vulnerability || !Array.isArray(vulnerability.via)) {
-    return new Set([packageName]);
-  }
-
+function directAdvisoryRoots(report) {
   const roots = new Set();
-  for (const via of vulnerability.via) {
-    if (typeof via === 'string') {
-      for (const root of advisoryRoots(report, via, new Set(seen))) roots.add(root);
-      continue;
-    }
 
-    if (via && typeof via === 'object') {
-      const severity = LEVEL[via.severity] ?? 0;
-      if (severity >= LEVEL.high) roots.add(via.name ?? packageName);
+  for (const [packageName, vulnerability] of Object.entries(report.vulnerabilities)) {
+    if (!Array.isArray(vulnerability.via)) continue;
+
+    for (const via of vulnerability.via) {
+      if (!via || typeof via !== 'object') continue;
+      if ((LEVEL[via.severity] ?? 0) < LEVEL.high) continue;
+      roots.add(via.name ?? packageName);
     }
   }
 
-  if (roots.size === 0) roots.add(packageName);
   return roots;
 }
 
 function assertOnlyKnownAdvisoryRoots(label, report, knownRoots) {
   const affected = blockingNames(report);
-  const roots = new Set();
+  const roots = directAdvisoryRoots(report);
 
-  for (const packageName of affected) {
-    for (const root of advisoryRoots(report, packageName)) roots.add(root);
+  // A blocking result with no advisory object is an audit shape we do not
+  // understand. Fail closed rather than silently accepting it.
+  if (affected.length > 0 && roots.size === 0) {
+    throw new Error(
+      `${label} reported high/critical packages but no advisory roots: ${affected.join(', ')}`,
+    );
   }
 
   const unexpected = [...roots].filter((name) => !knownRoots.has(name)).sort();
   if (unexpected.length > 0) {
-    throw new Error(`${label} has new high/critical advisory roots: ${unexpected.join(', ')}`);
+    throw new Error(
+      `${label} has new high/critical advisory roots: ${unexpected.join(', ')}`,
+    );
   }
 
   const accepted = [...roots].filter((name) => knownRoots.has(name)).sort();
@@ -93,6 +92,7 @@ function assertOnlyKnownAdvisoryRoots(label, report, knownRoots) {
       : `${label}: no high/critical advisories`,
   );
 }
+
 function assertNoBlocking(label, report) {
   const found = blockingNames(report);
   if (found.length > 0) {
