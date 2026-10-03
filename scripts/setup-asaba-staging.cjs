@@ -162,18 +162,39 @@ async function main() {
       })),
     });
 
-    const demoOwner = await tx.identity.upsert({
-      where: { email: 'asaba-demo@dashapp.test' },
-      create: {
-        email: 'asaba-demo@dashapp.test',
-        displayName: 'Asaba Demo Vendor Owner',
-        passwordHash: sourceOwner.identity.passwordHash,
-      },
-      update: {
-        displayName: 'Asaba Demo Vendor Owner',
-        passwordHash: sourceOwner.identity.passwordHash,
-      },
+    const demoOwnerEmail = 'asaba-demo@dashworldng.com';
+    const legacyDemoOwnerEmail = 'asaba-demo@dashapp.test';
+    const existingDemoOwner = await tx.identity.findUnique({
+      where: { email: demoOwnerEmail },
     });
+    const legacyDemoOwner = existingDemoOwner
+      ? null
+      : await tx.identity.findUnique({ where: { email: legacyDemoOwnerEmail } });
+
+    const demoOwner = existingDemoOwner
+      ? await tx.identity.update({
+          where: { id: existingDemoOwner.id },
+          data: {
+            displayName: 'Asaba Demo Vendor Owner',
+            passwordHash: sourceOwner.identity.passwordHash,
+          },
+        })
+      : legacyDemoOwner
+        ? await tx.identity.update({
+            where: { id: legacyDemoOwner.id },
+            data: {
+              email: demoOwnerEmail,
+              displayName: 'Asaba Demo Vendor Owner',
+              passwordHash: sourceOwner.identity.passwordHash,
+            },
+          })
+        : await tx.identity.create({
+            data: {
+              email: demoOwnerEmail,
+              displayName: 'Asaba Demo Vendor Owner',
+              passwordHash: sourceOwner.identity.passwordHash,
+            },
+          });
 
     const ownerRole = await tx.identityRole.findFirst({
       where: { identityId: demoOwner.id, role: 'vendor_owner', vendorId: vendor.id },
