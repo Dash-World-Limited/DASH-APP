@@ -1,5 +1,6 @@
 import * as Location from 'expo-location';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { AppState } from 'react-native';
 
 import { api, ApiError } from '../../api';
 import { useAppSession } from '../auth/AppSessionProvider';
@@ -226,8 +227,29 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     const availability = auth.viewer?.riderAvailability;
     const working = availability === 'idle' || availability === 'on_break' || availability === 'on_delivery';
     setOnline(working);
-    if (working) void restoreDelivery().catch(fail);
-  }, [auth.state, auth.viewer?.riderAvailability, fail, restoreDelivery]);
+    if (working) {
+      // A rider reopening DASH must immediately become fresh for dispatch.
+      // The server may still remember them as idle/on_delivery while their
+      // online lease has expired because the app was closed. Publishing one
+      // real GPS fix renews that lease and makes them discoverable again
+      // without forcing them to toggle Offline -> Online.
+      void reportCurrentPosition().catch(fail);
+      void restoreDelivery().catch(fail);
+    }
+  }, [auth.state, auth.viewer?.riderAvailability, fail, reportCurrentPosition, restoreDelivery]);
+
+  useEffect(() => {
+    if (!api.configured || !online || auth.state !== 'authenticated') return;
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        // Android may suspend foreground GPS while DASH is backgrounded. As
+        // soon as the rider returns, push a fresh fix immediately rather than
+        // waiting for the next watchPosition callback.
+        void reportCurrentPosition().catch(fail);
+      }
+    });
+    return () => subscription.remove();
+  }, [auth.state, fail, online, reportCurrentPosition]);
 
   const goOnline = useCallback(async (): Promise<boolean> => {
     setBusy(true);
