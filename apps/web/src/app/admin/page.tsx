@@ -11,6 +11,7 @@ interface RiderApplication {
   riderId: string;
   vehicleType: string;
   status: { code: string; label: string };
+  applicant: { name: string | null };
 }
 interface VendorApplication {
   vendorId: string;
@@ -56,6 +57,7 @@ export default function AdminOverviewPage() {
   const { me, loaded: meLoaded } = useMe();
   const { permissions, loaded: permissionsLoaded } = usePermissions();
   const [pendingRiders, setPendingRiders] = useState<number | null>(null);
+  const [riderPreview, setRiderPreview] = useState<RiderApplication[]>([]);
   const [pendingVendors, setPendingVendors] = useState<number | null>(null);
   const [orders, setOrders] = useState<LiveOrder[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +70,10 @@ export default function AdminOverviewPage() {
       if (permissions.has('admin:rider:approve')) {
         jobs.push(
           authedFetch<{ applications: RiderApplication[] }>('/v1/admin/rider-applications?status=pending&limit=100')
-            .then((result) => setPendingRiders(result.applications.length)),
+            .then((result) => {
+              setPendingRiders(result.applications.length);
+              setRiderPreview(result.applications.slice(0, 3));
+            }),
         );
       } else setPendingRiders(0);
 
@@ -134,6 +139,9 @@ export default function AdminOverviewPage() {
                 <Link href="/admin/partners" className="rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-extrabold text-[var(--on-primary)] transition hover:opacity-90">
                   Review applications
                 </Link>
+                <Link href="/admin/live" className="rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-extrabold text-white transition hover:bg-white/10">
+                  Open live map
+                </Link>
               </div>
             </div>
           </div>
@@ -171,7 +179,11 @@ export default function AdminOverviewPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="font-bold">Rider applications</p>
-                  <p className="mt-0.5 text-sm text-[var(--ink-muted)]">Identity, vehicle and approval queue</p>
+                  <p className="mt-0.5 text-sm text-[var(--ink-muted)]">
+                    {riderPreview.length > 0
+                      ? riderPreview.map((rider) => rider.applicant.name ?? 'Unnamed rider').join(' · ')
+                      : 'Identity, vehicle and approval queue'}
+                  </p>
                 </div>
                 <span className="text-xl text-[var(--ink-muted)]">→</span>
               </Link>
