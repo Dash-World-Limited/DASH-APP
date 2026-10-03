@@ -43,14 +43,14 @@ const identity: Record<Variant, { name: string; id: string }> = {
 
 /**
  * DASH uses MapLibre, so Android is not coupled to Google Maps or a Google
- * Maps API key. Development and staging use MapLibre's official demo style;
- * production must provide its own OSM-compatible style URL through
- * EXPO_PUBLIC_MAP_STYLE_URL (for example a commercial MapLibre tile provider
- * or a DASH-hosted style).
+ * Maps API key. Development and staging use OpenFreeMap's street-level Liberty
+ * style so device testing shows real roads and labels without an API key.
+ * Production must still provide its own reviewed OSM-compatible style URL
+ * through EXPO_PUBLIC_MAP_STYLE_URL.
  */
 const mapStyleUrl =
   process.env.EXPO_PUBLIC_MAP_STYLE_URL?.trim() ||
-  (variant === 'production' ? null : 'https://demotiles.maplibre.org/style.json');
+  (variant === 'production' ? null : 'https://tiles.openfreemap.org/styles/liberty');
 
 /**
  * Android's versionCode: a positive integer that must increase with every
