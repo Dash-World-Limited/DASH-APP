@@ -29,6 +29,7 @@ export type RiderRoute =
   | 'rider.online'
   | 'rider.offer'
   | 'rider.delivery'
+  | 'rider.history-detail'
   | 'rider.route'
   | 'rider.complete'
   | 'rider.chat';
