@@ -63,7 +63,6 @@ export function MapShell(props: MapShellProps) {
       <Map
         style={{ flex: 1 }}
         mapStyle={mapStyleUrl}
-        androidView="texture"
         compass={false}
         attribution
         attributionPosition={{ bottom: 8, right: 8 }}
