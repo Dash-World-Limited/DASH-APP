@@ -1,18 +1,37 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
 
+import { api, ApiError } from '../../api';
 import { MapShell } from '../../rider/MapShell';
 import { RouteStops } from '../../rider/RouteStops';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../../theme/tokens';
 import { Icon, type IconName } from '../../ui/Icon';
 import { Text } from '../../ui/Text';
-import { type DeliveryStatus, useRiderFlow } from './RiderFlowProvider';
+import { type DeliveryStatus, type RiderDelivery, useRiderFlow } from './RiderFlowProvider';
 
 interface ScreenProps {
   onBack: () => void;
   onPush: (name: 'offer' | 'delivery' | 'route' | 'complete') => void;
 }
+
+interface RiderHistoryItem {
+  id: string;
+  code: string;
+  status: 'delivered';
+  deliveredAt: string | null;
+  branch: { name: string };
+}
+
+interface ApiHistoryDelivery {
+  id: string;
+  code: string;
+  status: DeliveryStatus;
+  branch: RiderDelivery['branch'];
+  address: RiderDelivery['address'] | null;
+  items: readonly { nameSnapshot: string; quantity: number }[];
+}
+
 
 export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
   const { palette } = useTheme();
@@ -63,8 +82,39 @@ export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
   );
 }
 
-export function RiderOrdersScreen({ onOpen }: { onOpen: () => void }) {
+export function RiderOrdersScreen({ onOpen, onOpenHistory }: { onOpen: () => void; onOpenHistory: (orderId: string) => void }) {
   const flow = useRiderFlow();
+  const [history, setHistory] = useState<RiderHistoryItem[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(api.configured);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!api.configured) {
+      setHistoryBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setHistoryBusy(true);
+    void api.request<{ deliveries: RiderHistoryItem[] }>('/v1/rider/history')
+      .then((response) => {
+        if (!cancelled) {
+          setHistory(response.deliveries);
+          setHistoryError(null);
+        }
+      })
+      .catch((caught) => {
+        if (!cancelled) {
+          setHistoryError(caught instanceof ApiError ? caught.message : 'Could not load completed deliveries.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [flow.delivery?.status]);
+
   return (
     <RiderPage>
       <View style={{ height: 54, justifyContent: 'center' }}><Text variant="title">Orders</Text></View>
@@ -73,9 +123,19 @@ export function RiderOrdersScreen({ onOpen }: { onOpen: () => void }) {
         <ActionCard icon="bike-fast" title={flow.delivery.code} body={`${flow.delivery.branch.name} · ${statusLabel(flow.delivery.status)}`} action="Open delivery" onPress={onOpen} />
       ) : <Empty icon="bike-fast" title="No active delivery" body="An accepted delivery appears here until handover is complete." compact />}
       <Text variant="heading">History</Text>
-      {flow.delivery?.status === 'delivered' ? <HistoryCard code={flow.delivery.code} merchant={flow.delivery.branch.name} status="Delivered" /> : null}
+      {historyBusy ? <ActivityIndicator /> : null}
+      {history.map((item) => (
+        <HistoryCard
+          key={item.id}
+          code={item.code}
+          merchant={item.branch.name}
+          status="Delivered"
+          onPress={() => onOpenHistory(item.id)}
+        />
+      ))}
       {flow.preview ? <><HistoryCard code="DASH710842" merchant="Wellspring Pharmacy" status="Delivered" /><HistoryCard code="DASH692015" merchant="TechWorld" status="Delivered" /><StatusNotice preview /></> : null}
-      {!flow.preview && flow.delivery?.status !== 'delivered' ? <Empty icon="clipboard-text-clock-outline" title="No completed deliveries yet" body="Delivered and cancelled jobs are loaded from the rider delivery history." compact /> : null}
+      {historyError ? <ErrorNotice message={historyError} /> : null}
+      {!historyBusy && !flow.preview && history.length === 0 && !historyError ? <Empty icon="clipboard-text-clock-outline" title="No completed deliveries yet" body="Completed deliveries will appear here after handover." compact /> : null}
     </RiderPage>
   );
 }
@@ -151,6 +211,71 @@ export function RiderDeliveryScreen({ onBack, onPush, onChat }: ScreenProps & { 
       {next?.kind === 'route' ? <PrimaryButton label={next.label} icon="navigation-variant-outline" onPress={() => onPush('route')} /> : null}
       {next?.kind === 'progress' ? <PrimaryButton label={next.label} icon="arrow-right-circle-outline" disabled={flow.busy} onPress={() => void flow.progress(next.to).then((ok) => ok && (next.to === 'arrived' ? onPush('complete') : undefined))} /> : null}
       {next?.kind === 'complete' ? <PrimaryButton label={next.label} icon="shield-check-outline" onPress={() => onPush('complete')} /> : null}
+    </RiderPage>
+  );
+}
+
+export function RiderHistoryDetailScreen({ orderId, onBack }: { orderId: string; onBack: () => void }) {
+  const [delivery, setDelivery] = useState<RiderDelivery | null>(null);
+  const [busy, setBusy] = useState(api.configured);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!api.configured || !orderId) {
+      setBusy(false);
+      return;
+    }
+    let cancelled = false;
+    setBusy(true);
+    void api.request<{ delivery: ApiHistoryDelivery }>(`/v1/rider/deliveries/${encodeURIComponent(orderId)}`)
+      .then((response) => {
+        if (cancelled) return;
+        if (!response.delivery.address) throw new Error('This delivery has no drop-off address.');
+        setDelivery({
+          id: response.delivery.id,
+          code: response.delivery.code,
+          status: response.delivery.status,
+          branch: response.delivery.branch,
+          address: response.delivery.address,
+          items: response.delivery.items.map((item) => ({ name: item.nameSnapshot, quantity: item.quantity })),
+        });
+        setError(null);
+      })
+      .catch((caught) => {
+        if (!cancelled) setError(caught instanceof ApiError ? caught.message : 'Could not load this delivery.');
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orderId]);
+
+  if (busy) {
+    return <RiderPage><RiderHeader title="Delivery details" onBack={onBack} /><ActivityIndicator /></RiderPage>;
+  }
+
+  if (!delivery) {
+    return <RiderPage><RiderHeader title="Delivery details" onBack={onBack} />{error ? <ErrorNotice message={error} /> : <Empty icon="clipboard-text-clock-outline" title="Delivery not found" body="This completed delivery could not be loaded." />}</RiderPage>;
+  }
+
+  return (
+    <RiderPage>
+      <RiderHeader title="Delivery details" onBack={onBack} />
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <View><Text variant="micro" tone="muted">Order</Text><Text variant="heading">{delivery.code}</Text></View>
+        <StatusPill status={delivery.status} />
+      </View>
+      <Card>
+        <RouteStops pickup={{ title: delivery.branch.name, detail: delivery.branch.address }} dropoff={{ title: delivery.address.line1, detail: delivery.address.landmark }} />
+      </Card>
+      <Card>
+        <Text variant="label" weight="bold">Order items ({delivery.items.reduce((total, item) => total + item.quantity, 0)})</Text>
+        {delivery.items.map((item, index) => <View key={`${item.name}-${index}`} style={{ flexDirection: 'row', gap: space.sm }}><Text variant="caption" tone="accent">{item.quantity}×</Text><Text variant="caption" style={{ flex: 1 }}>{item.name}</Text></View>)}
+      </Card>
+      {delivery.address.instructions ? <InfoNotice icon="message-text-outline" message={delivery.address.instructions} /> : null}
+      <Empty icon="check-decagram-outline" title="Delivery completed" body="This completed job is kept in your delivery history." compact />
     </RiderPage>
   );
 }
@@ -267,9 +392,11 @@ function ActionCard({ icon, title, body, action, onPress }: { icon: IconName; ti
   return <Pressable onPress={onPress} accessibilityRole="button" style={{ padding: space.lg, gap: space.sm, borderRadius: radius.lg, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line }}><View style={{ flexDirection: 'row', gap: space.md, alignItems: 'center' }}><View style={{ width: 46, height: 46, borderRadius: 16, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name={icon} color={palette.accent} /></View><View style={{ flex: 1 }}><Text variant="label" weight="bold">{title}</Text><Text variant="caption" tone="muted">{body}</Text></View><Icon name="chevron-right" color={palette.accent} /></View><Text variant="caption" tone="accent" weight="bold">{action}</Text></Pressable>;
 }
 
-function HistoryCard({ code, merchant, status }: { code: string; merchant: string; status: string }) {
+function HistoryCard({ code, merchant, status, onPress }: { code: string; merchant: string; status: string; onPress?: () => void }) {
   const { palette } = useTheme();
-  return <View style={{ minHeight: 76, padding: space.md, borderRadius: radius.lg, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line, flexDirection: 'row', alignItems: 'center', gap: space.md }}><View style={{ width: 44, height: 44, borderRadius: 16, backgroundColor: palette.successSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name="check-decagram-outline" color={palette.success} /></View><View style={{ flex: 1 }}><Text variant="label" weight="bold">{code}</Text><Text variant="caption" tone="muted">{merchant}</Text></View><Text variant="micro" tone="success" weight="bold">{status}</Text></View>;
+  const content = <><View style={{ width: 44, height: 44, borderRadius: 16, backgroundColor: palette.successSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name="check-decagram-outline" color={palette.success} /></View><View style={{ flex: 1 }}><Text variant="label" weight="bold">{code}</Text><Text variant="caption" tone="muted">{merchant}</Text></View><Text variant="micro" tone="success" weight="bold">{status}</Text>{onPress ? <Icon name="chevron-right" color={palette.accent} /> : null}</>;
+  const style = { minHeight: 76, padding: space.md, borderRadius: radius.lg, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line, flexDirection: 'row' as const, alignItems: 'center' as const, gap: space.md };
+  return onPress ? <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open details for ${code}`} style={style}>{content}</Pressable> : <View style={style}>{content}</View>;
 }
 
 function Metric({ icon, value, label }: { icon: IconName; value: string; label: string }) {
