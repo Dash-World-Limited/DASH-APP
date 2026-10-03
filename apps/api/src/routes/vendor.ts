@@ -236,9 +236,24 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
 
       if (!vendor) throw ApiError.notFound();
 
+      const categories = await Promise.all(
+        vendor.categories.map(async (category) => ({
+          ...category,
+          items: await Promise.all(
+            category.items.map(async (item) => ({
+              ...item,
+              imageKey: item.imageKey
+                ? await app.services.storage.signedUrl(item.imageKey, 3_600)
+                : null,
+            })),
+          ),
+        })),
+      );
+
       return {
         vendor: {
           ...vendor,
+          categories,
           reviews: vendor.reviews.map((review) => ({
             id: review.id,
             rating: review.rating,
