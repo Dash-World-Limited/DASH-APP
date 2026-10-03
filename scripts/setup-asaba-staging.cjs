@@ -4,7 +4,10 @@
  * This creates a clearly labelled demo market, vendor, item, and customer
  * address. It is not the permanent Lagos/Delta state-boundary implementation.
  */
-const { PrismaClient } = require('@prisma/client');
+// This script is staging-only and its safety guard requires a PostgreSQL
+// dashdb_staging URL. Use the separately generated PostgreSQL Prisma client;
+// the hoisted @prisma/client is intentionally the SQLite development client.
+const { PrismaClient } = require('../packages/db/prisma/postgres/.client');
 
 if (!process.argv.includes('--apply')) {
   throw new Error('Safety stop: rerun with --apply after reviewing this script');
