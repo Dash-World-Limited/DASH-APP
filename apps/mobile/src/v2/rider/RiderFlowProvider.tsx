@@ -1,5 +1,5 @@
 import * as Location from 'expo-location';
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 
 import { api, ApiError } from '../../api';
@@ -116,6 +116,8 @@ function makePreviewDelivery(): RiderDelivery {
 
 const RiderFlowContext = createContext<RiderFlowValue | null>(null);
 
+const LOCATION_UPLOAD_INTERVAL_MS = 5_000;
+
 export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const auth = useAppSession();
   const preview = !api.configured;
@@ -125,6 +127,8 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const [offer, setOffer] = useState<RiderOffer | null>(null);
   const [delivery, setDelivery] = useState<RiderDelivery | null>(null);
   const [riderPosition, setRiderPosition] = useState<Coordinate | null>(api.configured ? null : RIDER_START);
+  const lastLocationUploadAt = useRef(0);
+  const locationUploadInFlight = useRef(false);
 
   const fail = useCallback((caught: unknown) => {
     setError(caught instanceof ApiError ? caught.message : 'Something went wrong. Please try again.');
@@ -132,19 +136,33 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
 
   const publishPosition = useCallback(async (position: Location.LocationObject): Promise<void> => {
     const point = { latitude: position.coords.latitude, longitude: position.coords.longitude };
+    // Keep the marker responsive to every GPS fix, but bound network writes.
+    // Some Android providers can emit a burst of fixes even when timeInterval
+    // is configured. Without an application-level guard those bursts can flood
+    // /v1/rider/location and trip the server rate limit.
     setRiderPosition(point);
     if (!api.configured) return;
 
-    await api.request('/v1/rider/location', {
-      method: 'POST',
-      body: {
-        ...point,
-        accuracy: position.coords.accuracy ?? undefined,
-        heading: position.coords.heading ?? undefined,
-        speed: position.coords.speed ?? undefined,
-        recordedAt: new Date(position.timestamp).toISOString(),
-      },
-    });
+    const now = Date.now();
+    if (locationUploadInFlight.current) return;
+    if (now - lastLocationUploadAt.current < LOCATION_UPLOAD_INTERVAL_MS) return;
+
+    locationUploadInFlight.current = true;
+    lastLocationUploadAt.current = now;
+    try {
+      await api.request('/v1/rider/location', {
+        method: 'POST',
+        body: {
+          ...point,
+          accuracy: position.coords.accuracy ?? undefined,
+          heading: position.coords.heading ?? undefined,
+          speed: position.coords.speed ?? undefined,
+          recordedAt: new Date(position.timestamp).toISOString(),
+        },
+      });
+    } finally {
+      locationUploadInFlight.current = false;
+    }
   }, []);
 
   const reportCurrentPosition = useCallback(async (): Promise<boolean> => {
@@ -257,6 +275,9 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     try {
       if (api.configured) {
         await api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'idle' } });
+        // Going online starts a new server lease. Do not let a very recent fix
+        // from the previous online session suppress the first fresh report.
+        lastLocationUploadAt.current = 0;
         if (!(await reportCurrentPosition())) {
           await api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'offline' } }).catch(() => undefined);
           return false;
@@ -282,6 +303,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       }
       setOnline(false);
       setOffer(null);
+      lastLocationUploadAt.current = 0;
       return true;
     } catch (caught) {
       fail(caught);
