@@ -25,7 +25,10 @@
 
 /** True when the stored value is already a fetchable URL rather than a key. */
 export function isDirectImageUrl(imageKey: string | null | undefined): boolean {
-  return typeof imageKey === 'string' && /^https?:\/\//i.test(imageKey);
+  return (
+    typeof imageKey === 'string' &&
+    (/^https?:\/\//i.test(imageKey) || /^\/v1\/files\//i.test(imageKey))
+  );
 }
 
 /**
@@ -39,8 +42,7 @@ export function imageUrl(imageKey: string | null | undefined): string | null {
   if (!imageKey) return null;
   if (isDirectImageUrl(imageKey)) return imageKey;
 
-  // Storage-key branch. Nothing resolves keys yet — the provider is not wired —
-  // so a key is treated as "no image" rather than as a broken request. This is
-  // the seam the real resolver drops into.
+  // Raw storage keys are never rendered. The API resolves them to either a
+  // provider HTTPS URL or its own signed /v1/files/... route first.
   return null;
 }
