@@ -2,10 +2,10 @@
  * What stands in for a map when this build cannot draw one.
  *
  * Two cases: the web design preview, where the native map module does not
- * exist, and an Android build without a Google Maps key, where the map view
- * would render an empty grey surface. Neither may pretend to be a map. This
- * draws the route's *shape* — projected from the same coordinates the real map
- * will use — on a plain ground, and says in words what is missing.
+ * exist, and a build with no production MapLibre style configured. Neither may
+ * pretend to be a map. This draws the route's *shape* — projected from the same
+ * coordinates the real map will use — on a plain ground, and says in words
+ * what is missing.
  */
 
 import { View } from 'react-native';

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Linking, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
 
 import { MapShell } from '../../rider/MapShell';
 import { RouteStops } from '../../rider/RouteStops';
@@ -153,7 +153,10 @@ export function RiderRouteScreen({ onBack }: Pick<ScreenProps, 'onBack'>) {
     ? { latitude: delivery.address.latitude, longitude: delivery.address.longitude }
     : { latitude: delivery.branch.latitude, longitude: delivery.branch.longitude };
   const route = interpolateRoute(flow.riderPosition, destination);
-  const externalUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination.latitude},${destination.longitude}`;
+  const externalUrl =
+    Platform.OS === 'ios'
+      ? `http://maps.apple.com/?daddr=${destination.latitude},${destination.longitude}`
+      : `geo:${destination.latitude},${destination.longitude}?q=${destination.latitude},${destination.longitude}`;
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: palette.background }} contentContainerStyle={{ paddingBottom: space.xxxl }}>

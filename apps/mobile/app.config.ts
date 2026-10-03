@@ -2,8 +2,8 @@
  * Native project configuration for the DASH Customer and Rider app.
  *
  * Expo development builds, not Expo Go: DASH needs native modules Expo Go does
- * not carry in production form (maps with our own key, background location
- * later, FCM), so the app is built as its own binary from the first day and
+ * not carry in production form (MapLibre, background location later, FCM),
+ * so the app is built as its own binary from the first day and
  * `expo start --dev-client` serves JavaScript to that binary.
  *
  * The native `android/` and `ios/` projects are generated from this file by
@@ -42,13 +42,15 @@ const identity: Record<Variant, { name: string; id: string }> = {
 };
 
 /**
- * Android maps need a Google Maps key compiled into the binary. None exists
- * yet. Without one the map view renders an empty surface, so the app reads
- * `mapsConfigured` and shows a designed "map unavailable in this build" state
- * instead of a grey rectangle pretending to be a map. iOS uses Apple Maps and
- * needs no key.
+ * DASH uses MapLibre, so Android is not coupled to Google Maps or a Google
+ * Maps API key. Development and staging use MapLibre's official demo style;
+ * production must provide its own OSM-compatible style URL through
+ * EXPO_PUBLIC_MAP_STYLE_URL (for example a commercial MapLibre tile provider
+ * or a DASH-hosted style).
  */
-const googleMapsApiKey = process.env.GOOGLE_MAPS_ANDROID_API_KEY;
+const mapStyleUrl =
+  process.env.EXPO_PUBLIC_MAP_STYLE_URL?.trim() ||
+  (variant === 'production' ? null : 'https://demotiles.maplibre.org/style.json');
 
 /**
  * Android's versionCode: a positive integer that must increase with every
@@ -138,7 +140,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'android.permission.FOREGROUND_SERVICE',
       'android.permission.RECEIVE_BOOT_COMPLETED',
     ],
-    ...(googleMapsApiKey ? { config: { googleMaps: { apiKey: googleMapsApiKey } } } : {}),
   },
   web: {
     // Web output exists for design review only — the product is the native
@@ -147,6 +148,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     output: 'single',
   },
   plugins: [
+    '@maplibre/maplibre-react-native',
     'expo-status-bar',
     'expo-font',
     'expo-image',
@@ -177,6 +179,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // The API the app talks to. Never defaulted to localhost: on a phone that
     // is the phone. Missing means the app shows staging fixtures and says so.
     apiUrl: process.env.EXPO_PUBLIC_API_URL ?? null,
-    mapsConfigured: Boolean(googleMapsApiKey),
+    mapStyleUrl,
   },
 });

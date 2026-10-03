@@ -49,10 +49,9 @@ jobs:
       # pointing at nothing.
       # Repository variable set for connected staging device builds.
       EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
-      # Compiled into the Android manifest by app.config.ts. Keep the build-time
-      # value out of the repository and restrict the key in Google Cloud to the
-      # DASH Android package/signing certificate.
-      GOOGLE_MAPS_ANDROID_API_KEY: ${{ secrets.GOOGLE_MAPS_ANDROID_API_KEY }}
+      # Optional OSM-compatible MapLibre style. Staging falls back to
+      # MapLibre's official demo style; production builds must provide one.
+      EXPO_PUBLIC_MAP_STYLE_URL: ${{ vars.EXPO_PUBLIC_MAP_STYLE_URL }}
 
     steps:
       - name: Check out the pushed commit

@@ -1,24 +1,20 @@
 /**
  * The native map, on iOS and Android.
  *
- * A real platform map — Apple Maps on iOS, Google Maps on Android — not a
- * picture of one and not a web widget. It is a representative shell for this
- * checkpoint: it draws the route, the rider and the destination from
- * coordinates, fits them in view, and is ready to be fed a live position and a
- * routed polyline. Turn-by-turn and live tracking arrive with the Rider
- * operations milestone; the rider's authoritative position stays the one the
- * server accepted, never one this view invents.
+ * DASH uses MapLibre rather than Google Maps. Staging uses MapLibre's official
+ * demo style so the route can be exercised without a Google account, D-U-N-S,
+ * Play Console registration or a Google Maps API key. Production must supply
+ * its own OSM-compatible style URL through EXPO_PUBLIC_MAP_STYLE_URL.
  *
- * Android needs a Google Maps key compiled into the build. Without one the
- * platform draws an empty grey surface, so this shows the designed fallback
- * and names what is missing instead.
+ * The route remains a representative straight-line/interpolated shell at this
+ * checkpoint. Rider operations will later replace it with a routed polyline;
+ * the rider's authoritative position stays the one the server accepted.
  */
 
-import { useRef } from 'react';
-import { Platform, View } from 'react-native';
-import MapView, { Marker, PROVIDER_DEFAULT, PROVIDER_GOOGLE, Polyline } from 'react-native-maps';
+import { Camera, GeoJSONSource, Layer, Map, Marker } from '@maplibre/maplibre-react-native';
+import { View } from 'react-native';
 
-import { mapsConfigured } from '../api';
+import { mapStyleUrl } from '../api';
 import { useTheme } from '../theme/ThemeProvider';
 import { Icon } from '../ui/Icon';
 import { MapFallback, type MapShellProps } from './MapFallback';
@@ -26,39 +22,77 @@ import { MapFallback, type MapShellProps } from './MapFallback';
 export type { MapShellProps } from './MapFallback';
 
 export function MapShell(props: MapShellProps) {
-  const { palette, scheme } = useTheme();
-  const map = useRef<MapView | null>(null);
-  const { route, rider, destination, routeColor, height = 300, destinationIcon = 'silverware-fork-knife', accessibilityLabel } = props;
+  const { palette } = useTheme();
+  const {
+    route,
+    rider,
+    destination,
+    routeColor,
+    height = 300,
+    destinationIcon = 'silverware-fork-knife',
+    accessibilityLabel,
+  } = props;
 
-  if (Platform.OS === 'android' && !mapsConfigured) {
-    return <MapFallback {...props} reason="Map needs a Google Maps key in this build" />;
+  if (!mapStyleUrl) {
+    return <MapFallback {...props} reason="Map style is not configured in this build" />;
   }
+
+  const points = [rider, ...route, destination];
+  const longitudes = points.map((point) => point.longitude);
+  const latitudes = points.map((point) => point.latitude);
+  const west = Math.min(...longitudes);
+  const east = Math.max(...longitudes);
+  const south = Math.min(...latitudes);
+  const north = Math.max(...latitudes);
+  const padLongitude = Math.max((east - west) * 0.18, 0.0015);
+  const padLatitude = Math.max((north - south) * 0.18, 0.0015);
+
+  const routeData = {
+    type: 'Feature' as const,
+    properties: {},
+    geometry: {
+      type: 'LineString' as const,
+      coordinates: route.map((point) => [point.longitude, point.latitude]),
+    },
+  };
 
   return (
     <View style={{ height }} accessibilityLabel={accessibilityLabel}>
-      <MapView
-        ref={map}
+      <Map
         style={{ flex: 1 }}
-        provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : PROVIDER_DEFAULT}
-        userInterfaceStyle={scheme}
-        toolbarEnabled={false}
-        showsCompass={false}
-        pitchEnabled={false}
-        initialRegion={{
-          latitude: (rider.latitude + destination.latitude) / 2,
-          longitude: (rider.longitude + destination.longitude) / 2,
-          latitudeDelta: Math.abs(rider.latitude - destination.latitude) * 2.2 + 0.004,
-          longitudeDelta: Math.abs(rider.longitude - destination.longitude) * 2.2 + 0.004,
-        }}
-        onMapReady={() =>
-          map.current?.fitToCoordinates([rider, ...route, destination], {
-            edgePadding: { top: 60, right: 60, bottom: 60, left: 60 },
-            animated: false,
-          })
-        }
+        mapStyle={mapStyleUrl}
+        androidView="texture"
+        compass={false}
+        attribution
+        attributionPosition={{ bottom: 8, right: 8 }}
       >
-        <Polyline coordinates={[...route]} strokeColor={routeColor} strokeWidth={5} lineCap="round" lineJoin="round" />
-        <Marker coordinate={rider} anchor={{ x: 0.5, y: 0.5 }} title="You" tracksViewChanges={false}>
+        <Camera
+          minZoom={3}
+          maxZoom={19}
+          initialViewState={{
+            bounds: [
+              west - padLongitude,
+              south - padLatitude,
+              east + padLongitude,
+              north + padLatitude,
+            ],
+            padding: { top: 54, right: 42, bottom: 54, left: 42 },
+          }}
+        />
+
+        {route.length >= 2 ? (
+          <GeoJSONSource id="dash-route" data={routeData}>
+            <Layer
+              id="dash-route-line"
+              type="line"
+              source="dash-route"
+              paint={{ 'line-color': routeColor, 'line-width': 5 }}
+              layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+            />
+          </GeoJSONSource>
+        ) : null}
+
+        <Marker id="dash-rider" lngLat={[rider.longitude, rider.latitude]} anchor="center">
           <View
             style={{
               width: 34,
@@ -74,7 +108,8 @@ export function MapShell(props: MapShellProps) {
             <Icon name="moped" size={18} color="#0B0D10" />
           </View>
         </Marker>
-        <Marker coordinate={destination} anchor={{ x: 0.5, y: 1 }} tracksViewChanges={false}>
+
+        <Marker id="dash-destination" lngLat={[destination.longitude, destination.latitude]} anchor="bottom">
           <View style={{ alignItems: 'center' }}>
             <View
               style={{
@@ -90,10 +125,18 @@ export function MapShell(props: MapShellProps) {
             >
               <Icon name={destinationIcon} size={18} color="#FFFFFF" />
             </View>
-            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#0B0D10', marginTop: -2 }} />
+            <View
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                backgroundColor: '#0B0D10',
+                marginTop: -2,
+              }}
+            />
           </View>
         </Marker>
-      </MapView>
+      </Map>
     </View>
   );
 }

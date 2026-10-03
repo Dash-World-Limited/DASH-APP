@@ -48,7 +48,7 @@ const webStore: CsrfStore = {
 
 export const session = createSession(Platform.OS === 'web' ? webStore : secureStore);
 
-const extra = (Constants.expoConfig?.extra ?? {}) as { apiUrl?: unknown; variant?: unknown; mapsConfigured?: unknown };
+const extra = (Constants.expoConfig?.extra ?? {}) as { apiUrl?: unknown; variant?: unknown; mapStyleUrl?: unknown };
 
 export const api = createApiClient({
   // The app config's value on a device. The web build's manifest carries the
@@ -65,8 +65,11 @@ export const api = createApiClient({
 export const buildVariant: 'development' | 'staging' | 'production' =
   extra.variant === 'staging' || extra.variant === 'production' ? extra.variant : 'development';
 
-/** True when this build carries a Google Maps key, so Android can draw a map. */
-export const mapsConfigured = extra.mapsConfigured === true;
+/** MapLibre style compiled into this build. Production deliberately has none unless configured. */
+export const mapStyleUrl =
+  typeof extra.mapStyleUrl === 'string' && extra.mapStyleUrl.trim().length > 0
+    ? extra.mapStyleUrl.trim()
+    : null;
 
 export { ApiError } from './errors';
 export type { SessionState } from './session';
