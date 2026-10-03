@@ -81,14 +81,16 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
     return { cities };
   });
 
-  // -------------------------------------------------------------------------
-  // GET /v1/serviceability?latitude=&longitude=
-  //
-  // The first question the customer app asks: "do you deliver here?"
-  // -------------------------------------------------------------------------
-  app.get('/v1/serviceability', async (request) => {
-    const point = coordinateSchema.parse(request.query);
-
+  /**
+   * Resolve one customer coordinate into the service context used by both
+   * serviceability and discovery.
+   *
+   * Keeping this in one function matters: a point must not be described as
+   * outside DASH by /serviceability while /vendors quietly returns merchants
+   * from another city. The catalogue is a delivery catalogue whenever an
+   * origin is supplied, so the same zone decision owns both answers.
+   */
+  async function resolveServiceability(point: { latitude: number; longitude: number }) {
     const cities = await prisma.city.findMany({
       where: { isLive: true },
       select: { id: true, slug: true, name: true },
@@ -100,24 +102,33 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
 
       const zones = await prisma.zone.findMany({
         where: { id: { in: [...zoneIds] } },
-        select: { id: true, name: true, slug: true, isActive: true, pausedReason: true, surgeMultiplier: true },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          isActive: true,
+          pausedReason: true,
+          surgeMultiplier: true,
+        },
       });
 
       const live = zones.filter((zone) => zone.isActive);
       if (live.length === 0) {
         return {
-          serviceable: false,
-          reason: 'zone_paused',
+          serviceable: false as const,
+          reason: 'zone_paused' as const,
           message:
             zones[0]?.pausedReason ??
             'Deliveries here are paused right now. Please try again shortly.',
           city,
+          zone: null,
+          busy: false,
         };
       }
 
       const primary = live[0];
       return {
-        serviceable: true,
+        serviceable: true as const,
         city,
         zone: primary ? { id: primary.id, name: primary.name, slug: primary.slug } : null,
         // Surfaced so the UI can warn before the customer builds a basket.
@@ -126,11 +137,23 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
     }
 
     return {
-      serviceable: false,
-      reason: 'outside_service_area',
+      serviceable: false as const,
+      reason: 'outside_service_area' as const,
       message: 'DASH APP does not deliver to this address yet.',
       city: null,
+      zone: null,
+      busy: false,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // GET /v1/serviceability?latitude=&longitude=
+  //
+  // The first question the customer app asks: "do you deliver here?"
+  // -------------------------------------------------------------------------
+  app.get('/v1/serviceability', async (request) => {
+    const point = coordinateSchema.parse(request.query);
+    return resolveServiceability(point);
   });
 
   // -------------------------------------------------------------------------
@@ -144,9 +167,25 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
         ? [query.category]
         : undefined;
 
+    const origin =
+      query.latitude !== undefined && query.longitude !== undefined
+        ? { latitude: query.latitude, longitude: query.longitude }
+        : null;
+
+    // With a delivery origin, discovery is scoped by the exact same service
+    // decision as /v1/serviceability. Returning a Lagos merchant to somebody
+    // standing in Asaba merely because Lagos happened to be seeded first is not
+    // "nearest"; it is a merchant the customer cannot order from.
+    const service = origin ? await resolveServiceability(origin) : null;
+    if (service && !service.serviceable) {
+      return { vendors: [], nextCursor: null };
+    }
+    const serviceCityId = service?.city.id;
+
     const vendors = await prisma.vendor.findMany({
       where: {
         status: 'approved',
+        ...(serviceCityId ? { cityId: serviceCityId } : {}),
         ...(vendorCategories ? { category: { in: [...vendorCategories] } } : {}),
         ...(query.search
           ? {
@@ -192,11 +231,6 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
 
     const hasMore = vendors.length > query.limit;
     const page = hasMore ? vendors.slice(0, query.limit) : vendors;
-
-    const origin =
-      query.latitude !== undefined && query.longitude !== undefined
-        ? { latitude: query.latitude, longitude: query.longitude }
-        : null;
 
     const shaped = page.map((vendor) => {
       const branch = vendor.branches[0];
