@@ -13,6 +13,7 @@ import { API_BASE, ApiRequestError } from '@/lib/api';
 import { PickupDialog, RejectDialog } from '@/components/vendor-dialogs';
 import {
   authedFetch,
+  signOut,
   useMe,
   usePermissions,
   useSessionState,
@@ -1184,6 +1185,7 @@ export default function VendorConsolePage() {
   const [rejecting, setRejecting] = useState<VendorOrder | null>(null);
   const [verifying, setVerifying] = useState<VendorOrder | null>(null);
   const [payout, setPayout] = useState<PayoutResponse['payoutDetails'] | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
 
   const canCatalogWrite = permissions.has('vendor:catalog:write');
   const canHoursWrite = permissions.has('vendor:hours:write');
@@ -1312,6 +1314,16 @@ export default function VendorConsolePage() {
       setError(errorMessage(caught, 'That change did not go through.'));
     } finally {
       setBusyKey(null);
+    }
+  };
+
+  const leaveVendorWorkspace = async (): Promise<void> => {
+    setSigningOut(true);
+    try {
+      await signOut();
+      window.location.assign('/signin?next=/vendor');
+    } finally {
+      setSigningOut(false);
     }
   };
 
@@ -2005,8 +2017,18 @@ export default function VendorConsolePage() {
                 </article>
               </section>
               <section className={styles.securityBand}>
-                <div><strong>Role-based access</strong><p>This session has {permissions.size} explicit permissions. Every record is still checked against this vendor and branch.</p></div>
-                <StatusPill value="protected" />
+                <div>
+                  <strong>Sign-in security</strong>
+                  <p>Vendor accounts sign in with a one-time code sent to the account email, so there is no vendor password to reset. Signing out revokes this session on the server and clears it from this browser.</p>
+                </div>
+                <button
+                  className={styles.secondaryButton}
+                  type="button"
+                  disabled={signingOut}
+                  onClick={() => void leaveVendorWorkspace()}
+                >
+                  {signingOut ? 'Signing out…' : 'Sign out'}
+                </button>
               </section>
             </div>
           ) : null}
