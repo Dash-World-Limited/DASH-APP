@@ -106,6 +106,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   android: {
     package: identity[variant].id,
     versionCode,
+    // Keep focused inputs visible when Android opens the software keyboard.
+    // Chat and other bottom-anchored forms must resize with the IME instead of
+    // being panned underneath it.
+    softwareKeyboardLayoutMode: 'resize',
     adaptiveIcon: {
       foregroundImage: './assets/brand/adaptive-icon.png',
       // Android 13 themed icons recolour this silhouette.
