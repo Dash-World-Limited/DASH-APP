@@ -38,6 +38,13 @@ interface Product {
   description: string;
   badge?: string;
   available?: boolean;
+  modifierGroups: Array<{
+    id: string;
+    name: string;
+    minSelect: number;
+    maxSelect: number;
+    options: Array<{ id: string; name: string; priceDelta: number }>;
+  }>;
 }
 
 /**
@@ -75,6 +82,13 @@ interface ApiVendorDetail {
       price: number;
       condition: string | null;
       isAvailable: boolean;
+      modifierGroups?: Array<{
+        id: string;
+        name: string;
+        minSelect: number;
+        maxSelect: number;
+        options: Array<{ id: string; name: string; priceDelta: number }>;
+      }>;
     }>;
   }>;
 }
@@ -183,17 +197,51 @@ export function ProductDetail({ category, merchantId, productId, onBack, onCart 
   const { palette } = useTheme();
   const { dispatch, refusalFor } = useCart();
   const [quantity, setQuantity] = useState(1);
-  const optionTitle = service === 'shops' ? 'Storage' : service === 'food' ? 'Portion' : null;
-  const optionValues = service === 'shops' ? ['128 GB', '256 GB', '512 GB'] : service === 'food' ? ['Regular', 'Large'] : [];
-  const [selectedOption, setSelectedOption] = useState(optionValues[0] ?? '');
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, string[]>>({});
+
+  // Options must come from the vendor's real modifier records. The old V2
+  // screen invented "Portion / Regular / Large" and "Storage" strings, then
+  // sent those labels as modifier IDs. The order API correctly rejected them
+  // because they were not database IDs for that item.
+  useEffect(() => {
+    setSelectedOptions({});
+  }, [product?.id]);
+
+  const selectionValid =
+    product?.modifierGroups.every((group) => {
+      const count = selectedOptions[group.id]?.length ?? 0;
+      return count >= group.minSelect && count <= group.maxSelect;
+    }) ?? true;
+
+  const toggleOption = (group: Product['modifierGroups'][number], optionId: string) => {
+    setSelectedOptions((current) => {
+      const selected = current[group.id] ?? [];
+      if (group.maxSelect <= 1) {
+        return { ...current, [group.id]: selected[0] === optionId && group.minSelect === 0 ? [] : [optionId] };
+      }
+      if (selected.includes(optionId)) {
+        return { ...current, [group.id]: selected.filter((id) => id !== optionId) };
+      }
+      if (selected.length >= group.maxSelect) return current;
+      return { ...current, [group.id]: [...selected, optionId] };
+    });
+  };
 
   const addToCart = () => {
-    if (!product || product.available === false) return;
+    if (!product || product.available === false || !selectionValid) return;
+    const options: Record<string, string> = {};
+    for (const group of product.modifierGroups) {
+      for (const optionId of selectedOptions[group.id] ?? []) {
+        // Cart values are what checkout turns into modifierIds. The key only
+        // makes multiple selections within the same group distinct.
+        options[group.maxSelect > 1 ? `${group.id}:${optionId}` : group.id] = optionId;
+      }
+    }
     const action = {
       merchantSlug: merchantId,
       productId: product.id,
       quantity,
-      options: optionTitle ? { [optionTitle.toLowerCase()]: selectedOption } : undefined,
+      options,
     } as const;
     if (refusalFor(merchantId) === 'different_merchant') {
       Alert.alert(
@@ -227,10 +275,18 @@ export function ProductDetail({ category, merchantId, productId, onBack, onCart 
       <Text variant="title">{product.name}</Text>
       <Text variant="heading" tone="accent">{product.price}</Text>
       <Text tone="muted">{product.description}</Text>
-      {optionTitle ? <OptionRow title={optionTitle} options={optionValues} selected={selectedOption} onSelect={setSelectedOption} /> : null}
+      {product.modifierGroups.map((group) => (
+        <ModifierOptionRow
+          key={group.id}
+          group={group}
+          selected={selectedOptions[group.id] ?? []}
+          onToggle={(optionId) => toggleOption(group, optionId)}
+        />
+      ))}
       {service === 'declutter' ? <Notice icon="shield-check-outline" text="Condition, defects and seller verification must be disclosed before checkout." /> : null}
       <QuantityControl value={quantity} onChange={setQuantity} />
-      <PrimaryButton label={product.available === false ? 'Currently unavailable' : `Add ${quantity} to cart`} onPress={addToCart} disabled={product.available === false} />
+      {!selectionValid ? <Text variant="micro" style={{ color: palette.danger }}>Choose the required options before adding this item.</Text> : null}
+      <PrimaryButton label={product.available === false ? 'Currently unavailable' : `Add ${quantity} to cart`} onPress={addToCart} disabled={product.available === false || !selectionValid} />
     </CatalogPage>
   );
 }
@@ -333,9 +389,57 @@ function InfoChip({ icon, text }: { icon: IconName; text: string }) {
   return <View style={{ flex: 1, minHeight: 54, borderRadius: radius.md, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center', gap: 2 }}><Icon name={icon} size={17} color={palette.accent} /><Text variant="micro" align="center">{text}</Text></View>;
 }
 
-function OptionRow({ title, options, selected, onSelect }: { title: string; options: readonly string[]; selected: string; onSelect: (value: string) => void }) {
+function ModifierOptionRow({
+  group,
+  selected,
+  onToggle,
+}: {
+  group: Product['modifierGroups'][number];
+  selected: readonly string[];
+  onToggle: (optionId: string) => void;
+}) {
   const { palette } = useTheme();
-  return <View style={{ gap: space.sm }}><Text variant="label" weight="bold">{title}</Text><View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>{options.map((option) => <Pressable key={option} onPress={() => onSelect(option)} accessibilityRole="radio" accessibilityState={{ selected: option === selected }} style={{ minHeight: 42, justifyContent: 'center', paddingHorizontal: space.md, borderRadius: radius.pill, backgroundColor: option === selected ? palette.inverse : palette.surface, borderWidth: 1, borderColor: option === selected ? palette.inverse : palette.line }}><Text variant="caption" tone={option === selected ? 'onInverse' : 'default'}>{option}</Text></Pressable>)}</View></View>;
+  const multiple = group.maxSelect > 1;
+  const requirement =
+    group.minSelect > 0
+      ? `Choose at least ${group.minSelect}${group.maxSelect > group.minSelect ? `, up to ${group.maxSelect}` : ''}`
+      : group.maxSelect > 1
+        ? `Optional · up to ${group.maxSelect}`
+        : 'Optional';
+
+  return (
+    <View style={{ gap: space.sm }}>
+      <View>
+        <Text variant="label" weight="bold">{group.name}</Text>
+        <Text variant="micro" tone="muted">{requirement}</Text>
+      </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+        {group.options.map((option) => {
+          const active = selected.includes(option.id);
+          const delta = option.priceDelta > 0 ? ` · +${formatNairaCompact(option.priceDelta as Kobo)}` : '';
+          return (
+            <Pressable
+              key={option.id}
+              onPress={() => onToggle(option.id)}
+              accessibilityRole={multiple ? 'checkbox' : 'radio'}
+              accessibilityState={multiple ? { checked: active } : { selected: active }}
+              style={{
+                minHeight: 42,
+                justifyContent: 'center',
+                paddingHorizontal: space.md,
+                borderRadius: radius.pill,
+                backgroundColor: active ? palette.inverse : palette.surface,
+                borderWidth: 1,
+                borderColor: active ? palette.inverse : palette.line,
+              }}
+            >
+              <Text variant="caption" tone={active ? 'onInverse' : 'default'}>{option.name}{delta}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
 }
 
 function QuantityControl({ value, onChange, compact = false }: { value: number; onChange: (value: number) => void; compact?: boolean }) {
@@ -488,6 +592,7 @@ function useStorefront(service: ServiceId, merchantId: string): { state: Feed<St
               price: formatNairaCompact(item.price as Kobo),
               badge: item.condition ? conditionLabel(item.condition) : item.isAvailable ? undefined : 'Unavailable',
               available: item.isAvailable,
+              modifierGroups: item.modifierGroups ?? [],
             })),
           },
         });
