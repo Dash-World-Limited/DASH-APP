@@ -673,6 +673,7 @@ function ProductForm({
         })),
       })) ?? [],
   );
+  const [imageFile, setImageFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -766,6 +767,21 @@ function ProductForm({
           },
         });
       }
+
+      if (imageFile) {
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(imageFile.type)) {
+          throw new Error('Upload a JPEG, PNG or WebP image.');
+        }
+        if (imageFile.size > 8 * 1024 * 1024) {
+          throw new Error('Product images must be 8 MB or smaller.');
+        }
+        await authedFetch('/v1/vendor/items/' + savedItemId + '/image', {
+          method: 'PUT',
+          rawBody: imageFile,
+          contentType: imageFile.type,
+        });
+      }
+
       await onSaved();
       onClose();
     } catch (caught) {
@@ -993,12 +1009,15 @@ function ProductForm({
 
         <div className={styles.uploadNotice}>
           <Icon name="image" />
-          <div>
+          <div style={{ display: 'grid', gap: 8, width: '100%' }}>
             <strong>Product photography</strong>
-            <span>
-              The storage upload connection is the next catalog task. Existing real
-              product URLs render now; this form will not invent an image.
-            </span>
+            <span>JPEG, PNG or WebP · maximum 8 MB. DASH securely decodes and re-encodes every upload before storing it.</span>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={(event) => setImageFile(event.target.files?.[0] ?? null)}
+            />
+            {imageFile ? <small>Selected: {imageFile.name}</small> : null}
           </div>
         </div>
         {failure ? <p className={styles.formError}>{failure}</p> : null}
