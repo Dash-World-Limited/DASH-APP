@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
 
 import { api, ApiError } from '../../api';
 import { useTheme } from '../../theme/ThemeProvider';
@@ -68,6 +68,14 @@ export function OrderChatScreen({ orderId, onBack }: { orderId: string; onBack: 
     }
   }, [messages.length]);
 
+  useEffect(() => {
+    const event = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const subscription = Keyboard.addListener(event, () => {
+      requestAnimationFrame(() => scroll.current?.scrollToEnd({ animated: true }));
+    });
+    return () => subscription.remove();
+  }, []);
+
   const send = async () => {
     const body = draft.trim();
     if (!body || sending || !canSend) return;
@@ -108,7 +116,7 @@ export function OrderChatScreen({ orderId, onBack }: { orderId: string; onBack: 
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: palette.background }}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={{ paddingHorizontal: space.gutter }}>
         <BackHeader title="Order chat" onBack={onBack} />
@@ -125,6 +133,7 @@ export function OrderChatScreen({ orderId, onBack }: { orderId: string; onBack: 
           contentContainerStyle={{ paddingHorizontal: space.gutter, paddingVertical: space.lg, gap: space.sm }}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
         >
           {messages.length === 0 && !error ? (
             <Empty
