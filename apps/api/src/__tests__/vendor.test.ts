@@ -708,6 +708,70 @@ describe('dashboard and catalogue editor', () => {
     expect(response.statusCode).toBe(404);
   });
 
+  it('sanitises and attaches a real product image', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z8xQAAAAASUVORK5CYII=',
+      'base64',
+    );
+
+    const response = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${world.vendorA.itemId}/image`,
+      headers: {
+        ...vendorA.headers,
+        'content-type': 'image/png',
+      },
+      payload: png,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ image: { key: string; url: string } }>();
+    expect(body.image.key).toMatch(/^vendor-products\/[0-9a-f]{48}$/);
+    expect(body.image.url).toContain('/v1/files/');
+
+    const saved = await context.prisma.menuItem.findUniqueOrThrow({
+      where: { id: world.vendorA.itemId },
+      select: { imageKey: true },
+    });
+    expect(saved.imageKey).toBe(body.image.key);
+  });
+
+  it('rejects image-shaped hostile bytes before storage', async () => {
+    const fakePng = Buffer.concat([
+      Buffer.from('89504e470d0a1a0a', 'hex'),
+      Buffer.from('<script>alert(1)</script>'),
+    ]);
+
+    const response = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${world.vendorA.itemId}/image`,
+      headers: {
+        ...vendorA.headers,
+        'content-type': 'image/png',
+      },
+      payload: fakePng,
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('cannot upload an image to another vendor’s product', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z8xQAAAAASUVORK5CYII=',
+      'base64',
+    );
+    const response = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${world.vendorB.itemId}/image`,
+      headers: {
+        ...vendorA.headers,
+        'content-type': 'image/png',
+      },
+      payload: png,
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
   it('cannot add a product to another vendor’s category', async () => {
     const foreign = await context.prisma.menuItem.findUniqueOrThrow({
       where: { id: world.vendorB.itemId },
