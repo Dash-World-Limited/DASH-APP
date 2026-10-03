@@ -20,7 +20,9 @@ import { Text } from '../ui/Text';
 export interface MapShellProps {
   route: readonly Coordinate[];
   rider: Coordinate;
-  destination: Coordinate;
+  destination?: Coordinate;
+  /** Keep the viewport centred on a moving rider, used by the Online screen. */
+  followRider?: boolean;
   /** Glyph for the destination pin: the merchant on the way there. */
   destinationIcon?: 'silverware-fork-knife' | 'home' | 'storefront-outline';
   routeColor: string;
@@ -30,16 +32,18 @@ export interface MapShellProps {
 
 export function MapFallback({ route, rider, destination, routeColor, height = 300, accessibilityLabel, reason }: MapShellProps & { reason: string }) {
   const { palette } = useTheme();
-  const points = [rider, ...route, destination];
+  const points = destination ? [rider, ...route, destination] : [rider, ...route];
   const lats = points.map((p) => p.latitude);
   const lngs = points.map((p) => p.longitude);
   const [minLat, maxLat, minLng, maxLng] = [Math.min(...lats), Math.max(...lats), Math.min(...lngs), Math.max(...lngs)];
   const W = 320;
   const H = height;
   const pad = 36;
-  const x = (lng: number): number => pad + ((lng - minLng) / (maxLng - minLng || 1)) * (W - pad * 2);
+  const x = (lng: number): number =>
+    maxLng === minLng ? W / 2 : pad + ((lng - minLng) / (maxLng - minLng)) * (W - pad * 2);
   // Latitude grows northwards; screen y grows downwards.
-  const y = (lat: number): number => pad + ((maxLat - lat) / (maxLat - minLat || 1)) * (H - pad * 2);
+  const y = (lat: number): number =>
+    maxLat === minLat ? H / 2 : pad + ((maxLat - lat) / (maxLat - minLat)) * (H - pad * 2);
 
   return (
     <View
@@ -57,7 +61,9 @@ export function MapFallback({ route, rider, destination, routeColor, height = 30
           strokeLinejoin="round"
         />
         <Circle cx={x(rider.longitude)} cy={y(rider.latitude)} r={9} fill={palette.map.riderMarker} stroke="#FFFFFF" strokeWidth={3} />
-        <Circle cx={x(destination.longitude)} cy={y(destination.latitude)} r={11} fill={palette.map.pickupPin} stroke="#FFFFFF" strokeWidth={3} />
+        {destination ? (
+          <Circle cx={x(destination.longitude)} cy={y(destination.latitude)} r={11} fill={palette.map.pickupPin} stroke="#FFFFFF" strokeWidth={3} />
+        ) : null}
       </Svg>
       <View
         style={{
