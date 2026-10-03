@@ -6,8 +6,9 @@
  * Play Console registration or a Google Maps API key. Production must supply
  * its own OSM-compatible style URL through EXPO_PUBLIC_MAP_STYLE_URL.
  *
- * The route remains a representative straight-line/interpolated shell at this
- * checkpoint. Rider operations will later replace it with a routed polyline;
+ * The Online screen is driven by the rider handset's live foreground GPS and
+ * recenters as accepted fixes arrive. Delivery navigation still uses a
+ * representative interpolated line until a routing provider is connected;
  * the rider's authoritative position stays the one the server accepted.
  */
 
@@ -27,6 +28,7 @@ export function MapShell(props: MapShellProps) {
     route,
     rider,
     destination,
+    followRider = false,
     routeColor,
     height = 300,
     destinationIcon = 'silverware-fork-knife',
@@ -37,7 +39,7 @@ export function MapShell(props: MapShellProps) {
     return <MapFallback {...props} reason="Map style is not configured in this build" />;
   }
 
-  const points = [rider, ...route, destination];
+  const points = destination ? [rider, ...route, destination] : [rider, ...route];
   const longitudes = points.map((point) => point.longitude);
   const latitudes = points.map((point) => point.latitude);
   const west = Math.min(...longitudes);
@@ -66,19 +68,31 @@ export function MapShell(props: MapShellProps) {
         attribution
         attributionPosition={{ bottom: 8, right: 8 }}
       >
-        <Camera
-          minZoom={3}
-          maxZoom={19}
-          initialViewState={{
-            bounds: [
-              west - padLongitude,
-              south - padLatitude,
-              east + padLongitude,
-              north + padLatitude,
-            ],
-            padding: { top: 54, right: 42, bottom: 54, left: 42 },
-          }}
-        />
+        {followRider || !destination ? (
+          <Camera
+            minZoom={3}
+            maxZoom={19}
+            center={[rider.longitude, rider.latitude]}
+            zoom={15.5}
+            duration={650}
+            easing="ease"
+            padding={{ top: 36, right: 24, bottom: 36, left: 24 }}
+          />
+        ) : (
+          <Camera
+            minZoom={3}
+            maxZoom={19}
+            initialViewState={{
+              bounds: [
+                west - padLongitude,
+                south - padLatitude,
+                east + padLongitude,
+                north + padLatitude,
+              ],
+              padding: { top: 54, right: 42, bottom: 54, left: 42 },
+            }}
+          />
+        )}
 
         {route.length >= 2 ? (
           <GeoJSONSource id="dash-route" data={routeData}>
@@ -109,33 +123,35 @@ export function MapShell(props: MapShellProps) {
           </View>
         </Marker>
 
-        <Marker id="dash-destination" lngLat={[destination.longitude, destination.latitude]} anchor="bottom">
-          <View style={{ alignItems: 'center' }}>
-            <View
-              style={{
-                width: 38,
-                height: 38,
-                borderRadius: 19,
-                backgroundColor: palette.map.pickupPin,
-                borderWidth: 3,
-                borderColor: '#FFFFFF',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Icon name={destinationIcon} size={18} color="#FFFFFF" />
+        {destination ? (
+          <Marker id="dash-destination" lngLat={[destination.longitude, destination.latitude]} anchor="bottom">
+            <View style={{ alignItems: 'center' }}>
+              <View
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 19,
+                  backgroundColor: palette.map.pickupPin,
+                  borderWidth: 3,
+                  borderColor: '#FFFFFF',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Icon name={destinationIcon} size={18} color="#FFFFFF" />
+              </View>
+              <View
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 4,
+                  backgroundColor: '#0B0D10',
+                  marginTop: -2,
+                }}
+              />
             </View>
-            <View
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 4,
-                backgroundColor: '#0B0D10',
-                marginTop: -2,
-              }}
-            />
-          </View>
-        </Marker>
+          </Marker>
+        ) : null}
       </Map>
     </View>
   );
