@@ -180,6 +180,7 @@ async function main() {
           data: {
             displayName: 'Asaba Demo Vendor Owner',
             passwordHash: sourceOwner.identity.passwordHash,
+            emailVerifiedAt: new Date(),
           },
         })
       : legacyDemoOwner
@@ -189,6 +190,7 @@ async function main() {
               email: demoOwnerEmail,
               displayName: 'Asaba Demo Vendor Owner',
               passwordHash: sourceOwner.identity.passwordHash,
+              emailVerifiedAt: new Date(),
             },
           })
         : await tx.identity.create({
@@ -196,6 +198,7 @@ async function main() {
               email: demoOwnerEmail,
               displayName: 'Asaba Demo Vendor Owner',
               passwordHash: sourceOwner.identity.passwordHash,
+              emailVerifiedAt: new Date(),
             },
           });
 
