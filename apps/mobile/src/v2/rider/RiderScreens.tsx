@@ -22,14 +22,27 @@ export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
     <RiderPage>
       <RiderHeader title="You’re online" onBack={onBack} />
       <StatusNotice preview={flow.preview} />
-      <View style={{ minHeight: 205, alignItems: 'center', justifyContent: 'center', gap: space.md }}>
-        <View style={{ width: 104, height: 104, borderRadius: 52, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}>
-          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: palette.accent, alignItems: 'center', justifyContent: 'center' }}>
-            <Icon name="radar" size={36} color={palette.onAccent} />
-          </View>
+      {flow.riderPosition ? (
+        <View style={{ borderRadius: radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: palette.line }}>
+          <MapShell
+            route={[]}
+            rider={flow.riderPosition}
+            followRider
+            routeColor={palette.accent}
+            height={300}
+            accessibilityLabel="Your live rider location"
+          />
         </View>
+      ) : (
+        <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.md }}>
+          <ActivityIndicator />
+          <Text variant="heading">Finding your live location…</Text>
+          <Text variant="caption" tone="muted" align="center">Keep location enabled while you are online. DASH will not offer work until your position is fresh.</Text>
+        </View>
+      )}
+      <View style={{ gap: space.xs }}>
         <Text variant="heading">Looking for nearby orders…</Text>
-        <Text variant="caption" tone="muted" align="center">DASH checks your zone, capacity and fresh location before offering a delivery.</Text>
+        <Text variant="caption" tone="muted">Your phone’s live GPS position is sent while you are online so dispatch can offer orders you can actually reach.</Text>
       </View>
 
       {flow.delivery && flow.delivery.status !== 'delivered' ? (
@@ -152,6 +165,20 @@ export function RiderRouteScreen({ onBack }: Pick<ScreenProps, 'onBack'>) {
   const destination = headingToDropoff
     ? { latitude: delivery.address.latitude, longitude: delivery.address.longitude }
     : { latitude: delivery.branch.latitude, longitude: delivery.branch.longitude };
+
+  if (!flow.riderPosition) {
+    return (
+      <RiderPage>
+        <RiderHeader title={headingToDropoff ? 'Navigate to customer' : 'Navigate to pickup'} onBack={onBack} />
+        <View style={{ minHeight: 240, alignItems: 'center', justifyContent: 'center', gap: space.md }}>
+          <ActivityIndicator />
+          <Text variant="heading" align="center">Getting your current location…</Text>
+          <Text variant="caption" tone="muted" align="center">Navigation starts from the rider phone’s real GPS position.</Text>
+        </View>
+      </RiderPage>
+    );
+  }
+
   const route = interpolateRoute(flow.riderPosition, destination);
   const externalUrl =
     Platform.OS === 'ios'
