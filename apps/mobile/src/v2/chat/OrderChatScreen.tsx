@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
 
 import { api, ApiError } from '../../api';
 import { useTheme } from '../../theme/ThemeProvider';
@@ -106,7 +106,10 @@ export function OrderChatScreen({ orderId, onBack }: { orderId: string; onBack: 
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: palette.background }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: palette.background }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
       <View style={{ paddingHorizontal: space.gutter }}>
         <BackHeader title="Order chat" onBack={onBack} />
       </View>
@@ -121,6 +124,7 @@ export function OrderChatScreen({ orderId, onBack }: { orderId: string; onBack: 
           style={{ flex: 1 }}
           contentContainerStyle={{ paddingHorizontal: space.gutter, paddingVertical: space.lg, gap: space.sm }}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
         >
           {messages.length === 0 && !error ? (
             <Empty
@@ -203,6 +207,6 @@ export function OrderChatScreen({ orderId, onBack }: { orderId: string; onBack: 
           </Pressable>
         </View>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
