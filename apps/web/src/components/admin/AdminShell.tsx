@@ -11,6 +11,7 @@ import { AdminThemeToggle, useAdminTheme } from './AdminTheme';
 const NAV = [
   { href: '/admin', label: 'Overview', icon: 'grid' },
   { href: '/admin/partners', label: 'Partners', icon: 'people' },
+  { href: '/admin/live', label: 'Live map', icon: 'pulse' },
 ] as const;
 
 function NavIcon({ name }: { name: 'grid' | 'people' | 'pulse' | 'wallet' | 'box' }) {
