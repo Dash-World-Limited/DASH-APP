@@ -37,6 +37,62 @@ function blockingNames(report) {
     .sort();
 }
 
+/**
+ * Resolve npm audit's propagated parent entries to the packages that
+ * actually carry high/critical advisory objects.
+ *
+ * npm marks every parent in a vulnerable dependency chain with the child's
+ * severity. Walking the string links in `via` lets the policy allow only a
+ * known advisory root instead of allowlisting broad parents such as
+ * `react-native`, which would hide a future unrelated runtime advisory.
+ * Unknown audit shapes fail closed by treating the package itself as a root.
+ */
+function advisoryRoots(report, packageName, seen = new Set()) {
+  if (seen.has(packageName)) return new Set();
+  seen.add(packageName);
+
+  const vulnerability = report.vulnerabilities[packageName];
+  if (!vulnerability || !Array.isArray(vulnerability.via)) {
+    return new Set([packageName]);
+  }
+
+  const roots = new Set();
+  for (const via of vulnerability.via) {
+    if (typeof via === 'string') {
+      for (const root of advisoryRoots(report, via, seen)) roots.add(root);
+      continue;
+    }
+
+    if (via && typeof via === 'object') {
+      const severity = LEVEL[via.severity] ?? 0;
+      if (severity >= LEVEL.high) roots.add(via.name ?? packageName);
+    }
+  }
+
+  if (roots.size === 0) roots.add(packageName);
+  return roots;
+}
+
+function assertOnlyKnownAdvisoryRoots(label, report, knownRoots) {
+  const affected = blockingNames(report);
+  const roots = new Set();
+
+  for (const packageName of affected) {
+    for (const root of advisoryRoots(report, packageName)) roots.add(root);
+  }
+
+  const unexpected = [...roots].filter((name) => !knownRoots.has(name)).sort();
+  if (unexpected.length > 0) {
+    throw new Error(`${label} has new high/critical advisory roots: ${unexpected.join(', ')}`);
+  }
+
+  const accepted = [...roots].filter((name) => knownRoots.has(name)).sort();
+  console.log(
+    accepted.length > 0
+      ? `${label}: known upstream/tooling advisory roots only: ${accepted.join(', ')}`
+      : `${label}: no high/critical advisories`,
+  );
+}
 function assertNoBlocking(label, report) {
   const found = blockingNames(report);
   if (found.length > 0) {
@@ -76,14 +132,19 @@ assertOnlyKnown(
   new Set(['prisma', '@prisma/config', 'deepmerge-ts']),
 );
 
-// Expo 57 currently packages Node-side CLI/config/code-signing tooling beneath
-// the runtime package, so npm audit cannot separate those build-time modules
-// from the React Native dependency graph. The release APK does not execute
-// these Node modules. Keep the exact current high-severity chain allowlisted;
-// any additional high/critical package fails this gate.
+// Expo 57 carries Node-side Metro/build and certificate tooling beneath the
+// mobile dependency graph. npm audit propagates vulnerabilities in those tools
+// all the way up through packages such as react-native and react-native-maps,
+// even though the release APK does not execute Metro, micromatch, braces or
+// node-forge.
+//
+// Do not allowlist those parent package names: that would hide a future real
+// React Native runtime advisory. Instead permit only the current advisory
+// roots that have no patched release in this toolchain. Any new advisory root
+// still fails the gate.
 const fullMobile = runAudit({ cwd: 'apps/mobile' });
-assertOnlyKnown(
+assertOnlyKnownAdvisoryRoots(
   'Native complete dependency graph',
   fullMobile,
-  new Set(['expo', '@expo/cli', '@expo/code-signing-certificates', 'node-forge']),
+  new Set(['braces', 'node-forge']),
 );
