@@ -609,6 +609,32 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // -------------------------------------------------------------------------
+  // GET /v1/rider/history — completed deliveries for this rider
+  //
+  // History is deliberately separate from /deliveries: the latter is the
+  // rider's live workload and must stay small and unambiguous. This endpoint is
+  // read-only, scoped to the authenticated rider, and returns only deliveries
+  // that actually reached handover.
+  // -------------------------------------------------------------------------
+  app.get(
+    '/v1/rider/history',
+    { preHandler: requirePermission('rider:delivery:progress') },
+    async (request) => {
+      const riderId = riderIdOf(request);
+      const history = await prisma.order.findMany({
+        where: { riderId, status: 'delivered' },
+        orderBy: [{ deliveredAt: 'desc' }, { updatedAt: 'desc' }],
+        take: 50,
+        select: {
+          ...ACTIVE_DELIVERY_SELECT,
+          deliveredAt: true,
+        },
+      });
+      return { deliveries: history };
+    },
+  );
+
+  // -------------------------------------------------------------------------
   // GET /v1/rider/deliveries/:id — full detail, only once assigned
   // -------------------------------------------------------------------------
   app.get<{ Params: { id: string } }>(
