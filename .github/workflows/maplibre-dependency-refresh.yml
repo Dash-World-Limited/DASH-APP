@@ -1,0 +1,44 @@
+name: One-off MapLibre dependency refresh
+
+on:
+  push:
+    branches:
+      - chatgpt/dash-next-release
+    paths:
+      - .github/workflows/maplibre-dependency-refresh.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/dash-next-release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/mobile/package-lock.json
+
+      - name: Replace Google-backed map dependency with MapLibre
+        run: |
+          set -euo pipefail
+          npm install --prefix apps/mobile --save-exact @maplibre/maplibre-react-native@11.4.1
+          npm uninstall --prefix apps/mobile react-native-maps
+
+      - name: Commit generated dependency files and remove this one-off workflow
+        run: |
+          set -euo pipefail
+          rm .github/workflows/maplibre-dependency-refresh.yml
+          git config user.name "dashworld-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add apps/mobile/package.json apps/mobile/package-lock.json .github/workflows/maplibre-dependency-refresh.yml
+          git diff --cached --check
+          git commit -m "build(mobile): switch map runtime to MapLibre"
+          git push origin HEAD:chatgpt/dash-next-release
