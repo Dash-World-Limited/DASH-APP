@@ -49,24 +49,28 @@ function PartnerQueue() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const stepUp = useStepUp();
+  const { run: runStepUp, prompt: stepUpPrompt } = useStepUp();
 
   const load = useCallback(async () => {
     if (!signedIn || !loaded) return;
     setError(null);
     try {
       if (canRiders) {
-        const result = await authedFetch<{ applications: RiderApplication[] }>('/v1/admin/rider-applications?status=pending&limit=100');
-        setRiders(result.applications);
+        const result = await runStepUp(() =>
+          authedFetch<{ applications: RiderApplication[] }>('/v1/admin/rider-applications?status=pending&limit=100'),
+        );
+        if (result) setRiders(result.applications);
       } else setRiders([]);
       if (canVendors) {
-        const result = await authedFetch<{ applications: VendorApplication[] }>('/v1/admin/vendor-applications?status=pending&limit=100');
-        setVendors(result.applications);
+        const result = await runStepUp(() =>
+          authedFetch<{ applications: VendorApplication[] }>('/v1/admin/vendor-applications?status=pending&limit=100'),
+        );
+        if (result) setVendors(result.applications);
       } else setVendors([]);
     } catch (caught) {
       setError(caught instanceof ApiRequestError ? caught.message : 'Could not load partner applications.');
     }
-  }, [canRiders, canVendors, loaded, signedIn]);
+  }, [canRiders, canVendors, loaded, runStepUp, signedIn]);
 
   useEffect(() => {
     void load();
@@ -80,7 +84,7 @@ function PartnerQueue() {
       const path = kind === 'rider'
         ? `/v1/admin/riders/${id}/decision`
         : `/v1/admin/vendors/${id}/decision`;
-      const result = await stepUp.run(() =>
+      const result = await runStepUp(() =>
         authedFetch(path, { method: 'POST', body: { decision: 'approve' } }),
       );
       if (result !== undefined) {
@@ -221,7 +225,7 @@ function PartnerQueue() {
           )}
         </div>
       </div>
-      {stepUp.prompt}
+      {stepUpPrompt}
     </div>
   );
 }
