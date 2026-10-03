@@ -477,7 +477,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     // allowlist above — a reflected origin plus credentials would let any site
     // read authenticated responses.
     credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type',
       'Authorization',
