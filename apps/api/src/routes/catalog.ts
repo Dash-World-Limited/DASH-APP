@@ -357,9 +357,24 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
     // same response as one that does not exist.
     if (!vendor || vendor.status !== 'approved') throw ApiError.notFound();
 
+    const categories = await Promise.all(
+      vendor.categories.map(async (category) => ({
+        ...category,
+        items: await Promise.all(
+          category.items.map(async (item) => ({
+            ...item,
+            imageKey: item.imageKey
+              ? await app.services.storage.signedUrl(item.imageKey, 3_600)
+              : null,
+          })),
+        ),
+      })),
+    );
+
     return {
       vendor: {
         ...vendor,
+        categories,
         serviceCategory: serviceCategoryForVendorCategory(vendor.category),
       },
     };
