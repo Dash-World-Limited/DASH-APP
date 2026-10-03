@@ -62,7 +62,7 @@ interface RiderFlowValue {
   error: string | null;
   offer: RiderOffer | null;
   delivery: RiderDelivery | null;
-  riderPosition: Coordinate;
+  riderPosition: Coordinate | null;
   goOnline(): Promise<boolean>;
   goOffline(): Promise<boolean>;
   findOffers(): Promise<void>;
@@ -123,10 +123,27 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [offer, setOffer] = useState<RiderOffer | null>(null);
   const [delivery, setDelivery] = useState<RiderDelivery | null>(null);
-  const [riderPosition, setRiderPosition] = useState<Coordinate>(RIDER_START);
+  const [riderPosition, setRiderPosition] = useState<Coordinate | null>(api.configured ? null : RIDER_START);
 
   const fail = useCallback((caught: unknown) => {
     setError(caught instanceof ApiError ? caught.message : 'Something went wrong. Please try again.');
+  }, []);
+
+  const publishPosition = useCallback(async (position: Location.LocationObject): Promise<void> => {
+    const point = { latitude: position.coords.latitude, longitude: position.coords.longitude };
+    setRiderPosition(point);
+    if (!api.configured) return;
+
+    await api.request('/v1/rider/location', {
+      method: 'POST',
+      body: {
+        ...point,
+        accuracy: position.coords.accuracy ?? undefined,
+        heading: position.coords.heading ?? undefined,
+        speed: position.coords.speed ?? undefined,
+        recordedAt: new Date(position.timestamp).toISOString(),
+      },
+    });
   }, []);
 
   const reportCurrentPosition = useCallback(async (): Promise<boolean> => {
@@ -136,22 +153,9 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       return false;
     }
     const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-    const point = { latitude: position.coords.latitude, longitude: position.coords.longitude };
-    setRiderPosition(point);
-    if (api.configured) {
-      await api.request('/v1/rider/location', {
-        method: 'POST',
-        body: {
-          ...point,
-          accuracy: position.coords.accuracy ?? undefined,
-          heading: position.coords.heading ?? undefined,
-          speed: position.coords.speed ?? undefined,
-          recordedAt: new Date(position.timestamp).toISOString(),
-        },
-      });
-    }
+    await publishPosition(position);
     return true;
-  }, []);
+  }, [publishPosition]);
 
   const findOffers = useCallback(async () => {
     if (!api.configured || !online) return;
@@ -172,11 +176,37 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!online || !api.configured) return;
-    const timer = setInterval(() => {
-      void reportCurrentPosition().catch(fail);
-    }, 20_000);
-    return () => clearInterval(timer);
-  }, [fail, online, reportCurrentPosition]);
+
+    let subscription: Location.LocationSubscription | null = null;
+    let cancelled = false;
+
+    void (async () => {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (!permission.granted) {
+        setError('Location permission is required while a rider is online.');
+        return;
+      }
+
+      const next = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.High,
+          timeInterval: 5_000,
+          distanceInterval: 5,
+        },
+        (position) => {
+          void publishPosition(position).catch(fail);
+        },
+      );
+
+      if (cancelled) next.remove();
+      else subscription = next;
+    })().catch(fail);
+
+    return () => {
+      cancelled = true;
+      subscription?.remove();
+    };
+  }, [fail, online, publishPosition]);
 
   const restoreDelivery = useCallback(async () => {
     if (!api.configured) return;
@@ -299,7 +329,12 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       if (api.configured) {
         await api.request(`/v1/rider/deliveries/${encodeURIComponent(delivery.id)}/complete`, {
           method: 'POST',
-          body: { pin, latitude: riderPosition.latitude, longitude: riderPosition.longitude },
+          body: {
+            pin,
+            ...(riderPosition
+              ? { latitude: riderPosition.latitude, longitude: riderPosition.longitude }
+              : {}),
+          },
         });
       }
       setDelivery((current) => current ? { ...current, status: 'delivered' } : current);
