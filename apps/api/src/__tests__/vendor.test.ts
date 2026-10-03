@@ -606,6 +606,108 @@ describe('dashboard and catalogue editor', () => {
     });
   });
 
+  it('creates real product options that customer checkout can quote', async () => {
+    const category = await context.prisma.menuItem.findUniqueOrThrow({
+      where: { id: world.vendorA.itemId },
+      select: { categoryId: true },
+    });
+
+    const created = await context.app.inject({
+      method: 'POST',
+      url: '/v1/vendor/items',
+      headers: vendorA.headers,
+      payload: {
+        categoryId: category.categoryId,
+        name: 'Rice with protein choice',
+        price: 250_000,
+        prepMinutes: 10,
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const itemId = created.json<{ item: { id: string } }>().item.id;
+
+    const choices = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${itemId}/modifiers`,
+      headers: vendorA.headers,
+      payload: {
+        groups: [
+          {
+            name: 'Choose your protein',
+            minSelect: 1,
+            maxSelect: 1,
+            options: [
+              { name: 'Beef', priceDelta: 100_000 },
+              { name: 'Chicken', priceDelta: 150_000 },
+            ],
+          },
+        ],
+      },
+    });
+    expect(choices.statusCode).toBe(200);
+    const group = choices.json<{
+      groups: {
+        id: string;
+        name: string;
+        options: { id: string; name: string }[];
+      }[];
+    }>().groups[0];
+    expect(group?.name).toBe('Choose your protein');
+    const beef = group?.options.find((option) => option.name === 'Beef');
+    expect(beef?.id).toBeTruthy();
+
+    const quote = await context.app.inject({
+      method: 'POST',
+      url: '/v1/orders/quote',
+      headers: customerA.headers,
+      payload: {
+        branchId: world.vendorA.branchId,
+        items: [{ itemId, quantity: 1, modifierIds: [beef!.id] }],
+        mode: 'delivery',
+        addressId: world.customerA.addressId,
+      },
+    });
+    expect(quote.statusCode).toBe(200);
+
+    const dashboard = await context.app.inject({
+      method: 'GET',
+      url: '/v1/vendor/dashboard',
+      headers: vendorA.headers,
+    });
+    expect(dashboard.statusCode).toBe(200);
+    const dashboardItems = dashboard.json<{
+      vendor: {
+        categories: {
+          items: {
+            id: string;
+            modifierGroups: { name: string; options: { name: string }[] }[];
+          }[];
+        }[];
+      };
+    }>().vendor.categories.flatMap((entry) => entry.items);
+    const saved = dashboardItems.find((entry) => entry.id === itemId);
+    expect(saved?.modifierGroups[0]?.options.map((option) => option.name)).toEqual(['Beef', 'Chicken']);
+  });
+
+  it('cannot replace another vendor’s product options', async () => {
+    const response = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${world.vendorB.itemId}/modifiers`,
+      headers: vendorA.headers,
+      payload: {
+        groups: [
+          {
+            name: 'Not yours',
+            minSelect: 0,
+            maxSelect: 1,
+            options: [{ name: 'Nope', priceDelta: 0 }],
+          },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
   it('cannot add a product to another vendor’s category', async () => {
     const foreign = await context.prisma.menuItem.findUniqueOrThrow({
       where: { id: world.vendorB.itemId },
