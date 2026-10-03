@@ -143,8 +143,11 @@ export class ApiRequestError extends Error {
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
+  /** Raw request bytes, used for bounded image uploads. Mutually exclusive with body. */
+  rawBody?: BodyInit;
+  contentType?: string;
   token?: string | null;
   idempotencyKey?: string;
   signal?: AbortSignal;
@@ -169,7 +172,13 @@ async function sendRequest<T>(
 ): Promise<T> {
   const method = options.method ?? 'GET';
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (options.body !== undefined && options.rawBody !== undefined) {
+    throw new Error('Request cannot have both JSON body and rawBody.');
+  }
+
+  const headers: Record<string, string> = {};
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (options.rawBody !== undefined && options.contentType) headers['Content-Type'] = options.contentType;
   if (options.token) headers['Authorization'] = `Bearer ${options.token}`;
   if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
 
@@ -190,7 +199,11 @@ async function sendRequest<T>(
       // web app and the API are different origins during development, and
       // cross-origin fetch omits cookies unless asked.
       credentials: 'include',
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      ...(options.rawBody !== undefined
+        ? { body: options.rawBody }
+        : options.body === undefined
+          ? {}
+          : { body: JSON.stringify(options.body) }),
       ...(options.signal ? { signal: options.signal } : {}),
     });
   } catch {
