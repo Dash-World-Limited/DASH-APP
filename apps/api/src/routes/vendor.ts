@@ -121,6 +121,26 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
                   isAvailable: true,
                   requiresAgeCheck: true,
                   updatedAt: true,
+                  modifierGroups: {
+                    orderBy: { sortOrder: 'asc' },
+                    select: {
+                      id: true,
+                      name: true,
+                      minSelect: true,
+                      maxSelect: true,
+                      sortOrder: true,
+                      options: {
+                        orderBy: { sortOrder: 'asc' },
+                        select: {
+                          id: true,
+                          name: true,
+                          priceDelta: true,
+                          isAvailable: true,
+                          sortOrder: true,
+                        },
+                      },
+                    },
+                  },
                   stock: {
                     where: actor.branchId
                       ? { branchId: actor.branchId }
@@ -352,6 +372,212 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       });
 
       return { item };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PUT /v1/vendor/items/:id/modifiers — replace this product's choice groups
+  //
+  // Full replacement keeps the dashboard contract simple while preserving the
+  // ids of groups/options the vendor is editing. Existing carts with a removed
+  // option are deliberately rejected at quote time instead of silently
+  // substituting another choice.
+  // -------------------------------------------------------------------------
+  app.put<{ Params: { id: string } }>(
+    '/v1/vendor/items/:id/modifiers',
+    { preHandler: requirePermission('vendor:catalog:write') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const optionSchema = z.object({
+        id: z.string().trim().min(1).optional(),
+        name: z.string().trim().min(1).max(80),
+        priceDelta: z.number().int().min(-100_000_000).max(100_000_000).default(0),
+        isAvailable: z.boolean().default(true),
+      });
+      const groupSchema = z
+        .object({
+          id: z.string().trim().min(1).optional(),
+          name: z.string().trim().min(1).max(80),
+          minSelect: z.number().int().min(0).max(20).default(0),
+          maxSelect: z.number().int().min(1).max(20).default(1),
+          options: z.array(optionSchema).min(1).max(30),
+        })
+        .superRefine((group, context) => {
+          if (group.minSelect > group.maxSelect) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['minSelect'],
+              message: 'Minimum selections cannot exceed maximum selections.',
+            });
+          }
+          if (group.maxSelect > group.options.length) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['maxSelect'],
+              message: 'Maximum selections cannot exceed the number of options.',
+            });
+          }
+          const available = group.options.filter((option) => option.isAvailable).length;
+          if (group.minSelect > available) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['minSelect'],
+              message: 'Required selections cannot exceed the available options.',
+            });
+          }
+        });
+      const body = z.object({ groups: z.array(groupSchema).max(12) }).parse(request.body);
+
+      const item = await prisma.menuItem.findUnique({
+        where: { id: request.params.id },
+        select: {
+          id: true,
+          vendorId: true,
+          modifierGroups: {
+            select: {
+              id: true,
+              options: { select: { id: true } },
+            },
+          },
+        },
+      });
+      if (!item) throw ApiError.notFound();
+      requireScope(actor, { vendorId: item.vendorId });
+
+      const currentGroups = new Map(item.modifierGroups.map((group) => [group.id, group]));
+      const submittedGroupIds = body.groups.flatMap((group) => (group.id ? [group.id] : []));
+
+      if (new Set(submittedGroupIds).size !== submittedGroupIds.length) {
+        throw ApiError.badRequest('The same option group was submitted more than once.');
+      }
+
+      for (const group of body.groups) {
+        if (!group.id) continue;
+        const current = currentGroups.get(group.id);
+        if (!current) throw ApiError.notFound();
+
+        const currentOptionIds = new Set(current.options.map((option) => option.id));
+        const submittedOptionIds = group.options.flatMap((option) => (option.id ? [option.id] : []));
+        if (new Set(submittedOptionIds).size !== submittedOptionIds.length) {
+          throw ApiError.badRequest('The same option was submitted more than once.');
+        }
+        if (submittedOptionIds.some((id) => !currentOptionIds.has(id))) throw ApiError.notFound();
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.modifierGroup.deleteMany({
+          where: {
+            itemId: item.id,
+            ...(submittedGroupIds.length > 0 ? { id: { notIn: submittedGroupIds } } : {}),
+          },
+        });
+
+        for (const [groupIndex, group] of body.groups.entries()) {
+          if (!group.id) {
+            await tx.modifierGroup.create({
+              data: {
+                itemId: item.id,
+                name: group.name,
+                minSelect: group.minSelect,
+                maxSelect: group.maxSelect,
+                sortOrder: groupIndex,
+                options: {
+                  create: group.options.map((option, optionIndex) => ({
+                    name: option.name,
+                    priceDelta: option.priceDelta,
+                    isAvailable: option.isAvailable,
+                    sortOrder: optionIndex,
+                  })),
+                },
+              },
+            });
+            continue;
+          }
+
+          await tx.modifierGroup.update({
+            where: { id: group.id },
+            data: {
+              name: group.name,
+              minSelect: group.minSelect,
+              maxSelect: group.maxSelect,
+              sortOrder: groupIndex,
+            },
+          });
+
+          const submittedOptionIds = group.options.flatMap((option) => (option.id ? [option.id] : []));
+          await tx.modifier.deleteMany({
+            where: {
+              groupId: group.id,
+              ...(submittedOptionIds.length > 0 ? { id: { notIn: submittedOptionIds } } : {}),
+            },
+          });
+
+          for (const [optionIndex, option] of group.options.entries()) {
+            if (option.id) {
+              await tx.modifier.update({
+                where: { id: option.id },
+                data: {
+                  name: option.name,
+                  priceDelta: option.priceDelta,
+                  isAvailable: option.isAvailable,
+                  sortOrder: optionIndex,
+                },
+              });
+            } else {
+              await tx.modifier.create({
+                data: {
+                  groupId: group.id,
+                  name: option.name,
+                  priceDelta: option.priceDelta,
+                  isAvailable: option.isAvailable,
+                  sortOrder: optionIndex,
+                },
+              });
+            }
+          }
+        }
+      });
+
+      const groups = await prisma.modifierGroup.findMany({
+        where: { itemId: item.id },
+        orderBy: { sortOrder: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          minSelect: true,
+          maxSelect: true,
+          sortOrder: true,
+          options: {
+            orderBy: { sortOrder: 'asc' },
+            select: {
+              id: true,
+              name: true,
+              priceDelta: true,
+              isAvailable: true,
+              sortOrder: true,
+            },
+          },
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'vendor.catalog.modifiers_changed',
+        resourceType: 'menu_item',
+        resourceId: item.id,
+        after: {
+          groups: groups.map((group) => ({
+            id: group.id,
+            name: group.name,
+            minSelect: group.minSelect,
+            maxSelect: group.maxSelect,
+            optionCount: group.options.length,
+          })),
+        },
+        requestId: request.id,
+      });
+
+      return { groups };
     },
   );
 
