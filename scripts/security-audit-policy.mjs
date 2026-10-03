@@ -59,7 +59,7 @@ function advisoryRoots(report, packageName, seen = new Set()) {
   const roots = new Set();
   for (const via of vulnerability.via) {
     if (typeof via === 'string') {
-      for (const root of advisoryRoots(report, via, seen)) roots.add(root);
+      for (const root of advisoryRoots(report, via, new Set(seen))) roots.add(root);
       continue;
     }
 
