@@ -9,7 +9,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react';
-import { ApiRequestError } from '@/lib/api';
+import { API_BASE, ApiRequestError } from '@/lib/api';
 import { PickupDialog, RejectDialog } from '@/components/vendor-dialogs';
 import {
   authedFetch,
@@ -314,7 +314,10 @@ function initials(value: string): string {
 }
 
 function directImageUrl(value: string | null): string | null {
-  return value && /^https?:\/\//i.test(value) ? value : null;
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return value;
+  if (/^\/v1\/files\//i.test(value)) return `${API_BASE.replace(/\/+$/, '')}${value}`;
+  return null;
 }
 
 function errorMessage(caught: unknown, fallback: string): string {
