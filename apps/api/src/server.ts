@@ -433,6 +433,17 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     ...(config.NODE_ENV === 'test' ? { disableRequestLogging: true } : {}),
   });
 
+  // Product photos are uploaded as raw image bytes, not multipart form data.
+  // Keeping the parser this narrow means JSON routes retain the 1 MB server
+  // body limit while vendor image uploads get their own bounded 8 MB buffer.
+  // The vendor route still verifies the magic bytes and fully decodes/re-encodes
+  // the image before anything is persisted.
+  app.addContentTypeParser(
+    ['image/jpeg', 'image/png', 'image/webp'],
+    { parseAs: 'buffer', bodyLimit: 8 * 1024 * 1024 },
+    (_request, body, done) => done(null, body),
+  );
+
   // --- Security headers ------------------------------------------------------
   await app.register(helmet, {
     // This is a JSON API; it serves no HTML, so the CSP is maximally strict.
