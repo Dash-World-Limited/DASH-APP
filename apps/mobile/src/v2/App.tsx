@@ -129,7 +129,7 @@ function Bootstrap() {
 
 function Navigator() {
   const { mode, setMode } = useAppMode();
-  const { viewer } = useAppSession();
+  const { viewer, state: sessionState } = useAppSession();
   const [state, setState] = useState<NavigationState>(() => createNavigationState(mode));
   const route = currentRoute(state);
 
@@ -146,11 +146,15 @@ function Navigator() {
   );
 
   useEffect(() => {
-    if (mode === 'rider' && viewer?.riderStatus !== 'approved') {
+    // Session restoration briefly reaches "authenticated" before /v1/auth/me
+    // has populated the viewer. Do not treat that temporary null viewer as a
+    // non-rider and overwrite the rider's remembered face with Customer.
+    if (sessionState !== 'authenticated' || !viewer) return;
+    if (mode === 'rider' && viewer.riderStatus !== 'approved') {
       setMode('customer');
       setState(createNavigationState('customer'));
     }
-  }, [mode, setMode, viewer?.riderStatus]);
+  }, [mode, sessionState, setMode, viewer]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
