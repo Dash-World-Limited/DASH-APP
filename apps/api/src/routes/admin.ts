@@ -68,9 +68,59 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       take: 200,
     });
 
-    const now = Date.now();
+    // The live board is also the source for the Super Admin map. An unscoped
+    // platform administrator may see every rider who is actively online;
+    // city-scoped operations staff only see riders already working an active
+    // order in one of their cities. That preserves the existing city boundary
+    // instead of turning the map into a cross-city location leak.
+    const observedAt = new Date();
+    const riders = await prisma.rider.findMany({
+      where: {
+        status: 'approved',
+        availability: { in: ['idle', 'on_delivery', 'on_break'] },
+        onlineUntil: { gt: observedAt },
+        lastLatitude: { not: null },
+        lastLongitude: { not: null },
+        ...(actor.cityIds && actor.cityIds.length > 0
+          ? {
+              orders: {
+                some: {
+                  status: { in: [...ACTIVE_STATUSES] },
+                  vendor: { cityId: { in: [...actor.cityIds] } },
+                },
+              },
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        availability: true,
+        vehicleType: true,
+        vehiclePlate: true,
+        lastLatitude: true,
+        lastLongitude: true,
+        locationReportedAt: true,
+        identity: { select: { displayName: true } },
+      },
+      orderBy: { locationReportedAt: 'desc' },
+      take: 500,
+    });
+
+    const now = observedAt.getTime();
 
     return {
+      riders: riders.map((rider) => ({
+        id: rider.id,
+        name: rider.identity.displayName,
+        availability: rider.availability,
+        vehicleType: rider.vehicleType,
+        vehiclePlate: rider.vehiclePlate,
+        latitude: rider.lastLatitude,
+        longitude: rider.lastLongitude,
+        locationAgeSeconds: rider.locationReportedAt
+          ? Math.round((now - rider.locationReportedAt.getTime()) / 1000)
+          : null,
+      })),
       orders: orders.map((order) => {
         const ageMinutes = Math.round((now - order.createdAt.getTime()) / 60_000);
         const locationAge = order.rider?.locationReportedAt
