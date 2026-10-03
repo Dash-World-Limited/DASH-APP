@@ -22,9 +22,13 @@ describe('imageUrl', () => {
     );
   });
 
-  it('treats a storage key as no image, rather than a broken request', () => {
-    // Nothing resolves keys yet. Returning a URL that 404s would put a broken
-    // image in front of a customer; returning null lets the component decide.
+  it('renders a signed local API image URL', () => {
+    expect(
+      imageUrl('/v1/files/vendor-products%2Fabc?expires=123&signature=deadbeef'),
+    ).toBe('/v1/files/vendor-products%2Fabc?expires=123&signature=deadbeef');
+  });
+
+  it('treats a raw storage key as no image, rather than a broken request', () => {
     expect(imageUrl('vendors/iya-kemi/jollof.jpg')).toBeNull();
   });
 
