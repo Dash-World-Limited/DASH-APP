@@ -99,6 +99,23 @@ interface Stock {
   updatedAt: string;
 }
 
+interface ModifierOption {
+  id: string;
+  name: string;
+  priceDelta: number;
+  isAvailable: boolean;
+  sortOrder: number;
+}
+
+interface ModifierGroup {
+  id: string;
+  name: string;
+  minSelect: number;
+  maxSelect: number;
+  sortOrder: number;
+  options: ModifierOption[];
+}
+
 interface CatalogItem {
   id: string;
   name: string;
@@ -109,6 +126,7 @@ interface CatalogItem {
   isAvailable: boolean;
   requiresAgeCheck: boolean;
   updatedAt: string;
+  modifierGroups: ModifierGroup[];
   stock: Stock[];
 }
 
@@ -179,6 +197,21 @@ interface ProductDraft {
   prepMinutes: string;
   quantity: string;
   requiresAgeCheck: boolean;
+}
+
+interface ModifierOptionDraft {
+  id?: string;
+  name: string;
+  priceNaira: string;
+  isAvailable: boolean;
+}
+
+interface ModifierGroupDraft {
+  id?: string;
+  name: string;
+  minSelect: string;
+  maxSelect: string;
+  options: ModifierOptionDraft[];
 }
 
 const NAV_ITEMS: readonly { id: Section; label: string; icon: IconName }[] = [
@@ -625,8 +658,60 @@ function ProductForm({
     quantity: stock?.quantity === null || stock?.quantity === undefined ? '' : String(stock.quantity),
     requiresAgeCheck: item?.requiresAgeCheck ?? false,
   });
+  const [modifierGroups, setModifierGroups] = useState<ModifierGroupDraft[]>(
+    () =>
+      item?.modifierGroups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        minSelect: String(group.minSelect),
+        maxSelect: String(group.maxSelect),
+        options: group.options.map((option) => ({
+          id: option.id,
+          name: option.name,
+          priceNaira: String(option.priceDelta / 100),
+          isAvailable: option.isAvailable,
+        })),
+      })) ?? [],
+  );
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+
+  const addModifierGroup = (): void => {
+    setModifierGroups((current) => [
+      ...current,
+      {
+        name: '',
+        minSelect: '0',
+        maxSelect: '1',
+        options: [{ name: '', priceNaira: '0', isAvailable: true }],
+      },
+    ]);
+  };
+
+  const updateModifierGroup = (index: number, patch: Partial<ModifierGroupDraft>): void => {
+    setModifierGroups((current) =>
+      current.map((group, groupIndex) => (groupIndex === index ? { ...group, ...patch } : group)),
+    );
+  };
+
+  const updateModifierOption = (
+    groupIndex: number,
+    optionIndex: number,
+    patch: Partial<ModifierOptionDraft>,
+  ): void => {
+    setModifierGroups((current) =>
+      current.map((group, currentGroupIndex) =>
+        currentGroupIndex === groupIndex
+          ? {
+              ...group,
+              options: group.options.map((option, currentOptionIndex) =>
+                currentOptionIndex === optionIndex ? { ...option, ...patch } : option,
+              ),
+            }
+          : group,
+      ),
+    );
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -645,12 +730,35 @@ function ProductForm({
           ? {}
           : { quantity: Number(draft.quantity) }),
       };
-      await authedFetch(item ? '/v1/vendor/items/' + item.id : '/v1/vendor/items', {
-        method: item ? 'PATCH' : 'POST',
-        body: payload,
+      const saved = await authedFetch<{ item: { id: string } }>(
+        item ? '/v1/vendor/items/' + item.id : '/v1/vendor/items',
+        {
+          method: item ? 'PATCH' : 'POST',
+          body: payload,
+        },
+      );
+      const savedItemId = item?.id ?? saved.item.id;
+
+      await authedFetch('/v1/vendor/items/' + savedItemId + '/modifiers', {
+        method: 'PUT',
+        body: {
+          groups: modifierGroups.map((group) => ({
+            ...(group.id ? { id: group.id } : {}),
+            name: group.name.trim(),
+            minSelect: Number(group.minSelect),
+            maxSelect: Number(group.maxSelect),
+            options: group.options.map((option) => ({
+              ...(option.id ? { id: option.id } : {}),
+              name: option.name.trim(),
+              priceDelta: Math.round(Number(option.priceNaira) * 100),
+              isAvailable: option.isAvailable,
+            })),
+          })),
+        },
       });
-      if (item && draft.quantity.trim() !== '') {
-        await authedFetch('/v1/vendor/items/' + item.id + '/availability', {
+
+      if (draft.quantity.trim() !== '') {
+        await authedFetch('/v1/vendor/items/' + savedItemId + '/availability', {
           method: 'PATCH',
           body: {
             isAvailable: Number(draft.quantity) > 0,
@@ -753,6 +861,136 @@ function ProductForm({
           />
           <span>Require age verification</span>
         </label>
+        <div
+          className={styles.fullField}
+          style={{ display: 'grid', gap: 12, borderTop: '1px solid var(--line)', paddingTop: 16 }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div>
+              <strong>Customer options</strong>
+              <p style={{ margin: '4px 0 0' }}>
+                Add real choices such as protein, size, colour or extras. Required choices block checkout until the customer selects them.
+              </p>
+            </div>
+            <button className={styles.secondaryButton} type="button" onClick={addModifierGroup}>
+              Add option group
+            </button>
+          </div>
+
+          {modifierGroups.map((group, groupIndex) => (
+            <section
+              key={group.id ?? 'new-group-' + String(groupIndex)}
+              style={{ display: 'grid', gap: 12, border: '1px solid var(--line)', borderRadius: 14, padding: 14 }}
+            >
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 110px 110px auto', gap: 10, alignItems: 'end' }}>
+                <label>
+                  <span>Option group</span>
+                  <input
+                    value={group.name}
+                    required
+                    maxLength={80}
+                    placeholder="Choose your protein"
+                    onChange={(event) => updateModifierGroup(groupIndex, { name: event.target.value })}
+                  />
+                </label>
+                <label>
+                  <span>Minimum</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="20"
+                    required
+                    value={group.minSelect}
+                    onChange={(event) => updateModifierGroup(groupIndex, { minSelect: event.target.value })}
+                  />
+                </label>
+                <label>
+                  <span>Maximum</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    required
+                    value={group.maxSelect}
+                    onChange={(event) => updateModifierGroup(groupIndex, { maxSelect: event.target.value })}
+                  />
+                </label>
+                <button
+                  className={styles.dangerButton}
+                  type="button"
+                  onClick={() => setModifierGroups((current) => current.filter((_, index) => index !== groupIndex))}
+                >
+                  Remove
+                </button>
+              </div>
+
+              {group.options.map((option, optionIndex) => (
+                <div
+                  key={option.id ?? 'new-option-' + String(optionIndex)}
+                  style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 140px auto auto', gap: 10, alignItems: 'end' }}
+                >
+                  <label>
+                    <span>Choice</span>
+                    <input
+                      value={option.name}
+                      required
+                      maxLength={80}
+                      placeholder="Beef"
+                      onChange={(event) => updateModifierOption(groupIndex, optionIndex, { name: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    <span>Extra price (₦)</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={option.priceNaira}
+                      onChange={(event) => updateModifierOption(groupIndex, optionIndex, { priceNaira: event.target.value })}
+                    />
+                  </label>
+                  <label className={styles.checkboxLabel}>
+                    <input
+                      type="checkbox"
+                      checked={option.isAvailable}
+                      onChange={(event) => updateModifierOption(groupIndex, optionIndex, { isAvailable: event.target.checked })}
+                    />
+                    <span>Available</span>
+                  </label>
+                  <button
+                    className={styles.secondaryButton}
+                    type="button"
+                    disabled={group.options.length === 1}
+                    onClick={() =>
+                      updateModifierGroup(groupIndex, {
+                        options: group.options.filter((_, index) => index !== optionIndex),
+                      })
+                    }
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+
+              <button
+                className={styles.secondaryButton}
+                type="button"
+                style={{ justifySelf: 'start' }}
+                onClick={() =>
+                  updateModifierGroup(groupIndex, {
+                    options: [...group.options, { name: '', priceNaira: '0', isAvailable: true }],
+                  })
+                }
+              >
+                Add choice
+              </button>
+            </section>
+          ))}
+
+          {modifierGroups.length === 0 ? (
+            <p style={{ margin: 0 }}>No customer options. This product can be added to cart as-is.</p>
+          ) : null}
+        </div>
+
         <div className={styles.uploadNotice}>
           <Icon name="image" />
           <div>
@@ -1529,6 +1767,11 @@ export default function VendorConsolePage() {
                               <StatusPill value={item.isAvailable ? 'open' : 'unavailable'} />
                               <h3>{item.name}</h3>
                               <p>{item.description ?? 'No description yet.'}</p>
+                              {item.modifierGroups.length > 0 ? (
+                                <small>
+                                  {item.modifierGroups.length} option group{item.modifierGroups.length === 1 ? '' : 's'}
+                                </small>
+                              ) : null}
                               <footer><strong>{formatNaira(item.price)}</strong><small>{item.prepMinutes} min</small></footer>
                             </div>
                           </article>
