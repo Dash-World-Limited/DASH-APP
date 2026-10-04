@@ -1,13 +1,10 @@
 name: CI
 
 on:
+  # Feature branches are verified through their pull request, not twice through
+  # both push and pull_request events. Main still verifies every direct update.
   push:
-    # The release-candidate line runs the full gate on every push, before any
-    # pull request exists; `main` is never pushed to from it. The line moved
-    # from claude/playstore-readiness to claude/awesome-bardeen-95lgbd and
-    # now to chatgpt/dash-next-release. Keep every active release-candidate
-    # line explicit so a direct push cannot bypass the full gate.
-    branches: [main, claude/playstore-readiness, claude/awesome-bardeen-95lgbd, chatgpt/dash-next-release]
+    branches: [main]
   pull_request:
     branches: [main]
 
