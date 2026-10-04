@@ -11,6 +11,7 @@ import { Text } from '../../ui/Text';
 import type { ServiceId } from '../artwork/CategoryArtwork';
 import { CategoryPhoto } from '../artwork/CategoryPhoto';
 import type { AppRoute } from '../navigation/model';
+import { DeclutterFeedScreen } from '../declutter/DeclutterScreens';
 
 /**
  * A merchant as the DASH API reports it.
@@ -108,6 +109,14 @@ export function CategoryDashboard({ id, onBack, onPush }: { id: string; onBack: 
   const { palette } = useTheme();
   const { state, reload } = useMerchantList(service);
   const merchants = state.status === 'ready' ? state.data : [];
+  if (service === 'declutter') {
+    return (
+      <DeclutterFeedScreen
+        onBack={onBack}
+        onOpen={(slug) => onPush({ name: 'customer.declutter-listing', params: { slug } })}
+      />
+    );
+  }
   return (
     <CatalogPage>
       <BackHeader title={copy.title} onBack={onBack} cart={() => onPush({ name: 'customer.cart' })} />
@@ -519,6 +528,12 @@ function useMerchantList(service: ServiceId): { state: Feed<readonly Merchant[]>
   const [state, setState] = useState<Feed<readonly Merchant[]>>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
+    // Declutters has its own listing API and screen; do not issue the legacy
+    // vendor-category request in the background when that category is open.
+    if (service === 'declutter') {
+      setState({ status: 'ready', data: [] });
+      return;
+    }
     if (!api.configured) {
       setState({ status: 'not-connected' });
       return;
