@@ -1,18 +1,8 @@
 name: Mobile arm64 release APK
 
 on:
-  push:
-    branches:
-      - claude/awesome-bardeen-95lgbd
-      - chatgpt/dash-next-release
-    paths:
-      - .github/workflows/mobile-release-apk.yml
-      # Root test-tooling changes (for example Vitest security upgrades) affect
-      # the native verification steps even when apps/mobile itself is unchanged.
-      - package.json
-      - package-lock.json
-      - apps/mobile/**
-      - packages/domain/**
+  # APKs are intentionally built only when requested. Ordinary code pushes are
+  # covered by CI and must not spend a full native build for every small fix.
   workflow_dispatch:
 
 # A dependency-refresh workflow may commit with GITHUB_TOKEN. GitHub suppresses
