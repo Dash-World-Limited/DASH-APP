@@ -540,7 +540,7 @@ function useMerchantList(service: ServiceId): { state: Feed<readonly Merchant[]>
     }
     setState({ status: 'loading' });
     const controller = new AbortController();
-    const query = service === 'declutter' ? 'category=declutter' : `service=${service === 'local-market' ? 'local_market' : service}`;
+    const query = `service=${service === 'local-market' ? 'local_market' : service}`;
     api.request<{ vendors: ApiVendorSummary[] }>(`/v1/vendors?${query}&limit=20`, { auth: false, signal: controller.signal })
       .then(({ vendors }) => {
         setState({
