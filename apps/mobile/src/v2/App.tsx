@@ -37,6 +37,7 @@ import { viewerFirstName, viewerInitials } from './auth/viewerName';
 import { LegalScreen } from './legal/LegalScreen';
 import { WalletScreen } from './wallet/WalletScreen';
 import { RiderApplyScreen } from './rider/RiderApplyScreen';
+import { DeclutterListingScreen } from './declutter/DeclutterScreens';
 import { CartScreen, CategoryDashboard, CustomerSearchScreen, ProductDetail, Storefront } from './catalog/CatalogScreens';
 import {
   CUSTOMER_TABS,
@@ -208,6 +209,8 @@ function RouteView({
       return <CustomerSearchScreen onBack={onBack} onPush={onPush} />;
     case 'customer.category':
       return <CategoryDashboard id={route.params?.id ?? 'food'} onBack={onBack} onPush={onPush} />;
+    case 'customer.declutter-listing':
+      return <DeclutterListingScreen slug={route.params?.slug ?? ''} onBack={onBack} />;
     case 'customer.store':
       return <Storefront category={route.params?.category ?? 'food'} merchantId={route.params?.id ?? ''} onBack={onBack} onPush={onPush} />;
     case 'customer.product':
