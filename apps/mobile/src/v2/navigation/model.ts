@@ -9,6 +9,7 @@ export type CustomerRoute =
   | 'customer.notifications'
   | 'customer.search'
   | 'customer.category'
+  | 'customer.declutter-listing'
   | 'customer.store'
   | 'customer.product'
   | 'customer.cart'
