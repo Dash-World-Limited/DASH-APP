@@ -537,7 +537,7 @@ function SignInScreen() {
           <p className={styles.eyebrow}>Vendor portal</p>
           <h2>Welcome back</h2>
           <p>Use the vendor account approved for your DASH storefront.</p>
-          <Link className={styles.primaryButton} href="/signin?next=/vendor">
+          <Link className={styles.primaryButton} href="/vendor/signin">
             Sign in to Vendor
           </Link>
           <small>
