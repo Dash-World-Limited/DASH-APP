@@ -18,6 +18,7 @@ import { Modal } from '@/components/Modal';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, useHasSession, usePermissions } from '@/lib/session';
 import { PricingQueue } from './pricing';
+import { PublishQueue } from './publish';
 
 /**
  * Declutters operations console.
@@ -41,7 +42,7 @@ import { PricingQueue } from './pricing';
  * refusal — a greyed-out control teaches nobody why.
  */
 
-type Tab = 'sellers' | 'submissions' | 'pricing';
+type Tab = 'sellers' | 'submissions' | 'pricing' | 'publish';
 
 interface SellerRow {
   id: string;
@@ -147,6 +148,7 @@ export default function DeclutterOpsPage() {
   const canReviewKyc = permissions.has('declutter:kyc:review');
   const canReadSubmissions = permissions.has('declutter:submission:read');
   const canAuthorize = permissions.has('declutter:pricing:authorize');
+  const canPublish = permissions.has('declutter:listing:publish');
 
   if (!hasSession) {
     return (
@@ -213,11 +215,20 @@ export default function DeclutterOpsPage() {
           >
             ValueCheck
           </Button>
+          <Button
+            variant={tab === 'publish' ? 'primary' : 'secondary'}
+            size="sm"
+            onClick={() => setTab('publish')}
+            aria-current={tab === 'publish' ? 'page' : undefined}
+          >
+            Publish
+          </Button>
         </nav>
 
         {tab === 'sellers' ? <SellerQueue canReviewKyc={canReviewKyc} /> : null}
         {tab === 'submissions' ? <SubmissionQueue /> : null}
         {tab === 'pricing' ? <PricingQueue canAuthorize={canAuthorize} /> : null}
+        {tab === 'publish' ? <PublishQueue canPublish={canPublish} /> : null}
       </main>
     </div>
   );
