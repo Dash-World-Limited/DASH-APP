@@ -24,6 +24,7 @@ import { authedFetch, useHasSession } from '@/lib/session';
 import { track } from '@/lib/analytics';
 import { signInHref } from '@/lib/return-to';
 import { ItemSubmissionForm } from '@/components/declutter/ItemSubmissionForm';
+import { SellerItems } from '@/components/declutter/SellerItems';
 
 interface SellerSelf {
   id: string;
@@ -230,7 +231,12 @@ function NextStep({
     );
   }
 
-  return <ItemSubmissionForm kycStatus={seller.kycStatus} />;
+  return (
+    <div className="space-y-5">
+      <SellerItems />
+      <ItemSubmissionForm kycStatus={seller.kycStatus} />
+    </div>
+  );
 }
 
 function BecomeSeller({ onCreated }: { onCreated: () => void }) {
