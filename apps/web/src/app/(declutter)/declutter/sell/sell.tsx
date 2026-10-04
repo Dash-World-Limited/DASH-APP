@@ -23,6 +23,7 @@ import { ApiRequestError } from '@/lib/api';
 import { authedFetch, useHasSession } from '@/lib/session';
 import { track } from '@/lib/analytics';
 import { signInHref } from '@/lib/return-to';
+import { ItemSubmissionForm } from '@/components/declutter/ItemSubmissionForm';
 
 interface SellerSelf {
   id: string;
@@ -210,44 +211,6 @@ function NextStep({
 
   if (!seller) return <BecomeSeller onCreated={onChanged} />;
 
-  if (seller.kycStatus === 'verified') {
-    return (
-      <Panel>
-        <p className="flex flex-wrap items-center gap-2 text-base font-bold">
-          You are verified
-          <span className="rounded-full bg-[var(--success-soft)] px-2.5 py-1 text-xs font-bold text-[var(--success)]">
-            Verified seller
-          </span>
-        </p>
-        <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
-          Send the item to the Declutters team and we will value it. Photographs, the condition and
-          anything that is not perfect about it all help — an item described honestly is valued
-          faster and sells sooner.
-        </p>
-        <a
-          href={WHATSAPP}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-6 inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
-        >
-          Send an item on WhatsApp
-        </a>
-      </Panel>
-    );
-  }
-
-  if (seller.kycStatus === 'pending') {
-    return (
-      <Panel>
-        <p className="text-base font-bold">Your verification is with us</p>
-        <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
-          A DASH team member is checking your details. You will be able to submit items as soon as
-          that is done.
-        </p>
-      </Panel>
-    );
-  }
-
   if (seller.kycStatus === 'suspended') {
     return (
       <Panel>
@@ -255,33 +218,19 @@ function NextStep({
         <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
           Contact DASH support and we will explain what happened.
         </p>
+        <a
+          href={WHATSAPP}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-6 inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
+        >
+          Contact Declutters support
+        </a>
       </Panel>
     );
   }
 
-  return (
-    <Panel>
-      <p className="text-base font-bold">
-        {seller.kycStatus === 'rejected' ? 'Your verification was not accepted' : 'Get verified'}
-      </p>
-      <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
-        {seller.rejectionReason ??
-          'One government ID and a phone number. This happens once, and it is the reason buyers trust the marketplace.'}
-      </p>
-      <p className="mt-3 text-sm leading-relaxed text-[var(--ink-muted)]">
-        Verification is completed with the Declutters team directly while the seller portal is being
-        finished.
-      </p>
-      <a
-        href={WHATSAPP}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="mt-6 inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
-      >
-        Continue on WhatsApp
-      </a>
-    </Panel>
-  );
+  return <ItemSubmissionForm kycStatus={seller.kycStatus} />;
 }
 
 function BecomeSeller({ onCreated }: { onCreated: () => void }) {
