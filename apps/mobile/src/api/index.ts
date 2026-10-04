@@ -50,14 +50,18 @@ export const session = createSession(Platform.OS === 'web' ? webStore : secureSt
 
 const extra = (Constants.expoConfig?.extra ?? {}) as { apiUrl?: unknown; variant?: unknown; mapStyleUrl?: unknown };
 
+// The API origin is also exported for media URLs returned as API-relative
+// paths by local/staging storage adapters.
+export const apiBaseUrl =
+  normaliseBaseUrl(COMPILED_API_URL) ??
+  normaliseBaseUrl(extra.apiUrl) ??
+  normaliseBaseUrl(process.env.EXPO_PUBLIC_API_URL);
+
 export const api = createApiClient({
   // The app config's value on a device. The web build's manifest carries the
   // key but not the string (it arrives as `{}`), so fall back to the same
   // variable, which Expo inlines into every bundle at build time.
-  baseUrl:
-    normaliseBaseUrl(COMPILED_API_URL) ??
-    normaliseBaseUrl(extra.apiUrl) ??
-    normaliseBaseUrl(process.env.EXPO_PUBLIC_API_URL),
+  baseUrl: apiBaseUrl,
   fetch: (input, init) => fetch(input, init),
   session,
 });
