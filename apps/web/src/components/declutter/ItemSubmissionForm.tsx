@@ -1,0 +1,387 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+
+import { ApiRequestError } from '@/lib/api';
+import { authedFetch } from '@/lib/session';
+
+type PhotoRole = 'front' | 'back' | 'side' | 'label' | 'screen' | 'accessories' | 'damage' | 'other';
+
+interface Taxonomy {
+  categories: Array<{ key: string; name: string; slug: string }>;
+  locations: Array<{ slug: string; label: string }>;
+}
+
+interface Submission {
+  id: string;
+  code: string;
+  status: string;
+  title: string | null;
+}
+
+interface SelectedPhoto {
+  file: File;
+  role: PhotoRole;
+}
+
+const PHOTO_ROLES: Array<{ value: PhotoRole; label: string }> = [
+  { value: 'front', label: 'Front view' },
+  { value: 'back', label: 'Back view' },
+  { value: 'side', label: 'Side view' },
+  { value: 'label', label: 'Model / label' },
+  { value: 'screen', label: 'Screen / display' },
+  { value: 'accessories', label: 'Accessories' },
+  { value: 'damage', label: 'Damage / defect' },
+  { value: 'other', label: 'Other useful view' },
+];
+
+const ACCEPTED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_PHOTOS = 12;
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read that image.'));
+    reader.onload = () => {
+      const value = typeof reader.result === 'string' ? reader.result : '';
+      const comma = value.indexOf(',');
+      if (comma < 0) reject(new Error('Could not read that image.'));
+      else resolve(value.slice(comma + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function messageOf(caught: unknown): string {
+  return caught instanceof ApiRequestError
+    ? caught.message
+    : caught instanceof Error
+      ? caught.message
+      : 'Something went wrong. Please try again.';
+}
+
+export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
+  const [taxonomy, setTaxonomy] = useState<Taxonomy | null>(null);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [categoryKey, setCategoryKey] = useState('');
+  const [locationSlug, setLocationSlug] = useState('');
+  const [condition, setCondition] = useState<'new' | 'like_new' | 'good' | 'fair'>('good');
+  const [expectedPrice, setExpectedPrice] = useState('');
+  const [photos, setPhotos] = useState<SelectedPhoto[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<Submission | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    authedFetch<Taxonomy>('/v1/declutter/taxonomy')
+      .then((value) => {
+        if (cancelled) return;
+        setTaxonomy(value);
+        setCategoryKey((current) => current || value.categories[0]?.key || '');
+        setLocationSlug((current) => current || value.locations[0]?.slug || '');
+      })
+      .catch((caught) => {
+        if (!cancelled) setError(messageOf(caught));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const canSubmit = useMemo(
+    () =>
+      !busy &&
+      title.trim().length >= 3 &&
+      description.trim().length >= 10 &&
+      Boolean(categoryKey) &&
+      Boolean(locationSlug) &&
+      photos.length > 0,
+    [busy, categoryKey, description, locationSlug, photos.length, title],
+  );
+
+  function choosePhotos(files: FileList | null) {
+    if (!files) return;
+    setError(null);
+
+    const incoming = Array.from(files);
+    if (photos.length + incoming.length > MAX_PHOTOS) {
+      setError(`You can upload up to ${MAX_PHOTOS} photos for one item.`);
+      return;
+    }
+
+    for (const file of incoming) {
+      if (!ACCEPTED_TYPES.has(file.type)) {
+        setError('Use JPEG, PNG or WebP images only.');
+        return;
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        setError(`${file.name} is larger than 8 MB.`);
+        return;
+      }
+    }
+
+    setPhotos((current) => [
+      ...current,
+      ...incoming.map((file, index) => ({
+        file,
+        role: current.length === 0 && index === 0 ? ('front' as const) : ('other' as const),
+      })),
+    ]);
+  }
+
+  function reset() {
+    setTitle('');
+    setDescription('');
+    setExpectedPrice('');
+    setCondition('good');
+    setPhotos([]);
+    setCreated(null);
+    setProgress('');
+    setError(null);
+  }
+
+  async function submit() {
+    if (!canSubmit) return;
+    setBusy(true);
+    setError(null);
+    setProgress('Creating your item…');
+
+    try {
+      const parsedNaira = expectedPrice.trim() ? Number(expectedPrice.replace(/,/g, '')) : null;
+      if (parsedNaira !== null && (!Number.isFinite(parsedNaira) || parsedNaira <= 0)) {
+        throw new Error('Enter a valid expected price or leave it blank.');
+      }
+
+      const response = await authedFetch<{ submission: Submission }>('/v1/declutter/submissions', {
+        method: 'POST',
+        body: {
+          title: title.trim(),
+          description: description.trim(),
+          categoryKey,
+          condition,
+          locationSlug,
+          ...(parsedNaira !== null ? { expectedPriceKobo: Math.round(parsedNaira * 100) } : {}),
+        },
+      });
+
+      for (let index = 0; index < photos.length; index += 1) {
+        const selected = photos[index]!;
+        setProgress(`Uploading photo ${index + 1} of ${photos.length}…`);
+        const data = await fileToBase64(selected.file);
+        await authedFetch(`/v1/declutter/submissions/${response.submission.id}/photos`, {
+          method: 'POST',
+          body: {
+            contentType: selected.file.type,
+            role: selected.role,
+            data,
+          },
+        });
+      }
+
+      setCreated(response.submission);
+      setProgress('');
+    } catch (caught) {
+      setError(messageOf(caught));
+      setProgress('');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (created) {
+    return (
+      <div className="dcl-glass rounded-[var(--radius-card)] p-6">
+        <p className="dcl-eyebrow">Item received</p>
+        <h2 className="mt-3 text-xl font-bold">{created.title ?? title}</h2>
+        <p className="mt-2 text-sm leading-relaxed text-[var(--ink-muted)]">
+          Reference <strong>{created.code}</strong>. Your photos are uploaded and the item is now in
+          the DASH review flow.
+        </p>
+        <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface-sunken)] p-4 text-sm text-[var(--ink-muted)]">
+          {kycStatus === 'verified'
+            ? 'Once DASH reviews the item, authorises the fixed price and you accept it, the listing can be published. Published listings appear automatically on the Declutters website and in DASH APP.'
+            : 'You can submit items before verification is finished. DASH will not publish them until your seller verification and item review are complete.'}
+        </div>
+        <button
+          type="button"
+          onClick={reset}
+          className="mt-6 min-h-12 w-full rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
+        >
+          Add another item
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="dcl-glass rounded-[var(--radius-card)] p-6">
+      <p className="dcl-eyebrow">List an item</p>
+      <h2 className="mt-2 text-xl font-bold">Show DASH what you want to sell</h2>
+      <p className="mt-2 text-sm leading-relaxed text-[var(--ink-muted)]">
+        Add honest details and photographs of the actual item. Nothing becomes public until DASH
+        reviews it.
+      </p>
+
+      {kycStatus !== 'verified' ? (
+        <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface-sunken)] p-4 text-xs leading-relaxed text-[var(--ink-muted)]">
+          Seller verification is still <strong>{kycStatus.replaceAll('_', ' ')}</strong>. You can
+          upload items now; publication stays locked until verification is complete.
+        </div>
+      ) : null}
+
+      <div className="mt-6 space-y-4">
+        <label className="block text-sm font-semibold">
+          Item title
+          <input
+            value={title}
+            maxLength={140}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="e.g. Samsung Galaxy S23 Ultra 256GB"
+            className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm outline-none focus:border-[var(--primary)]"
+          />
+        </label>
+
+        <label className="block text-sm font-semibold">
+          Description
+          <textarea
+            value={description}
+            maxLength={4000}
+            rows={4}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Condition, age, what works, what does not, accessories included…"
+            className="mt-2 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 py-3 text-sm outline-none focus:border-[var(--primary)]"
+          />
+        </label>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block text-sm font-semibold">
+            Category
+            <select
+              value={categoryKey}
+              onChange={(event) => setCategoryKey(event.target.value)}
+              className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm"
+            >
+              {(taxonomy?.categories ?? []).map((category) => (
+                <option key={category.key} value={category.key}>{category.name}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block text-sm font-semibold">
+            Area
+            <select
+              value={locationSlug}
+              onChange={(event) => setLocationSlug(event.target.value)}
+              className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm"
+            >
+              {(taxonomy?.locations ?? []).map((location) => (
+                <option key={location.slug} value={location.slug}>{location.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block text-sm font-semibold">
+            Condition
+            <select
+              value={condition}
+              onChange={(event) => setCondition(event.target.value as typeof condition)}
+              className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm"
+            >
+              <option value="new">New</option>
+              <option value="like_new">Like new</option>
+              <option value="good">Good</option>
+              <option value="fair">Fair</option>
+            </select>
+          </label>
+
+          <label className="block text-sm font-semibold">
+            Expected price (₦) <span className="font-normal text-[var(--ink-muted)]">(optional)</span>
+            <input
+              inputMode="numeric"
+              value={expectedPrice}
+              onChange={(event) => setExpectedPrice(event.target.value.replace(/[^0-9,]/g, ''))}
+              placeholder="250000"
+              className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm outline-none focus:border-[var(--primary)]"
+            />
+          </label>
+        </div>
+
+        <div>
+          <label className="block text-sm font-semibold" htmlFor="declutter-item-photos">
+            Item photos
+          </label>
+          <p className="mt-1 text-xs text-[var(--ink-muted)]">
+            1–12 JPEG, PNG or WebP images, up to 8 MB each. Photograph the real item.
+          </p>
+          <input
+            id="declutter-item-photos"
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            multiple
+            onChange={(event) => {
+              choosePhotos(event.target.files);
+              event.currentTarget.value = '';
+            }}
+            className="mt-3 block w-full text-sm"
+          />
+
+          {photos.length > 0 ? (
+            <div className="mt-4 space-y-2">
+              {photos.map((photo, index) => (
+                <div key={`${photo.file.name}-${index}`} className="grid gap-2 rounded-xl border border-[var(--line)] p-3 sm:grid-cols-[1fr_12rem_auto] sm:items-center">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold">{photo.file.name}</p>
+                    <p className="text-xs text-[var(--ink-muted)]">{Math.max(1, Math.round(photo.file.size / 1024))} KB</p>
+                  </div>
+                  <select
+                    value={photo.role}
+                    onChange={(event) =>
+                      setPhotos((current) =>
+                        current.map((candidate, candidateIndex) =>
+                          candidateIndex === index
+                            ? { ...candidate, role: event.target.value as PhotoRole }
+                            : candidate,
+                        ),
+                      )
+                    }
+                    className="min-h-10 rounded-lg border border-[var(--line)] bg-[var(--surface-sunken)] px-3 text-xs"
+                    aria-label={`What ${photo.file.name} shows`}
+                  >
+                    {PHOTO_ROLES.map((role) => (
+                      <option key={role.value} value={role.value}>{role.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setPhotos((current) => current.filter((_, candidateIndex) => candidateIndex !== index))}
+                    className="min-h-10 rounded-lg border border-[var(--line)] px-3 text-xs font-bold"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {progress ? <p className="mt-5 text-sm font-semibold text-[var(--primary)]">{progress}</p> : null}
+      {error ? <p role="alert" className="mt-5 text-sm font-semibold text-[var(--danger)]">{error}</p> : null}
+
+      <button
+        type="button"
+        disabled={!canSubmit}
+        onClick={() => void submit()}
+        className="mt-6 min-h-12 w-full rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)] disabled:opacity-50"
+      >
+        {busy ? 'Uploading…' : 'Submit item to DASH'}
+      </button>
+    </div>
+  );
+}
