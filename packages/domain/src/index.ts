@@ -12,8 +12,20 @@ export * from './crypto/index.js';
 export * from './geo/index.js';
 export * from './permissions/index.js';
 export * from './orders/index.js';
+export * from './declutter/index.js';
 export * from './pricing/index.js';
 export * from './dispatch/index.js';
 export * from './pay/index.js';
 export * from './ledger/index.js';
 export * from './ports/index.js';
+export * from './services/index.js';
+
+/**
+ * DASH ValueCheck is deliberately absent from this barrel.
+ *
+ * It is a product in its own right, not a corner of DASH APP, and it is
+ * imported as `@dash/domain/valuecheck` so that boundary is visible at every
+ * call site. Flattening it in here also collided outright — ValueCheck and the
+ * order machine both have an `assertTransition`, because they are two
+ * different lifecycles that should never share a namespace.
+ */

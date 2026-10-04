@@ -19,6 +19,10 @@ import {
   type TestContext,
 } from './harness.js';
 import { CSRF_COOKIE, REFRESH_COOKIE } from '../auth/cookies.js';
+import { useIntegrationTimeouts } from './timeouts.js';
+
+// Real Fastify, real SQLite, real round trips — see timeouts.ts.
+useIntegrationTimeouts();
 
 const totp = new TOTP({
   crypto: new NobleCryptoPlugin(),

@@ -176,10 +176,13 @@ describe('quote', () => {
     expect(response.statusCode).toBe(404);
   });
 
-  it('is refused to a vendor, a rider, and support', async () => {
+  it('is refused to a vendor and to support', async () => {
+    // A rider is deliberately absent from this list. DASH has one consumer
+    // identity: an approved rider is a customer who can also work, so quoting
+    // a basket is something they are entitled to do. Vendor and support hold
+    // no consumer capability and are refused outright.
     for (const [label, actor] of [
       ['vendor', vendorA],
-      ['rider', riderA],
       ['support', support],
     ] as const) {
       const response = await context.app.inject({
@@ -190,6 +193,21 @@ describe('quote', () => {
       });
       expect(response.statusCode, label).toBe(403);
     }
+  });
+
+  it("lets a rider quote as a customer, but not against another customer's address", async () => {
+    // Both halves of the capability in one assertion. The rider is no longer
+    // refused for *being* a rider — the permission check passes — and is then
+    // stopped by ownership, because `basket()` is built on customerA's
+    // address. 404 rather than 403: an address that is not yours must not be
+    // confirmed to exist.
+    const response = await context.app.inject({
+      method: 'POST',
+      url: '/v1/orders/quote',
+      headers: riderA.headers,
+      payload: basket(),
+    });
+    expect(response.statusCode).toBe(404);
   });
 
   it('is refused without authentication', async () => {
@@ -266,16 +284,29 @@ describe('create order', () => {
     expect(response.statusCode).toBe(404);
   });
 
-  it('is refused to non-customers', async () => {
-    for (const [label, actor] of [['vendor', vendorA], ['rider', riderA]] as const) {
-      const response = await context.app.inject({
-        method: 'POST',
-        url: '/v1/orders',
-        headers: { ...actor.headers, 'idempotency-key': idempotencyKey('deny') },
-        payload: { ...basket(), paymentMethod: 'card' },
-      });
-      expect(response.statusCode, label).toBe(403);
-    }
+  it('is refused to accounts with no consumer capability', async () => {
+    // Vendor only. A rider carries the customer capability by design and is
+    // covered by the ownership case below.
+    const response = await context.app.inject({
+      method: 'POST',
+      url: '/v1/orders',
+      headers: { ...vendorA.headers, 'idempotency-key': idempotencyKey('deny') },
+      payload: { ...basket(), paymentMethod: 'card' },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("does not let a rider order against another customer's address", async () => {
+    // The rider may place orders — that is the point of one identity holding
+    // both capabilities — but only their own. Ownership is still the gate, and
+    // it answers 404 so nothing is disclosed.
+    const response = await context.app.inject({
+      method: 'POST',
+      url: '/v1/orders',
+      headers: { ...riderA.headers, 'idempotency-key': idempotencyKey('rdeny') },
+      payload: { ...basket(), paymentMethod: 'card' },
+    });
+    expect(response.statusCode).toBe(404);
   });
 });
 

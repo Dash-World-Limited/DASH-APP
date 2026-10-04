@@ -18,10 +18,10 @@ import {
   signInWithPassword,
   TEST_EMAIL,
   TEST_PASSWORD,
-  TEST_PHONE,
+  TEST_CUSTOMER_PHONE,
   type TestContext,
 } from './harness.js';
-import { CSRF_COOKIE, REFRESH_COOKIE } from '../auth/cookies.js';
+import { CSRF_COOKIE, REFRESH_COOKIE, csrfCookieOptions, refreshCookieOptions } from '../auth/cookies.js';
 
 let context: TestContext;
 
@@ -155,6 +155,16 @@ describe('login', () => {
     // separately in config.test.ts and by assertSecureCookieConfig().
   });
 
+  it('marks auth cookies Secure on an HTTPS staging origin even outside production', () => {
+    const staging = { ...context.config, PUBLIC_WEB_URL: 'https://staging.dashworldng.com' };
+    expect(refreshCookieOptions(staging).secure).toBe(true);
+    expect(csrfCookieOptions(staging).secure).toBe(true);
+
+    const local = { ...context.config, PUBLIC_WEB_URL: 'http://127.0.0.1:3000' };
+    expect(refreshCookieOptions(local).secure).toBe(false);
+    expect(csrfCookieOptions(local).secure).toBe(false);
+  });
+
   it('sets the CSRF cookie readable by script, site-wide', async () => {
     const response = await completeSignIn();
 
@@ -199,7 +209,7 @@ describe('OTP login', () => {
     const request = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/request',
-      payload: { phone: TEST_PHONE },
+      payload: { phone: TEST_CUSTOMER_PHONE },
     });
     const code = request.json<{ devCode?: string }>().devCode;
     expect(code).toMatch(/^\d{6}$/);
@@ -207,7 +217,7 @@ describe('OTP login', () => {
     const verify = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/verify',
-      payload: { phone: TEST_PHONE, code },
+      payload: { phone: TEST_CUSTOMER_PHONE, code },
     });
 
     expect(verify.statusCode).toBe(200);
@@ -219,7 +229,7 @@ describe('OTP login', () => {
     const known = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/request',
-      payload: { phone: TEST_PHONE },
+      payload: { phone: TEST_CUSTOMER_PHONE },
     });
     const unknown = await context.app.inject({
       method: 'POST',
@@ -244,21 +254,21 @@ describe('OTP login', () => {
     const request = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/request',
-      payload: { phone: TEST_PHONE },
+      payload: { phone: TEST_CUSTOMER_PHONE },
     });
     const code = request.json<{ devCode: string }>().devCode;
 
     const wrong = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/verify',
-      payload: { phone: TEST_PHONE, code: code === '000000' ? '111111' : '000000' },
+      payload: { phone: TEST_CUSTOMER_PHONE, code: code === '000000' ? '111111' : '000000' },
     });
     expect(wrong.statusCode).toBe(400);
 
     const right = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/verify',
-      payload: { phone: TEST_PHONE, code },
+      payload: { phone: TEST_CUSTOMER_PHONE, code },
     });
     expect(right.statusCode).toBe(200);
 
@@ -266,9 +276,65 @@ describe('OTP login', () => {
     const replayed = await context.app.inject({
       method: 'POST',
       url: '/v1/auth/otp/verify',
-      payload: { phone: TEST_PHONE, code },
+      payload: { phone: TEST_CUSTOMER_PHONE, code },
     });
     expect(replayed.statusCode).toBe(400);
+  });
+
+
+  it('does not issue an email OTP to an identity that requires staff MFA', async () => {
+    const email = 'privileged-otp-block@dashapp.test';
+    await context.prisma.identity.create({
+      data: {
+        email,
+        emailVerifiedAt: new Date(),
+        displayName: 'Privileged OTP Block',
+        roles: { create: { role: 'super_admin' } },
+      },
+    });
+
+    const request = await context.app.inject({
+      method: 'POST',
+      url: '/v1/auth/otp/request',
+      payload: { email },
+    });
+
+    expect(request.statusCode).toBe(200);
+    expect(request.json<{ devCode?: string }>().devCode).toBeUndefined();
+  });
+
+  it('refuses an old customer OTP if the identity becomes privileged before redemption', async () => {
+    const email = 'otp-elevated-before-redeem@dashapp.test';
+    const identity = await context.prisma.identity.create({
+      data: {
+        email,
+        emailVerifiedAt: new Date(),
+        displayName: 'Elevated Before Redeem',
+      },
+      select: { id: true },
+    });
+
+    const request = await context.app.inject({
+      method: 'POST',
+      url: '/v1/auth/otp/request',
+      payload: { email },
+    });
+    const code = request.json<{ devCode?: string }>().devCode;
+    expect(code).toMatch(/^\d{6}$/);
+
+    await context.prisma.identityRole.create({
+      data: { identityId: identity.id, role: 'super_admin' },
+    });
+
+    const verify = await context.app.inject({
+      method: 'POST',
+      url: '/v1/auth/otp/verify',
+      payload: { email, code },
+    });
+
+    expect(verify.statusCode).toBe(401);
+    expect(findCookie(verify.headers['set-cookie'], REFRESH_COOKIE)).toBeUndefined();
+    expect(verify.json<{ error: { message: string } }>().error.message).toContain('staff sign-in');
   });
 });
 

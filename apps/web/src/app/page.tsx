@@ -10,9 +10,9 @@ import { Card, Wordmark } from '@/components/ui';
 
 const SURFACES = [
   {
-    href: '/browse',
+    href: '/home',
     title: 'Order something',
-    description: 'Browse Lagos vendors, build a basket, and track it to your door.',
+    description: 'Browse nearby vendors, build a basket, and track it to your door.',
     role: 'Customer',
   },
   {
@@ -41,13 +41,13 @@ export default function HomePage() {
       <header className="mb-14">
         <Wordmark className="text-3xl" />
         <h1 className="mt-8 max-w-2xl text-4xl font-extrabold leading-[1.1] tracking-tight sm:text-5xl">
-          Everything in Lagos,
+          Six services.
           <br />
-          <span className="text-gold-500">delivered.</span>
+          <span className="text-gold-500">One DASH.</span>
         </h1>
         <p className="mt-5 max-w-xl text-lg text-graphite-600">
-          Food, groceries, pharmacy and parcels. Order in minutes and watch every step from the
-          kitchen to your door.
+          FOOD, SHOPS, PHARMACY, LOCAL MARKET, DECLUTTER and LOGISTICS — one trusted place for
+          what your day needs.
         </p>
       </header>
 

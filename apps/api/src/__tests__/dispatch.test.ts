@@ -9,9 +9,13 @@
  *      double-assignment bug, and it is cheap to get wrong.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, idempotencyKey, type Actor, type World } from './world.js';
+import { useIntegrationTimeouts } from './timeouts.js';
+
+// Real Fastify, real SQLite, real round trips — see timeouts.ts.
+useIntegrationTimeouts();
 
 let context: TestContext;
 let world: World;
@@ -30,6 +34,54 @@ beforeAll(async () => {
   riderB = await actAs(context, world.riderB.email);
   dispatcher = await actAs(context, world.dispatcher.email);
 }, 180_000);
+
+/**
+ * Release deliveries left assigned by earlier tests.
+ *
+ * Acceptance now enforces vehicle capacity, which dispatch always enforced but
+ * the accept path never re-checked. These tests share one database and rarely
+ * complete the trips they start, so a fixture rider accumulated assignments
+ * until the fourth accept in the file was refused as `at_capacity` — a real
+ * rule, correctly applied, to a rider who in reality would have finished those
+ * deliveries hours ago.
+ *
+ * Cancelled rather than delivered: fabricating completed deliveries would move
+ * earnings and completion counts that other tests assert on, whereas a
+ * cancelled order is simply no longer active.
+ */
+beforeEach(async () => {
+  await context.prisma.order.updateMany({
+    where: {
+      riderId: { in: [world.riderA.riderId, world.riderB.riderId] },
+      status: { in: ['rider_assigned', 'rider_arrived', 'picked_up', 'en_route', 'arrived'] },
+    },
+    data: { status: 'cancelled' },
+  });
+  // And keep them reporting.
+  //
+  // `buildWorld` stamps a position once, but acceptance requires one no older
+  // than 120s and this file takes minutes to run — so by the later tests a
+  // fixture rider was `location_stale` and could not accept anything. A real
+  // online rider reports every twenty seconds; this is the fixture equivalent,
+  // and without it the suite would be asserting against a rider who has
+  // effectively gone dark.
+  await context.prisma.rider.updateMany({
+    where: { id: { in: [world.riderA.riderId, world.riderB.riderId] } },
+    data: {
+      availability: 'idle',
+      // Back to the fixture's own position, not just a fresh timestamp. The
+      // location-reporting tests deliberately move riders around — teleports,
+      // returns from elsewhere — and acceptance now re-measures distance to the
+      // pickup against wherever the rider actually is. Refreshing the clock
+      // without the coordinates leaves a rider who is provably present and
+      // provably in the wrong city.
+      lastLatitude: 6.5,
+      lastLongitude: 3.4,
+      locationReportedAt: new Date(),
+      onlineUntil: new Date(Date.now() + 900_000),
+    },
+  });
+});
 
 afterAll(async () => {
   await context?.close();
@@ -566,6 +618,35 @@ describe('location reporting', () => {
     });
   });
 
+  it('keeps accepting positions once the rider is on a delivery', async () => {
+    // `on_delivery` is a state the rider cannot select — the server sets it on
+    // assignment. The offline rule must refuse `offline` and nothing else: a
+    // delivery in progress is when the customer is actively watching the rider
+    // approach, and it is the worst possible moment to stop knowing where they
+    // are. Freshness and the plausibility check are untouched by this.
+    await baseline(6.5, 3.4);
+    await context.prisma.rider.update({
+      where: { id: world.riderA.riderId },
+      data: { availability: 'on_delivery' },
+    });
+
+    const response = await context.app.inject({
+      method: 'POST',
+      url: '/v1/rider/location',
+      headers: riderA.headers,
+      payload: { latitude: 6.5013, longitude: 3.4004, accuracy: 10 },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ accepted: boolean }>().accepted).toBe(true);
+
+    // Put the rider back, because the server rightly refuses to let a rider go
+    // offline mid-delivery and the following tests need to be able to.
+    await context.prisma.rider.update({
+      where: { id: world.riderA.riderId },
+      data: { availability: 'idle' },
+    });
+  });
+
   it('rejects a position while the rider is offline', async () => {
     await context.app.inject({
       method: 'POST',
@@ -654,6 +735,211 @@ describe('location reporting', () => {
       payload: { latitude: 6.5, longitude: 3.4 },
     });
     expect(response.statusCode).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('preparing is the only trigger for normal dispatch', () => {
+  /**
+   * Which transition sends a rider, and which deliberately do not.
+   *
+   * This started as a regression test for a queue-key collision: checkout and
+   * vendor-accept both enqueued `dispatch.find_rider` under the same key, so
+   * the queue — which remembers keys for ever, because that is what makes
+   * at-least-once delivery safe — silently discarded the second one.
+   *
+   * The rule it guards has since changed, and the reason is worth keeping. A
+   * rider is now sent when the vendor moves the order into `preparing`, and at
+   * no other point in the normal path. Checkout is before the vendor has
+   * agreed to make the order at all. Accepting is agreement without
+   * commitment — a vendor may accept several orders and start them in whatever
+   * sequence suits the kitchen, and a rider dispatched on accept waits at a
+   * counter for food that is fourth in line. `ready` is too late: the food is
+   * already sitting there while a rider is still being found.
+   *
+   * So the assertions below are as much about the transitions that must stay
+   * silent as the one that must fire.
+   */
+  async function placedOrder(tag: string): Promise<string> {
+    const created = await context.app.inject({
+      method: 'POST',
+      url: '/v1/orders',
+      headers: { ...customerA.headers, 'idempotency-key': idempotencyKey(tag) },
+      payload: {
+        branchId: world.vendorA.branchId,
+        items: [
+          { itemId: world.vendorA.itemId, quantity: 1, modifierIds: [world.vendorA.modifierId] },
+        ],
+        mode: 'delivery',
+        addressId: world.customerA.addressId,
+        paymentMethod: 'card',
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    return created.json<{ order: { id: string } }>().order.id;
+  }
+
+  /**
+   * The dispatch intents recorded for exactly this order.
+   *
+   * Matched by parsing the payload rather than by a substring search over it.
+   * `contains` would also match a payload that merely mentions this order id
+   * somewhere else, and an assertion that something did *not* happen is only
+   * as trustworthy as its ability to see everything that did.
+   */
+  const dispatchJobs = async (orderId: string): Promise<string[]> => {
+    const rows = await context.prisma.outboxEvent.findMany({
+      where: { name: 'dispatch.find_rider' },
+      select: { idempotencyKey: true, payload: true },
+    });
+    return rows
+      .filter((row) => {
+        try {
+          return (JSON.parse(row.payload) as { orderId?: string }).orderId === orderId;
+        } catch {
+          return false;
+        }
+      })
+      .map((row) => row.idempotencyKey ?? '');
+  };
+
+  /** Take an order to `accepted`, the state `preparing` is legal from. */
+  const acceptedOrder = async (tag: string): Promise<string> => {
+    const orderId = await placedOrder(tag);
+    const accepted = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/accept`,
+      headers: vendorA.headers,
+      payload: { prepMinutes: 20 },
+    });
+    expect(accepted.statusCode).toBe(200);
+    return orderId;
+  };
+
+  it('does not dispatch when the order is merely placed', async () => {
+    const orderId = await placedOrder('dtrig1');
+    expect(await dispatchJobs(orderId)).toEqual([]);
+  });
+
+  it('does not dispatch when the vendor only accepts', async () => {
+    const orderId = await placedOrder('dtrig2');
+
+    const accepted = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/accept`,
+      headers: vendorA.headers,
+      payload: { prepMinutes: 20 },
+    });
+    expect(accepted.statusCode).toBe(200);
+
+    // Accepting is agreement, not commitment. No rider is sent yet.
+    expect(await dispatchJobs(orderId)).toEqual([]);
+  });
+
+  it('dispatches exactly once when the vendor starts preparing', async () => {
+    const orderId = await placedOrder('dtrig3');
+
+    await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/accept`,
+      headers: vendorA.headers,
+      payload: { prepMinutes: 20 },
+    });
+
+    const preparing = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/progress`,
+      headers: vendorA.headers,
+      payload: { to: 'preparing' },
+    });
+    expect(preparing.statusCode).toBe(200);
+
+    expect(await dispatchJobs(orderId)).toEqual([`dispatch_${orderId}_preparing`]);
+  });
+
+  it('does not dispatch again when the order becomes ready', async () => {
+    const orderId = await placedOrder('dtrig4');
+
+    for (const step of [
+      { url: `/v1/vendor/orders/${orderId}/accept`, payload: { prepMinutes: 20 } },
+      { url: `/v1/vendor/orders/${orderId}/progress`, payload: { to: 'preparing' } },
+      { url: `/v1/vendor/orders/${orderId}/progress`, payload: { to: 'ready' } },
+    ]) {
+      const response = await context.app.inject({
+        method: 'POST',
+        url: step.url,
+        headers: vendorA.headers,
+        payload: step.payload,
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    // Still the single job from `preparing` — `ready` adds nothing.
+    expect(await dispatchJobs(orderId)).toEqual([`dispatch_${orderId}_preparing`]);
+  });
+
+  it('records one dispatch intent when two Preparing transitions race', async () => {
+    // The sequential case is guarded by the state machine, but `assertTransition`
+    // runs on an order read *before* the transaction opens. Two requests can
+    // therefore both read `accepted`, both judge the transition legal, and both
+    // proceed — and `OutboxEvent.idempotencyKey` is deliberately not unique, so
+    // the database will not stop a second intent being written.
+    //
+    // One intent means one round of offers. Two would mean a rider being
+    // offered work that another rider may already be riding to collect.
+    const orderId = await acceptedOrder('dtrig6');
+
+    const startPreparing = () =>
+      context.app.inject({
+        method: 'POST',
+        url: `/v1/vendor/orders/${orderId}/progress`,
+        headers: vendorA.headers,
+        payload: { to: 'preparing' },
+      });
+
+    const responses = await Promise.all([startPreparing(), startPreparing()]);
+
+    // At least one must succeed — a race must not lose the transition entirely.
+    expect(responses.some((response) => response.statusCode === 200)).toBe(true);
+
+    // The assertion that matters: exactly one intent, carrying exactly the key
+    // this transition owns, associated with exactly this order.
+    const keys = await dispatchJobs(orderId);
+    expect(keys).toEqual([`dispatch_${orderId}_preparing`]);
+  });
+
+  it('cannot be made to dispatch twice by repeating the transition', async () => {
+    // A double-tapped button, or a retried request. The state machine refuses
+    // `preparing -> preparing`, and the idempotency key would stop the queue
+    // running a redelivered publication twice even if it did not.
+    const orderId = await placedOrder('dtrig5');
+
+    await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/accept`,
+      headers: vendorA.headers,
+      payload: { prepMinutes: 20 },
+    });
+
+    const first = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/progress`,
+      headers: vendorA.headers,
+      payload: { to: 'preparing' },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await context.app.inject({
+      method: 'POST',
+      url: `/v1/vendor/orders/${orderId}/progress`,
+      headers: vendorA.headers,
+      payload: { to: 'preparing' },
+    });
+    expect(second.statusCode).toBeGreaterThanOrEqual(400);
+
+    const keys = await dispatchJobs(orderId);
+    expect(keys).toEqual([`dispatch_${orderId}_preparing`]);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });
 

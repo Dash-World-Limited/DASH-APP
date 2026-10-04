@@ -8,6 +8,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, idempotencyKey, type Actor, type World } from './world.js';
+import { useIntegrationTimeouts } from './timeouts.js';
+
+// Real Fastify, real SQLite, real round trips — see timeouts.ts.
+useIntegrationTimeouts();
 
 let context: TestContext;
 let world: World;
@@ -521,5 +525,278 @@ describe('reports', () => {
     const body = response.json<{ orders: { total: number }; itemsRevenue: number }>();
     expect(body.orders.total).toBeGreaterThanOrEqual(0);
     expect(Number.isInteger(body.itemsRevenue)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('dashboard and catalogue editor', () => {
+  it('returns only the signed-in vendor dashboard data', async () => {
+    const response = await context.app.inject({
+      method: 'GET',
+      url: '/v1/vendor/dashboard',
+      headers: vendorA.headers,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{
+      vendor: {
+        id: string;
+        branches: { id: string }[];
+        categories: { items: { id: string }[] }[];
+      };
+    }>();
+    expect(body.vendor.id).toBe(world.vendorA.vendorId);
+    expect(body.vendor.branches.some((branch) => branch.id === world.vendorA.branchId)).toBe(true);
+    expect(
+      body.vendor.categories.flatMap((category) => category.items).some((item) => item.id === world.vendorA.itemId),
+    ).toBe(true);
+    expect(
+      body.vendor.categories.flatMap((category) => category.items).some((item) => item.id === world.vendorB.itemId),
+    ).toBe(false);
+  });
+
+  it('does not expose the dashboard to non-vendor actors', async () => {
+    for (const [label, actor] of [
+      ['customer', customerA],
+      ['rider', riderA],
+      ['dispatcher', dispatcher],
+    ] as const) {
+      const response = await context.app.inject({
+        method: 'GET',
+        url: '/v1/vendor/dashboard',
+        headers: actor.headers,
+      });
+      expect(response.statusCode, label).toBe(403);
+    }
+  });
+
+  it('creates and edits a product inside the caller’s catalogue', async () => {
+    const category = await context.prisma.menuItem.findUniqueOrThrow({
+      where: { id: world.vendorA.itemId },
+      select: { categoryId: true },
+    });
+
+    const created = await context.app.inject({
+      method: 'POST',
+      url: '/v1/vendor/items',
+      headers: vendorA.headers,
+      payload: {
+        categoryId: category.categoryId,
+        name: 'Vendor dashboard test item',
+        description: 'Created through the vendor catalogue contract.',
+        price: 325_000,
+        prepMinutes: 12,
+        quantity: 8,
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const item = created.json<{ item: { id: string; name: string; price: number } }>().item;
+    expect(item).toMatchObject({ name: 'Vendor dashboard test item', price: 325_000 });
+
+    const changed = await context.app.inject({
+      method: 'PATCH',
+      url: `/v1/vendor/items/${item.id}`,
+      headers: vendorA.headers,
+      payload: { name: 'Edited dashboard item', price: 350_000 },
+    });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json<{ item: { name: string; price: number } }>().item).toMatchObject({
+      name: 'Edited dashboard item',
+      price: 350_000,
+    });
+  });
+
+  it('creates real product options that customer checkout can quote', async () => {
+    const category = await context.prisma.menuItem.findUniqueOrThrow({
+      where: { id: world.vendorA.itemId },
+      select: { categoryId: true },
+    });
+
+    const created = await context.app.inject({
+      method: 'POST',
+      url: '/v1/vendor/items',
+      headers: vendorA.headers,
+      payload: {
+        categoryId: category.categoryId,
+        name: 'Rice with protein choice',
+        price: 250_000,
+        prepMinutes: 10,
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const itemId = created.json<{ item: { id: string } }>().item.id;
+
+    const choices = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${itemId}/modifiers`,
+      headers: vendorA.headers,
+      payload: {
+        groups: [
+          {
+            name: 'Choose your protein',
+            minSelect: 1,
+            maxSelect: 1,
+            options: [
+              { name: 'Beef', priceDelta: 100_000 },
+              { name: 'Chicken', priceDelta: 150_000 },
+            ],
+          },
+        ],
+      },
+    });
+    expect(choices.statusCode).toBe(200);
+    const group = choices.json<{
+      groups: {
+        id: string;
+        name: string;
+        options: { id: string; name: string }[];
+      }[];
+    }>().groups[0];
+    expect(group?.name).toBe('Choose your protein');
+    const beef = group?.options.find((option) => option.name === 'Beef');
+    expect(beef?.id).toBeTruthy();
+
+    const quote = await context.app.inject({
+      method: 'POST',
+      url: '/v1/orders/quote',
+      headers: customerA.headers,
+      payload: {
+        branchId: world.vendorA.branchId,
+        items: [{ itemId, quantity: 1, modifierIds: [beef!.id] }],
+        mode: 'delivery',
+        addressId: world.customerA.addressId,
+      },
+    });
+    expect(quote.statusCode).toBe(200);
+
+    const dashboard = await context.app.inject({
+      method: 'GET',
+      url: '/v1/vendor/dashboard',
+      headers: vendorA.headers,
+    });
+    expect(dashboard.statusCode).toBe(200);
+    const dashboardItems = dashboard.json<{
+      vendor: {
+        categories: {
+          items: {
+            id: string;
+            modifierGroups: { name: string; options: { name: string }[] }[];
+          }[];
+        }[];
+      };
+    }>().vendor.categories.flatMap((entry) => entry.items);
+    const saved = dashboardItems.find((entry) => entry.id === itemId);
+    expect(saved?.modifierGroups[0]?.options.map((option) => option.name)).toEqual(['Beef', 'Chicken']);
+  });
+
+  it('cannot replace another vendor’s product options', async () => {
+    const response = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${world.vendorB.itemId}/modifiers`,
+      headers: vendorA.headers,
+      payload: {
+        groups: [
+          {
+            name: 'Not yours',
+            minSelect: 0,
+            maxSelect: 1,
+            options: [{ name: 'Nope', priceDelta: 0 }],
+          },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('sanitises and attaches a real product image', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==',
+      'base64',
+    );
+
+    const response = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${world.vendorA.itemId}/image`,
+      headers: {
+        ...vendorA.headers,
+        'content-type': 'image/png',
+      },
+      payload: png,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ image: { key: string; url: string } }>();
+    expect(body.image.key).toMatch(/^vendor-products\/[0-9a-f]{48}$/);
+    expect(body.image.url).toContain('/v1/files/');
+
+    const saved = await context.prisma.menuItem.findUniqueOrThrow({
+      where: { id: world.vendorA.itemId },
+      select: { imageKey: true },
+    });
+    expect(saved.imageKey).toBe(body.image.key);
+  });
+
+  it('rejects image-shaped hostile bytes before storage', async () => {
+    const fakePng = Buffer.concat([
+      Buffer.from('89504e470d0a1a0a', 'hex'),
+      Buffer.from('<script>alert(1)</script>'),
+    ]);
+
+    const response = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${world.vendorA.itemId}/image`,
+      headers: {
+        ...vendorA.headers,
+        'content-type': 'image/png',
+      },
+      payload: fakePng,
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('cannot upload an image to another vendor’s product', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDasKb6QAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const response = await context.app.inject({
+      method: 'PUT',
+      url: `/v1/vendor/items/${world.vendorB.itemId}/image`,
+      headers: {
+        ...vendorA.headers,
+        'content-type': 'image/png',
+      },
+      payload: png,
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('cannot add a product to another vendor’s category', async () => {
+    const foreign = await context.prisma.menuItem.findUniqueOrThrow({
+      where: { id: world.vendorB.itemId },
+      select: { categoryId: true },
+    });
+    const response = await context.app.inject({
+      method: 'POST',
+      url: '/v1/vendor/items',
+      headers: vendorA.headers,
+      payload: {
+        categoryId: foreign.categoryId,
+        name: 'Cross-tenant item',
+        price: 100_000,
+      },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('cannot edit another vendor’s product', async () => {
+    const response = await context.app.inject({
+      method: 'PATCH',
+      url: `/v1/vendor/items/${world.vendorB.itemId}`,
+      headers: vendorA.headers,
+      payload: { name: 'Not yours' },
+    });
+    expect(response.statusCode).toBe(404);
   });
 });

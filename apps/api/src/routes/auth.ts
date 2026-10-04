@@ -38,9 +38,15 @@ import { writeAudit } from '@dash/db';
 import { requiresMfa } from '@dash/domain/mfa';
 import type { Role } from '@dash/domain/permissions';
 import { createChallenge, isMfaActive } from '../auth/mfa.js';
+import { describeDeliveryFailure, otpReference, sendOtpEmail, sendOtpSms } from '../auth/otp-delivery.js';
+import { revokeAllDeviceTokens, revokeDeviceToken } from '../push/registration.js';
 import { ApiError } from '../http/errors.js';
 import { actorOf, authenticate, requireAuth } from '../http/context.js';
 import { issueAccessFor as issueAccessForShared } from '../auth/issue.js';
+import { describePhone } from '@dash/domain/onboarding';
+import { phoneVerificationRequired } from './onboarding.js';
+import { effectiveCapabilities } from '../deployment/profile.js';
+import { ensureCustomerRole } from '../auth/customer-role.js';
 import {
   createSession,
   SessionError,
@@ -51,6 +57,7 @@ import {
 } from '../auth/sessions.js';
 import {
   clearAuthCookies,
+  ensureCsrfCookie,
   issueAuthCookies,
   readRefreshCookie,
 } from '../auth/cookies.js';
@@ -61,16 +68,45 @@ const phoneSchema = z
   .trim()
   .regex(/^\+[1-9]\d{7,14}$/, 'Enter a valid phone number including the country code');
 
-const otpRequestSchema = z.object({
-  phone: phoneSchema,
-  purpose: z.enum(['login', 'step_up']).default('login'),
-});
+const emailSchema = z.string().trim().toLowerCase().email('Enter a valid email address');
 
-const otpVerifySchema = z.object({
-  phone: phoneSchema,
-  code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code'),
-  purpose: z.enum(['login', 'step_up']).default('login'),
-});
+/**
+ * A code goes to one destination: a phone or an email address, never both.
+ *
+ * Email was added for the Declutters website, where a visitor signs up with an
+ * email address and would otherwise have no way back into their own account:
+ * SMS verification is off for V1, and the phone number they typed has never
+ * been proved. Rather than build a second sign-in, the destination became a
+ * choice — everything after it (the hashed code, the attempt ceiling, the
+ * expiry, single use, the session it mints) is the same proven path both
+ * channels have always run through.
+ */
+const destinationSchema = z
+  .object({ phone: phoneSchema.optional(), email: emailSchema.optional() })
+  .refine((value) => (value.phone === undefined) !== (value.email === undefined), {
+    message: 'Give either a phone number or an email address',
+  });
+
+const otpRequestSchema = destinationSchema.and(
+  z.object({ purpose: z.enum(['login', 'step_up']).default('login') }),
+);
+
+const otpVerifySchema = destinationSchema.and(
+  z.object({
+    code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code'),
+    purpose: z.enum(['login', 'step_up']).default('login'),
+  }),
+);
+
+/** The address a code was sent to, and how it travelled. */
+function destinationOf(body: { phone?: string | undefined; email?: string | undefined }): {
+  value: string;
+  channel: 'sms' | 'email';
+} {
+  return body.phone !== undefined
+    ? { value: body.phone, channel: 'sms' }
+    : { value: body.email!, channel: 'email' };
+}
 
 const passwordLoginSchema = z.object({
   email: z.string().trim().toLowerCase().email('Enter a valid email address'),
@@ -85,11 +121,60 @@ async function getDecoyHash(): Promise<string> {
 }
 
 export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma, config, sms } = app.services;
+  const { prisma, config, sms, email } = app.services;
+  const smsEnabled = effectiveCapabilities(config).has('sms');
 
   /** Delegates to the shared issuer so both flows mint identical claims. */
   const issueAccessFor = (identityId: string, sessionId: string) =>
     issueAccessForShared(prisma, config, identityId, sessionId);
+
+  /**
+   * True when this destination was sent a code within the cooldown, or has
+   * reached the hourly cap. Counts every purpose: each one is a message sent
+   * to the same person at DASH's cost.
+   */
+  async function destinationThrottled(destination: string): Promise<boolean> {
+    const recent = await prisma.otpChallenge.findMany({
+      where: { destination, createdAt: { gt: new Date(Date.now() - 3_600_000) } },
+      orderBy: { createdAt: 'desc' },
+      take: config.OTP_MAX_CODES_PER_HOUR,
+      select: { createdAt: true },
+    });
+    if (recent.length >= config.OTP_MAX_CODES_PER_HOUR) return true;
+    const latest = recent[0];
+    return (
+      latest !== undefined &&
+      Date.now() - latest.createdAt.getTime() < config.OTP_RESEND_COOLDOWN_SECONDS * 1000
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // GET /v1/auth/csrf
+  // -------------------------------------------------------------------------
+  // The CSRF bootstrap. A cross-subdomain client cannot read the host-only
+  // cookie, so it asks for the value instead — see `ensureCsrfCookie`.
+  //
+  // Unauthenticated on purpose: the token is needed *before* sign-in, which is
+  // the first state-changing request a visitor makes. It authorises nothing on
+  // its own; it only proves a request came from script that an allowed origin
+  // was able to read a response on.
+  //
+  // A GET, so the global CSRF hook does not demand a token in order to obtain
+  // a token.
+  app.get(
+    '/v1/auth/csrf',
+    { config: { rateLimit: { max: 60, timeWindow: '10 minutes' } } },
+    async (request, reply) => {
+      const csrfToken = ensureCsrfCookie(request, reply, config);
+
+      // Never cached. A stored copy served to a second person would put one
+      // browser's token into another's page, where it matches no cookie and
+      // every write fails.
+      void reply.header('Cache-Control', 'no-store');
+
+      return { csrfToken };
+    },
+  );
 
   // -------------------------------------------------------------------------
   // POST /v1/auth/otp/request
@@ -105,43 +190,102 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request) => {
       const body = otpRequestSchema.parse(request.body);
+      const destination = destinationOf(body);
+
+      // With SMS off (all of V1), a phone number cannot receive a code. Said
+      // up front, and identically for every number, so it reveals nothing
+      // about which numbers have accounts.
+      if (destination.channel === 'sms' && !smsEnabled) {
+        throw ApiError.badRequest('Sign-in codes are sent by email. Enter your email address instead.');
+      }
 
       const identity = await prisma.identity.findUnique({
-        where: { phone: body.phone },
-        select: { id: true, status: true },
+        where:
+          destination.channel === 'sms'
+            ? { phone: destination.value }
+            : { email: destination.value },
+        // `emailVerifiedAt` gates the email channel only. An address nobody has
+        // proved must not be able to receive a sign-in code, or signup would be
+        // a way to take over an account by claiming somebody else's address.
+        select: {
+          id: true,
+          status: true,
+          emailVerifiedAt: true,
+          displayName: true,
+          roles: { select: { role: true } },
+        },
       });
 
-      // Always do the same work and return the same shape, account or not.
+      // Always return the same shape, account or not.
       let issuedCode: string | null = null;
 
-      if (identity && identity.status === 'active') {
+      const usable =
+        identity !== null &&
+        identity.status === 'active' &&
+        (destination.channel === 'sms' || identity.emailVerifiedAt !== null) &&
+        !requiresMfa(identity.roles.map((row) => row.role as Role));
+
+      // Per-destination throttle (see OTP_RESEND_COOLDOWN_SECONDS). Only an
+      // account can have codes, so only an account can be throttled, and a
+      // throttled request is answered exactly like every other one.
+      const throttled = usable && (await destinationThrottled(destination.value));
+
+      if (identity && usable && !throttled) {
         const code = generateOtp(6);
-        issuedCode = code;
 
         // Invalidate any outstanding codes for this destination so an older code
         // cannot be used after a new one is requested.
         await prisma.otpChallenge.updateMany({
-          where: { destination: body.phone, purpose: body.purpose, consumedAt: null },
+          where: { destination: destination.value, purpose: body.purpose, consumedAt: null },
           data: { consumedAt: new Date() },
         });
 
-        await prisma.otpChallenge.create({
+        const challenge = await prisma.otpChallenge.create({
           data: {
             identityId: identity.id,
-            destination: body.phone,
-            channel: 'sms',
+            destination: destination.value,
+            channel: destination.channel,
             codeHash: await hashOtp(code),
             purpose: body.purpose,
             maxAttempts: config.OTP_MAX_ATTEMPTS,
             expiresAt: new Date(Date.now() + config.OTP_TTL_SECONDS * 1000),
           },
+          select: { id: true },
         });
 
-        await sms.send({
-          to: body.phone,
-          body: `Your DASH APP code is ${code}. It expires in ${Math.round(config.OTP_TTL_SECONDS / 60)} minutes.`,
-          reference: `otp_${body.purpose}`,
-        });
+        const message = {
+          code,
+          ttlSeconds: config.OTP_TTL_SECONDS,
+          purpose: body.purpose,
+          displayName: identity.displayName,
+        };
+        try {
+          if (destination.channel === 'sms') await sendOtpSms(sms, destination.value, message);
+          else await sendOtpEmail(email, destination.value, message);
+          issuedCode = code;
+        } catch (error) {
+          // A delivery failure (SES refusing an unverified address while the
+          // account is sandboxed, a provider outage) happens only for a real
+          // account, so answering it differently would tell a caller the
+          // account exists. Answer as usual, retire the code that never
+          // arrived, and record the failure without the body.
+          await prisma.otpChallenge.update({
+            where: { id: challenge.id },
+            data: { consumedAt: new Date() },
+          });
+          request.log.warn(
+            {
+              channel: destination.channel,
+              reference: otpReference(body.purpose),
+              provider: destination.channel === 'sms' ? sms.providerName : email.providerName,
+              ...describeDeliveryFailure(error),
+            },
+            'otp delivery failed',
+          );
+        }
+      } else {
+        // The issuing path's dominant cost is the hash; pay it here too.
+        await hashOtp(generateOtp(6));
       }
 
       // Development convenience: return the code in the response so local work
@@ -159,7 +303,10 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       return {
         sent: true,
         expiresInSeconds: config.OTP_TTL_SECONDS,
-        message: 'If that number has an account, a code is on its way.',
+        // A constant, never account-dependent: the client counts down before
+        // offering "Send again", which is also when the server would send.
+        resendAfterSeconds: config.OTP_RESEND_COOLDOWN_SECONDS,
+        message: 'If that account exists, a code is on its way.',
         // Note this is only ever present for a real account, so it cannot be
         // used to distinguish one — the absence of the field is identical to
         // the response for an unknown number in production, where it is never
@@ -177,13 +324,22 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     { config: { rateLimit: { max: 10, timeWindow: '10 minutes' } } },
     async (request, reply) => {
       const body = otpVerifySchema.parse(request.body);
+      const destination = destinationOf(body);
+
+      // A step-up elevates the session presenting it, so the code must have
+      // been issued to that session's own identity. Without this, whoever
+      // holds a borrowed session could request a step-up code to an address
+      // *they* control, redeem it with the borrowed token, and elevate the
+      // victim's session — the exact thing step-up exists to prevent.
+      const stepUpActor = body.purpose === 'step_up' ? await authenticate(request) : null;
 
       const challenge = await prisma.otpChallenge.findFirst({
         where: {
-          destination: body.phone,
+          destination: destination.value,
           purpose: body.purpose,
           consumedAt: null,
           expiresAt: { gt: new Date() },
+          ...(stepUpActor ? { identityId: stepUpActor.identityId } : {}),
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -213,8 +369,8 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         data: { consumedAt: new Date() },
       });
 
-      if (body.purpose === 'step_up') {
-        const actor = await authenticate(request);
+      if (stepUpActor) {
+        const actor = stepUpActor;
         await markSteppedUp(prisma, actor.sessionId);
         await writeAudit(prisma, {
           identityId: actor.identityId,
@@ -226,6 +382,25 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         });
         return { steppedUp: true };
       }
+      // An OTP may have been issued while this identity was still a customer
+      // and the account may have gained a privileged role before redemption.
+      // Re-check now: privileged identities must finish password + MFA, and an
+      // old OTP must never mint a privileged session.
+      const otpIdentity = await prisma.identity.findUnique({
+        where: { id: challenge.identityId },
+        select: { roles: { select: { role: true } } },
+      });
+      if (
+        !otpIdentity ||
+        requiresMfa(otpIdentity.roles.map((row) => row.role as Role))
+      ) {
+        throw ApiError.unauthorized('Use staff sign-in for this account.');
+      }
+
+      // Accounts verified before signup granted the customer role — including
+      // Declutters sign-ups, which are the same DASH account — get it here,
+      // once, so they can order. Only an identity with a customer profile.
+      await ensureCustomerRole(prisma, challenge.identityId);
 
       const session = await createSession(
         prisma,
@@ -405,6 +580,19 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   app.post('/v1/auth/logout', { preHandler: requireAuth }, async (request, reply) => {
     const actor = actorOf(request);
+
+    // Silence this installation before the session goes, while the link from
+    // session to device is still readable. Signing out on a shared handset is
+    // the case that matters: the next person to sign in must not keep
+    // receiving the last person's offers, and rebinding on their registration
+    // only helps once they actually register.
+    const session = await prisma.session.findUnique({
+      where: { id: actor.sessionId },
+      select: { device: { select: { pushToken: true } } },
+    });
+    const token = session?.device?.pushToken;
+    if (token) await revokeDeviceToken(prisma, token);
+
     await revokeSession(prisma, actor.sessionId, 'user_logout');
 
     // Clearing the cookies matters as much as revoking the session: a browser
@@ -428,13 +616,23 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   app.post('/v1/auth/logout-everywhere', { preHandler: requireAuth }, async (request, reply) => {
     const actor = actorOf(request);
     const count = await revokeAllSessions(prisma, actor.identityId, 'user_logout_all');
+
+    // Push tokens go with the sessions.
+    //
+    // Someone signing out everywhere has usually lost a device, and a session
+    // revocation that left notifications arriving on it would be a promise
+    // half kept — the phone in someone else's hand would keep buzzing with
+    // their work. The push path never consults the session, so it has to be
+    // told separately.
+    const devicesSilenced = await revokeAllDeviceTokens(prisma, actor.identityId);
+
     clearAuthCookies(reply, config);
     await writeAudit(prisma, {
       identityId: actor.identityId,
       action: 'auth.logout_all',
       resourceType: 'identity',
       resourceId: actor.identityId,
-      after: { sessionsRevoked: count },
+      after: { sessionsRevoked: count, devicesSilenced },
       ipAddress: request.ip,
       requestId: request.id,
     });
@@ -460,6 +658,23 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     });
     if (!identity) throw ApiError.unauthorized();
 
+    // A rider's own working state, so their app can recover it after a restart.
+    //
+    // Without this the client had no way to learn it: availability was only
+    // ever set locally by the "go online" button, so relaunching the app reset
+    // it to `offline` in the UI while the server still had the rider working.
+    // Everything gated on that flag — the offer subscription and the GPS
+    // reporting loop — then stopped silently, and the rider was invisible to
+    // dispatch while their own screen looked normal.
+    //
+    // Read from the profile, not the actor: the actor carries a rider only
+    // while that rider is approved (it is what grants permissions), but the
+    // app still needs to say "your application is pending" to everyone else.
+    const riderState = await prisma.rider.findUnique({
+      where: { identityId: actor.identityId },
+      select: { id: true, availability: true, status: true },
+    });
+
     return {
       identity,
       roles: actor.roles,
@@ -467,8 +682,25 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       // convenience only — every permission is re-checked server-side.
       permissions: [...actor.permissions],
       vendorId: actor.vendorId ?? null,
-      riderId: actor.riderId ?? null,
+      riderId: riderState?.id ?? null,
+      riderAvailability: riderState?.availability ?? null,
+      // Never "verified": nothing in V1 proves a phone number. The notice is
+      // the one sentence every surface shows beside it.
+      phone: describePhone(identity.phone, await phoneVerificationRequired(prisma)),
+      // Whether this identity may actually work as a rider, which is not the
+      // same question as whether it has a rider profile. A pending, suspended
+      // or rejected rider still has a `riderId`; only `approved` may switch
+      // into rider mode, and the server refuses the rider routes to the rest
+      // regardless of what any client believes. Returned so the app can hide
+      // an option it would not be allowed to use, never so it can grant one.
+      riderStatus: riderState?.status ?? null,
       customerId: actor.customerId ?? null,
+      // The cities this actor is scoped to, so the dispatch board knows which
+      // `city:` topics to follow. Their own scope, derived server-side from
+      // their role rows and already implicit in every ops response they get —
+      // this discloses nothing they could not infer from the board itself.
+      // Empty for an unscoped ops role, which reaches every city.
+      cityIds: actor.cityIds ? [...actor.cityIds] : [],
       steppedUpAt: actor.steppedUpAt ?? null,
     };
   });

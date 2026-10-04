@@ -16,10 +16,12 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { confirmOrderPaid } from './orders.js';
+import { z } from 'zod';
+import { settlePayment } from '../payments/settle.js';
+import { confirmRefundWithProvider } from '../payments/refund-confirmation.js';
 
 export async function registerWebhookRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma, payments } = app.services;
+  const { prisma, payments, queue } = app.services;
 
   // The raw body is required for signature verification — a re-serialized JSON
   // object will not produce the same bytes, so the signature would never match.
@@ -65,8 +67,17 @@ export async function registerWebhookRoutes(app: FastifyInstance): Promise<void>
       }
 
       // --- Replay protection --------------------------------------------------
-      // The unique constraint on (provider, eventId) is what actually enforces
-      // this; the create failing means we have already seen this event.
+      // The unique constraint on (provider, eventId) records every delivery.
+      // An event already *processed* is a replay and does nothing. An event
+      // recorded but never processed is a retry of a delivery that failed part
+      // way — the provider could not be asked, say — and is processed again:
+      // treating it as a replay would drop that payment on the floor for good.
+      //
+      // Exactly one delivery owns an event: the one whose insert succeeds, or
+      // a later one that takes over an event whose earlier attempt failed for
+      // want of the provider. Every other delivery is a duplicate — including
+      // a concurrent one while the owner is still working.
+      let owned = false;
       try {
         await prisma.paymentWebhook.create({
           data: {
@@ -77,66 +88,121 @@ export async function registerWebhookRoutes(app: FastifyInstance): Promise<void>
             rawPayload: rawBody.slice(0, 20_000),
           },
         });
+        owned = true;
       } catch {
+        const retried = await prisma.paymentWebhook.updateMany({
+          where: {
+            provider: payments.providerName,
+            eventId: event.id,
+            processedAt: null,
+            processingError: 'provider_unreachable',
+          },
+          data: { processingError: null },
+        });
+        owned = retried.count === 1;
+      }
+      if (!owned) {
         request.log.info({ eventId: event.id }, 'ignored duplicate webhook');
         return reply.status(200).send({ received: true, duplicate: true });
       }
 
       // --- Never trust the body's own claim about status or amount ------------
-      // A forged-but-correctly-signed body is unlikely, but asking the provider
-      // costs one call and removes the question entirely.
-      const verified = await payments.verify(event.providerReference);
-
-      const payment = await prisma.payment.findUnique({
-        where: { providerReference: event.providerReference },
-        select: { id: true, orderId: true, amount: true, status: true },
-      });
-
-      if (!payment) {
-        request.log.warn(
-          { reference: event.providerReference },
-          'webhook referenced an unknown payment',
-        );
-        return reply.status(200).send({ received: true });
-      }
-
-      // The amount must match what we asked for. A mismatch is either a provider
-      // bug or tampering; either way it must not silently fulfil an order.
-      if (verified.amount !== payment.amount) {
-        request.log.error(
-          { paymentId: payment.id, expected: payment.amount, actual: verified.amount },
-          'webhook amount does not match the payment record',
-        );
+      // `settlePayment` asks the provider and uses only its answer. When the
+      // provider cannot be asked it throws, the event stays unprocessed, and
+      // the non-2xx makes the provider deliver it again later.
+      let outcome;
+      try {
+        outcome = await settlePayment({ prisma, payments, queue }, event.providerReference, 'system');
+      } catch (error) {
+        request.log.error({ eventId: event.id, err: error }, 'webhook could not be settled; awaiting retry');
         await prisma.paymentWebhook.updateMany({
           where: { provider: payments.providerName, eventId: event.id },
-          data: { processingError: 'amount_mismatch' },
+          data: { processingError: 'provider_unreachable' },
+        });
+        return reply.status(503).send({ received: true, processed: false });
+      }
+
+      // Refusals are recorded and answered exactly like a bad signature, so
+      // nobody probing learns whether a reference exists or what it is for.
+      if (outcome === 'unknown_payment' || outcome === 'amount_mismatch') {
+        request.log.warn({ eventId: event.id, outcome }, 'webhook refused');
+        await prisma.paymentWebhook.updateMany({
+          where: { provider: payments.providerName, eventId: event.id },
+          data: { processingError: outcome },
         });
         return reply.status(200).send({ received: true });
       }
+      if (outcome === 'captured_for_closed_order') {
+        request.log.error({ eventId: event.id, outcome }, 'webhook settled into a state that needs a person');
+      }
 
-      await prisma.payment.update({
-        where: { id: payment.id },
+      const payment = await prisma.payment.findUnique({
+        where: { providerReference: event.providerReference },
+        select: { id: true },
+      });
+
+      // A refund event re-checks refunds a person has already linked to a
+      // Paystack refund on this payment — through Paystack, never from this
+      // body. One not linked yet waits for a person: which refund of ours a
+      // Paystack refund settles is their call, not a guess. A failure here
+      // does not fail the delivery; reconciliation checks again later.
+      if (payment && event.type.startsWith('refund.')) {
+        const linked = await prisma.refund.findMany({
+          where: { paymentId: payment.id, status: 'refund_processing', providerReference: { not: null } },
+          select: { id: true },
+        });
+        for (const refund of linked) {
+          try {
+            await confirmRefundWithProvider(
+              { prisma, payments },
+              { refundId: refund.id, actorId: null, source: 'webhook' },
+            );
+          } catch (error) {
+            request.log.warn({ eventId: event.id, refundId: refund.id, err: error }, 'refund re-check deferred');
+          }
+        }
+      }
+      await prisma.paymentWebhook.updateMany({
+        where: { provider: payments.providerName, eventId: event.id },
         data: {
-          status: verified.status,
-          ...(verified.status === 'captured' ? { capturedAt: new Date() } : {}),
-          ...(verified.status === 'failed'
-            ? { failedAt: new Date(), failureReason: verified.providerMessage ?? null }
-            : {}),
+          paymentId: payment?.id ?? null,
+          processedAt: new Date(),
+          processingError: outcome === 'captured_for_closed_order' ? outcome : null,
         },
       });
 
-      if (verified.status === 'captured') {
-        // Idempotent by order state — a second capture event for the same order
-        // finds it already placed and does nothing.
-        await confirmOrderPaid(prisma, payment.orderId, 'system');
-      }
-
-      await prisma.paymentWebhook.updateMany({
-        where: { provider: payments.providerName, eventId: event.id },
-        data: { paymentId: payment.id, processedAt: new Date() },
-      });
-
       return reply.status(200).send({ received: true, processed: true });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/payments/return — the customer's browser is back from checkout
+  // -------------------------------------------------------------------------
+  // Paystack sends the browser to the web page at /pay/complete with the
+  // reference in the query string. That page asks for the reference to be
+  // checked now, so the order settles even if the webhook is late and the
+  // customer never reopens the app.
+  //
+  // It is a nudge, not a claim. The body carries only a reference; the
+  // outcome comes from `settlePayment`, which asks Paystack and places an
+  // order only for a capture of the recorded amount — the same single path
+  // the webhook and the app use. The answer is always the same `{ checked:
+  // true }`, whatever happened, so the endpoint tells nobody whether a
+  // reference exists or what state its order is in.
+  app.post(
+    '/v1/payments/return',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      const parsed = z.object({ reference: z.string().trim().regex(/^[A-Za-z0-9._-]{4,80}$/) }).safeParse(request.body);
+      if (parsed.success) {
+        try {
+          await settlePayment({ prisma, payments, queue }, parsed.data.reference, 'payment_return');
+        } catch (error) {
+          // Paystack unreachable: the webhook and the app will settle it.
+          request.log.warn({ err: error }, 'payment return could not be checked now');
+        }
+      }
+      return reply.status(202).send({ checked: true });
     },
   );
 }

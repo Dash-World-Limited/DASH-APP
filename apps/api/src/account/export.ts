@@ -39,7 +39,7 @@ import {
   type ExportStatus,
 } from '@dash/domain/account';
 import type { ExportArchivePort } from '@dash/domain/ports';
-import { writeAudit, type PrismaClient } from '@dash/db';
+import { writeAudit, type DbClient, type PrismaClient } from '@dash/db';
 import { DataExportError } from './errors.js';
 
 const ARCHIVE_CONTENT_TYPE = 'application/json';
@@ -147,7 +147,13 @@ function toView(row: ExportRow, now: Date, downloadSecret?: string): ExportReque
  * build. Terminal requests (delivered, expired, failed) do not block a new one.
  */
 export async function requestDataExport(
-  prisma: PrismaClient,
+  // `DbClient`, not `PrismaClient`, so the caller can hand this a `$transaction`
+  // handle and commit the request together with the outbox event that schedules
+  // the build. Previously the row committed and the enqueue was a separate
+  // network call, so a queue outage in the gap left a `pending` export that no
+  // worker was ever told to build — visible to the customer as a request that
+  // never completes.
+  prisma: DbClient,
   input: {
     identityId: string;
     ipAddress?: string | null;

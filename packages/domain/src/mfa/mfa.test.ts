@@ -45,16 +45,22 @@ describe('which roles require MFA', () => {
   });
 
   it('is not satisfied by step-up coverage alone', () => {
-    // city_manager, dispatcher, and marketing_manager hold no step-up
-    // permission today, but can pause a city, reassign live orders, and message
-    // every customer respectively. A purely derived policy would miss them.
-    for (const role of ['city_manager', 'dispatcher', 'marketing_manager'] as const) {
+    // dispatcher and marketing_manager hold no step-up permission today, but
+    // can reassign live orders and message every customer respectively. A
+    // purely derived policy would miss them. (city_manager used to be on this
+    // list; it now holds vendor and rider approval, which are step-up gated.)
+    for (const role of ['dispatcher', 'marketing_manager'] as const) {
       const actor = buildActor({ identityId: 'i', sessionId: 's', roles: [role] });
       const holdsStepUp = [...actor.permissions].some((p) => STEP_UP_PERMISSIONS.has(p));
 
       expect(holdsStepUp).toBe(false);
       expect(MFA_REQUIRED_ROLES.has(role)).toBe(true);
     }
+    // And the role that approves partners must both hold MFA and step up.
+    const cityManager = buildActor({ identityId: 'i', sessionId: 's', roles: ['city_manager'] });
+    expect(MFA_REQUIRED_ROLES.has('city_manager')).toBe(true);
+    expect(STEP_UP_PERMISSIONS.has('admin:vendor:approve')).toBe(true);
+    expect([...cityManager.permissions]).toContain('admin:vendor:approve');
   });
 
   it('requires MFA for every staff role', () => {

@@ -34,6 +34,7 @@ import type {
   PushPort,
   QueueJob,
   QueuePort,
+  RefundLookup,
   RouteEstimate,
   SmsPort,
   StoragePort,
@@ -65,6 +66,7 @@ export class MockPaymentAdapter implements PaymentPort {
 
   private readonly records = new Map<string, MockPaymentRecord>();
   private readonly byIdempotencyKey = new Map<string, string>();
+  private readonly refunds = new Map<string, { providerReference: string; amount: Kobo }>();
 
   async initialize(input: {
     amount: Kobo;
@@ -127,7 +129,26 @@ export class MockPaymentAdapter implements PaymentPort {
     record.capturedAmount = kobo(record.capturedAmount - input.amount);
     record.status = record.capturedAmount === 0 ? 'refunded' : 'partially_refunded';
 
-    return { refundReference: `mock_refund_${randomUUID()}`, status: record.status };
+    const refundReference = `mock_refund_${randomUUID()}`;
+    this.refunds.set(refundReference, { providerReference: input.providerReference, amount: input.amount });
+    return { refundReference, status: record.status };
+  }
+
+  /**
+   * Only refunds this mock itself made through `refund` exist. There is no
+   * mock dashboard to refund from, so a reference typed by a person is
+   * unknown here — which is the honest answer.
+   */
+  async lookupRefund(input: { refundReference: string; providerReference: string }): Promise<RefundLookup> {
+    const refund = this.refunds.get(input.refundReference);
+    return {
+      refundReference: input.refundReference,
+      matchesPayment: refund?.providerReference === input.providerReference,
+      status: refund ? 'processed' : 'pending',
+      amount: refund?.amount ?? kobo(0),
+      currency: 'NGN',
+      providerStatus: refund ? 'processed' : 'not_found',
+    };
   }
 
   /**

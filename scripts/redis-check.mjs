@@ -20,6 +20,11 @@
  *   5. Rate-limit counters are *shared*: two Fastify instances pointed at the
  *      same Redis enforce one budget between them, which is the entire reason
  *      production refuses per-process counters.
+ *   6. A realtime notification published by one instance reaches *another*
+ *      instance's hub. This is the property the in-process adapter cannot
+ *      provide and the entire reason `RealtimeBroadcastPort` exists — a
+ *      single-instance developer machine cannot tell the two apart, and a
+ *      production deployment loses most updates if it is wrong.
  */
 
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -125,6 +130,145 @@ check('two instances share one rate-limit budget through Redis', limited);
 
 await one.close();
 await two.close();
+
+// --- Realtime fan-out ------------------------------------------------------
+//
+// The one thing an in-process adapter can never do: reach a socket that is
+// being served by a different process. Two adapters here stand in for two API
+// instances, exactly as the two Fastify instances above stand in for two rate
+// limiters.
+console.log('\nRealtime fan-out');
+const { RedisBroadcastAdapter, channelFor } = await import('../apps/api/src/realtime/broadcast.ts');
+const { createBroadcastRedis } = await import('../apps/api/src/redis/client.ts');
+const { RealtimeHub, Connection } = await import('../apps/api/src/realtime/hub.ts');
+const { parseNotification } = await import('../packages/domain/src/realtime/index.ts');
+
+const rtPrefix = `${prefix}:rt`;
+
+/** One "instance": a broadcast adapter feeding its own hub. */
+const buildInstance = () => {
+  const adapter = new RedisBroadcastAdapter(
+    createBroadcastRedis(url),
+    createBroadcastRedis(url),
+    undefined,
+    rtPrefix,
+  );
+  const hub = new RealtimeHub();
+  const delivered = [];
+
+  adapter.subscribe((raw) => {
+    // Validated before it is believed, exactly as the server does. A shared
+    // Redis is a trust boundary, not an internal channel.
+    try {
+      delivered.push(parseNotification(raw));
+    } catch {
+      delivered.push('rejected');
+    }
+  });
+
+  return { adapter, hub, delivered };
+};
+
+const alpha = buildInstance();
+const beta = buildInstance();
+// A third on a different prefix, standing in for staging sharing this Redis.
+const otherDeployment = (() => {
+  const adapter = new RedisBroadcastAdapter(
+    createBroadcastRedis(url),
+    createBroadcastRedis(url),
+    undefined,
+    `${prefix}:other`,
+  );
+  const delivered = [];
+  adapter.subscribe(() => delivered.push('received'));
+  return { adapter, delivered };
+})();
+
+// Give the SUBSCRIBE commands time to land before anything is published.
+await sleep(1_000);
+
+const notification = {
+  eventId: 'order:check@1',
+  subject: 'order:check',
+  topics: ['order:check'],
+  version: 1,
+  occurredAt: Date.now(),
+};
+
+await alpha.adapter.publish(notification);
+await sleep(1_000);
+
+check(
+  'a notification published by one instance reaches another instance',
+  beta.delivered.some((entry) => entry !== 'rejected' && entry.eventId === notification.eventId),
+  beta.delivered,
+);
+check(
+  'the publishing instance serves its own sockets too',
+  alpha.delivered.some((entry) => entry !== 'rejected' && entry.eventId === notification.eventId),
+  alpha.delivered,
+);
+check(
+  'a deployment on a different prefix receives nothing',
+  otherDeployment.delivered.length === 0,
+  otherDeployment.delivered,
+);
+check('the channel is namespaced by prefix', channelFor(rtPrefix) === `${rtPrefix}:realtime`);
+
+// A socket on the second instance receives the frame the notification became.
+const frames = [];
+const socket = {
+  bufferedAmount: 0,
+  send: (data) => frames.push(JSON.parse(data)),
+  close: () => undefined,
+};
+const watcher = new Connection('check-1', socket, Date.now());
+// Authorisation is not under test here — the hub's own suite covers it. What
+// is under test is that the notification crossed a process boundary and became
+// a frame on the far side.
+watcher.actor = { identityId: 'check', sessionId: 'check', roles: [], permissions: new Set() };
+watcher.authorityExpiresAt = Date.now() + 60_000;
+beta.hub.add(watcher);
+beta.hub.subscribe(watcher, 'order:check');
+
+const second = { ...notification, eventId: 'order:check@2', version: 2 };
+let deliveredToSocket = false;
+beta.adapter.subscribe((raw) => {
+  try {
+    if (beta.hub.publish(parseNotification(raw)) > 0) deliveredToSocket = true;
+  } catch {
+    // Counted by the rejection check above.
+  }
+});
+await alpha.adapter.publish(second);
+await sleep(1_000);
+
+check(
+  'a notification from another instance becomes a frame on a local socket',
+  deliveredToSocket && frames.some((frame) => frame.eventId === second.eventId),
+  frames,
+);
+
+// Anything at all can be published to a Redis channel by anything holding the
+// credentials. It must not become a frame.
+const rawPublisher = createBroadcastRedis(url);
+await rawPublisher.publish(channelFor(rtPrefix), 'not json at all');
+await rawPublisher.publish(
+  channelFor(rtPrefix),
+  JSON.stringify({ eventId: 'x', subject: 'order:x', topics: ['order:*'], version: 1, occurredAt: 1 }),
+);
+await sleep(1_000);
+check(
+  'malformed and crafted broadcasts are rejected, not delivered',
+  beta.delivered.filter((entry) => entry === 'rejected').length >= 1 &&
+    !frames.some((frame) => frame.subject === 'order:x'),
+  { rejected: beta.delivered.filter((entry) => entry === 'rejected').length },
+);
+await rawPublisher.quit();
+
+await alpha.adapter.close();
+await beta.adapter.close();
+await otherDeployment.adapter.close();
 
 // --- Cleanup ---------------------------------------------------------------
 const cleanup = createQueueRedis(url);

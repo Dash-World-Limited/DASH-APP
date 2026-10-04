@@ -58,6 +58,18 @@ describe('the register of what Redis is trusted with', () => {
     expect(queue!.failureMode).toBe('retryable');
   });
 
+  it('makes realtime fan-out degradable rather than retryable', () => {
+    // The distinction is the whole reason the register exists. A dropped
+    // notification costs freshness — the client polls the same authorized route
+    // it always did — while a dropped queue job costs work that nothing will
+    // ever redo. Classifying this one as retryable would put realtime on the
+    // critical path of a request it has no business blocking.
+    const realtime = REDIS_RESPONSIBILITIES.find((r) => r.name === 'realtime_fanout');
+    expect(realtime).toBeDefined();
+    expect(realtime!.failureMode).toBe('degradable');
+    expect(realtime!.correctnessCritical).toBe(false);
+  });
+
   it('trusts Redis with nothing durable', () => {
     // Sessions, OTP challenges, idempotency keys, and the ledger are
     // PostgreSQL rows. If one of those names ever appears here, durable

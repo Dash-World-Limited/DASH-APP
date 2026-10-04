@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>DASH APP</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #16181d;
+        --ink-muted: #5b6270;
+        --surface: #faf8f4;
+        --surface-raised: #ffffff;
+        --gold: #d4a72c;
+        --coral: #e5484d;
+        --line: #e5e2db;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: var(--surface);
+        color: var(--ink);
+        font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .card {
+        width: 100%;
+        max-width: 420px;
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 32px 24px;
+        text-align: center;
+      }
+      .wordmark { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; }
+      .wordmark span { color: var(--gold); margin-left: 3px; }
+      h1 { font-size: 18px; margin: 24px 0 8px; }
+      p { margin: 0 0 8px; color: var(--ink-muted); font-size: 14px; }
+      .spinner {
+        width: 28px; height: 28px; margin: 24px auto 0;
+        border: 3px solid var(--line); border-top-color: var(--gold);
+        border-radius: 50%; animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      button {
+        margin-top: 20px; width: 100%; min-height: 48px;
+        border: 0; border-radius: 12px; background: var(--gold);
+        color: #16181d; font-size: 15px; font-weight: 700;
+      }
+      .detail {
+        margin-top: 18px; padding: 12px; border-radius: 10px;
+        background: var(--surface); border: 1px solid var(--line);
+        font: 12px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+        color: var(--ink-muted); text-align: left; word-break: break-all;
+      }
+      ol { text-align: left; font-size: 13px; color: var(--ink-muted); padding-left: 20px; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="wordmark">DASH<span>&bull;</span></div>
+
+      <!-- Connecting -->
+      <section id="connecting">
+        <h1>Starting the test build</h1>
+        <p id="connecting-note">Contacting the development server&hellip;</p>
+        <div class="spinner"></div>
+      </section>
+
+      <!-- Unreachable -->
+      <section id="failed" hidden>
+        <h1>Cannot reach the test backend</h1>
+        <p>
+          This internal build loads the DASH APP client from a development
+          machine on your network. That machine did not answer.
+        </p>
+        <ol>
+          <li>Is the phone on the same Wi-Fi or hotspot as the laptop?</li>
+          <li>Are both servers running on the laptop (<code>npm run dev</code>)?</li>
+          <li>Has the laptop's address changed since this build was made?</li>
+        </ol>
+        <div class="detail" id="detail"></div>
+        <button type="button" id="retry">Try again</button>
+      </section>
+    </main>
+
+    <script>
+      /**
+       * Start from a page that is already on the device, then hand over.
+       *
+       * The previous build pointed the WebView straight at the development
+       * server. When that server was unreachable the WebView had nothing to
+       * paint and the app opened to a white screen — and Capacitor's own
+       * `errorPath` did not rescue it, because with a remote `server.url` the
+       * page is proxied through Java and a failed fetch is swallowed by a
+       * catch that only logs socket timeouts.
+       *
+       * So the shell now boots from this bundled page, which cannot fail to
+       * load, and only navigates onward once the server has actually answered.
+       * A blank screen is no longer reachable: either this page is showing a
+       * spinner, or it is showing an error with the reason on it.
+       */
+      var TARGET = null;
+
+      var connecting = document.getElementById('connecting');
+      var failed = document.getElementById('failed');
+      var detail = document.getElementById('detail');
+      var note = document.getElementById('connecting-note');
+
+      function show(which) {
+        connecting.hidden = which !== 'connecting';
+        failed.hidden = which !== 'failed';
+      }
+
+      function fail(reason) {
+        detail.textContent = (TARGET ? TARGET.serverUrl + '\n' : '') + reason;
+        show('failed');
+      }
+
+      /**
+       * Is the development server answering?
+       *
+       * `no-cors` on purpose. This page is served from `http://localhost` by
+       * the shell, so a normal request to the dev server is cross-origin and
+       * the browser would refuse to read the response no matter how healthy
+       * the server is — the probe would report a failure that says nothing
+       * about the server.
+       *
+       * An opaque response cannot be inspected, and that is fine: the only
+       * question here is whether anything answered at all. A reachable server
+       * resolves the promise; a refused connection, a wrong address, or a
+       * blocked cleartext policy rejects it. The timeout covers the case that
+       * neither happens because the network is simply hanging.
+       */
+      function probe(url) {
+        return new Promise(function (resolve) {
+          var settled = false;
+          var timer = setTimeout(function () {
+            if (!settled) { settled = true; resolve({ ok: false, why: 'No response within 8 seconds.' }); }
+          }, 8000);
+
+          fetch(url, { method: 'GET', mode: 'no-cors', cache: 'no-store' })
+            .then(function () {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve({ ok: true });
+            })
+            .catch(function (error) {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve({ ok: false, why: String(error && error.message ? error.message : error) });
+            });
+        });
+      }
+
+      function start() {
+        show('connecting');
+        note.textContent = 'Contacting the development server…';
+
+        fetch('./target.json', { cache: 'no-store' })
+          .then(function (r) { return r.json(); })
+          .then(function (target) {
+            TARGET = target;
+            note.textContent = 'Contacting ' + target.serverUrl + '…';
+            return probe(target.serverUrl + '/signin');
+          })
+          .then(function (result) {
+            if (result.ok) {
+              // Answered. Hand the WebView over to the real client.
+              window.location.replace(TARGET.serverUrl + '/signin');
+            } else {
+              fail(result.why);
+            }
+          })
+          .catch(function (error) {
+            fail('Could not read the build target: ' + error);
+          });
+      }
+
+      document.getElementById('retry').addEventListener('click', start);
+      start();
+    </script>
+  </body>
+</html>

@@ -12,13 +12,21 @@
     "./dispatch": "./src/dispatch/index.ts",
     "./pay": "./src/pay/index.ts",
     "./orders": "./src/orders/index.ts",
+    "./declutter": "./src/declutter/index.ts",
+    "./valuecheck": "./src/valuecheck/index.ts",
     "./ledger": "./src/ledger/index.ts",
     "./permissions": "./src/permissions/index.ts",
     "./ports": "./src/ports/index.ts",
+    "./push": "./src/push/index.ts",
     "./envelope": "./src/envelope/index.ts",
+    "./redaction": "./src/redaction/index.ts",
+    "./realtime": "./src/realtime/index.ts",
     "./mfa": "./src/mfa/index.ts",
     "./retention": "./src/retention/index.ts",
-    "./account": "./src/account/index.ts"
+    "./account": "./src/account/index.ts",
+    "./signup": "./src/signup/index.ts",
+    "./services": "./src/services/index.ts",
+    "./onboarding": "./src/onboarding/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

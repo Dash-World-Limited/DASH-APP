@@ -1,5 +1,12 @@
 # DASH APP — Latest Status
 
+> **Superseded for the release (28 September 2026).** The Play Store release
+> candidate is on branch `claude/awesome-bardeen-95lgbd` (a fast-forward of
+> `claude/playstore-readiness`), not `main`. Its current state — what is
+> proven, what is built but unproven, the release blockers and what needs
+> David — is in [`docs/release/README.md`](release/README.md). The rest of
+> this page is the 4 September checkpoint of `main`, kept as history.
+
 **Updated:** 2026-09-04
 
 This file is the short current checkpoint for picking the project up quickly. For full architecture, security, decisions, and operational detail, continue with `HANDOFF.md`, `ARCHITECTURE.md`, and `docs/DECISIONS.md`.
