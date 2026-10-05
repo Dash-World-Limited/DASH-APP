@@ -29,7 +29,7 @@ jobs:
         working-directory: apps/mobile
         run: |
           npm install expo-audio@~57.0.5 --save
-          npx expo install expo-asset
+          npm install expo-asset --save
 
       - name: Generate small local DASH UI tones
         run: |
