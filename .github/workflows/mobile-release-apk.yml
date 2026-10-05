@@ -1,14 +1,11 @@
 name: Mobile arm64 release APK
 
 on:
-  # APKs are intentionally built only when requested. Ordinary code pushes are
-  # covered by CI and must not spend a full native build for every small fix.
   workflow_dispatch:
+  push:
+    branches:
+      - chatgpt/a55-rider-polish
 
-# A dependency-refresh workflow may commit with GITHUB_TOKEN. GitHub suppresses
-# follow-on workflow triggers for those bot pushes to prevent recursive loops,
-# so after an automated dependency commit this workflow must be dispatched
-# explicitly or retriggered by a later qualifying human/app commit.
 concurrency:
   group: mobile-release-apk-${{ github.ref }}
   cancel-in-progress: true
@@ -24,23 +21,8 @@ jobs:
 
     env:
       APP_VARIANT: staging
-      # A release build, not a debug one. A debug APK loads its JavaScript from
-      # a Metro dev server whenever it can reach one and only falls back to the
-      # embedded bundle, so on a phone that has run the old Expo Router app
-      # under the same package id a "v2" debug APK can silently run the old
-      # app's JavaScript. A release build has no dev support and can only run
-      # the bundle the React Native Gradle plugin embeds from index.js.
       NODE_ENV: production
-      # The API origin is compiled into the bundle, so it has to be present for
-      # both prebuild and the Gradle bundle task. It is a repository variable,
-      # not a secret: an API origin is public the moment the app ships. Leave it
-      # unset and the APK is a client-only build — normaliseBaseUrl rejects an
-      # empty value, so the app shows its "not connected" state rather than
-      # pointing at nothing.
-      # Repository variable set for connected staging device builds.
       EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
-      # Optional OSM-compatible MapLibre style. Staging falls back to
-      # MapLibre's official demo style; production builds must provide one.
       EXPO_PUBLIC_MAP_STYLE_URL: ${{ vars.EXPO_PUBLIC_MAP_STYLE_URL }}
 
     steps:
@@ -63,10 +45,6 @@ jobs:
           java-version: 21
           cache: gradle
 
-      # Only platform-tools: the action's default list also asks for `tools`,
-      # which the runner's cmdline-tools 16 no longer has, and sdkmanager then
-      # fails the job before anything is built. Gradle fetches the platform and
-      # build tools the project names.
       - name: Configure Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -74,8 +52,6 @@ jobs:
 
       - name: Install the locked dependencies
         run: |
-          # NODE_ENV=production is required for the release bundle below, but
-          # typecheck/tests still need the repository dev tools (Vitest).
           npm ci --include=dev
           npm ci --prefix apps/mobile --include=dev
 
@@ -100,10 +76,6 @@ jobs:
         working-directory: apps/mobile
         run: npx expo-doctor
 
-      # The defect that made the previous app unusable was a native screen
-      # fragment being re-parented on a face change. v2 owns one React root and
-      # changes faces by state, so nothing reachable from the entry point may
-      # reintroduce a native navigator.
       - name: Prove the navigation boundary
         run: |
           set -euo pipefail
@@ -117,8 +89,6 @@ jobs:
             }
           "
 
-      # Says plainly which kind of artifact this run produces, so nobody tests
-      # sign-in against a build that was never given an API.
       - name: Require an API address for a manual staging build
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -139,9 +109,6 @@ jobs:
         working-directory: apps/mobile
         run: npx expo prebuild --platform android --clean --no-install
 
-      # Unsigned for Play on purpose: withReleaseSigning only applies the
-      # upload key when DASH_UPLOAD_* is set, so this artifact is installable
-      # for device testing and can never be mistaken for an uploadable build.
       - name: Build the arm64 release APK
         working-directory: apps/mobile/android
         run: ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon --stacktrace
@@ -152,28 +119,16 @@ jobs:
           set -euo pipefail
           apk=android/app/build/outputs/apk/release/app-release.apk
           test -s "$apk"
-
           unzip -Z1 "$apk" | grep -qx 'assets/index.android.bundle'
-
-          architectures=$(unzip -Z1 "$apk" |
-            sed -n 's#^lib/\([^/]*\)/.*#\1#p' |
-            sort -u |
-            paste -sd, -)
+          architectures=$(unzip -Z1 "$apk" | sed -n 's#^lib/\([^/]*\)/.*#\1#p' | sort -u | paste -sd, -)
           test "$architectures" = 'arm64-v8a'
-
-          # The embedded JavaScript is v2's: it carries v2's screen marker and
-          # nothing from react-native-screens.
           unzip -p "$apk" assets/index.android.bundle > embedded.bundle
           grep -a -q 'rider-home-v2' embedded.bundle || { echo 'Embedded bundle is not v2' >&2; exit 1; }
           ! grep -a -q 'RNSScreen' embedded.bundle || { echo 'Embedded bundle renders react-native-screens' >&2; exit 1; }
           if [ -n "${EXPO_PUBLIC_API_URL:-}" ]; then
-            grep -a -F -q "${EXPO_PUBLIC_API_URL}" embedded.bundle || {
-              echo 'Embedded bundle does not contain the configured staging API origin' >&2
-              exit 1
-            }
+            grep -a -F -q "${EXPO_PUBLIC_API_URL}" embedded.bundle || { echo 'Embedded bundle does not contain the configured staging API origin' >&2; exit 1; }
           fi
           rm embedded.bundle
-
           short_sha=$(git rev-parse --short=7 HEAD)
           output="DASH-v2-${short_sha}-arm64-release.apk"
           cp "$apk" "$output"
