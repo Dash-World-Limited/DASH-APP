@@ -154,6 +154,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   plugins: [
     '@maplibre/maplibre-react-native',
     'expo-status-bar',
+    'expo-asset',
     'expo-font',
     'expo-image',
     'expo-secure-store',
