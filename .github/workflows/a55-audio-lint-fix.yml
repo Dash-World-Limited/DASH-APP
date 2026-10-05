@@ -1,0 +1,53 @@
+name: Normalize A55 audio asset imports
+
+on:
+  push:
+    branches:
+      - chatgpt/a55-rider-polish
+    paths:
+      - .github/workflows/a55-audio-lint-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/a55-rider-polish
+      - name: Add narrow lint allowances for Metro static audio assets
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          files = [
+              Path('apps/mobile/src/v2/rider/RiderScreens.tsx'),
+              Path('apps/mobile/src/v2/orders/CheckoutScreen.tsx'),
+          ]
+          for path in files:
+              text = path.read_text()
+              lines = text.splitlines()
+              out = []
+              for line in lines:
+                  if "useAudioPlayer(require(" in line and (not out or 'eslint-disable-next-line @typescript-eslint/no-require-imports' not in out[-1]):
+                      indent = line[:len(line) - len(line.lstrip())]
+                      out.append(f"{indent}// Metro resolves bundled WAV assets statically; require is the supported asset reference here.")
+                      out.append(f"{indent}// eslint-disable-next-line @typescript-eslint/no-require-imports")
+                  out.append(line)
+              path.write_text('\n'.join(out) + '\n')
+          PY
+      - name: Verify lint
+        run: |
+          npm ci
+          npm ci --prefix apps/mobile
+          npm run lint
+      - name: Commit lint-safe audio references
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/mobile/src/v2/rider/RiderScreens.tsx apps/mobile/src/v2/orders/CheckoutScreen.tsx
+          git commit -m "fix(mobile): lint bundled DASH audio references"
+          git push origin HEAD:chatgpt/a55-rider-polish
