@@ -1,0 +1,26 @@
+name: A55 polish full repository check
+
+on:
+  push:
+    branches:
+      - chatgpt/a55-rider-polish
+    paths:
+      - .github/workflows/a55-final-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install locked repository dependencies
+        run: npm ci --include=dev
+      - name: Typecheck API, web and workspace packages
+        run: npm run typecheck
