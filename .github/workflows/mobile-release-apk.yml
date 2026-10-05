@@ -1,3 +1,4 @@
+# Manual trigger marker: final lint-safe A55 polish build
 name: Mobile arm64 release APK
 
 on:
