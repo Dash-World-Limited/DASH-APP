@@ -31,6 +31,20 @@ jobs:
           npm install expo-audio@~57.0.5 --save
           npm install expo-asset --save
 
+      - name: Register expo-asset in the dynamic Expo config
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('apps/mobile/app.config.ts')
+          text = path.read_text()
+          marker = "    'expo-status-bar',\n"
+          if "    'expo-asset',\n" not in text:
+              if marker not in text:
+                  raise SystemExit('Could not find Expo plugin insertion point')
+              text = text.replace(marker, marker + "    'expo-asset',\n", 1)
+              path.write_text(text)
+          PY
+
       - name: Generate small local DASH UI tones
         run: |
           python3 - <<'PY'
@@ -62,14 +76,14 @@ jobs:
           tone('order-placed.wav', [(659.25, .08, .22), (783.99, .08, .24), (1046.50, .15, .27)])
           PY
 
-      - name: Commit dependency lock and audio assets
+      - name: Commit dependency lock, config and audio assets
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apps/mobile/package.json apps/mobile/package-lock.json apps/mobile/assets/sounds
+          git add apps/mobile/package.json apps/mobile/package-lock.json apps/mobile/app.config.ts apps/mobile/assets/sounds
           if git diff --cached --quiet; then
-            echo "Audio dependency and assets are already prepared."
+            echo "Audio dependency, config and assets are already prepared."
             exit 0
           fi
-          git commit -m "fix(mobile): add expo-asset peer for audio runtime"
+          git commit -m "fix(mobile): complete expo audio native dependencies"
           git push origin HEAD:chatgpt/a55-rider-polish
