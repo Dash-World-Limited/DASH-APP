@@ -818,8 +818,9 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
               },
             },
           },
-          // The rider's live position, but only their name and coarse location —
-          // never their phone number or identity id.
+          // The assigned rider's live position and contact number. The order-level
+          // scope check below limits this to the owning customer, and the response
+          // exposes it only while the delivery is active.
           rider: {
             select: {
               id: true,
@@ -827,7 +828,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
               lastLongitude: true,
               locationReportedAt: true,
               vehicleType: true,
-              identity: { select: { displayName: true } },
+              identity: { select: { displayName: true, phone: true } },
             },
           },
         },
@@ -864,6 +865,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
             order.rider && isActive(status)
               ? {
                   name: order.rider.identity.displayName,
+                  phone: order.rider.identity.phone,
                   vehicleType: order.rider.vehicleType,
                   latitude: order.rider.lastLatitude,
                   longitude: order.rider.lastLongitude,

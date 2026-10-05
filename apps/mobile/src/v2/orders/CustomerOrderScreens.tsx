@@ -37,7 +37,7 @@ interface OrderDetail extends OrderSummary {
   branch: { name: string; address: string; latitude: number; longitude: number };
   address: { line1: string; landmark: string | null; instructions: string | null; latitude: number; longitude: number } | null;
   statusEvents: Array<{ toStatus: string; createdAt: string }>;
-  rider: { name: string | null; vehicleType: string; latitude: number | null; longitude: number | null; reportedAt: string | null; isStale: boolean } | null;
+  rider: { name: string | null; phone: string | null; vehicleType: string; latitude: number | null; longitude: number | null; reportedAt: string | null; isStale: boolean } | null;
   /**
    * Refunds owed on this order, worded by the server. Optional because an
    * older server omits the field entirely — which reads as "no refunds", not
@@ -251,7 +251,7 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
         {!api.configured ? <Notice icon="flask-outline" text="Interactive tracking preview. The real screen polls the protected order endpoint and uses only server-accepted rider coordinates." /> : null}
         <View><Text variant="title">{order.statusLabel}</Text><Text variant="caption" tone="muted">{order.vendor.name} · {order.items.reduce((total, item) => total + item.quantity, 0)} items</Text></View>
         {order.rider ? <Card><View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}><View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}><Icon name="moped" color={palette.textOnInverse} /></View><View style={{ flex: 1 }}><Text variant="label" weight="bold">{order.rider.name ?? 'Your DASH rider'}</Text><Text variant="caption" tone={order.rider.isStale ? 'muted' : 'success'}>{order.rider.isStale ? 'Location temporarily delayed' : 'Location updated recently'}</Text></View></View></Card> : null}
-        {order.rider ? <SecondaryButton label="Message your rider" onPress={() => onChat(order.id)} /> : null}
+        {order.rider ? <View style={{ flexDirection: 'row', gap: space.sm }}>{order.rider.phone ? <View style={{ flex: 1 }}><SecondaryButton label="Call rider" onPress={() => void Linking.openURL(`tel:${order.rider?.phone?.replace(/\s/g, '') ?? ''}`)} /></View> : null}<View style={{ flex: 1 }}><SecondaryButton label="Message rider" onPress={() => onChat(order.id)} /></View></View> : null}
         <PaymentSection
           status={order.status}
           outcome={outcome}

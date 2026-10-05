@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, TextInput, Vibration, View } from 'react-native';
+import { useAudioPlayer } from 'expo-audio';
 
 import { api, ApiError } from '../../api';
 import { MapShell } from '../../rider/MapShell';
@@ -36,18 +37,23 @@ export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
   const { palette } = useTheme();
   const flow = useRiderFlow();
   const lastOfferId = useRef<string | null>(null);
+  const onlineTone = useAudioPlayer(require('../../../assets/sounds/online.wav'));
+  const offlineTone = useAudioPlayer(require('../../../assets/sounds/offline.wav'));
+  const offerTone = useAudioPlayer(require('../../../assets/sounds/offer.wav'));
 
   useEffect(() => {
+    onlineTone.play();
     Vibration.vibrate(45);
-  }, []);
+  }, [onlineTone]);
 
   useEffect(() => {
     const offerId = flow.offer?.id ?? null;
     if (offerId && offerId !== lastOfferId.current) {
+      void offerTone.seekTo(0).then(() => offerTone.play()).catch(() => undefined);
       Vibration.vibrate([0, 140, 80, 220]);
     }
     lastOfferId.current = offerId;
-  }, [flow.offer?.id]);
+  }, [flow.offer?.id, offerTone]);
 
   const gpsReady = Boolean(flow.riderPosition);
   const activeDelivery = flow.delivery && flow.delivery.status !== 'delivered' ? flow.delivery : null;
@@ -179,8 +185,9 @@ export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
       {flow.error ? <ErrorNotice message={flow.error} /> : null}
       <SecondaryButton label={flow.busy ? 'Updating…' : 'Go offline'} onPress={() => void flow.goOffline().then((ok) => {
         if (!ok) return;
+        void offlineTone.seekTo(0).then(() => offlineTone.play()).catch(() => undefined);
         Vibration.vibrate(35);
-        onBack();
+        setTimeout(onBack, 160);
       })} disabled={flow.busy} />
     </RiderPage>
   );

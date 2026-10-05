@@ -22,6 +22,7 @@
 import { formatNairaCompact } from '@dash/domain/money';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, TextInput, View } from 'react-native';
+import { useAudioPlayer } from 'expo-audio';
 
 import { api, ApiError } from '../../api';
 import {
@@ -109,6 +110,7 @@ function SignedInCheckout({ merchantSlug, onBack, onTrack }: { merchantSlug: str
   const { palette } = useTheme();
   const { viewer } = useAppSession();
   const { cart, dispatch } = useCart();
+  const orderPlacedTone = useAudioPlayer(require('../../../assets/sounds/order-placed.wav'));
 
   const [branchId, setBranchId] = useState<string | null>(null);
   const [merchantName, setMerchantName] = useState<string | null>(null);
@@ -189,6 +191,7 @@ function SignedInCheckout({ merchantSlug, onBack, onTrack }: { merchantSlug: str
       });
       attemptKey.current = null;
       await rememberOrder(placed.order.id, { deliveryPin: placed.deliveryPin, authorizationUrl: placed.payment.authorizationUrl });
+      void orderPlacedTone.seekTo(0).then(() => orderPlacedTone.play()).catch(() => undefined);
       // The order now exists on the server; the basket has done its job.
       dispatch({ type: 'clear' });
       onTrack(placed.order.id);
