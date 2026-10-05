@@ -37,8 +37,14 @@ export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
   const { palette } = useTheme();
   const flow = useRiderFlow();
   const lastOfferId = useRef<string | null>(null);
+  // Metro resolves bundled WAV assets statically; require is the supported asset reference here.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const onlineTone = useAudioPlayer(require('../../../assets/sounds/online.wav'));
+  // Metro resolves bundled WAV assets statically; require is the supported asset reference here.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const offlineTone = useAudioPlayer(require('../../../assets/sounds/offline.wav'));
+  // Metro resolves bundled WAV assets statically; require is the supported asset reference here.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const offerTone = useAudioPlayer(require('../../../assets/sounds/offer.wav'));
 
   useEffect(() => {

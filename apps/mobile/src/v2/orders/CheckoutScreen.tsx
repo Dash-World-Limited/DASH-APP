@@ -110,6 +110,8 @@ function SignedInCheckout({ merchantSlug, onBack, onTrack }: { merchantSlug: str
   const { palette } = useTheme();
   const { viewer } = useAppSession();
   const { cart, dispatch } = useCart();
+  // Metro resolves bundled WAV assets statically; require is the supported asset reference here.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const orderPlacedTone = useAudioPlayer(require('../../../assets/sounds/order-placed.wav'));
 
   const [branchId, setBranchId] = useState<string | null>(null);
