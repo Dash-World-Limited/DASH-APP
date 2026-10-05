@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  DATABASE_URL: file:./ci.db
+
 jobs:
   verify:
     runs-on: ubuntu-24.04
