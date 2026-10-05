@@ -1,0 +1,73 @@
+name: Prepare A55 polish audio assets
+
+on:
+  push:
+    branches:
+      - chatgpt/a55-rider-polish
+    paths:
+      - .github/workflows/a55-polish-assets.yml
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/a55-rider-polish
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - name: Add Expo Audio with a locked SDK 57 version
+        working-directory: apps/mobile
+        run: npm install expo-audio@~57.0.5 --save
+
+      - name: Generate small local DASH UI tones
+        run: |
+          python3 - <<'PY'
+          import math, struct, wave
+          from pathlib import Path
+
+          out = Path('apps/mobile/assets/sounds')
+          out.mkdir(parents=True, exist_ok=True)
+          rate = 44100
+
+          def tone(name, notes):
+              samples = []
+              for freq, seconds, volume in notes:
+                  count = int(rate * seconds)
+                  fade = max(1, int(rate * 0.012))
+                  for i in range(count):
+                      envelope = min(1.0, i / fade, (count - i - 1) / fade)
+                      value = math.sin(2 * math.pi * freq * i / rate) * volume * max(0.0, envelope)
+                      samples.append(int(max(-1, min(1, value)) * 32767))
+              with wave.open(str(out / name), 'wb') as f:
+                  f.setnchannels(1)
+                  f.setsampwidth(2)
+                  f.setframerate(rate)
+                  f.writeframes(b''.join(struct.pack('<h', s) for s in samples))
+
+          tone('online.wav', [(523.25, .08, .22), (659.25, .09, .24), (783.99, .12, .26)])
+          tone('offline.wav', [(659.25, .08, .19), (523.25, .12, .18)])
+          tone('offer.wav', [(783.99, .10, .30), (0.01, .05, 0), (987.77, .12, .33), (0.01, .05, 0), (1174.66, .16, .34)])
+          tone('order-placed.wav', [(659.25, .08, .22), (783.99, .08, .24), (1046.50, .15, .27)])
+          PY
+
+      - name: Commit dependency lock and audio assets
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/mobile/package.json apps/mobile/package-lock.json apps/mobile/assets/sounds
+          if git diff --cached --quiet; then
+            echo "Audio dependency and assets are already prepared."
+            exit 0
+          fi
+          git commit -m "feat(mobile): add locked audio runtime and DASH tones"
+          git push origin HEAD:chatgpt/a55-rider-polish
