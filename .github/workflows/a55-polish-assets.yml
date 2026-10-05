@@ -25,9 +25,11 @@ jobs:
           cache: npm
           cache-dependency-path: apps/mobile/package-lock.json
 
-      - name: Add Expo Audio with a locked SDK 57 version
+      - name: Add Expo Audio and its required asset peer
         working-directory: apps/mobile
-        run: npm install expo-audio@~57.0.5 --save
+        run: |
+          npm install expo-audio@~57.0.5 --save
+          npx expo install expo-asset
 
       - name: Generate small local DASH UI tones
         run: |
@@ -69,5 +71,5 @@ jobs:
             echo "Audio dependency and assets are already prepared."
             exit 0
           fi
-          git commit -m "feat(mobile): add locked audio runtime and DASH tones"
+          git commit -m "fix(mobile): add expo-asset peer for audio runtime"
           git push origin HEAD:chatgpt/a55-rider-polish
