@@ -1,0 +1,99 @@
+name: Wire A55 polish features
+
+on:
+  push:
+    branches:
+      - chatgpt/a55-rider-polish
+    paths:
+      - .github/workflows/a55-polish-code.yml
+
+permissions:
+  contents: write
+
+jobs:
+  wire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: chatgpt/a55-rider-polish
+
+      - name: Wire tones and two-way delivery calling
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          # Rider: real local tones + existing tactile feedback.
+          path = 'apps/mobile/src/v2/rider/RiderScreens.tsx'
+          replace_once(path,
+              "import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, TextInput, Vibration, View } from 'react-native';\n",
+              "import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, TextInput, Vibration, View } from 'react-native';\nimport { useAudioPlayer } from 'expo-audio';\n")
+          replace_once(path,
+              "  const lastOfferId = useRef<string | null>(null);\n\n  useEffect(() => {\n    Vibration.vibrate(45);\n  }, []);",
+              "  const lastOfferId = useRef<string | null>(null);\n  const onlineTone = useAudioPlayer(require('../../../assets/sounds/online.wav'));\n  const offlineTone = useAudioPlayer(require('../../../assets/sounds/offline.wav'));\n  const offerTone = useAudioPlayer(require('../../../assets/sounds/offer.wav'));\n\n  useEffect(() => {\n    onlineTone.play();\n    Vibration.vibrate(45);\n  }, [onlineTone]);")
+          replace_once(path,
+              "    if (offerId && offerId !== lastOfferId.current) {\n      Vibration.vibrate([0, 140, 80, 220]);\n    }",
+              "    if (offerId && offerId !== lastOfferId.current) {\n      void offerTone.seekTo(0).then(() => offerTone.play()).catch(() => undefined);\n      Vibration.vibrate([0, 140, 80, 220]);\n    }")
+          replace_once(path,
+              "  }, [flow.offer?.id]);",
+              "  }, [flow.offer?.id, offerTone]);")
+          replace_once(path,
+              "        Vibration.vibrate(35);\n        onBack();",
+              "        void offlineTone.seekTo(0).then(() => offlineTone.play()).catch(() => undefined);\n        Vibration.vibrate(35);\n        setTimeout(onBack, 160);")
+
+          # Checkout: positive confirmation only after the server has created the order.
+          path = 'apps/mobile/src/v2/orders/CheckoutScreen.tsx'
+          replace_once(path,
+              "import { ActivityIndicator, Linking, Pressable, TextInput, View } from 'react-native';\n",
+              "import { ActivityIndicator, Linking, Pressable, TextInput, View } from 'react-native';\nimport { useAudioPlayer } from 'expo-audio';\n")
+          replace_once(path,
+              "  const { cart, dispatch } = useCart();\n\n  const [branchId",
+              "  const { cart, dispatch } = useCart();\n  const orderPlacedTone = useAudioPlayer(require('../../../assets/sounds/order-placed.wav'));\n\n  const [branchId")
+          replace_once(path,
+              "      await rememberOrder(placed.order.id, { deliveryPin: placed.deliveryPin, authorizationUrl: placed.payment.authorizationUrl });\n      // The order now exists on the server; the basket has done its job.",
+              "      await rememberOrder(placed.order.id, { deliveryPin: placed.deliveryPin, authorizationUrl: placed.payment.authorizationUrl });\n      void orderPlacedTone.seekTo(0).then(() => orderPlacedTone.play()).catch(() => undefined);\n      // The order now exists on the server; the basket has done its job.")
+
+          # API: expose the assigned rider's phone only to the owning customer and only while the order is active.
+          path = 'apps/api/src/routes/orders.ts'
+          replace_once(path,
+              "          // The rider's live position, but only their name and coarse location —\n          // never their phone number or identity id.",
+              "          // The assigned rider's live position and contact number. The order-level\n          // scope check below limits this to the owning customer, and the response\n          // exposes it only while the delivery is active.")
+          replace_once(path,
+              "              identity: { select: { displayName: true } },",
+              "              identity: { select: { displayName: true, phone: true } },")
+          replace_once(path,
+              "                  name: order.rider.identity.displayName,\n                  vehicleType: order.rider.vehicleType,",
+              "                  name: order.rider.identity.displayName,\n                  phone: order.rider.identity.phone,\n                  vehicleType: order.rider.vehicleType,")
+
+          # Customer tracking: Call Rider beside DASH chat once a rider is assigned.
+          path = 'apps/mobile/src/v2/orders/CustomerOrderScreens.tsx'
+          replace_once(path,
+              "  rider: { name: string | null; vehicleType: string; latitude: number | null; longitude: number | null; reportedAt: string | null; isStale: boolean } | null;",
+              "  rider: { name: string | null; phone: string | null; vehicleType: string; latitude: number | null; longitude: number | null; reportedAt: string | null; isStale: boolean } | null;")
+          replace_once(path,
+              "        {order.rider ? <SecondaryButton label=\"Message your rider\" onPress={() => onChat(order.id)} /> : null}",
+              "        {order.rider ? <View style={{ flexDirection: 'row', gap: space.sm }}>{order.rider.phone ? <View style={{ flex: 1 }}><SecondaryButton label=\"Call rider\" onPress={() => void Linking.openURL(`tel:${order.rider?.phone?.replace(/\\s/g, '') ?? ''}`)} /></View> : null}<View style={{ flex: 1 }}><SecondaryButton label=\"Message rider\" onPress={() => onChat(order.id)} /></View></View> : null}")
+          PY
+
+      - name: Typecheck changed mobile code
+        run: |
+          npm ci --include=dev
+          npm ci --prefix apps/mobile --include=dev
+          npm run typecheck --prefix apps/mobile
+
+      - name: Commit wired features
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/mobile/src/v2/rider/RiderScreens.tsx apps/mobile/src/v2/orders/CheckoutScreen.tsx apps/mobile/src/v2/orders/CustomerOrderScreens.tsx apps/api/src/routes/orders.ts
+          git commit -m "feat(mobile): add DASH tones and two-way delivery calling"
+          git push origin HEAD:chatgpt/a55-rider-polish
