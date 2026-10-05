@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, TextInput, Vibration, View } from 'react-native';
 
 import { api, ApiError } from '../../api';
 import { MapShell } from '../../rider/MapShell';
@@ -32,52 +32,156 @@ interface ApiHistoryDelivery {
   items: readonly { nameSnapshot: string; quantity: number }[];
 }
 
-
 export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
   const { palette } = useTheme();
   const flow = useRiderFlow();
+  const lastOfferId = useRef<string | null>(null);
+
+  useEffect(() => {
+    Vibration.vibrate(45);
+  }, []);
+
+  useEffect(() => {
+    const offerId = flow.offer?.id ?? null;
+    if (offerId && offerId !== lastOfferId.current) {
+      Vibration.vibrate([0, 140, 80, 220]);
+    }
+    lastOfferId.current = offerId;
+  }, [flow.offer?.id]);
+
+  const gpsReady = Boolean(flow.riderPosition);
+  const activeDelivery = flow.delivery && flow.delivery.status !== 'delivered' ? flow.delivery : null;
 
   return (
     <RiderPage>
-      <RiderHeader title="You’re online" onBack={onBack} />
-      <StatusNotice preview={flow.preview} />
-      {flow.riderPosition ? (
-        <View style={{ borderRadius: radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: palette.line }}>
-          <MapShell
-            route={[]}
-            rider={flow.riderPosition}
-            followRider
-            routeColor={palette.accent}
-            height={300}
-            accessibilityLabel="Your live rider location"
-          />
+      <View style={{ minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+        <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel="Go back" style={{ width: touchTarget, height: touchTarget, alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name="arrow-left" color={palette.text} />
+        </Pressable>
+        <View style={{ flex: 1 }}>
+          <Text variant="micro" tone="muted">DASH RIDER</Text>
+          <Text variant="appBar">Live workspace</Text>
         </View>
-      ) : (
-        <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.md }}>
-          <ActivityIndicator />
-          <Text variant="heading">Finding your live location…</Text>
-          <Text variant="caption" tone="muted" align="center">Keep location enabled while you are online. DASH will not offer work until your position is fresh.</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: space.md, paddingVertical: space.sm, borderRadius: radius.pill, backgroundColor: palette.successSoft }}>
+          <View style={{ width: 8, height: 8, borderRadius: 99, backgroundColor: palette.success }} />
+          <Text variant="micro" tone="success" weight="bold">ONLINE</Text>
         </View>
-      )}
-      <View style={{ gap: space.xs }}>
-        <Text variant="heading">Looking for nearby orders…</Text>
-        <Text variant="caption" tone="muted">Your phone’s live GPS position is sent while you are online so dispatch can offer orders you can actually reach.</Text>
       </View>
 
-      {flow.delivery && flow.delivery.status !== 'delivered' ? (
-        <ActionCard icon="bike-fast" title={`Active delivery · ${flow.delivery.code}`} body={statusLabel(flow.delivery.status)} action="Open delivery" onPress={() => onPush('delivery')} />
-      ) : null}
+      <View style={{ borderRadius: radius.xl, padding: space.xl, gap: space.md, backgroundColor: palette.inverse }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+          <View style={{ width: 54, height: 54, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.accent }}>
+            <Icon name="bike-fast" size={28} color={palette.onAccent} />
+          </View>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text variant="micro" style={{ color: palette.textOnInverse }}>YOU’RE ONLINE</Text>
+            <Text variant="title" style={{ color: palette.textOnInverse }}>Ready for the next delivery</Text>
+          </View>
+        </View>
+        <Text variant="caption" style={{ color: palette.textOnInverse }}>
+          DASH is sharing your live position and checking for nearby work while this status is active.
+        </Text>
+        <View style={{ flexDirection: 'row', gap: space.sm }}>
+          <View style={{ flex: 1, minHeight: 78, padding: space.sm, borderRadius: radius.md, justifyContent: 'center', gap: 3, backgroundColor: palette.surface }}>
+            <Icon name="crosshairs-gps" size={18} color={gpsReady ? palette.success : palette.rating} />
+            <Text variant="micro" tone="muted">GPS</Text>
+            <Text variant="micro" weight="bold">{gpsReady ? 'Ready' : 'Finding…'}</Text>
+          </View>
+          <View style={{ flex: 1, minHeight: 78, padding: space.sm, borderRadius: radius.md, justifyContent: 'center', gap: 3, backgroundColor: palette.surface }}>
+            <Icon name="access-point" size={18} color={palette.success} />
+            <Text variant="micro" tone="muted">Dispatch</Text>
+            <Text variant="micro" weight="bold">{flow.offer ? 'Offer waiting' : 'Listening'}</Text>
+          </View>
+          <View style={{ flex: 1, minHeight: 78, padding: space.sm, borderRadius: radius.md, justifyContent: 'center', gap: 3, backgroundColor: palette.surface }}>
+            <Icon name="shield-check-outline" size={18} color={palette.success} />
+            <Text variant="micro" tone="muted">Status</Text>
+            <Text variant="micro" weight="bold">Available</Text>
+          </View>
+        </View>
+      </View>
+
+      <StatusNotice preview={flow.preview} />
 
       {flow.offer ? (
-        <ActionCard icon="bell-ring-outline" title="New delivery offer" body={`${flow.offer.order.pickup.name} · ${metres(flow.offer.pickupDistanceMetres)} away`} action="Review offer" onPress={() => onPush('offer')} />
-      ) : flow.preview ? (
-        <PrimaryButton label="Preview an incoming order" icon="package-variant-closed" onPress={() => { flow.previewOffer(); onPush('offer'); }} />
-      ) : (
-        <SecondaryButton label="Check for orders now" onPress={() => void flow.findOffers()} />
-      )}
+        <Pressable onPress={() => onPush('offer')} accessibilityRole="button" accessibilityLabel="Review incoming delivery offer" style={({ pressed }) => ({ borderRadius: radius.xl, padding: space.xl, gap: space.md, backgroundColor: pressed ? palette.accentPressed : palette.accent })}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+            <View style={{ width: 50, height: 50, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.onAccent }}>
+              <Icon name="bell-ring-outline" color={palette.accent} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text variant="micro" tone="onAccent" weight="bold">NEW DELIVERY OFFER</Text>
+              <Text variant="heading" tone="onAccent">{flow.offer.order.pickup.name}</Text>
+              <Text variant="caption" tone="onAccent">Pickup is {metres(flow.offer.pickupDistanceMetres)} away</Text>
+            </View>
+            <Icon name="chevron-right" color={palette.onAccent} />
+          </View>
+          <Text variant="label" tone="onAccent" weight="bold">Tap to review before the offer expires</Text>
+        </Pressable>
+      ) : null}
+
+      {activeDelivery ? (
+        <ActionCard icon="navigation-variant-outline" title={`Active delivery · ${activeDelivery.code}`} body={statusLabel(activeDelivery.status)} action="Open delivery" onPress={() => onPush('delivery')} />
+      ) : null}
+
+      <View style={{ gap: space.sm }}>
+        <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: space.md }}>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text variant="heading">Your live area</Text>
+            <Text variant="caption" tone="muted">The map confirms where DASH currently sees you.</Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View style={{ width: 7, height: 7, borderRadius: 99, backgroundColor: gpsReady ? palette.success : palette.rating }} />
+            <Text variant="micro" tone="muted">{gpsReady ? 'GPS live' : 'Locating'}</Text>
+          </View>
+        </View>
+
+        {flow.riderPosition ? (
+          <View style={{ borderRadius: radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: palette.line }}>
+            <MapShell
+              route={[]}
+              rider={flow.riderPosition}
+              followRider
+              routeColor={palette.accent}
+              height={220}
+              accessibilityLabel="Your live rider location"
+            />
+          </View>
+        ) : (
+          <View style={{ minHeight: 190, alignItems: 'center', justifyContent: 'center', gap: space.md, borderRadius: radius.lg, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line }}>
+            <ActivityIndicator color={palette.accent} />
+            <Text variant="heading">Finding your live location…</Text>
+            <Text variant="caption" tone="muted" align="center" style={{ maxWidth: 290 }}>
+              Keep Location enabled. DASH only offers real work when your rider position is fresh.
+            </Text>
+          </View>
+        )}
+      </View>
+
+      {!flow.offer && !activeDelivery ? (
+        <Card>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+            <View style={{ width: 46, height: 46, borderRadius: 16, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name="radar" color={palette.accent} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text variant="label" weight="bold">Looking for nearby orders…</Text>
+              <Text variant="caption" tone="muted">Stay online and keep DASH open. New offers will appear here with a stronger alert.</Text>
+            </View>
+          </View>
+          {flow.preview ? (
+            <PrimaryButton label="Preview an incoming order" icon="package-variant-closed" onPress={() => { flow.previewOffer(); onPush('offer'); }} />
+          ) : (
+            <SecondaryButton label="Check for orders now" onPress={() => void flow.findOffers()} />
+          )}
+        </Card>
+      ) : null}
 
       {flow.error ? <ErrorNotice message={flow.error} /> : null}
-      <SecondaryButton label={flow.busy ? 'Updating…' : 'Go offline'} onPress={() => void flow.goOffline().then((ok) => ok && onBack())} disabled={flow.busy} />
+      <SecondaryButton label={flow.busy ? 'Updating…' : 'Go offline'} onPress={() => void flow.goOffline().then((ok) => {
+        if (!ok) return;
+        Vibration.vibrate(35);
+        onBack();
+      })} disabled={flow.busy} />
     </RiderPage>
   );
 }
