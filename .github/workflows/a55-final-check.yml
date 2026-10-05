@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  typecheck:
+  verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -21,6 +21,14 @@ jobs:
           node-version: 22
           cache: npm
       - name: Install locked repository dependencies
-        run: npm ci --include=dev
-      - name: Typecheck API, web and workspace packages
+        run: npm ci
+      - name: Install locked native dependencies
+        run: npm ci --prefix apps/mobile
+      - name: Generate Prisma client
+        run: npm run db:generate
+      - name: Validate Prisma schema
+        run: npx prisma validate --schema packages/db/prisma/schema.prisma
+      - name: Lint repository
+        run: npm run lint
+      - name: Typecheck repository
         run: npm run typecheck
