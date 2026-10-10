@@ -72,6 +72,7 @@ import { issueAccessFor } from '../auth/issue.js';
 import { issueAuthCookies } from '../auth/cookies.js';
 import { ensureCustomerRole } from '../auth/customer-role.js';
 import { otpEmailContent } from '../auth/otp-delivery.js';
+import { dashEmailHtml } from '../email/dash-brand.js';
 
 /** Signup accepts valid national numbering plans in canonical E.164 form. */
 const phoneSchema = e164PhoneSchema;
@@ -275,11 +276,24 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
       ]);
 
       if (byEmail && byEmail.emailVerifiedAt !== null) {
+        const existingAccountText = `Somebody entered this address on the DASH signup form.\n\nYou already have an account with it, so there is nothing to create. Sign in with this email address instead, and we will send you a code.\n\nIf that was not you, no action is needed — nothing has changed on your account.\n\nDASH\nBeyond the Digital`;
         await email.send({
           to: body.email,
           subject: 'You already have a DASH account',
-          text: `Somebody entered this address on the DASH signup form.\n\nYou already have an account with it, so there is nothing to create. Sign in with this email address instead, and we will send you a code.\n\nIf that was not you, no action is needed — nothing has changed on your account.\n\nDASH`,
-          html: `<p>Somebody entered this address on the DASH signup form.</p><p>You already have an account with it, so there is nothing to create. Sign in with this email address instead and we will send you a code.</p><p>If that was not you, no action is needed — nothing has changed on your account.</p><p>DASH</p>`,
+          text: existingAccountText,
+          html: dashEmailHtml({
+            previewText: 'You already have a DASH account. Nothing has changed on your account.',
+            eyebrow: 'Account notice',
+            title: 'You already have a DASH account',
+            greeting: byEmail.displayName ? `Hello ${byEmail.displayName},` : 'Hello,',
+            paragraphs: [
+              'Somebody entered this email address on the DASH signup form.',
+              'You already have an account with this email address, so there is nothing to create. Sign in using this email address and we will send you a code.',
+              'If that was not you, no action is needed — nothing has changed on your account.',
+            ],
+            securityNote:
+              'DASH will never ask you to share a verification code by phone, chat or social media.',
+          }),
           reference: 'signup_existing_account',
         });
 
@@ -326,11 +340,24 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         !reclaimable &&
         (byEmail === null || byPhone.id !== byEmail.id);
       if (phoneConflict) {
+        const phoneConflictText = `Hello ${body.name},\n\nThat phone number is already associated with a DASH account.\n\nWe have not created a second account and we have not changed the existing one. If the existing account belongs to you, sign in using the email address already linked to your DASH account.\n\nIf you believe this is a mistake, reply to this email or contact DASH support and a person will look at it.\n\nDASH\nBeyond the Digital`;
         await email.send({
           to: body.email,
           subject: 'We could not finish creating your DASH account',
-          text: `That phone number is already registered to a DASH account.\n\nWe have not created a second account and we have not changed the existing one. If the account is yours, sign in with that phone number. If you think this is a mistake, reply to this email and a person will look at it.\n\nDASH`,
-          html: `<p>That phone number is already registered to a DASH account.</p><p>We have not created a second account and we have not changed the existing one. If the account is yours, sign in with that phone number. If you think this is a mistake, reply to this email and a person will look at it.</p><p>DASH</p>`,
+          text: phoneConflictText,
+          html: dashEmailHtml({
+            previewText: 'We could not finish creating your DASH account.',
+            eyebrow: 'Account notice',
+            title: 'We could not create another DASH account',
+            greeting: `Hello ${body.name},`,
+            paragraphs: [
+              'That phone number is already associated with a DASH account.',
+              'We have not created a second account and we have not changed the existing one. If the existing account belongs to you, sign in using the email address already linked to your DASH account.',
+              'If you believe this is a mistake, reply to this email or contact DASH support and a person will look at it.',
+            ],
+            securityNote:
+              'For your privacy, this message does not reveal any details about the existing DASH account.',
+          }),
           reference: 'signup_phone_conflict',
         });
 
