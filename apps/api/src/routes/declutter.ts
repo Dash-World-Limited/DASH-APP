@@ -47,6 +47,8 @@ import {
   type SubmissionState,
 } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
+import { notifySellerDecision } from '../declutter/notifications.js';
+import { notificationEmail, sellerNotificationEvent } from '../declutter/notification-delivery.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import { auditContext, customerIdOf, declutterActorFor } from './declutter-shared.js';
 import type { Actor } from '@dash/domain/permissions';
@@ -66,6 +68,7 @@ const verificationSchema = z.object({
   nationalId: z.string().trim().min(6).max(32),
   phoneE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/, 'Use international format, e.g. +234…'),
   addressLine: z.string().trim().min(4).max(200),
+  socialHandle: z.string().trim().max(81).regex(/^@?[A-Za-z0-9_][A-Za-z0-9_.]{0,79}$/, 'Enter a social handle, e.g. @ada_seller.').nullable().optional(),
   // Optional. A bank account exists to be paid into, and nobody has been paid
   // yet — collecting an account number so somebody can list a sofa asks for
   // the most sensitive thing they have in exchange for nothing. Settlement
@@ -266,6 +269,7 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
           nationalIdLast4: body.nationalId.slice(-4),
           phoneE164: body.phoneE164,
           addressLine: body.addressLine,
+          socialHandle: body.socialHandle ?? null,
           bankName: body.bankName ?? null,
           bankAccountCipher: body.bankAccountNumber
             ? encrypt(body.bankAccountNumber, keyring, context)
@@ -550,6 +554,23 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
         ...auditContext(request),
       });
 
+      if (to === 'verified' || to === 'rejected' || to === 'suspended') {
+        // The decision is committed; delivery failures must not undo KYC.
+        try {
+          const customer = updated.customerId ? await prisma.customer.findUnique({
+            where: { id: updated.customerId }, include: { identity: { select: { email: true } } },
+          }) : null;
+          const result = await notifySellerDecision(notificationEmail(prisma, app.services.email,
+            await sellerNotificationEvent(prisma, updated.id, `declutter.seller.${to}`)), {
+            sellerId: updated.id, sellerName: updated.displayName,
+            sellerEmail: customer?.identity.email ?? null, decision: to,
+            reason: updated.rejectionReason, publicWebUrl: app.services.config.PUBLIC_WEB_URL,
+          });
+          if (result.failed) request.log.warn({ failed: result.failed }, 'declutter seller-decision notification failed');
+        } catch {
+          request.log.warn('declutter seller-decision notification failed');
+        }
+      }
       return { seller: queueView(updated) };
     },
   );
@@ -915,6 +936,7 @@ interface SellerRow {
   legalName: string | null;
   phoneE164: string | null;
   addressLine: string | null;
+  socialHandle: string | null;
   adminNotes: string | null;
   verifiedAt: Date | null;
   createdAt: Date;
@@ -934,6 +956,7 @@ function selfView(seller: SellerRow) {
     displayName: seller.displayName,
     sellerType: seller.sellerType,
     publicArea: seller.publicArea,
+    socialHandle: seller.socialHandle,
     kycStatus: seller.kycStatus,
     rejectionReason: seller.rejectionReason,
     canSubmit: canSellerSubmit(seller.kycStatus as KycState),
@@ -961,6 +984,7 @@ function adminView(seller: SellerRow & { documents: { id: string; kind: string; 
     legalName: seller.legalName,
     phoneE164: seller.phoneE164,
     addressLine: seller.addressLine,
+    socialHandle: seller.socialHandle,
     nationalIdLast4: seller.nationalIdLast4,
     bankName: seller.bankName,
     bankAccountLast4: seller.bankAccountLast4,

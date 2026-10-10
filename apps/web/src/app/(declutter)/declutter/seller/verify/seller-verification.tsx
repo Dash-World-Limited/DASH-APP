@@ -14,6 +14,7 @@ interface SellerSelf {
   id: string;
   displayName: string;
   publicArea: string | null;
+  socialHandle: string | null;
   kycStatus: KycStatus;
   rejectionReason: string | null;
 }
@@ -79,6 +80,7 @@ export function SellerVerificationPage() {
   const [nationalId, setNationalId] = useState('');
   const [phoneE164, setPhoneE164] = useState('');
   const [addressLine, setAddressLine] = useState('');
+  const [socialHandle, setSocialHandle] = useState('');
   const [documentKind, setDocumentKind] = useState<DocumentKind>('national_id');
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -97,7 +99,10 @@ export function SellerVerificationPage() {
 
       try {
         const data = await authedFetch<{ seller: SellerSelf }>('/v1/declutter/seller/me');
-        if (!cancelled) setSeller(data.seller);
+        if (!cancelled) {
+          setSeller(data.seller);
+          setSocialHandle(data.seller.socialHandle ?? '');
+        }
       } catch (caught) {
         if (!cancelled) {
           if (caught instanceof ApiRequestError && caught.status === 404) {
@@ -170,6 +175,7 @@ export function SellerVerificationPage() {
             nationalId: nationalId.trim(),
             phoneE164: phoneE164.trim(),
             addressLine: addressLine.trim(),
+            socialHandle: socialHandle.trim() || null,
           },
         },
       );
@@ -205,6 +211,7 @@ export function SellerVerificationPage() {
     nationalId.trim().length >= 6 &&
     /^\+[1-9]\d{7,14}$/.test(phoneE164.trim()) &&
     addressLine.trim().length >= 4 &&
+    (!socialHandle.trim() || /^@?[A-Za-z0-9_][A-Za-z0-9_.]{0,79}$/.test(socialHandle.trim())) &&
     documentFile !== null &&
     confirmed;
 
@@ -332,6 +339,12 @@ export function SellerVerificationPage() {
                   placeholder="+234…"
                   onChange={(event) => setPhoneE164(event.target.value)}
                 />
+              </Field>
+            </div>
+
+            <div className="mt-6">
+              <Field id="seller-social" label="Social handle (optional)" hint="Your social account handle, e.g. @ada_seller. Only DASH reviewers can see it.">
+                <input id="seller-social" className={inputClass} value={socialHandle} maxLength={81} autoComplete="off" onChange={(event) => setSocialHandle(event.target.value)} />
               </Field>
             </div>
 

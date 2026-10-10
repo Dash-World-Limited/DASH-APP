@@ -22,7 +22,7 @@ async function settle(
   const results = await Promise.allSettled(messages.map((message) => email.send(message)));
   return {
     attempted: results.length,
-    failed: results.filter((result) => result.status === 'rejected').length,
+    failed: results.filter((result) => result.status === 'rejected' || !result.value.accepted).length,
   };
 }
 

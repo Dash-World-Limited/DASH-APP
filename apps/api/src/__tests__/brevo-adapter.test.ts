@@ -61,7 +61,7 @@ describe('sending', () => {
 
     const body = JSON.parse(String(call.init.body)) as Record<string, unknown>;
     expect(body).toMatchObject({
-      sender: { name: 'DASH World', email: 'no-reply@dashworldng.com' },
+      sender: { name: 'DASH', email: 'no-reply@dashworldng.com' },
       to: [{ email: 'ada@example.com' }],
       replyTo: { email: 'hello@dashworldng.com' },
       subject: message.subject,

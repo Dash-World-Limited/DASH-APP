@@ -31,7 +31,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
@@ -49,6 +49,7 @@ let seededAt: number;
 beforeAll(() => {
   directory = mkdtempSync(join(tmpdir(), 'dash-seed-'));
   const file = join(directory, 'seed.db');
+  writeFileSync(file, '');
   const databaseUrl = `file:${file}`;
 
   // The Prisma CLI's JS entry point through the current Node binary rather

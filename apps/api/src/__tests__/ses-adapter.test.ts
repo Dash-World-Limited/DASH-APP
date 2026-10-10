@@ -85,7 +85,7 @@ describe('sending', () => {
     await adapter.send(MESSAGE);
 
     const input = client.sent[0]?.input;
-    expect(input?.FromEmailAddress).toBe('DASH World <no-reply@notify.dashworldng.com>');
+    expect(input?.FromEmailAddress).toBe('DASH <no-reply@notify.dashworldng.com>');
     // The identity-conflict email tells people to reply to this address.
     expect(input?.ReplyToAddresses).toEqual(['admin@dashworldng.com']);
   });
@@ -162,5 +162,13 @@ describe('failure', () => {
     const { adapter } = adapterWith('rejected');
     const error = (await adapter.send(MESSAGE).catch((caught) => caught)) as EmailDeliveryError;
     expect(error.cause).toBeInstanceOf(MessageRejected);
+  });
+
+  it('does not echo an unexpected provider error that quotes personal data', async () => {
+    const adapter = new SesEmailAdapter(OPTIONS, { send: async () => {
+      throw new Error(`Provider rejected buyer@example.com code 123456: ${MESSAGE.html}`);
+    } } as never);
+    const error = await adapter.send(MESSAGE).catch((caught: EmailDeliveryError) => caught);
+    expect((error as EmailDeliveryError).message).toBe('SES send failed: Error');
   });
 });

@@ -6,6 +6,8 @@ import {
   DECLUTTER_ADMIN_EMAILS,
   notifyDeclutterSubmissionCreated,
   notifySellerVerificationSubmitted,
+  notifySellerDecision,
+  notifyListingPublished,
 } from '../declutter/notifications.js';
 
 class CaptureEmail implements EmailPort {
@@ -64,6 +66,40 @@ describe('DASH transactional email', () => {
 });
 
 describe('Declutters notification routing', () => {
+  it('escapes seller names, item titles and rejection reasons in every workflow', async () => {
+    const email = new CaptureEmail();
+    const malicious = '<img src=x onerror="steal()">';
+    const common = { sellerEmail: 'seller@example.com', sellerName: malicious, sellerId: 'seller-escape', publicWebUrl: 'https://dashworldng.com' };
+    await notifySellerVerificationSubmitted(email, common);
+    await notifyDeclutterSubmissionCreated(email, { ...common, kycStatus: 'verified', submissionId: 'escape', submissionCode: 'DCL-ESCAPE', itemTitle: malicious });
+    for (const decision of ['verified', 'rejected', 'suspended'] as const) await notifySellerDecision(email, { ...common, decision, reason: malicious });
+    await notifyListingPublished(email, { ...common, listingId: 'escape', slug: 'escaped-item', itemTitle: malicious });
+    for (const message of email.sent) {
+      expect(message.html).not.toContain(malicious);
+      expect(message.html).toContain('&lt;img src=x onerror=&quot;steal()&quot;&gt;');
+    }
+    expect(email.sent.at(-1)?.html).toContain('https://dashworldng.com/declutter/escaped-item');
+  });
+
+  it('escapes all layout text and link attributes', () => {
+    const value = `<>&"'`;
+    const html = dashEmailHtml({ previewText: value, eyebrow: value, title: value, greeting: value, paragraphs: [value], code: value, details: [{ label: value, value }], cta: { label: value, href: `https://dashworldng.com/?q=${value}` }, securityNote: value });
+    expect(html).not.toContain(value);
+    expect(html).toContain('&lt;&gt;&amp;&quot;&#39;');
+    expect(html).toContain('href="https://dashworldng.com/?q=&lt;&gt;&amp;&quot;&#39;"');
+  });
+
+  it('attempts both admin inboxes when seller delivery throws', async () => {
+    const email = new CaptureEmail();
+    const original = email.send.bind(email);
+    email.send = async (message) => {
+      if (message.to === 'seller@example.com') throw new Error('fixture');
+      return original(message);
+    };
+    expect(await notifySellerVerificationSubmitted(email, { sellerEmail: 'seller@example.com', sellerName: 'Ada', sellerId: 's1', publicWebUrl: 'https://dashworldng.com' })).toEqual({ attempted: 3, failed: 1 });
+    expect(email.sent.map(m => m.to)).toEqual([...DECLUTTER_ADMIN_EMAILS]);
+  });
+
   it('alerts the seller and both independent admin inboxes after an item is completed', async () => {
     const email = new CaptureEmail();
 

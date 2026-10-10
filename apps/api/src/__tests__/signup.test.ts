@@ -111,7 +111,7 @@ describe('creating an account', () => {
     expect(response.json().sent).toBe(true);
 
     const message = mailbox.lastTo(person.email);
-    expect(message?.subject).toMatch(/is your DASH verification code/);
+    expect(message?.subject).toMatch(/is your DASH code/);
     expect(message?.reference).toMatch(/^email_verify_/);
   });
 

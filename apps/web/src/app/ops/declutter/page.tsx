@@ -68,6 +68,7 @@ interface SellerDetail extends SellerRow {
   legalName: string | null;
   phoneE164: string | null;
   addressLine: string | null;
+  socialHandle: string | null;
   nationalIdLast4: string | null;
   bankName: string | null;
   bankAccountLast4: string | null;
@@ -445,6 +446,7 @@ function SellerDetailModal({
             <Detail label="Legal name" value={detail.legalName} />
             <Detail label="Phone" value={detail.phoneE164} />
             <Detail label="Address" value={detail.addressLine} />
+            <Detail label="Social handle" value={detail.socialHandle} />
             <Detail
               label="Identity number"
               value={detail.nationalIdLast4 ? `•••• ${detail.nationalIdLast4}` : null}

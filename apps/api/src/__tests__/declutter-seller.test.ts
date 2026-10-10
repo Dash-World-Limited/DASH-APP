@@ -74,6 +74,7 @@ const KYC_BODY = {
   nationalId: '12345678901',
   phoneE164: '+2347000001234',
   addressLine: '14 Okpanam Road, Asaba',
+  socialHandle: '@chinedu_seller',
   bankName: 'Test Bank',
   bankAccountNumber: '0123456789',
 };
@@ -140,10 +141,20 @@ describe('an ordinary account is not a seller', () => {
 // ---------------------------------------------------------------------------
 
 describe('verification', () => {
+  it.each(['<script>', 'https://example.com/profile', '@bad handle', '@', 'x'.repeat(82)])('refuses invalid social handle %s', async (socialHandle) => {
+    const response = await post(customerA, '/v1/declutter/seller/me/verification', { ...KYC_BODY, socialHandle });
+    expect(response.statusCode).toBe(400);
+  });
+
   it('accepts details and puts the seller in the queue', async () => {
     const response = await post(customerA, '/v1/declutter/seller/me/verification', KYC_BODY);
     expect(response.statusCode).toBe(200);
     expect(response.json().seller.kycStatus).toBe('pending');
+    expect(response.json().seller.socialHandle).toBe('@chinedu_seller');
+    const stored = await context.prisma.declutterSeller.findUniqueOrThrow({ where: { id: sellerAId } });
+    expect(stored.socialHandle).toBe('@chinedu_seller');
+    expect(stored.addressLine).toBe(KYC_BODY.addressLine);
+    expect(stored.adminNotes).toBeNull();
   });
 
   it('never hands back what it was given, even to its owner', async () => {
@@ -156,7 +167,7 @@ describe('verification', () => {
       // reason they were turned down. Everything else stays behind the wall,
       // including from its owner — there is no product reason to re-display a
       // national identifier, and every extra place it appears can leak.
-      if (field === 'rejectionReason') continue;
+      if (field === 'rejectionReason' || field === 'socialHandle') continue;
       expect(body.seller, field).not.toHaveProperty(field);
     }
   });
@@ -251,6 +262,7 @@ describe('an administrator decides', () => {
     });
 
     expect(read.statusCode).toBe(200);
+    expect(read.json().seller.socialHandle).toBe('@chinedu_seller');
     // 400 for the missing reason, not 403. The elevation held across both.
     expect(decide.statusCode).toBe(400);
   });

@@ -21,6 +21,7 @@ import { z } from 'zod';
 import { writeAudit } from '@dash/db';
 import { PHOTO_ROLES } from '@dash/domain/valuecheck';
 import { photoAlt } from '@dash/domain/declutter';
+import { notificationEmail, sellerNotificationEvent } from '../declutter/notification-delivery.js';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import { auditContext, customerIdOf, PHOTO_LINK_SECONDS } from './declutter-shared.js';
@@ -250,17 +251,8 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
         throw ApiError.badRequest('Upload at least one photograph before finishing this item.');
       }
 
-      const alreadyNotified = await prisma.auditLog.findFirst({
-        where: {
-          action: 'declutter.submission.notification_sent',
-          resourceType: 'DeclutterSubmission',
-          resourceId: submission.id,
-        },
-        select: { id: true },
-      });
-      if (alreadyNotified) return { completed: true, notified: true };
 
-      const result = await notifyDeclutterSubmissionCreated(email, {
+      const result = await notifyDeclutterSubmissionCreated(notificationEmail(prisma, email, submission.id), {
         sellerEmail: await accountEmail(actor.identityId),
         sellerName: seller.displayName,
         sellerId: seller.id,
@@ -310,23 +302,18 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
       }
 
       const evidenceCount = await prisma.declutterSellerDocument.count({
-        where: { sellerId: seller.id },
+        where: {
+          sellerId: seller.id,
+          kind: { in: ['national_id', 'drivers_licence', 'passport', 'voters_card'] },
+          status: { not: 'rejected' },
+        },
       });
       if (evidenceCount === 0) {
         throw ApiError.badRequest('Upload a government ID document before finishing verification.');
       }
 
-      const alreadyNotified = await prisma.auditLog.findFirst({
-        where: {
-          action: 'declutter.seller.verification_notification_sent',
-          resourceType: 'DeclutterSeller',
-          resourceId: seller.id,
-        },
-        select: { id: true },
-      });
-      if (alreadyNotified) return { completed: true, notified: true };
 
-      const result = await notifySellerVerificationSubmitted(email, {
+      const result = await notifySellerVerificationSubmitted(notificationEmail(prisma, email, await sellerNotificationEvent(prisma, seller.id, 'declutter.seller.kyc_submitted')), {
         sellerEmail: await accountEmail(actor.identityId),
         sellerName: seller.displayName,
         sellerId: seller.id,
@@ -380,18 +367,13 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
       }
 
       const action = `declutter.seller.${body.decision}_notification_sent`;
-      const alreadyNotified = await prisma.auditLog.findFirst({
-        where: { action, resourceType: 'DeclutterSeller', resourceId: seller.id },
-        select: { id: true },
-      });
-      if (alreadyNotified) return { notified: true };
 
-      const result = await notifySellerDecision(email, {
+      const result = await notifySellerDecision(notificationEmail(prisma, email, await sellerNotificationEvent(prisma, seller.id, `declutter.seller.${body.decision}`)), {
         sellerEmail: seller.customer?.identity.email ?? null,
         sellerName: seller.displayName,
         sellerId: seller.id,
         decision: body.decision,
-        reason: body.reason,
+        reason: seller.rejectionReason,
         publicWebUrl: config.PUBLIC_WEB_URL,
       });
 
@@ -443,13 +425,8 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
       }
 
       const action = 'declutter.listing.published_notification_sent';
-      const alreadyNotified = await prisma.auditLog.findFirst({
-        where: { action, resourceType: 'DeclutterListing', resourceId: listing.id },
-        select: { id: true },
-      });
-      if (alreadyNotified) return { notified: true };
 
-      const result = await notifyListingPublished(email, {
+      const result = await notifyListingPublished(notificationEmail(prisma, email, listing.id), {
         sellerEmail: listing.seller.customer?.identity.email ?? null,
         sellerName: listing.seller.displayName,
         itemTitle: listing.title,

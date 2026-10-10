@@ -183,6 +183,6 @@ function describe(error: unknown): string {
   if (error instanceof MessageRejected) return 'SES rejected the message';
   if (error instanceof AccountSuspendedException) return 'The SES account is suspended';
   if (error instanceof SendingPausedException) return 'SES sending is paused for this identity';
-  if (error instanceof Error) return `${error.name}: ${error.message}`;
-  return 'Unknown SES error';
+  if (error instanceof Error) return `SES send failed: ${error.name}`;
+  return 'SES send failed';
 }

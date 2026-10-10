@@ -74,6 +74,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
   const [progress, setProgress] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<Submission | null>(null);
+  const [notified, setNotified] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -185,10 +186,11 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
       // This is the notification boundary. The API refuses to complete an item
       // with no photos, and sends the seller/admin emails idempotently here.
       setProgress('Finishing your submission…');
-      await authedFetch(`/v1/declutter/submissions/${response.submission.id}/complete`, {
+      const completion = await authedFetch<{ notified: boolean }>(`/v1/declutter/submissions/${response.submission.id}/complete`, {
         method: 'POST',
       });
 
+      setNotified(completion.notified);
       setCreated(response.submission);
       setProgress('');
     } catch (caught) {
@@ -206,7 +208,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
         <h2 className="mt-3 text-xl font-bold">{created.title ?? title}</h2>
         <p className="mt-2 text-sm leading-relaxed text-[var(--ink-muted)]">
           Reference <strong>{created.code}</strong>. Your photos are uploaded and the item is now in
-          the DASH review flow. A confirmation email has been sent to your DASH account email.
+          the DASH review flow. {notified ? 'Your confirmation email has been accepted for delivery.' : 'Email confirmation is pending; your item is safely submitted.'}
         </p>
         <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface-sunken)] p-4 text-sm text-[var(--ink-muted)]">
           {kycStatus === 'verified'

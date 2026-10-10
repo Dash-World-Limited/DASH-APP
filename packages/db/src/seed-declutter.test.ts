@@ -20,7 +20,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
@@ -34,6 +34,7 @@ let prisma: PrismaClient;
 beforeAll(() => {
   directory = mkdtempSync(join(tmpdir(), 'dash-declutter-seed-'));
   const databaseUrl = `file:${join(directory, 'declutter.db')}`;
+  writeFileSync(join(directory, 'declutter.db'), '');
 
   // The Prisma CLI's JS entry point through the current Node binary rather than
   // `npx`: on Windows `npx` resolves to `npx.cmd`, which Node refuses to spawn

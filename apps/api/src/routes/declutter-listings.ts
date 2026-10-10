@@ -57,6 +57,8 @@ import {
   type TrustBadge,
 } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
+import { notifyListingPublished } from '../declutter/notifications.js';
+import { notificationEmail } from '../declutter/notification-delivery.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import { auditContext, customerIdOf, declutterActorFor, PHOTO_LINK_SECONDS } from './declutter-shared.js';
 
@@ -341,6 +343,20 @@ export async function registerDeclutterListingRoutes(app: FastifyInstance): Prom
         ...auditContext(request),
       });
 
+      // Publication is committed; the browser's retry endpoint uses the same claim.
+      try {
+        const customer = submission.seller.customerId ? await prisma.customer.findUnique({
+          where: { id: submission.seller.customerId }, include: { identity: { select: { email: true } } },
+        }) : null;
+        const result = await notifyListingPublished(notificationEmail(prisma, app.services.email, listing.id), {
+          sellerEmail: customer?.identity.email ?? null, sellerName: submission.seller.displayName,
+          listingId: listing.id, slug: listing.slug, itemTitle: listing.title,
+          publicWebUrl: app.services.config.PUBLIC_WEB_URL,
+        });
+        if (result.failed) request.log.warn({ failed: result.failed }, 'declutter listing-live notification failed');
+      } catch {
+        request.log.warn('declutter listing-live notification failed');
+      }
       reply.code(201);
       return { listing: { id: listing.id, slug: listing.slug, priceKobo: listing.priceKobo } };
     },

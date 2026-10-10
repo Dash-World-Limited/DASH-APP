@@ -18,6 +18,13 @@
 
 export type ColorScheme = 'light' | 'dark';
 
+/** Existing Declutters hero artwork inks, shared by both schemes. */
+export const declutterHero = {
+  background: '#E6DCEB',
+  title: '#30243A',
+  caption: '#5A4A62',
+} as const;
+
 export interface MapPalette {
   /** Route from the rider to the merchant. Blue on the Rider board — a map convention, not the brand. */
   routeToPickup: string;

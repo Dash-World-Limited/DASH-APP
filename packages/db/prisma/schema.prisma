@@ -1899,6 +1899,8 @@ model DeclutterSeller {
   phoneE164        String?
   phoneVerifiedAt  DateTime?
   addressLine      String?
+  /// Private review contact; never included in the public seller profile.
+  socialHandle     String?
 
   bankName          String?
   bankAccountLast4  String?
