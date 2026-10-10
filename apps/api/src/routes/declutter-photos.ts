@@ -1,5 +1,5 @@
 /**
- * Item photographs and the completion boundary for seller submissions.
+ * Item photographs and the completion boundaries for seller submissions.
  *
  * A second-hand marketplace is photographs. The price, the condition grade and
  * the description are all claims; photographs are the closest a buyer gets to
@@ -8,6 +8,11 @@
  * Notification happens only after the browser says the submission is complete,
  * and that endpoint refuses an item with no photographs. This prevents DASH
  * from emailing "we received your item" while the upload is still half-finished.
+ *
+ * This module also holds the idempotent notification boundaries that the
+ * existing admin console calls after a seller decision or publication. Business
+ * state changes still happen in the core Declutters routes; email is never the
+ * source of truth and can never roll a decision back.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -17,10 +22,12 @@ import { writeAudit } from '@dash/db';
 import { PHOTO_ROLES } from '@dash/domain/valuecheck';
 import { photoAlt } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
-import { actorOf, requireAuth } from '../http/context.js';
+import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import { auditContext, customerIdOf, PHOTO_LINK_SECONDS } from './declutter-shared.js';
 import {
   notifyDeclutterSubmissionCreated,
+  notifyListingPublished,
+  notifySellerDecision,
   notifySellerVerificationSubmitted,
 } from '../declutter/notifications.js';
 
@@ -44,6 +51,11 @@ const uploadSchema = z.object({
   role: z.enum(PHOTO_ROLES),
   caption: z.string().trim().max(200).optional(),
   data: z.string().min(1),
+});
+
+const sellerDecisionNoticeSchema = z.object({
+  decision: z.enum(['verified', 'rejected', 'suspended']),
+  reason: z.string().trim().max(500).optional(),
 });
 
 export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promise<void> {
@@ -338,6 +350,130 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
       }
 
       return { completed: true, notified: result.failed === 0 };
+    },
+  );
+
+  /**
+   * The admin decision itself is made by the existing KYC route. This endpoint
+   * only tells the seller what that already-recorded decision was. It refuses
+   * to send if the supplied decision does not match the database.
+   */
+  app.post(
+    '/v1/admin/declutter/sellers/:id/decision-notification',
+    { preHandler: requirePermission('declutter:kyc:review') },
+    async (request) => {
+      const actor = actorOf(request);
+      const { id } = z.object({ id: z.string().min(1).max(40) }).parse(request.params);
+      const body = sellerDecisionNoticeSchema.parse(request.body);
+
+      const seller = await prisma.declutterSeller.findUnique({
+        where: { id },
+        include: {
+          customer: {
+            select: { identity: { select: { email: true } } },
+          },
+        },
+      });
+      if (!seller) throw ApiError.notFound();
+      if (seller.kycStatus !== body.decision) {
+        throw ApiError.conflict('The seller decision has not been recorded yet.');
+      }
+
+      const action = `declutter.seller.${body.decision}_notification_sent`;
+      const alreadyNotified = await prisma.auditLog.findFirst({
+        where: { action, resourceType: 'DeclutterSeller', resourceId: seller.id },
+        select: { id: true },
+      });
+      if (alreadyNotified) return { notified: true };
+
+      const result = await notifySellerDecision(email, {
+        sellerEmail: seller.customer?.identity.email ?? null,
+        sellerName: seller.displayName,
+        sellerId: seller.id,
+        decision: body.decision,
+        reason: body.reason,
+        publicWebUrl: config.PUBLIC_WEB_URL,
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action,
+        resourceType: 'DeclutterSeller',
+        resourceId: seller.id,
+        after: { attempted: result.attempted, failed: result.failed },
+        ...auditContext(request),
+      });
+
+      if (result.failed > 0) {
+        request.log.warn(
+          { attempted: result.attempted, failed: result.failed },
+          'declutter seller-decision notification failed',
+        );
+      }
+      return { notified: result.failed === 0 };
+    },
+  );
+
+  /**
+   * Called after the existing publish route succeeds. The database is checked
+   * again, and the email is sent only once for a published listing.
+   */
+  app.post(
+    '/v1/admin/declutter/listings/:id/published-notification',
+    { preHandler: requirePermission('declutter:listing:publish') },
+    async (request) => {
+      const actor = actorOf(request);
+      const { id } = z.object({ id: z.string().min(1).max(40) }).parse(request.params);
+
+      const listing = await prisma.declutterListing.findUnique({
+        where: { id },
+        include: {
+          seller: {
+            include: {
+              customer: {
+                select: { identity: { select: { email: true } } },
+              },
+            },
+          },
+        },
+      });
+      if (!listing) throw ApiError.notFound();
+      if (!listing.publishedAt || listing.moderationStatus !== 'approved') {
+        throw ApiError.conflict('The listing is not published yet.');
+      }
+
+      const action = 'declutter.listing.published_notification_sent';
+      const alreadyNotified = await prisma.auditLog.findFirst({
+        where: { action, resourceType: 'DeclutterListing', resourceId: listing.id },
+        select: { id: true },
+      });
+      if (alreadyNotified) return { notified: true };
+
+      const result = await notifyListingPublished(email, {
+        sellerEmail: listing.seller.customer?.identity.email ?? null,
+        sellerName: listing.seller.displayName,
+        itemTitle: listing.title,
+        listingId: listing.id,
+        slug: listing.slug,
+        publicWebUrl: config.PUBLIC_WEB_URL,
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action,
+        resourceType: 'DeclutterListing',
+        resourceId: listing.id,
+        after: { attempted: result.attempted, failed: result.failed },
+        ...auditContext(request),
+      });
+
+      if (result.failed > 0) {
+        request.log.warn(
+          { attempted: result.attempted, failed: result.failed },
+          'declutter listing-live notification failed',
+        );
+      }
+      return { notified: result.failed === 0 };
     },
   );
 
