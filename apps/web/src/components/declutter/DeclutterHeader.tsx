@@ -1,27 +1,11 @@
 'use client';
 
 /**
- * The public marketplace's own navigation.
+ * Public marketplace navigation.
  *
- * Deliberately not `AppHeader`. That header belongs to DASH APP and carries a
- * Basket, because everything else in the app is bought through one. Declutters
- * is not: a buyer asks to be put in touch and a DASH team member arranges it,
- * so a basket icon here would be an interface element for a transaction that
- * does not exist.
- *
- * What a website navigation owes a visitor is different from what an app's
- * navigation owes a signed-in user. This is horizontal, has real destinations
- * rather than tabs, and puts Sell an item in front of people, because half the
- * marketplace's supply arrives through somebody wondering whether their old
- * laptop is worth anything.
- *
- * Sign in is present but quiet. Browsing, searching and reading a listing all
- * work signed out; an account is needed only to ask about an item or to sell
- * one, and asking a stranger to sign in before they have seen anything is how a
- * marketplace loses them on the first screen.
- *
- * It is glass rather than a solid bar. The page beneath is photographs, and a
- * solid header would cut the top off every one of them as it scrolled past.
+ * Declutters deliberately has its own website-style header rather than the
+ * DASH APP shell. Browsing stays open to everyone; account actions appear only
+ * where they are useful.
  */
 
 import Link from 'next/link';
@@ -34,26 +18,26 @@ import { DeclutterWordmark } from './DeclutterWordmark';
 
 const LINKS = [
   { href: '/declutter', label: 'Browse' },
-  // Anchors to the category filter on the feed. There is no separate
-  // categories landing page, by decision: the filter is the category
-  // experience, and a page that only re-listed the same nine categories would
-  // be a click between a visitor and the thing they came for.
   { href: '/declutter#browse', label: 'Categories' },
   { href: '/declutter/sell', label: 'Sell an item' },
 ];
+
+function joinHref(returnTo: string): string {
+  const target = returnTo.startsWith('/declutter') ? returnTo : '/declutter';
+  return target === '/declutter'
+    ? '/declutter/join'
+    : `/declutter/join?next=${encodeURIComponent(target)}`;
+}
 
 export function DeclutterHeader() {
   const pathname = usePathname();
   const hasSession = useHasSession();
   const [open, setOpen] = useState(false);
 
-  // A menu that survives navigation is a menu covering the page the visitor
-  // just asked for.
   useEffect(() => {
     setOpen(false);
   }, [pathname]);
 
-  // The body must not scroll behind an open full-height menu.
   useEffect(() => {
     if (!open) return;
     const previous = document.body.style.overflow;
@@ -68,7 +52,6 @@ export function DeclutterHeader() {
       <div className="mx-auto flex w-full max-w-[1240px] items-center gap-4 px-5 py-3.5 sm:px-8">
         <Link
           href="/declutter"
-          // Padded so the wordmark is a comfortable tap target, not a 16px line of text.
           className="-m-2 shrink-0 rounded-lg p-2"
           aria-label="DASH World Declutters — marketplace home"
         >
@@ -85,19 +68,32 @@ export function DeclutterHeader() {
               {link.label}
             </Link>
           ))}
-          <Link
-            // Signing in from the header returns you to the page you were on,
-            // not to the front of the marketplace.
-            href={hasSession ? '/account' : signInHref(pathname)}
-            className="ml-2 rounded-full border border-[var(--line-strong)] px-4 py-2 text-sm font-semibold transition-colors hover:bg-[var(--dcl-glass)]"
-          >
-            {hasSession ? 'Account' : 'Sign in'}
-          </Link>
+
+          {hasSession ? (
+            <Link
+              href="/account"
+              className="ml-2 rounded-full border border-[var(--line-strong)] px-4 py-2 text-sm font-semibold transition-colors hover:bg-[var(--dcl-glass)]"
+            >
+              Account
+            </Link>
+          ) : (
+            <>
+              <Link
+                href={signInHref(pathname)}
+                className="ml-2 rounded-full border border-[var(--line-strong)] px-4 py-2 text-sm font-semibold transition-colors hover:bg-[var(--dcl-glass)]"
+              >
+                Sign in
+              </Link>
+              <Link
+                href={joinHref(pathname)}
+                className="rounded-full bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+              >
+                Create account
+              </Link>
+            </>
+          )}
         </nav>
 
-        {/* A disclosure button, not a tab bar. On a handset the navigation
-            collapses into the header rather than pinning itself to the bottom
-            of the screen, which is an app pattern. */}
         <button
           type="button"
           className="ml-auto inline-flex min-h-11 items-center gap-2 rounded-full border border-[var(--line-strong)] px-4 text-sm font-semibold md:hidden"
@@ -128,12 +124,30 @@ export function DeclutterHeader() {
               </li>
             ))}
           </ul>
-          <Link
-            href={hasSession ? '/account' : signInHref(pathname)}
-            className="mt-4 block rounded-full border border-[var(--line-strong)] px-4 py-3 text-center text-sm font-semibold"
-          >
-            {hasSession ? 'Account' : 'Sign in'}
-          </Link>
+
+          {hasSession ? (
+            <Link
+              href="/account"
+              className="mt-4 block rounded-full border border-[var(--line-strong)] px-4 py-3 text-center text-sm font-semibold"
+            >
+              Account
+            </Link>
+          ) : (
+            <div className="mt-4 grid gap-3">
+              <Link
+                href={signInHref(pathname)}
+                className="block rounded-full border border-[var(--line-strong)] px-4 py-3 text-center text-sm font-semibold"
+              >
+                Sign in
+              </Link>
+              <Link
+                href={joinHref(pathname)}
+                className="block rounded-full bg-[var(--primary)] px-4 py-3 text-center text-sm font-semibold text-white"
+              >
+                Create account
+              </Link>
+            </div>
+          )}
         </nav>
       ) : null}
     </header>
