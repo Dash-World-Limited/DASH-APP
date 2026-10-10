@@ -7,7 +7,7 @@
 
 import type { DeliveryReceipt, EmailPort, SmsPort } from '@dash/domain/ports';
 
-export type OtpPurpose = 'login' | 'step_up';
+export type OtpPurpose = 'login' | 'step_up' | 'email_verify';
 
 export interface OtpMessage {
   code: string;
@@ -36,6 +36,12 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => HTML_ESCAPES[character] ?? character);
 }
 
+function actionFor(purpose: OtpPurpose): string {
+  if (purpose === 'step_up') return 'confirm this secure action';
+  if (purpose === 'email_verify') return 'verify your email and finish creating your DASH account';
+  return 'continue with DASH';
+}
+
 /**
  * One email identity for DASH authentication, regardless of which DASH product
  * initiated the journey. Product-specific wording here would make the shared
@@ -45,7 +51,7 @@ export function otpEmailContent(message: OtpMessage): { subject: string; text: s
   const mins = minutes(message.ttlSeconds);
   const greeting = message.displayName ? `Hello ${message.displayName},` : 'Hello,';
   const htmlGreeting = message.displayName ? `Hello ${escapeHtml(message.displayName)},` : 'Hello,';
-  const action = message.purpose === 'step_up' ? 'confirm this secure action' : 'continue with DASH';
+  const action = actionFor(message.purpose);
 
   return {
     subject: `${message.code} is your DASH code`,
