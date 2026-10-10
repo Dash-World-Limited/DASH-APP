@@ -26,12 +26,16 @@ async function settle(
   };
 }
 
+function baseUrl(publicWebUrl: string): string {
+  return publicWebUrl.replace(/\/$/, '');
+}
+
 function reviewUrl(publicWebUrl: string): string {
-  return `${publicWebUrl.replace(/\/$/, '')}/ops/declutter`;
+  return `${baseUrl(publicWebUrl)}/ops/declutter`;
 }
 
 function sellerVerifyUrl(publicWebUrl: string): string {
-  return `${publicWebUrl.replace(/\/$/, '')}/declutter/seller/verify`;
+  return `${baseUrl(publicWebUrl)}/declutter/seller/verify`;
 }
 
 export async function notifySellerVerificationSubmitted(
@@ -59,7 +63,7 @@ export async function notifySellerVerificationSubmitted(
           'Thank you. Your seller verification has been received and is now waiting for DASH review.',
           'You can continue submitting items while we review it. Nothing can go live until your seller profile is approved.',
         ],
-        cta: { label: 'Back to selling', href: `${input.publicWebUrl.replace(/\/$/, '')}/declutter/sell` },
+        cta: { label: 'Back to selling', href: `${baseUrl(input.publicWebUrl)}/declutter/sell` },
       }),
       reference: `declutter_kyc_received_${input.sellerId}`,
     });
@@ -163,4 +167,119 @@ export async function notifyDeclutterSubmissionCreated(
   }
 
   return settle(email, messages);
+}
+
+export async function notifySellerDecision(
+  email: EmailPort,
+  input: {
+    sellerEmail: string | null;
+    sellerName: string;
+    sellerId: string;
+    decision: 'verified' | 'rejected' | 'suspended';
+    reason?: string | null;
+    publicWebUrl: string;
+  },
+): Promise<SendResult> {
+  if (!input.sellerEmail) return { attempted: 0, failed: 0 };
+
+  if (input.decision === 'verified') {
+    return settle(email, [
+      {
+        to: input.sellerEmail,
+        subject: 'You’re verified to sell on DASH Declutters',
+        text: `Hello ${input.sellerName},\n\nYour seller verification has been approved. You are now verified to sell on DASH Declutters.\n\nYou will not need to upload your ID again for every item.\n\nSell an item: ${baseUrl(input.publicWebUrl)}/declutter/sell\n\nDASH Declutters`,
+        html: dashEmailHtml({
+          previewText: 'Your DASH Declutters seller verification has been approved.',
+          eyebrow: 'DASH Declutters',
+          greeting: `Hello ${input.sellerName},`,
+          title: 'You’re verified to sell',
+          paragraphs: [
+            'Your seller verification has been approved.',
+            'You will not need to upload your ID again for every item you submit.',
+          ],
+          cta: { label: 'Sell an item', href: `${baseUrl(input.publicWebUrl)}/declutter/sell` },
+        }),
+        reference: `declutter_kyc_verified_${input.sellerId}`,
+      },
+    ]);
+  }
+
+  if (input.decision === 'rejected') {
+    const reason = input.reason?.trim() || 'We need you to review and resubmit your seller verification details.';
+    return settle(email, [
+      {
+        to: input.sellerEmail,
+        subject: 'We need an update to your DASH Declutters verification',
+        text: `Hello ${input.sellerName},\n\nWe need an update before we can approve your seller verification.\n\nReason: ${reason}\n\nUpdate your verification: ${sellerVerifyUrl(input.publicWebUrl)}\n\nDASH Declutters`,
+        html: dashEmailHtml({
+          previewText: 'Your DASH Declutters verification needs an update.',
+          eyebrow: 'DASH Declutters',
+          greeting: `Hello ${input.sellerName},`,
+          title: 'We need an update',
+          paragraphs: [
+            'We need an update before we can approve your seller verification.',
+            reason,
+          ],
+          cta: { label: 'Update verification', href: sellerVerifyUrl(input.publicWebUrl) },
+        }),
+        reference: `declutter_kyc_rejected_${input.sellerId}`,
+      },
+    ]);
+  }
+
+  return settle(email, [
+    {
+      to: input.sellerEmail,
+      subject: 'Selling is paused on your DASH Declutters account',
+      text: `Hello ${input.sellerName},\n\nSelling has been paused on your DASH Declutters account.\n\n${input.reason ? `Reason: ${input.reason}\n\n` : ''}Contact DASH support if you need help.\n\nDASH Declutters`,
+      html: dashEmailHtml({
+        previewText: 'Selling is paused on your DASH Declutters account.',
+        eyebrow: 'DASH Declutters',
+        greeting: `Hello ${input.sellerName},`,
+        title: 'Selling is paused',
+        paragraphs: [
+          'Selling has been paused on your DASH Declutters account.',
+          ...(input.reason ? [input.reason] : []),
+          'Contact DASH support if you need help.',
+        ],
+      }),
+      reference: `declutter_kyc_suspended_${input.sellerId}`,
+    },
+  ]);
+}
+
+export async function notifyListingPublished(
+  email: EmailPort,
+  input: {
+    sellerEmail: string | null;
+    sellerName: string;
+    itemTitle: string;
+    listingId: string;
+    slug: string;
+    publicWebUrl: string;
+  },
+): Promise<SendResult> {
+  if (!input.sellerEmail) return { attempted: 0, failed: 0 };
+  const href = `${baseUrl(input.publicWebUrl)}/declutter/${input.slug}`;
+
+  return settle(email, [
+    {
+      to: input.sellerEmail,
+      subject: `Your ${input.itemTitle} listing is now live`,
+      text: `Hello ${input.sellerName},\n\nYour ${input.itemTitle} listing is now live on DASH Declutters.\n\nView it here: ${href}\n\nDASH will continue handling buyer enquiries through the marketplace.\n\nDASH Declutters`,
+      html: dashEmailHtml({
+        previewText: `${input.itemTitle} is now live on DASH Declutters.`,
+        eyebrow: 'DASH Declutters',
+        greeting: `Hello ${input.sellerName},`,
+        title: 'Your listing is live',
+        paragraphs: [
+          `${input.itemTitle} is now live on DASH Declutters.`,
+          'DASH will continue handling buyer enquiries through the marketplace.',
+        ],
+        details: [{ label: 'Item', value: input.itemTitle }],
+        cta: { label: 'View live listing', href },
+      }),
+      reference: `declutter_listing_live_${input.listingId}`,
+    },
+  ]);
 }
