@@ -18,6 +18,12 @@ interface ReadyRow extends SubmissionRow {
   gaps: string[];
 }
 
+interface PublishedListing {
+  id: string;
+  slug: string;
+  priceKobo: number;
+}
+
 function messageFor(error: unknown): string {
   return error instanceof ApiRequestError ? error.message : 'Something went wrong. Try again.';
 }
@@ -62,9 +68,24 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
     setBusyId(row.id);
     setError(null);
     try {
-      await authedFetch(`/v1/admin/declutter/submissions/${row.id}/publish`, {
-        method: 'POST',
-      });
+      const published = await authedFetch<{ listing: PublishedListing }>(
+        `/v1/admin/declutter/submissions/${row.id}/publish`,
+        { method: 'POST' },
+      );
+
+      // Publication has already succeeded. Email is deliberately a separate,
+      // idempotent best-effort boundary: a mail-provider outage must never undo
+      // a listing that the admin just published.
+      try {
+        await authedFetch(
+          `/v1/admin/declutter/listings/${published.listing.id}/published-notification`,
+          { method: 'POST' },
+        );
+      } catch {
+        // The listing remains live and the API audit trail records notification
+        // attempts. Operational retry can happen without republishing the item.
+      }
+
       await load();
     } catch (caught) {
       setError(messageFor(caught));
