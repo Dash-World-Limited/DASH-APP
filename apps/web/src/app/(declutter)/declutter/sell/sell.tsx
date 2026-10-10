@@ -3,17 +3,9 @@
 /**
  * Where a seller actually starts.
  *
- * The whole point of this screen is to tell someone the truth about the
- * sequence before they invest effort in it. Selling on Declutters is not
- * "upload a photo and set a price" — DASH verifies who you are, values the
- * item, and puts a price to you that you accept or decline. That is the
- * product, and hiding it behind a form that only reveals the next obstacle
- * after each step is how people abandon a marketplace.
- *
- * So the page reads the caller's actual state and shows them the step they are
- * on, rather than a generic funnel. Verification is the long pole, it involves
- * a document review by a human, and finding that out after typing a description
- * is exactly the wasted effort this avoids.
+ * The screen reads the caller's real seller state and keeps the full sequence
+ * visible: create a seller profile, verify once, submit items, receive a DASH
+ * valuation, and only then move toward publication.
  */
 
 import Link from 'next/link';
@@ -77,8 +69,6 @@ export function SellEntry() {
       const data = await authedFetch<{ seller: SellerSelf }>('/v1/declutter/seller/me');
       setSeller(data.seller);
     } catch (caught) {
-      // A 404 is the ordinary case: signed in, has never sold anything. It is
-      // not an error worth showing anybody.
       if (caught instanceof ApiRequestError && caught.status === 404) {
         setSeller(null);
       } else {
@@ -196,16 +186,24 @@ function NextStep({
   if (!hasSession) {
     return (
       <Panel>
-        <p className="text-base font-bold">Sign in to start</p>
+        <p className="text-base font-bold">Use your DASH account to start</p>
         <p className="mt-2 text-sm text-[var(--ink-muted)]">
-          You need a DASH account. If you already order on DASH, that is the same account.
+          One account works across DASH. Sign in if you already have one, or create one now.
         </p>
-        <Link
-          href={signInHref('/declutter/sell')}
-          className="mt-6 inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)]"
-        >
-          Sign in
-        </Link>
+        <div className="mt-6 flex flex-wrap gap-3">
+          <Link
+            href={signInHref('/declutter/sell')}
+            className="inline-flex min-h-12 items-center rounded-full border border-[var(--line-strong)] px-6 text-sm font-bold"
+          >
+            Sign in
+          </Link>
+          <Link
+            href="/declutter/join?next=%2Fdeclutter%2Fsell"
+            className="inline-flex min-h-12 items-center rounded-full bg-[var(--primary)] px-6 text-sm font-bold text-[var(--on-primary)]"
+          >
+            Create account
+          </Link>
+        </div>
       </Panel>
     );
   }
@@ -233,8 +231,43 @@ function NextStep({
 
   return (
     <div className="space-y-5">
+      <VerificationPrompt seller={seller} />
       <SellerItems />
       <ItemSubmissionForm kycStatus={seller.kycStatus} />
+    </div>
+  );
+}
+
+function VerificationPrompt({ seller }: { seller: SellerSelf }) {
+  if (seller.kycStatus === 'verified') return null;
+
+  if (seller.kycStatus === 'pending') {
+    return (
+      <div className="rounded-[var(--radius-card)] border border-[var(--line)] bg-[var(--surface)] p-5">
+        <p className="text-sm font-bold">Seller verification is under review</p>
+        <p className="mt-2 text-xs leading-relaxed text-[var(--ink-muted)]">
+          You can submit an item now. It will stay private until DASH finishes verifying you.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-[var(--radius-card)] border border-[var(--dcl-gold)]/40 bg-[var(--surface)] p-5">
+      <p className="text-sm font-bold">
+        {seller.kycStatus === 'rejected' ? 'Update your seller verification' : 'Verify your seller profile'}
+      </p>
+      <p className="mt-2 text-xs leading-relaxed text-[var(--ink-muted)]">
+        {seller.kycStatus === 'rejected' && seller.rejectionReason
+          ? seller.rejectionReason
+          : 'Upload your government ID and private contact details once. You can still submit an item now, but it cannot go live until verification is approved.'}
+      </p>
+      <Link
+        href="/declutter/seller/verify"
+        className="mt-4 inline-flex min-h-11 items-center rounded-full bg-[var(--primary)] px-5 text-xs font-bold text-[var(--on-primary)]"
+      >
+        {seller.kycStatus === 'rejected' ? 'Fix verification' : 'Verify seller profile'}
+      </Link>
     </div>
   );
 }
