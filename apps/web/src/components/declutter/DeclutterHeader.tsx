@@ -12,7 +12,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
-import { useHasSession } from '@/lib/session';
+import { useSessionState } from '@/lib/session';
 import { signInHref } from '@/lib/return-to';
 import { DeclutterWordmark } from './DeclutterWordmark';
 
@@ -31,7 +31,8 @@ function joinHref(returnTo: string): string {
 
 export function DeclutterHeader() {
   const pathname = usePathname();
-  const hasSession = useHasSession();
+  const sessionState = useSessionState();
+  const hasSession = sessionState === 'authenticated';
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -71,12 +72,12 @@ export function DeclutterHeader() {
 
           {hasSession ? (
             <Link
-              href="/account"
+              href="/declutter/account"
               className="ml-2 rounded-full border border-[var(--line-strong)] px-4 py-2 text-sm font-semibold transition-colors hover:bg-[var(--dcl-glass)]"
             >
               Account
             </Link>
-          ) : (
+          ) : sessionState === 'restoring' ? <span role="status" className="px-4 text-sm text-[var(--ink-muted)]">Checking account…</span> : (
             <>
               <Link
                 href={signInHref(pathname)}
@@ -127,12 +128,12 @@ export function DeclutterHeader() {
 
           {hasSession ? (
             <Link
-              href="/account"
+              href="/declutter/account"
               className="mt-4 block rounded-full border border-[var(--line-strong)] px-4 py-3 text-center text-sm font-semibold"
             >
               Account
             </Link>
-          ) : (
+          ) : sessionState === 'restoring' ? <p role="status" className="py-4 text-sm text-[var(--ink-muted)]">Checking account…</p> : (
             <div className="mt-4 grid gap-3">
               <Link
                 href={signInHref(pathname)}

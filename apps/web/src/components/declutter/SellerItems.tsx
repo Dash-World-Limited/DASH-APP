@@ -123,7 +123,7 @@ export function SellerItems({ refreshKey = 0 }: { refreshKey?: number }) {
         {rows.map((row) => {
           const waitingForSeller = row.price?.status === 'seller_acceptance_pending' && row.price.priceKobo;
           return (
-            <article key={row.submission.id} className="rounded-2xl border border-[var(--line)] bg-[var(--surface-sunken)] p-4">
+            <article id={`item-${row.submission.id}`} key={row.submission.id} className="scroll-mt-24 rounded-2xl border border-[var(--line)] bg-[var(--surface-sunken)] p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="font-bold">{row.submission.title ?? row.submission.code}</p>

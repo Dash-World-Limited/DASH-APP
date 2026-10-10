@@ -6,7 +6,7 @@ import { ItemSubmissionForm } from './ItemSubmissionForm';
 import { SellerVerificationPage } from '@/app/(declutter)/declutter/seller/verify/seller-verification';
 
 const state = vi.hoisted(() => ({ signedIn: false, fetch: vi.fn() }));
-vi.mock('@/lib/session', () => ({ useHasSession: () => state.signedIn, authedFetch: state.fetch }));
+vi.mock('@/lib/session', () => ({ useHasSession: () => state.signedIn, useSessionState: () => state.signedIn ? 'authenticated' : 'unauthenticated', authedFetch: state.fetch }));
 vi.mock('next/navigation', () => ({ usePathname: () => '/declutter/sell' }));
 beforeEach(() => { state.signedIn = false; state.fetch.mockReset(); });
 afterEach(cleanup);

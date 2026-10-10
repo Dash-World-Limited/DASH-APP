@@ -62,7 +62,6 @@ beforeAll(() => {
     { cwd: process.cwd(), env: { ...process.env, DATABASE_URL: databaseUrl }, stdio: 'pipe' },
   );
 
-  seededAt = Date.now();
   execFileSync(process.execPath, ['--import', 'tsx', 'packages/db/src/seed.ts'], {
     cwd: process.cwd(),
     // No ENCRYPTION_KEY: the seed treats the keyring as optional and simply
@@ -70,6 +69,9 @@ beforeAll(() => {
     env: { ...process.env, DATABASE_URL: databaseUrl },
     stdio: 'pipe',
   });
+  // Evaluate freshness after the child has reported its location. Sampling
+  // before the seed starts makes a valid position look like it is in the future.
+  seededAt = Date.now();
 
   prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
 }, 180_000);

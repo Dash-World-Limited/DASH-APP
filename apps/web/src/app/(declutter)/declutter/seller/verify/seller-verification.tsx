@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch, useHasSession } from '@/lib/session';
+import { authedFetch, useSessionState } from '@/lib/session';
 import { signInHref } from '@/lib/return-to';
 
 type KycStatus = 'unverified' | 'pending' | 'verified' | 'rejected' | 'suspended';
@@ -70,7 +70,8 @@ const inputClass =
   'min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)] focus:border-[var(--primary)]';
 
 export function SellerVerificationPage() {
-  const hasSession = useHasSession();
+  const sessionState = useSessionState();
+  const hasSession = sessionState === 'authenticated';
   const [seller, setSeller] = useState<SellerSelf | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -229,7 +230,7 @@ export function SellerVerificationPage() {
       </section>
 
       <div className="mx-auto w-full max-w-[900px] px-5 py-10 sm:px-8 sm:py-14">
-        {!loaded ? (
+        {sessionState === 'restoring' || !loaded ? (
           <div className="dcl-glass rounded-[var(--radius-card)] p-6">
             <p className="text-sm text-[var(--ink-muted)]">Checking your seller profile…</p>
           </div>

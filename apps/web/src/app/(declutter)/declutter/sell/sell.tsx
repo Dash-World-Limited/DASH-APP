@@ -12,7 +12,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch, useHasSession } from '@/lib/session';
+import { authedFetch, useSessionState } from '@/lib/session';
 import { track } from '@/lib/analytics';
 import { signInHref } from '@/lib/return-to';
 import { ItemSubmissionForm } from '@/components/declutter/ItemSubmissionForm';
@@ -54,7 +54,8 @@ const STEPS = [
 ];
 
 export function SellEntry() {
-  const hasSession = useHasSession();
+  const sessionState = useSessionState();
+  const hasSession = sessionState === 'authenticated';
   const [seller, setSeller] = useState<SellerSelf | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,7 +151,7 @@ export function SellEntry() {
                 Try again
               </button>
             </div>
-          ) : !loaded ? (
+          ) : sessionState === 'restoring' || !loaded ? (
             <div className="dcl-glass rounded-[var(--radius-card)] p-6">
               <p className="sr-only" aria-live="polite">
                 Checking your account

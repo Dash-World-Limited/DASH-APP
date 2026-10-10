@@ -378,6 +378,28 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
     return { submission: submissionView(submission) };
   });
 
+  /** Minimal account summary. Explicit selects keep KYC and admin data out. */
+  app.get('/v1/declutter/account', { preHandler: requireAuth }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const seller = await prisma.declutterSeller.findUnique({
+      where: { customerId: customerIdOf(actorOf(request)) },
+      select: { id: true, kycStatus: true },
+    });
+    if (!seller) return { seller: null, submissions: [], listings: [] };
+    const [submissions, listings] = await Promise.all([
+      prisma.declutterSubmission.findMany({
+        where: { sellerId: seller.id }, orderBy: { createdAt: 'desc' }, take: 50,
+        select: { id: true, code: true, title: true, status: true },
+      }),
+      prisma.declutterListing.findMany({
+        where: { sellerId: seller.id }, orderBy: { createdAt: 'desc' }, take: 50,
+        select: { id: true, submissionId: true, slug: true, title: true, moderationStatus: true,
+          availability: true, publishedAt: true, priceKobo: true },
+      }),
+    ]);
+    return { seller: { kycStatus: seller.kycStatus, canSubmit: canSellerSubmit(seller.kycStatus as KycState) }, submissions, listings };
+  });
+
   /** GET /v1/declutter/submissions — the caller's own submissions, only. */
   app.get('/v1/declutter/submissions', { preHandler: requireAuth }, async (request) => {
     const seller = await sellerForCaller(actorOf(request));

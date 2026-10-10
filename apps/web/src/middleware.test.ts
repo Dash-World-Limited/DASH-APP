@@ -45,6 +45,7 @@ const DASH_APP_ONLY = [
 const DECLUTTERS = [
   '/declutter',
   '/declutter/sell',
+  '/declutter/account',
   '/declutter/join',
   '/declutter/signin',
   '/declutter/verify',

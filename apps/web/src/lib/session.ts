@@ -12,29 +12,20 @@
  * automatically to `/v1/auth/*`. That is the entire point: an XSS on this origin
  * can steal the 15-minute access token, but not the 30-day refresh token.
  *
- * The cost of cookies is CSRF, so every state-changing request echoes the CSRF
- * token from its (readable) cookie into a header. See apps/api/src/auth/cookies.ts.
+ * Writes echo the CSRF token from a same-origin cookie or the existing API
+ * bootstrap response. Both auth cookies remain host-only.
  */
 
 import { useEffect, useState } from 'react';
-import { apiFetch, ApiRequestError, CSRF_COOKIE, type Me, type Session } from './api';
+import { apiFetch, ApiRequestError, type Me, type Session } from './api';
 
 let accessToken: string | null = null;
 let expiresAt = 0;
 let refreshInFlight: Promise<string | null> | null = null;
 
-/**
- * Whether this browser has ever been signed in during this page's life.
- *
- * The refresh cookie is HttpOnly, so there is no way to ask "am I signed in?"
- * without calling the server. This flag lets the app avoid a pointless refresh
- * on a cold load for a visitor who has never signed in, while still attempting
- * one for a returning user — the CSRF cookie, which IS readable, is the tell.
- */
-function hasRefreshCookie(): boolean {
-  if (typeof document === 'undefined') return false;
-  return document.cookie.split('; ').some((entry) => entry.startsWith(`${CSRF_COOKIE}=`));
-}
+// Host-only API cookies are invisible on the marketplace origin. Ask the API
+// once per page lifetime; absence of a local cookie is not proof of sign-out.
+let sessionChecked = false;
 
 const listeners = new Set<() => void>();
 
@@ -49,6 +40,7 @@ export function subscribeToSession(listener: () => void): () => void {
 }
 
 function storeAccess(session: Session): void {
+  sessionChecked = true;
   accessToken = session.accessToken;
   // Refresh 30s early so a request never races the expiry.
   expiresAt = Date.now() + (session.expiresIn - 30) * 1000;
@@ -56,6 +48,7 @@ function storeAccess(session: Session): void {
 }
 
 export function clearSession(): void {
+  sessionChecked = true;
   accessToken = null;
   expiresAt = 0;
   notify();
@@ -64,12 +57,12 @@ export function clearSession(): void {
 /**
  * True when a session plausibly exists.
  *
- * "Plausibly" is the honest word: the only local evidence is the CSRF cookie,
- * and the server is the authority. A stale cookie produces one failed refresh
- * and then a clean signed-out state.
+ * Until the API answers, a host-only refresh cookie may exist on its origin.
+ * After a failed restoration or sign-out, no further automatic attempt is made
+ * during this page lifetime. Access tokens are held only in memory.
  */
 export function hasSession(): boolean {
-  return accessToken !== null || hasRefreshCookie();
+  return accessToken !== null || !sessionChecked;
 }
 
 /**
@@ -84,7 +77,7 @@ export function hasSession(): boolean {
  */
 export async function getAccessToken(): Promise<string | null> {
   if (accessToken && Date.now() < expiresAt) return accessToken;
-  if (!hasRefreshCookie()) return null;
+  if (sessionChecked && !accessToken) return null;
 
   refreshInFlight ??= (async () => {
     try {
@@ -118,6 +111,7 @@ export async function authedFetch<T>(
     if (error instanceof ApiRequestError && error.isAuthFailure) {
       // The token may have been revoked server-side. One retry with a fresh one.
       accessToken = null;
+      sessionChecked = false;
       const retryToken = await getAccessToken();
       if (retryToken) return apiFetch<T>(path, { ...options, token: retryToken });
       clearSession();
@@ -190,21 +184,15 @@ export type SessionState = 'restoring' | 'authenticated' | 'unauthenticated';
 /**
  * Restore the session, and report which of the three states we are in.
  *
- * `restoring` is entered only when there is something to restore — the CSRF
- * cookie is readable and says a session plausibly exists — so a visitor who has
- * never signed in still goes straight to `unauthenticated` with no request and
- * no spinner.
+ * Start with the same neutral state on server and client. A missing readable
+ * cookie cannot identify a signed-out visitor on a separate API origin.
  *
  * The refresh is *actively* driven here rather than waited for. Previously
  * nothing triggered one until a screen happened to make an API call, which on
  * a cold start is after it has already decided what to render.
  */
 export function useSessionState(): SessionState {
-  const [state, setState] = useState<SessionState>(() =>
-    // Synchronous, so the first paint is already correct rather than a frame
-    // of the wrong answer. `hasSession()` is a cookie read, not a request.
-    hasSession() ? 'restoring' : 'unauthenticated',
-  );
+  const [state, setState] = useState<SessionState>('restoring');
 
   useEffect(() => {
     let cancelled = false;
@@ -212,9 +200,7 @@ export function useSessionState(): SessionState {
     const sync = (): void => {
       if (cancelled) return;
       // A token in hand is proof; anything else waits for the restore below.
-      setState((current) =>
-        accessToken !== null ? 'authenticated' : current === 'restoring' ? 'restoring' : current,
-      );
+      setState(accessToken !== null ? 'authenticated' : sessionChecked ? 'unauthenticated' : 'restoring');
     };
 
     void (async () => {
