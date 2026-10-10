@@ -366,6 +366,20 @@ function SellerDetailModal({
         method: 'POST',
         body: { to, reason: reason.trim() || undefined },
       });
+
+      // The KYC decision is already committed. Notification is deliberately a
+      // separate, idempotent best-effort boundary so a mail-provider outage can
+      // never roll the decision back or make the reviewer press Verify twice.
+      try {
+        await authedFetch(`/v1/admin/declutter/sellers/${sellerId}/decision-notification`, {
+          method: 'POST',
+          body: { decision: to, reason: reason.trim() || undefined },
+        });
+      } catch {
+        // The decision remains authoritative; the notification endpoint can be
+        // retried independently because it records its own audit marker.
+      }
+
       onChanged();
     } catch (caught) {
       setNotice(messageFor(caught));
