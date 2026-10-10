@@ -8,7 +8,6 @@ import { authedFetch, useHasSession } from '@/lib/session';
 import { signInHref } from '@/lib/return-to';
 
 type KycStatus = 'unverified' | 'pending' | 'verified' | 'rejected' | 'suspended';
-
 type DocumentKind = 'national_id' | 'drivers_licence' | 'passport' | 'voters_card';
 
 interface SellerSelf {
@@ -122,6 +121,16 @@ export function SellerVerificationPage() {
     };
   }, [hasSession]);
 
+  // If a seller returns after their KYC POST succeeded but the browser closed
+  // before the notification request finished, this retries the idempotent
+  // completion boundary. The admin queue is authoritative either way.
+  useEffect(() => {
+    if (!hasSession || seller?.kycStatus !== 'pending') return;
+    void authedFetch('/v1/declutter/seller/me/verification/complete', {
+      method: 'POST',
+    }).catch(() => undefined);
+  }, [hasSession, seller?.id, seller?.kycStatus]);
+
   async function submit() {
     if (!documentFile) {
       setError('Choose a government ID document to upload.');
@@ -142,8 +151,6 @@ export function SellerVerificationPage() {
     try {
       const data = await fileToBase64(documentFile);
 
-      // Store the evidence first. If the later details request fails, the
-      // seller can retry without losing the private document they already sent.
       await authedFetch('/v1/declutter/seller/me/documents', {
         method: 'POST',
         body: {
@@ -166,6 +173,18 @@ export function SellerVerificationPage() {
           },
         },
       );
+
+      // The KYC write is already complete at this point. Notification is a
+      // separate idempotent boundary so a mail-provider problem can never roll
+      // back private identity data or make the seller resubmit it.
+      try {
+        await authedFetch('/v1/declutter/seller/me/verification/complete', {
+          method: 'POST',
+        });
+      } catch {
+        // The admin queue remains authoritative. The effect above retries when
+        // this pending seller is next loaded.
+      }
 
       setSeller(result.seller);
       setSubmitted(true);
