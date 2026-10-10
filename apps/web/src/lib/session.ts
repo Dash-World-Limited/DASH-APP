@@ -152,7 +152,7 @@ export async function loadMe(): Promise<Me | null> {
   return meInFlight;
 }
 
-function invalidateMe(): void {
+export function invalidateMe(): void {
   meCache = null;
 }
 

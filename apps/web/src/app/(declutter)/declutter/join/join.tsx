@@ -1,5 +1,7 @@
 'use client';
 
+import { PhoneInput } from '@/components/PhoneInput';
+
 /**
  * Creating a DASH account.
  *
@@ -68,7 +70,7 @@ export function JoinPage() {
   const ready =
     name.trim().length >= 2 &&
     email.includes('@') &&
-    /^\+\d{8,15}$/.test(phone.trim()) &&
+    phone !== '' &&
     state !== '' &&
     cityArea.trim().length >= 2 &&
     usageIntent !== '' &&
@@ -97,6 +99,7 @@ export function JoinPage() {
       <form
         onSubmit={(event) => {
           event.preventDefault();
+          if (!ready || busy) return;
           setBusy(true);
           setError(null);
           void (async () => {
@@ -157,19 +160,11 @@ export function JoinPage() {
             placeholder="you@example.com"
             hint="We send a six-digit code here to confirm it is yours."
           />
-          <AuthField
+          <PhoneInput
             id="join-phone"
-            label="Phone number"
-            type="tel"
-            autoComplete="tel"
-            inputMode="tel"
-            required
-            value={phone}
-            onChange={(event) => setPhone(event.target.value.replace(/[^\d+]/g, ''))}
-            placeholder="+234 800 000 0000"
-            // Said plainly. Implying a check that is not happening would be the
-            // first thing this page got wrong.
-            hint="Include the country code. We do not send a text — this is how DASH reaches you about an item."
+            onChange={setPhone}
+            disabled={busy}
+            hint="We do not send a text — this is how DASH reaches you about an item."
           />
 
           <Select

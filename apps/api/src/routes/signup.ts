@@ -55,6 +55,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { e164PhoneSchema } from '@dash/domain/phone';
 import { generateOtp, generateReference, hashOtp, verifyOtp } from '@dash/domain/crypto';
 import { writeAudit, PRIVACY_SLUG, TERMS_SLUG } from '@dash/db';
 import {
@@ -72,11 +73,8 @@ import { issueAuthCookies } from '../auth/cookies.js';
 import { ensureCustomerRole } from '../auth/customer-role.js';
 import { otpEmailContent } from '../auth/otp-delivery.js';
 
-/** E.164, matching the auth routes exactly. One definition of a phone number. */
-const phoneSchema = z
-  .string()
-  .trim()
-  .regex(/^\+[1-9]\d{7,14}$/, 'Enter a valid phone number including the country code');
+/** Signup accepts valid national numbering plans in canonical E.164 form. */
+const phoneSchema = e164PhoneSchema;
 
 const emailSchema = z.string().trim().toLowerCase().email('Enter a valid email address');
 

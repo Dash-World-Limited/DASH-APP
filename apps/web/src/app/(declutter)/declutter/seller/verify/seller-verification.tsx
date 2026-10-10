@@ -1,5 +1,7 @@
 'use client';
 
+import { PhoneInput } from '@/components/PhoneInput';
+
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
@@ -210,7 +212,7 @@ export function SellerVerificationPage() {
     legalName.trim().length >= 2 &&
     identityName.trim().length >= 2 &&
     nationalId.trim().length >= 6 &&
-    /^\+[1-9]\d{7,14}$/.test(phoneE164.trim()) &&
+    phoneE164 !== '' &&
     addressLine.trim().length >= 4 &&
     (!socialHandle.trim() || /^@?[A-Za-z0-9_][A-Za-z0-9_.]{0,79}$/.test(socialHandle.trim())) &&
     documentFile !== null &&
@@ -330,17 +332,7 @@ export function SellerVerificationPage() {
                 />
               </Field>
 
-              <Field id="seller-phone" label="Phone number" hint="A number DASH can reach you on. Include +234 or your country code.">
-                <input
-                  id="seller-phone"
-                  className={inputClass}
-                  value={phoneE164}
-                  type="tel"
-                  autoComplete="tel"
-                  placeholder="+234…"
-                  onChange={(event) => setPhoneE164(event.target.value)}
-                />
-              </Field>
+              <PhoneInput id="seller-phone" onChange={setPhoneE164} disabled={busy} hint="A number DASH can reach you on." />
             </div>
 
             <div className="mt-6">

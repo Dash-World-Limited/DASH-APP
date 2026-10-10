@@ -141,6 +141,13 @@ describe('an ordinary account is not a seller', () => {
 // ---------------------------------------------------------------------------
 
 describe('verification', () => {
+  it('rejects invalid numbering plans in private seller verification', async () => {
+    for (const phoneE164 of ['+2340000000000', '+4474001', '08012345678']) {
+      const response = await post(customerA, '/v1/declutter/seller/me/verification', { ...KYC_BODY, phoneE164 });
+      expect(response.statusCode).toBe(400);
+    }
+  });
+
   it.each(['<script>', 'https://example.com/profile', '@bad handle', '@', 'x'.repeat(82)])('refuses invalid social handle %s', async (socialHandle) => {
     const response = await post(customerA, '/v1/declutter/seller/me/verification', { ...KYC_BODY, socialHandle });
     expect(response.statusCode).toBe(400);

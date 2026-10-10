@@ -27,6 +27,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { e164PhoneSchema } from '@dash/domain/phone';
 import { writeAudit } from '@dash/db';
 import { encrypt } from '@dash/domain/envelope';
 import { generateReference } from '@dash/domain/crypto';
@@ -66,7 +67,7 @@ const becomeSellerSchema = z.object({
 const verificationSchema = z.object({
   legalName: z.string().trim().min(2).max(120),
   nationalId: z.string().trim().min(6).max(32),
-  phoneE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/, 'Use international format, e.g. +234…'),
+  phoneE164: e164PhoneSchema,
   addressLine: z.string().trim().min(4).max(200),
   socialHandle: z.string().trim().max(81).regex(/^@?[A-Za-z0-9_][A-Za-z0-9_.]{0,79}$/, 'Enter a social handle, e.g. @ada_seller.').nullable().optional(),
   // Optional. A bank account exists to be paid into, and nobody has been paid

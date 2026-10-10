@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, signOut, useMe, useSessionState } from '@/lib/session';
 import { signInHref } from '@/lib/return-to';
+import { AccountPhoneEditor } from '@/components/declutter/AccountPhoneEditor';
 
 interface Submission { id: string; code: string; title: string | null; status: string }
 interface Listing {
@@ -89,6 +90,7 @@ export function DeclutterAccount() {
               <p className="dcl-eyebrow">DASH account</p>
               <h2 className="mt-3 break-words text-xl font-bold">{me?.identity.displayName || (loaded ? 'Your account' : 'Loading…')}</h2>
               <p className="mt-2 break-all text-sm text-[var(--ink-muted)]">{me?.identity.email}</p>
+              {me ? <AccountPhoneEditor key={me.identity.id} initialPhone={me.identity.phone} /> : null}
               <button type="button" disabled={signingOut} className={`${button} mt-6 w-full disabled:opacity-50`} onClick={() => {
                 setSigningOut(true);
                 void signOut().finally(() => setSigningOut(false));

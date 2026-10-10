@@ -26,12 +26,14 @@
     "./account": "./src/account/index.ts",
     "./signup": "./src/signup/index.ts",
     "./services": "./src/services/index.ts",
-    "./onboarding": "./src/onboarding/index.ts"
+    "./onboarding": "./src/onboarding/index.ts",
+    "./phone": "./src/phone/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "libphonenumber-js": "^1.13.15",
     "zod": "^3.24.1"
   }
 }

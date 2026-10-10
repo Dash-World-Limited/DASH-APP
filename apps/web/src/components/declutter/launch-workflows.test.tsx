@@ -27,7 +27,7 @@ it('uploads private identity evidence and submits the social handle in its own f
   render(<SellerVerificationPage />);
   await screen.findByLabelText('Legal name');
   expect((screen.getByLabelText('Social handle (optional)') as HTMLInputElement).value).toBe('@old_handle');
-  for (const [label, value] of [['Legal name', 'Ada Seller'], ['Name on ID', 'Ada Seller'], ['ID number', '12345678901'], ['Phone number', '+2348012345678'], ['Private address', '14 Example Road'], ['Social handle (optional)', '@ada_seller']] as const) {
+  for (const [label, value] of [['Legal name', 'Ada Seller'], ['Name on ID', 'Ada Seller'], ['ID number', '12345678901'], ['Local phone number', '08012345678'], ['Private address', '14 Example Road'], ['Social handle (optional)', '@ada_seller']] as const) {
     fireEvent.change(screen.getByLabelText(label), { target: { value } });
   }
   fireEvent.change(screen.getByLabelText('ID file'), { target: { files: [new File(['private fixture'], 'id.png', { type: 'image/png' })] } });
@@ -37,6 +37,7 @@ it('uploads private identity evidence and submits the social handle in its own f
   const calls = state.fetch.mock.calls;
   const verification = calls.find(([url]) => url.endsWith('/verification'));
   expect(verification?.[1].body.socialHandle).toBe('@ada_seller');
+  expect(verification?.[1].body.phoneE164).toBe('+2348012345678');
   expect(verification?.[1].body.addressLine).toBe('14 Example Road');
   expect(calls.findIndex(([url]) => url.endsWith('/documents'))).toBeLessThan(calls.findIndex(([url]) => url.endsWith('/verification')));
   expect(calls.some(([url]) => url.endsWith('/verification/complete'))).toBe(true);

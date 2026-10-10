@@ -21,6 +21,8 @@
 import type { FastifyInstance } from 'fastify';
 import { effectiveCapabilities } from '../deployment/profile.js';
 import { z } from 'zod';
+import { writeAudit } from '@dash/db';
+import { e164PhoneSchema } from '@dash/domain/phone';
 import { ApiError } from '../http/errors.js';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import { actorOf, requireAuth, requirePermission, withIdempotency } from '../http/context.js';
@@ -53,6 +55,36 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
    */
   const exportEnabled = effectiveCapabilities(app.services.config).has('dataExport');
   const { prisma, config, queue } = app.services;
+
+  // This edits the canonical account contact, never seller KYC evidence. SMS
+  // identities need a proved-number change flow; Declutters uses email sign-in.
+  app.patch('/v1/account/phone', {
+    preHandler: requireAuth,
+    config: { rateLimit: { max: 5, timeWindow: '10 minutes' } },
+  }, async (request, reply) => {
+    const actor = actorOf(request);
+    customerIdOrForbid(request);
+    if (effectiveCapabilities(config).has('sms')) {
+      throw ApiError.forbidden('Phone changes require a verified-number flow when SMS sign-in is enabled.');
+    }
+    const { phone } = z.object({ phone: e164PhoneSchema }).strict().parse(request.body);
+    try {
+      await prisma.$transaction(async tx => {
+        await tx.identity.update({ where: { id: actor.identityId }, data: { phone } });
+        await writeAudit(tx, {
+          identityId: actor.identityId, action: 'account.phone.updated',
+          resourceType: 'identity', resourceId: actor.identityId,
+          ipAddress: request.ip, requestId: request.id,
+        });
+      });
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+        throw ApiError.conflict('That number cannot be used. Please use another number or contact DASH support.');
+      }
+      throw error;
+    }
+    return reply.header('cache-control', 'no-store').send({ saved: true });
+  });
 
   /** Deletion and export are a customer flow. Staff/vendor/rider are out of scope. */
   function customerIdOrForbid(request: Parameters<typeof actorOf>[0]): string {
