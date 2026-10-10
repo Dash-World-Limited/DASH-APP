@@ -12,7 +12,8 @@ import type { MerchantServiceCategoryId } from '@dash/domain/services';
  */
 
 export const API_BASE =
-  process.env['NEXT_PUBLIC_API_URL'] ?? 'http://127.0.0.1:4000';
+  // Next replaces direct NEXT_PUBLIC_* property reads in browser builds.
+  process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:4000';
 
 /**
  * The CSRF cookie name, mirrored from the API.

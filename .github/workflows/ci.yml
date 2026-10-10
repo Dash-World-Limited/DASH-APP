@@ -230,6 +230,8 @@ jobs:
     name: Production build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      NEXT_PUBLIC_API_URL: https://api.dashworldng.com
 
     steps:
       - uses: actions/checkout@v4
@@ -249,6 +251,9 @@ jobs:
       # catches things the workspace typecheck does not.
       - name: Build the web app
         run: npm run build --workspace @dash/web
+
+      - name: Verify the browser API base in the emitted client bundle
+        run: node scripts/check-web-api-bundle.mjs
 
   secrets:
     name: Secret scan
