@@ -1,25 +1,13 @@
 /**
- * Item photographs.
+ * Item photographs and the completion boundary for seller submissions.
  *
  * A second-hand marketplace is photographs. The price, the condition grade and
- * the description are all claims; the photographs are the closest a buyer gets
- * to holding the thing before they pay for it. So this path does three jobs
- * that a generic upload endpoint would not.
+ * the description are all claims; photographs are the closest a buyer gets to
+ * holding the thing before they pay for it.
  *
- * **It asks what the photograph shows.** `role` is required, not inferred. A
- * valuation that cannot tell a box shot from a photograph of the serial label
- * has to assume the worst about both, and a screen reader announcing "image"
- * six times is not a listing anyone can use.
- *
- * **It fingerprints every byte, globally.** A seller re-using their own
- * photograph across two submissions is untidy. A *second account* uploading the
- * first account's photograph is the oldest fraud in second-hand selling, and it
- * is invisible unless fingerprints are shared across the whole marketplace
- * rather than kept per seller. That upload is refused and a human is told.
- *
- * **It never makes an object public.** Bytes go to the same private bucket as
- * everything else, under a random key, and leave only through a signed URL
- * minted per request.
+ * Notification happens only after the browser says the submission is complete,
+ * and that endpoint refuses an item with no photographs. This prevents DASH
+ * from emailing "we received your item" while the upload is still half-finished.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -31,6 +19,10 @@ import { photoAlt } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requireAuth } from '../http/context.js';
 import { auditContext, customerIdOf, PHOTO_LINK_SECONDS } from './declutter-shared.js';
+import {
+  notifyDeclutterSubmissionCreated,
+  notifySellerVerificationSubmitted,
+} from '../declutter/notifications.js';
 
 /** Base64 inflates by about a third over the adapter's 8 MB object cap. */
 const PHOTO_BODY_LIMIT = 12 * 1024 * 1024;
@@ -38,14 +30,6 @@ const PHOTO_BODY_LIMIT = 12 * 1024 * 1024;
 /** Enough to describe an item honestly; past this it is a gallery, not a listing. */
 const MAX_PHOTOS_PER_SUBMISSION = 12;
 
-/**
- * States in which a seller may still change their photographs.
- *
- * Not simply "anything before published". Once a price has been put to the
- * seller, the item DASH valued and the item on the page have to stay the same
- * item — otherwise a seller could accept a price for one thing and publish
- * photographs of another.
- */
 const PHOTO_EDITABLE_STATES = new Set([
   'draft',
   'intake',
@@ -59,37 +43,43 @@ const uploadSchema = z.object({
   contentType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
   role: z.enum(PHOTO_ROLES),
   caption: z.string().trim().max(200).optional(),
-  /** Raw base64, no data: prefix. */
   data: z.string().min(1),
 });
 
 export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma } = app.services;
+  const { prisma, config, email } = app.services;
 
-  /** The caller's own submission, or a 404 that does not confirm it exists. */
-  async function ownSubmissionOr404(actor: ReturnType<typeof actorOf>, id: string) {
+  async function sellerForActor(actor: ReturnType<typeof actorOf>) {
     const seller = await prisma.declutterSeller.findUnique({
       where: { customerId: customerIdOf(actor) },
     });
     if (!seller) throw ApiError.notFound();
+    return seller;
+  }
+
+  /** The caller's own submission, or a 404 that does not confirm it exists. */
+  async function ownSubmissionOr404(actor: ReturnType<typeof actorOf>, id: string) {
+    const seller = await sellerForActor(actor);
 
     const submission = await prisma.declutterSubmission.findUnique({
       where: { id },
       include: { photos: { orderBy: { position: 'asc' } } },
     });
-    // Ownership and existence answered with the same response. A 403 here
-    // would confirm that somebody else's submission id is real.
     if (!submission || submission.sellerId !== seller.id) throw ApiError.notFound();
 
     return { seller, submission };
   }
 
+  async function accountEmail(identityId: string): Promise<string | null> {
+    const identity = await prisma.identity.findUnique({
+      where: { id: identityId },
+      select: { email: true },
+    });
+    return identity?.email ?? null;
+  }
+
   /**
    * POST /v1/declutter/submissions/:id/photos
-   *
-   * Base64 in JSON, matching the document upload path, because the API
-   * registers no multipart parser and two endpoints do not justify adding a
-   * body parser to every route in the service.
    */
   app.post(
     '/v1/declutter/submissions/:id/photos',
@@ -118,7 +108,6 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
         include: { submissionPhotos: { select: { submissionId: true } } },
       });
 
-      // --- duplicate handling ------------------------------------------------
       if (existing) {
         const sameSubmission = existing.submissionPhotos.some(
           (photo) => photo.submissionId === submission.id,
@@ -128,9 +117,6 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
         }
 
         if (existing.firstSellerId && existing.firstSellerId !== seller.id) {
-          // The signal worth keeping. Recorded even though the upload is
-          // refused: a blocked attempt to reuse another seller's photograph is
-          // exactly what an investigator wants to find later.
           await prisma.declutterImageUsage.create({
             data: {
               fingerprintId: existing.id,
@@ -162,23 +148,17 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
             ...auditContext(request),
           });
 
-          // Deliberately vague. Naming the other account, or even confirming
-          // there is one, would turn this endpoint into a way to test whether
-          // a given image is already on the marketplace.
           throw ApiError.conflict(
             'That photograph cannot be used. Upload your own photographs of the item.',
           );
         }
       }
 
-      // --- store -------------------------------------------------------------
       let stored;
       try {
         stored = await app.services.storage.put({
           body: bytes,
           contentType: body.contentType,
-          // Its own prefix. Item photographs are published; KYC evidence is
-          // not, and the two must never share a place in the bucket.
           prefix: 'declutter-items',
         });
       } catch {
@@ -222,8 +202,6 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
         action: 'declutter.photo.uploaded',
         resourceType: 'DeclutterSubmission',
         resourceId: submission.id,
-        // Never the storage key: an audit row carrying it would be a second
-        // place to find the object.
         after: { role: photo.role, position, sizeBytes: stored.sizeBytes },
         ...auditContext(request),
       });
@@ -238,6 +216,128 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
           url: await app.services.storage.signedUrl(photo.storageKey, PHOTO_LINK_SECONDS),
         },
       };
+    },
+  );
+
+  /**
+   * POST /v1/declutter/submissions/:id/complete
+   *
+   * The browser calls this only after every selected image has uploaded. It is
+   * idempotent and is the point at which both the seller receipt and the two
+   * independent DASH review inboxes are notified.
+   */
+  app.post(
+    '/v1/declutter/submissions/:id/complete',
+    { preHandler: requireAuth },
+    async (request) => {
+      const actor = actorOf(request);
+      const { id } = z.object({ id: z.string().min(1).max(40) }).parse(request.params);
+      const { seller, submission } = await ownSubmissionOr404(actor, id);
+
+      if (submission.photos.length === 0) {
+        throw ApiError.badRequest('Upload at least one photograph before finishing this item.');
+      }
+
+      const alreadyNotified = await prisma.auditLog.findFirst({
+        where: {
+          action: 'declutter.submission.notification_sent',
+          resourceType: 'DeclutterSubmission',
+          resourceId: submission.id,
+        },
+        select: { id: true },
+      });
+      if (alreadyNotified) return { completed: true, notified: true };
+
+      const result = await notifyDeclutterSubmissionCreated(email, {
+        sellerEmail: await accountEmail(actor.identityId),
+        sellerName: seller.displayName,
+        sellerId: seller.id,
+        kycStatus: seller.kycStatus,
+        submissionId: submission.id,
+        submissionCode: submission.code,
+        itemTitle: submission.title ?? 'Your item',
+        publicWebUrl: config.PUBLIC_WEB_URL,
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'declutter.submission.notification_sent',
+        resourceType: 'DeclutterSubmission',
+        resourceId: submission.id,
+        after: { attempted: result.attempted, failed: result.failed },
+        ...auditContext(request),
+      });
+
+      if (result.failed > 0) {
+        request.log.warn(
+          { attempted: result.attempted, failed: result.failed },
+          'one or more declutter submission notifications failed',
+        );
+      }
+
+      return { completed: true, notified: result.failed === 0 };
+    },
+  );
+
+  /**
+   * POST /v1/declutter/seller/me/verification/complete
+   *
+   * Seller KYC itself is handled by the core Declutters route. This completion
+   * boundary exists only for notification and is idempotent. It never receives
+   * an ID number, address or document bytes.
+   */
+  app.post(
+    '/v1/declutter/seller/me/verification/complete',
+    { preHandler: requireAuth },
+    async (request) => {
+      const actor = actorOf(request);
+      const seller = await sellerForActor(actor);
+
+      if (seller.kycStatus !== 'pending') {
+        throw ApiError.conflict('Seller verification is not waiting for review.');
+      }
+
+      const evidenceCount = await prisma.declutterSellerDocument.count({
+        where: { sellerId: seller.id },
+      });
+      if (evidenceCount === 0) {
+        throw ApiError.badRequest('Upload a government ID document before finishing verification.');
+      }
+
+      const alreadyNotified = await prisma.auditLog.findFirst({
+        where: {
+          action: 'declutter.seller.verification_notification_sent',
+          resourceType: 'DeclutterSeller',
+          resourceId: seller.id,
+        },
+        select: { id: true },
+      });
+      if (alreadyNotified) return { completed: true, notified: true };
+
+      const result = await notifySellerVerificationSubmitted(email, {
+        sellerEmail: await accountEmail(actor.identityId),
+        sellerName: seller.displayName,
+        sellerId: seller.id,
+        publicWebUrl: config.PUBLIC_WEB_URL,
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'declutter.seller.verification_notification_sent',
+        resourceType: 'DeclutterSeller',
+        resourceId: seller.id,
+        after: { attempted: result.attempted, failed: result.failed },
+        ...auditContext(request),
+      });
+
+      if (result.failed > 0) {
+        request.log.warn(
+          { attempted: result.attempted, failed: result.failed },
+          'one or more declutter seller-verification notifications failed',
+        );
+      }
+
+      return { completed: true, notified: result.failed === 0 };
     },
   );
 
@@ -265,13 +365,6 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
     },
   );
 
-  /**
-   * DELETE /v1/declutter/submissions/:id/photos/:photoId
-   *
-   * The row goes; the fingerprint stays. Deleting the fingerprint would let a
-   * seller launder a blocked image by uploading it, deleting it and uploading
-   * it again from another account.
-   */
   app.delete(
     '/v1/declutter/submissions/:id/photos/:photoId',
     { preHandler: requireAuth },
@@ -291,15 +384,10 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
 
       await prisma.declutterSubmissionPhoto.delete({ where: { id: photo.id } });
 
-      // The object itself goes too. A photograph a seller withdrew before it
-      // was ever published is not evidence of anything, and keeping the bytes
-      // would be keeping a picture of someone's home they asked us to drop.
       try {
         await app.services.storage.delete(photo.storageKey);
       } catch {
-        // A storage provider that cannot delete right now must not fail the
-        // request: the row is gone, the object is unreachable without the key,
-        // and retrying deletion is a maintenance concern.
+        // The row is gone and the object is unreachable without its private key.
       }
 
       await writeAudit(prisma, {
