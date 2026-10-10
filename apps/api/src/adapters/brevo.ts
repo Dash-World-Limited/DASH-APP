@@ -24,11 +24,14 @@
 import type { DeliveryReceipt, EmailPort } from '@dash/domain/ports';
 import { EmailDeliveryError } from './ses.js';
 
+const DASH_SENDER_NAME = 'DASH';
+
 export interface BrevoEmailOptions {
   /** A Brevo API v3 key (`xkeysib-…`). A secret; never logged. */
   apiKey: string;
   /** Verified in the Brevo account as a sender. */
   fromAddress: string;
+  /** Retained for configuration compatibility; DASH owns the visible identity. */
   fromName: string;
   /** A monitored mailbox: the identity-conflict email tells people to reply. */
   replyTo: string;
@@ -77,7 +80,10 @@ export class BrevoEmailAdapter implements EmailPort {
           accept: 'application/json',
         },
         body: JSON.stringify({
-          sender: { name: this.options.fromName, email: this.options.fromAddress },
+          // Every DASH product shares one canonical account. The visible sender
+          // follows that identity too: never "DASH WORLD LIMITED" on one code
+          // and "DASH APP" on another simply because an old env label survived.
+          sender: { name: DASH_SENDER_NAME, email: this.options.fromAddress },
           to: [{ email: input.to }],
           replyTo: { email: this.options.replyTo },
           subject: input.subject,
