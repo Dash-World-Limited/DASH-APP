@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
-import { AdminThemeToggle, useAdminTheme } from '@/components/admin/AdminTheme';
+
 import { DashWordmark } from '@/components/brand/DashWordmark';
 import { ApiRequestError } from '@/lib/api';
 import {
@@ -30,7 +30,6 @@ function messageOf(error: unknown): string {
 
 export default function AdminSignInPage() {
   const router = useRouter();
-  const { theme, setTheme } = useAdminTheme();
   const [stage, setStage] = useState<Stage>('credentials');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -131,7 +130,6 @@ export default function AdminSignInPage() {
   return (
     <div
       data-surface="admin"
-      data-admin-theme={theme}
       className="admin-grid-glow min-h-screen bg-[var(--surface)] px-4 py-6 text-[var(--ink)] sm:px-6"
     >
       <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-6xl items-stretch overflow-hidden rounded-[2rem] border border-[var(--line)] bg-[var(--surface-raised)] shadow-2xl">
@@ -171,7 +169,7 @@ export default function AdminSignInPage() {
               <DashWordmark height="1.15rem" />
             </div>
             <div className="ml-auto w-40">
-              <AdminThemeToggle theme={theme} onChange={setTheme} />
+
             </div>
           </div>
 

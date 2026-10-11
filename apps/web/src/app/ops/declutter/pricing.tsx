@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   Badge,
   Button,
@@ -93,6 +93,7 @@ interface Workspace {
     valueCheckStatus: string;
     escalationReasons: string[];
     authorizedPriceKobo: number | null;
+    proposedPriceKobo: number | null;
     authorizationVersion: number;
     sellerAcceptedPriceKobo: number | null;
     acceptanceValid: boolean;
@@ -271,16 +272,18 @@ function ApprovalQueue({ onOpen }: { onOpen: (id: string) => void }) {
 
 // ---------------------------------------------------------------------------
 
-function WorkspaceModal({
+export function WorkspaceModal({
   submissionId,
   canAuthorize,
   onClose,
   onChanged,
+  inline = false,
 }: {
   submissionId: string;
   canAuthorize: boolean;
   onClose: () => void;
   onChanged: () => void;
+  inline?: boolean;
 }) {
   const [data, setData] = useState<Workspace | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -299,8 +302,10 @@ function WorkspaceModal({
       setData(body);
       // Pre-filled with the recommendation, so an adjustment is something the
       // reviewer types rather than something that happens by default.
-      if (body.valuation?.recommendedPriceKobo) {
-        setPriceNaira(String(body.valuation.recommendedPriceKobo / 100));
+      const shownPrice = body.submission.valueCheckStatus === 'super_admin_approval_pending'
+        ? body.submission.proposedPriceKobo : body.valuation?.recommendedPriceKobo;
+      if (shownPrice) {
+        setPriceNaira(String(shownPrice / 100));
       }
     } catch (caught) {
       setError(messageFor(caught));
@@ -335,9 +340,11 @@ function WorkspaceModal({
   const recommended = data?.valuation?.recommendedPriceKobo ?? null;
   const typedKobo = Math.round(Number(priceNaira || '0') * 100);
   const isAdjustment = recommended !== null && typedKobo !== recommended;
+  const isAuthorizationAdjustment = typedKobo !== data?.submission.proposedPriceKobo;
 
+  const Frame = inline ? InlinePricingFrame : Modal;
   return (
-    <Modal title="DASH ValueCheck" onClose={onClose}>
+    <Frame title="DASH ValueCheck" onClose={onClose}>
       {stepUpPrompt}
       {error ? <ErrorState title="Could not open" message={error} onRetry={() => void load()} /> : null}
       {!data && !error ? <LoadingBlock label="Loading" /> : null}
@@ -540,12 +547,12 @@ function WorkspaceModal({
                   disabled={busy}
                   onClick={() =>
                     void call('authorize', {
-                      kind: isAdjustment ? 'adjusted' : 'approved',
-                      ...(isAdjustment ? { priceKobo: typedKobo, reason: reason.trim() } : {}),
+                      kind: isAuthorizationAdjustment ? 'adjusted' : 'approved',
+                      ...(isAuthorizationAdjustment ? { priceKobo: typedKobo, reason: reason.trim() } : {}),
                     })
                   }
                 >
-                  {isAdjustment ? 'Adjust & authorise' : 'Authorise'}
+                  {isAuthorizationAdjustment ? 'Adjust & authorise' : 'Authorise'}
                 </Button>
                 <Button
                   variant="secondary"
@@ -566,8 +573,12 @@ function WorkspaceModal({
           ) : null}
         </div>
       ) : null}
-    </Modal>
+    </Frame>
   );
+}
+
+function InlinePricingFrame({ title, children }: { title: string; children: ReactNode; onClose: () => void }) {
+  return <section className="dcl-glass rounded-2xl border border-[var(--line)] p-5 sm:p-6"><h2 className="mb-5 text-xl font-bold">{title}</h2>{children}</section>;
 }
 
 function ComparableSection({

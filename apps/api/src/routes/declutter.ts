@@ -577,22 +577,23 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
         if (to === 'verified') {
           const waiting = await tx.declutterSubmission.findMany({
             where: { sellerId: seller.id, status: 'kyc_pending' },
-            select: { id: true },
+            select: { id: true, title: true, description: true, categoryId: true, locationId: true, photos: { select: { id: true } } },
           });
 
           for (const submission of waiting) {
+            const releasedStatus = submission.title && submission.description && submission.categoryId && submission.locationId && submission.photos.length ? 'fraud_review' : 'details_pending';
             await tx.declutterSubmission.update({
               where: { id: submission.id },
               data: {
-                status: 'details_pending',
+                status: releasedStatus,
                 events: {
                   create: {
                     fromStatus: 'kyc_pending',
-                    toStatus: 'details_pending',
+                    toStatus: releasedStatus,
                     actorType: acting,
                     actorId: actor.identityId,
                     reasonCode: 'seller_verified',
-                    note: 'Seller verification completed; item released for detail review.',
+                    note: 'Seller verification completed; item released to its next required review.',
                   },
                 },
               },
@@ -704,6 +705,9 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
       // seller accepted, and `declutter:listing:publish` — a later milestone.
       if (to === 'published') {
         throw ApiError.forbidden('Publishing is not available yet.');
+      }
+      if (to === 'approved') {
+        throw ApiError.forbidden('Use Approve & Publish in the item workspace. It preserves required seller verification and price consent and requires Super Admin step-up.');
       }
 
       const updated = await prisma.declutterSubmission.update({

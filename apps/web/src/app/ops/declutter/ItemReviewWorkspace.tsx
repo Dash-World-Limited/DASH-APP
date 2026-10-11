@@ -13,7 +13,8 @@ import {
   formatNaira,
 } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch } from '@/lib/session';
+import { authedFetch, usePermissions } from '@/lib/session';
+import { useStepUp } from '@/components/StepUpPrompt';
 
 interface SubmissionSummary {
   id: string;
@@ -72,6 +73,7 @@ interface PhotoResponse {
 }
 
 const SUBMISSION_TRANSITIONS = [
+  { value: 'approve_publish', label: 'Approve & Publish — final Super Admin decision' },
   { value: 'kyc_pending', label: 'Waiting on verification' },
   { value: 'details_pending', label: 'Need more detail' },
   { value: 'fraud_review', label: 'Send to fraud review' },
@@ -134,11 +136,13 @@ export function ItemReviewWorkspace({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const {permissions} = usePermissions();
+  const {run: runWithStepUp, prompt: stepUpPrompt} = useStepUp();
   const [detail, setDetail] = useState<ReviewSubmission | null>(null);
   const [photos, setPhotos] = useState<ReviewPhoto[] | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [photoError, setPhotoError] = useState<string | null>(null);
-  const [to, setTo] = useState<string>(SUBMISSION_TRANSITIONS[0].value);
+  const [to, setTo] = useState<string>(SUBMISSION_TRANSITIONS[1].value);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -183,10 +187,10 @@ export function ItemReviewWorkspace({
     setBusy(true);
     setNotice(null);
     try {
-      await authedFetch(`/v1/admin/declutter/submissions/${submission.id}/transition`, {
+      await runWithStepUp(() => authedFetch(`/v1/admin/declutter/submissions/${submission.id}/${to === 'approve_publish' ? 'approve-publish' : 'transition'}`, {
         method: 'POST',
-        body: { to, note: note.trim() || undefined },
-      });
+        body: to === 'approve_publish' ? { reason: note.trim() || undefined } : { to, note: note.trim() || undefined },
+      }));
       onChanged();
     } catch (caught) {
       setNotice(messageFor(caught));
@@ -222,6 +226,7 @@ export function ItemReviewWorkspace({
 
   return (
     <div className="fixed inset-0 z-50 bg-[#08111f]/60 backdrop-blur-[2px]" onMouseDown={onClose}>
+      <div onMouseDown={event => event.stopPropagation()}>{stepUpPrompt}</div>
       <aside
         role="dialog"
         aria-modal="true"
@@ -390,7 +395,7 @@ export function ItemReviewWorkspace({
                     onChange={(event) => setTo(event.target.value)}
                     className="w-full rounded-xl border border-[#dcd6ca] bg-white px-3.5 py-2.5 text-sm"
                   >
-                    {SUBMISSION_TRANSITIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    {SUBMISSION_TRANSITIONS.filter(option => option.value !== 'approve_publish' || permissions.has('declutter:pricing:authorize')).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
                 </Field>
                 <Field label="Review note" htmlFor={`declutter-transition-note-${submission.id}`} hint="Be specific enough that another reviewer can understand the decision later.">

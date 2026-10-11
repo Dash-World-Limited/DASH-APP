@@ -38,7 +38,6 @@ import {
   isMediatedContact,
   isPubliclyActionable,
   isPubliclyVisible,
-  listingSlug,
   LISTING_SORTS,
   moderationMachine,
   photoAlt,
@@ -57,8 +56,9 @@ import {
   type TrustBadge,
 } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
-import { notifyListingPublished } from '../declutter/notifications.js';
-import { notificationEmail } from '../declutter/notification-delivery.js';
+import { publishSnapshot, sendPublicationEmail } from '../declutter/publication.js';
+import { facts, hubInclude } from '../declutter/hub.js';
+import { hubBlockers } from '@dash/domain/declutter';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import { auditContext, customerIdOf, declutterActorFor, PHOTO_LINK_SECONDS } from './declutter-shared.js';
 
@@ -255,6 +255,10 @@ export async function registerDeclutterListingRoutes(app: FastifyInstance): Prom
         });
       }
 
+      const hubSubmission = await prisma.declutterSubmission.findUniqueOrThrow({ where: { id }, include: hubInclude });
+      const blockers = hubBlockers(facts(hubSubmission));
+      if (blockers.length) throw ApiError.unprocessable('Mandatory item checks are still outstanding.', { blockers });
+
       // Narrowed by `canPublish`, but TypeScript cannot see that through a
       // boolean, and an assertion here would be the wrong kind of confidence.
       const price = submission.authorizedPriceKobo;
@@ -266,97 +270,13 @@ export async function registerDeclutterListingRoutes(app: FastifyInstance): Prom
         throw ApiError.unprocessable('This submission is not ready to publish.');
       }
 
-      const slug = listingSlug(title, submission.code);
-
-      const listing = await prisma.$transaction(async (tx) => {
-        const created = await tx.declutterListing.create({
-          data: {
-            slug,
-            submissionId: submission.id,
-            sellerId: submission.sellerId,
-            categoryId,
-            locationId,
-            title,
-            description,
-            condition: submission.condition ?? 'good',
-            priceKobo: price,
-            attributes: submission.attributes,
-            moderationStatus: 'approved',
-            availability: 'available',
-            publishedAt: new Date(),
-            revision: 1,
-            events: {
-              create: {
-                axis: 'moderation',
-                fromStatus: 'draft',
-                toStatus: 'approved',
-                actorType: acting,
-                actorId: actor.identityId,
-                note: 'Published from submission.',
-              },
-            },
-          },
-        });
-
-        // Photographs are re-pointed, not re-uploaded. The same object in the
-        // same private bucket, now also reachable through the listing — so
-        // publishing does not double the storage bill or risk a copy that
-        // silently differs from the one that was reviewed.
-        for (const photo of submission.photos) {
-          await tx.declutterListingPhoto.create({
-            data: {
-              listingId: created.id,
-              fingerprintId: photo.fingerprintId,
-              storageKey: photo.storageKey,
-              position: photo.position,
-              role: photo.role,
-              caption: photo.caption,
-            },
-          });
-        }
-
-        await tx.declutterSubmission.update({
-          where: { id: submission.id },
-          data: {
-            status: 'published',
-            events: {
-              create: {
-                fromStatus: submission.status,
-                toStatus: 'published',
-                actorType: acting,
-                actorId: actor.identityId,
-                note: `Listing ${created.slug}`,
-              },
-            },
-          },
-        });
-
-        return created;
+      const listing = await prisma.$transaction(async tx => {
+        await tx.declutterSubmission.update({ where: { id }, data: { updatedAt: new Date() } });
+        const current = await tx.declutterSubmission.findUniqueOrThrow({ where: { id }, include: hubInclude });
+        if (current.contentRevision !== submission.contentRevision || current.authorizationVersion !== submission.authorizationVersion) throw ApiError.unprocessable('This item changed. Refresh the workspace.');
+        return publishSnapshot(tx, current, actor.identityId, acting === 'super_admin' ? 'super_admin' : 'admin', false, auditContext(request));
       });
-
-      await writeAudit(prisma, {
-        identityId: actor.identityId,
-        action: 'declutter.listing.published',
-        resourceType: 'DeclutterListing',
-        resourceId: listing.id,
-        after: { slug: listing.slug, priceKobo: listing.priceKobo, submissionId: submission.id },
-        ...auditContext(request),
-      });
-
-      // Publication is committed; the browser's retry endpoint uses the same claim.
-      try {
-        const customer = submission.seller.customerId ? await prisma.customer.findUnique({
-          where: { id: submission.seller.customerId }, include: { identity: { select: { email: true } } },
-        }) : null;
-        const result = await notifyListingPublished(notificationEmail(prisma, app.services.email, listing.id), {
-          sellerEmail: customer?.identity.email ?? null, sellerName: submission.seller.displayName,
-          listingId: listing.id, slug: listing.slug, itemTitle: listing.title,
-          publicWebUrl: app.services.config.PUBLIC_WEB_URL,
-        });
-        if (result.failed) request.log.warn({ failed: result.failed }, 'declutter listing-live notification failed');
-      } catch {
-        request.log.warn('declutter listing-live notification failed');
-      }
+      await sendPublicationEmail(app, listing);
       reply.code(201);
       return { listing: { id: listing.id, slug: listing.slug, priceKobo: listing.priceKobo } };
     },

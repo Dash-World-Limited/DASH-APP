@@ -109,12 +109,13 @@ describe('Declutters launch journey against the real API and isolated database',
     await post(admin, `/v1/admin/declutter/sellers/${sellerId}/decision-notification`, { decision: 'verified' });
     await post(admin, `/v1/admin/declutter/sellers/${sellerId}/decision-notification`, { decision: 'verified' });
     expect(sent.filter(m => m.reference === `declutter_kyc_verified_${sellerId}`)).toHaveLength(1);
-    expect((await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } })).status).toBe('details_pending');
+    expect((await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } })).status).toBe('fraud_review');
     const releaseEvent = await context.prisma.declutterSubmissionEvent.findFirst({
-      where: { submissionId: id, fromStatus: 'kyc_pending', toStatus: 'details_pending', reasonCode: 'seller_verified' },
+      where: { submissionId: id, fromStatus: 'kyc_pending', toStatus: 'fraud_review', reasonCode: 'seller_verified' },
     });
     expect(releaseEvent).not.toBeNull();
-    await post(admin, `/v1/admin/declutter/submissions/${id}/transition`, { to: 'valuation_pending' });
+    await post(admin, `/v1/admin/declutter/submissions/${id}/checks`, { kind: 'safety', passed: true });
+    await post(admin, `/v1/admin/declutter/submissions/${id}/checks`, { kind: 'item', passed: true });
     for (const price of [3_500_000, 3_600_000, 3_700_000]) await post(admin, `/v1/admin/declutter/submissions/${id}/comparables`, {
       source: 'Fixture marketplace', description: 'iPhone 13 Pro 128GB', soldPriceKobo: price, observedAt: new Date().toISOString(),
     }, 201);
@@ -123,6 +124,7 @@ describe('Declutters launch journey against the real API and isolated database',
     if (decision.valueCheckStatus === 'super_admin_approval_pending') await post(admin, `/v1/admin/declutter/submissions/${id}/authorize`, { kind: 'approved' });
     const price = await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } });
     await post(seller, `/v1/declutter/submissions/${id}/price-response`, { response: 'accept', priceKobo: price.authorizedPriceKobo });
+    await post(admin, `/v1/admin/declutter/submissions/${id}/fully-approve`);
     const published = await post(admin, `/v1/admin/declutter/submissions/${id}/publish`, undefined, 201);
     await post(admin, `/v1/admin/declutter/listings/${published.listing.id}/published-notification`);
     expect(sent.filter(m => m.reference === `declutter_listing_live_${published.listing.id}`)).toHaveLength(1);

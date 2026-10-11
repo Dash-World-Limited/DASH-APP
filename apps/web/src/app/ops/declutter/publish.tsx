@@ -1,10 +1,13 @@
 'use client';
 
+import Link from 'next/link';
+import { useStepUp } from '@/components/StepUpPrompt';
+import { HUB_BLOCKER_LABELS } from '@dash/domain/declutter';
 import { useCallback, useEffect, useState } from 'react';
 
 import { Button, Card, EmptyState, ErrorState, LoadingBlock } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch } from '@/lib/session';
+import { authedFetch, usePermissions } from '@/lib/session';
 
 interface SubmissionRow {
   id: string;
@@ -30,6 +33,9 @@ function messageFor(error: unknown): string {
 }
 
 export function PublishQueue({ canPublish }: { canPublish: boolean }) {
+  const { run, prompt } = useStepUp();
+  const { permissions } = usePermissions();
+  const [notice, setNotice] = useState<string | null>(null);
   const [rows, setRows] = useState<ReadyRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -69,24 +75,10 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
     setBusyId(row.id);
     setError(null);
     try {
-      const published = await authedFetch<{ listing: PublishedListing }>(
-        `/v1/admin/declutter/submissions/${row.id}/publish`,
-        { method: 'POST' },
-      );
-
-      // Publication has already succeeded. Email is deliberately a separate,
-      // idempotent best-effort boundary: a mail-provider outage must never undo
-      // a listing that the admin just published.
-      try {
-        await authedFetch(
-          `/v1/admin/declutter/listings/${published.listing.id}/published-notification`,
-          { method: 'POST' },
-        );
-      } catch {
-        // The listing remains live and the API audit trail records notification
-        // attempts. Operational retry can happen without republishing the item.
-      }
-
+      const result = await run(() => authedFetch<{ published: boolean; listing: PublishedListing | null; message: string }>(
+        `/v1/admin/declutter/submissions/${row.id}/approve-publish`, { method: 'POST', body: {} },
+      ));
+      if (result) setNotice(result.message);
       await load();
     } catch (caught) {
       setError(messageFor(caught));
@@ -97,10 +89,12 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
 
   return (
     <section className="space-y-4" aria-label="Publication review">
+      {prompt}
+      {notice ? <p role="status" className="text-sm">{notice}</p> : null}
       <div>
         <h2 className="text-sm font-semibold">Publication review</h2>
         <p className="mt-1 text-xs text-[var(--ink-muted)]">
-          Review each submission status and resolve any blockers before publishing.
+          Approve and publish with Super Admin authority. Required seller verification and current-price consent remain mandatory.
         </p>
       </div>
 
@@ -123,16 +117,17 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
                   <p className="mt-1 text-xs font-medium">All publication checks passed.</p>
                 ) : (
                   <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                    Blocked: {row.gaps.length > 0 ? row.gaps.map((gap) => gap.replace(/_/g, ' ')).join(' · ') : 'Publication checks are incomplete.'}
+                    Blocked: {row.gaps.length > 0 ? row.gaps.map((gap) => HUB_BLOCKER_LABELS[gap] ?? 'Publication review required').join(' · ') : 'Publication checks are incomplete.'}
                   </p>
                 )}
               </div>
+              <Link className="min-h-11 py-3 text-sm font-bold underline" href={`/ops/declutter/items/${row.id}`}>Review item</Link>
               <Button
                 size="sm"
-                disabled={!canPublish || !row.canPublish || busyId === row.id}
+                disabled={!canPublish || !permissions.has('declutter:pricing:authorize') || row.gaps.includes('already_published') || ['withdrawn', 'rejected'].includes(row.status) || busyId === row.id}
                 onClick={() => void publish(row)}
               >
-                {busyId === row.id ? 'Publishing…' : 'Publish'}
+                {busyId === row.id ? 'Checking requirements…' : 'Approve & Publish'}
               </Button>
             </Card>
           </li>

@@ -103,7 +103,7 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
       const body = uploadSchema.parse(request.body);
       const { seller, submission } = await ownSubmissionOr404(actor, id);
 
-      if (!PHOTO_EDITABLE_STATES.has(submission.status)) {
+      if (!PHOTO_EDITABLE_STATES.has(submission.status) || submission.itemReviewedAt || submission.authorizedAt || submission.valueCheckStatus !== 'valuation_pending') {
         throw ApiError.conflict(
           'Photographs cannot be changed at this stage. Contact DASH support if something is wrong.',
         );
