@@ -18,6 +18,7 @@ import {
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch, usePermissions, useSessionState } from '@/lib/session';
 
+import { ItemReviewWorkspace } from './ItemReviewWorkspace';
 import { PricingQueue } from './pricing';
 import { PublishQueue } from './publish';
 
@@ -83,14 +84,6 @@ const SUBMISSION_FILTERS = [
   'fraud_review',
   'valuation_pending',
   'pricing_review',
-] as const;
-
-const SUBMISSION_TRANSITIONS = [
-  { value: 'kyc_pending', label: 'Waiting on verification' },
-  { value: 'details_pending', label: 'Need more detail' },
-  { value: 'fraud_review', label: 'Send to fraud review' },
-  { value: 'valuation_pending', label: 'Ready to value' },
-  { value: 'rejected', label: 'Reject' },
 ] as const;
 
 const IDENTITY_DOCUMENT_KINDS = new Set([
@@ -1055,93 +1048,18 @@ function SubmissionQueue({ canWrite }: { canWrite: boolean }) {
         ) : null}
       </div>
 
-      {open ? <SubmissionReviewDrawer submission={open} canWrite={canWrite} onClose={() => setOpen(null)} onChanged={() => { setOpen(null); void load(); }} /> : null}
+      {open ? (
+        <ItemReviewWorkspace
+          submission={open}
+          canWrite={canWrite}
+          onClose={() => setOpen(null)}
+          onChanged={() => {
+            setOpen(null);
+            void load();
+          }}
+        />
+      ) : null}
     </OpsPanel>
-  );
-}
-
-function SubmissionReviewDrawer({
-  submission,
-  canWrite,
-  onClose,
-  onChanged,
-}: {
-  submission: SubmissionRow;
-  canWrite: boolean;
-  onClose: () => void;
-  onChanged: () => void;
-}) {
-  const [to, setTo] = useState<string>(SUBMISSION_TRANSITIONS[0].value);
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  async function move() {
-    setBusy(true);
-    setNotice(null);
-    try {
-      await authedFetch(`/v1/admin/declutter/submissions/${submission.id}/transition`, {
-        method: 'POST',
-        body: { to, note: note.trim() || undefined },
-      });
-      onChanged();
-    } catch (caught) {
-      setNotice(messageFor(caught));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <OpsDrawer title="Item review" subtitle={submission.code} onClose={onClose}>
-      <div className="space-y-5">
-        <div className="rounded-[24px] bg-[#08111f] p-5 text-white sm:p-6">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <p className="text-xs font-semibold tracking-[0.15em] text-[#d5b466]">SUBMISSION</p>
-              <h3 className="mt-2 text-2xl font-bold">{submission.title ?? 'Untitled item'}</h3>
-              <p className="mt-1 text-sm text-white/55">Received {formatDate(submission.createdAt)}</p>
-            </div>
-            <Badge tone={submissionTone(submission.status)}>{readable(submission.status)}</Badge>
-          </div>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          <ReviewSection title="Item facts">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <DataTile label="Reference" value={submission.code} />
-              <DataTile label="Condition" value={submission.condition ? readable(submission.condition) : null} />
-              <DataTile label="Seller expects" value={submission.expectedPriceKobo === null ? null : formatNaira(submission.expectedPriceKobo)} />
-              <DataTile label="Workflow state" value={readable(submission.status)} />
-            </div>
-          </ReviewSection>
-
-          <ReviewSection title="Seller link">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <DataTile label="Seller" value={submission.seller?.displayName ?? null} />
-              <DataTile label="Seller KYC" value={submission.seller ? readable(submission.seller.kycStatus) : null} />
-              <DataTile label="Seller ID" value={submission.seller?.id ?? null} wide />
-            </div>
-          </ReviewSection>
-        </div>
-
-        <ReviewSection title="Workflow decision" description="Move this item only when the current review supports the next state.">
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Field label="Move to" htmlFor="declutter-transition-v2">
-              <select id="declutter-transition-v2" value={to} onChange={(event) => setTo(event.target.value)} className="w-full rounded-xl border border-[#dcd6ca] bg-white px-3.5 py-2.5 text-sm">
-                {SUBMISSION_TRANSITIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </Field>
-            <Field label="Review note" htmlFor="declutter-transition-note-v2" hint="Kept on the submission history.">
-              <Input id="declutter-transition-note-v2" value={note} onChange={(event) => setNote(event.target.value)} placeholder="e.g. Need a clear serial-number photo" />
-            </Field>
-          </div>
-          {notice ? <p role="alert" className="mt-4 rounded-xl bg-[#fff2ef] px-4 py-3 text-sm font-medium text-[#a94336]">{notice}</p> : null}
-          <Button className="mt-5" disabled={busy || !canWrite} onClick={() => void move()}>{busy ? 'Applying…' : 'Apply workflow decision'}</Button>
-          {!canWrite ? <p className="mt-3 text-xs text-[#7b828c]">Your staff role can read submissions but cannot change their workflow state.</p> : null}
-        </ReviewSection>
-      </div>
-    </OpsDrawer>
   );
 }
 
