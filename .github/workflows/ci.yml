@@ -260,25 +260,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
-    # gitleaks asks GitHub for pull-request metadata when this workflow runs
-    # for a PR. The default workflow permission is intentionally read-only,
-    # so grant only the extra read scope the scanner needs.
-    permissions:
-      contents: read
-      pull-requests: read
-
     steps:
       - uses: actions/checkout@v4
         with:
           # gitleaks needs history to scan commits, not just the tree.
           fetch-depth: 0
 
+      # The MIT-licensed CLI has the same detection engine without the
+      # organization's paid Action wrapper. Pin and verify the release binary.
+      - name: Install Gitleaks CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          scanner_dir="${RUNNER_TEMP}/gitleaks"
+          mkdir -p "$scanner_dir"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$scanner_dir/gitleaks.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $scanner_dir/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$scanner_dir/gitleaks.tar.gz" -C "$scanner_dir" gitleaks
+
       - name: Scan for committed secrets
-        # Pin the third-party scanner to the exact revision already exercised
-        # by this repository instead of trusting a movable major-version tag.
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/gitleaks/gitleaks" git . \
+            --config .gitleaks.toml --log-opts="--all" --redact --exit-code 1
 
   dependencies:
     name: Dependency audit
