@@ -4,6 +4,7 @@ import { photoSrc } from '@/lib/declutter';
 import { useEffect, useState } from 'react';
 import { authedFetch, signOut, useMe } from '@/lib/session';
 import { signInHref } from '@/lib/return-to';
+import { RemoveItem } from './RemoveItem';
 import { AccountPhoneEditor } from './AccountPhoneEditor';
 import { HubChat } from './HubChat';
 import { useHub } from './use-hub';
@@ -56,7 +57,7 @@ export function ActionCentre({
 }) {
   return (
     <section
-      className={`${card} border-[var(--primary)]`}
+      className={`${card} dcl-action-centre border-[var(--primary)]`}
       aria-label="Action required"
     >
       <h2 className="text-xl font-bold">Action required</h2>
@@ -92,7 +93,7 @@ export function ItemProgress({ item }: { item: HubItem }) {
   return (
     <section className={card}>
       <h2 className="text-xl font-bold">Item progress</h2>
-      <ol className="mt-5 grid gap-4 sm:grid-cols-3">
+      <ol className="dcl-progress mt-5 grid gap-4 sm:grid-cols-4">
         {item.progress.map((p, i) => (
           <li
             key={p.key}
@@ -160,11 +161,11 @@ export function SellerDashboard() {
   return (
     <main
       id="main"
-      className="mx-auto w-full max-w-[1240px] px-5 py-10 sm:px-8"
+      className="dcl-seller-main mx-auto w-full max-w-[1240px] px-5 py-10 sm:px-8"
     >
       <p className="dcl-eyebrow">Your seller hub</p>
       <h1 className="dcl-display mt-3 text-3xl font-extrabold sm:text-5xl">
-        Your Declutters, in one place.
+        Your seller dashboard.
       </h1>
       <p className="mt-4 max-w-xl text-sm leading-relaxed text-[var(--ink-muted)]">
         Follow every item, review your prices, improve your listings and talk to
@@ -176,7 +177,7 @@ export function SellerDashboard() {
         </div>
       ) : (
         <div className="mt-8 space-y-6">
-          <section className={card}>
+          <section className={`${card} dcl-account-profile`}>
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0">
                 <h2 className="break-words text-xl font-bold">
@@ -245,7 +246,8 @@ export function SellerDashboard() {
               </Link>
             ) : null}
           </section>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <ActionCentre actions={actions} />
+          <div className="dcl-summary grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
             {[
               ['Total items', data?.totals.total],
               ['Under review', data?.totals.underReview],
@@ -262,7 +264,6 @@ export function SellerDashboard() {
               </div>
             ))}
           </div>
-          <ActionCentre actions={actions} />
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-2xl font-bold">Your items</h2>
             <button className={button} onClick={() => void refresh()}>
@@ -284,30 +285,31 @@ export function SellerDashboard() {
           {[...groups].map(([status, rows]) => (
             <section key={status} aria-label={status}>
               <h3 className="mb-4 text-lg font-bold">
-                {status} ({rows.length})
+                {status === 'Removed' ? 'Removed items · history kept' : status}{' '}
+                ({rows.length})
               </h3>
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {rows.map((item) => (
-                  <article key={item.id} className={card}>
+                  <article key={item.id} className={`${card} dcl-item-card`}>
                     {item.photos[0] ? (
                       <img
                         src={photoSrc(item.photos[0].url)}
                         alt={item.title ?? 'Item photo'}
-                        className="aspect-[4/3] w-full rounded-xl object-cover"
+                        className="dcl-item-thumb aspect-[4/3] w-full rounded-xl object-cover"
                       />
                     ) : (
-                      <div className="flex aspect-[4/3] items-center justify-center rounded-xl bg-[var(--surface-sunken)] text-sm">
+                      <div className="dcl-item-thumb flex aspect-[4/3] items-center justify-center rounded-xl bg-[var(--surface-sunken)] text-sm">
                         Photos awaiting upload
                       </div>
                     )}
-                    <h4 className="mt-4 break-words text-lg font-bold">
+                    <h4 className="dcl-item-title mt-4 break-words text-lg font-bold">
                       {item.title ?? 'Your item'}
                     </h4>
                     <p className="mt-2 text-xs text-[var(--ink-muted)]">
                       {item.code} · {date(item.createdAt)}
                     </p>
                     <p className="mt-2 text-sm font-semibold">{item.status}</p>
-                    <dl className="mt-4 space-y-2 text-sm">
+                    <dl className="dcl-item-prices mt-4 space-y-2 text-sm">
                       <div className="flex flex-wrap justify-between gap-2">
                         <dt>Your submitted price</dt>
                         <dd className="font-bold">
@@ -321,7 +323,7 @@ export function SellerDashboard() {
                         </dd>
                       </div>
                     </dl>
-                    <p className="mt-3 text-xs">
+                    <p className="dcl-card-stage-count mt-3 text-xs">
                       {
                         item.progress.filter((p) => p.state === 'completed')
                           .length
@@ -340,7 +342,7 @@ export function SellerDashboard() {
                         </span>
                       ) : null}
                     </div>
-                    <div className="mt-4 flex flex-wrap gap-2">
+                    <div className="dcl-item-links mt-4 flex flex-wrap gap-2">
                       <Link
                         className={button}
                         href={`/declutter/account/items/${item.id}`}
@@ -353,7 +355,7 @@ export function SellerDashboard() {
                       >
                         Chat with DASH
                       </Link>
-                      {item.listing?.publishedAt ? (
+                      {item.status === 'Live' && item.listing?.publishedAt ? (
                         <Link
                           className="min-h-11 py-3 text-sm font-bold underline"
                           href={`/declutter/${item.listing.slug}`}
@@ -374,9 +376,9 @@ export function SellerDashboard() {
 }
 export function ItemDetails({ item }: { item: HubItem }) {
   return (
-    <section className={card}>
+    <section className={`${card} dcl-item-details`}>
       <h2 className="text-xl font-bold">Item details</h2>
-      <div className="mt-5 grid gap-3 sm:grid-cols-2">
+      <div className="dcl-gallery mt-5 grid gap-3 sm:grid-cols-2">
         {item.photos.map((p, i) => (
           <figure key={p.id}>
             <img
@@ -430,6 +432,10 @@ function SellerItemEditor({
   item: HubItem;
   onChanged: () => Promise<void>;
 }) {
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    if (window.matchMedia?.('(min-width: 768px)').matches) setEditing(true);
+  }, []);
   const [title, setTitle] = useState(item.title ?? '');
   const [description, setDescription] = useState(item.description ?? '');
   const [condition, setCondition] = useState(item.condition ?? 'good');
@@ -530,7 +536,7 @@ function SellerItemEditor({
     }
   }
   return (
-    <section id="edit" className={`${card} scroll-mt-24`}>
+    <section id="edit" className={`${card} dcl-item-editor scroll-mt-24`}>
       <h2 className="text-xl font-bold">Improve your item</h2>
       <p className="mt-3 text-sm leading-relaxed">
         Replace poor photos or update item details. DASH reviews every proposed
@@ -548,6 +554,17 @@ function SellerItemEditor({
         <p role="alert" className="mt-4 text-sm">
           {error}
         </p>
+      ) : null}
+      {!existing ? (
+        <button
+          type="button"
+          className={`${button} mt-4 w-full`}
+          aria-expanded={editing}
+          aria-controls="item-edit-form"
+          onClick={() => setEditing((v) => !v)}
+        >
+          {editing ? 'Close editor' : 'Update photos & details'}
+        </button>
       ) : null}
       {existing ? (
         <div className="mt-4 space-y-3">
@@ -618,8 +635,9 @@ function SellerItemEditor({
             </div>
           ) : null}
         </div>
-      ) : (
+      ) : editing ? (
         <form
+          id="item-edit-form"
           className="mt-5 space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
@@ -728,7 +746,7 @@ function SellerItemEditor({
             {busy ? 'Uploading changes…' : 'Submit changes for review'}
           </button>
         </form>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -769,7 +787,7 @@ export function SellerItemWorkspace({
   return (
     <main
       id="main"
-      className="mx-auto w-full max-w-[1240px] px-5 py-10 sm:px-8"
+      className="dcl-seller-main mx-auto w-full max-w-[1240px] px-5 py-10 sm:px-8"
     >
       <Link href="/declutter/account" className="text-sm font-bold underline">
         ← Your seller dashboard
@@ -801,8 +819,10 @@ export function SellerItemWorkspace({
             </h1>
             <p className="mt-3 text-lg font-bold">{item.status}</p>
           </header>
-          {item.listing?.publishedAt ? (
-            <section className={`${card} border-[var(--primary)]`}>
+          {item.status === 'Live' && item.listing?.publishedAt ? (
+            <section
+              className={`${card} dcl-action-centre border-[var(--primary)]`}
+            >
               <h2 className="text-2xl font-extrabold">YOUR ITEM IS LIVE</h2>
               <p className="mt-3">
                 Public price: {money(item.listing.priceKobo)} · Published{' '}
@@ -818,13 +838,23 @@ export function SellerItemWorkspace({
           ) : null}
           <ActionCentre actions={item.actions} />
           <ItemProgress item={item} />
-          <div className="grid min-w-0 items-start gap-6 lg:grid-cols-2">
+          <div className="dcl-workspace-columns grid min-w-0 items-start gap-6 lg:grid-cols-2">
             <div className="min-w-0 space-y-6">
               <ItemDetails item={item} />
-              <SellerItemEditor key={item.id} item={item} onChanged={refresh} />
+              {!['Removed', 'Sold'].includes(item.status) ? (
+                <SellerItemEditor
+                  key={item.id}
+                  item={item}
+                  onChanged={refresh}
+                />
+              ) : null}
+              <RemoveItem item={item} onChanged={refresh} />
             </div>
             <div className="min-w-0 space-y-6">
-              <section id="price" className={`${card} scroll-mt-24`}>
+              <section
+                id="price"
+                className={`${card} dcl-price-decision scroll-mt-24`}
+              >
                 <h2 className="text-xl font-bold">Your price decision</h2>
                 <dl className="mt-5 space-y-4">
                   <div>
@@ -844,7 +874,12 @@ export function SellerItemWorkspace({
                     </dd>
                   </div>
                 </dl>
-                {item.priceAcceptanceValid ? (
+                {item.status === 'Removed' ? (
+                  <p className="mt-5 text-sm">
+                    This item was removed. These prices are kept for your
+                    history.
+                  </p>
+                ) : item.priceAcceptanceValid ? (
                   <p className="mt-5 font-bold">
                     Price accepted
                     {item.preConsented
@@ -857,7 +892,8 @@ export function SellerItemWorkspace({
                     You declined DASH’s authorised price. Your item will not
                     publish. Chat with DASH about the next step.
                   </p>
-                ) : item.valueCheckStatus === 'seller_acceptance_pending' ? (
+                ) : item.valueCheckStatus === 'seller_acceptance_pending' &&
+                  item.status !== 'Removed' ? (
                   <div className="mt-5 space-y-3">
                     <p className="text-sm">
                       Your decision is required before this item can proceed.
@@ -908,7 +944,7 @@ export function SellerItemWorkspace({
                 submissionId={item.id}
                 onChanged={refresh}
               />
-              <section className={card}>
+              <section className={`${card} dcl-item-history`}>
                 <h2 className="text-xl font-bold">
                   Activity & pricing history
                 </h2>

@@ -15,7 +15,7 @@ it('lets a new visitor create an account from desktop and mobile navigation', ()
   render(<DeclutterHeader />);
   expect(screen.getByRole('link', { name: 'Create account' }).getAttribute('href')).toBe('/declutter/join?next=%2Fdeclutter%2Fsell');
   expect(screen.getByRole('link', { name: 'Sign in' })).toBeTruthy();
-  fireEvent.click(screen.getByRole('button'));
+  fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
   expect(screen.getAllByRole('link', { name: 'Create account' })).toHaveLength(2);
   expect(screen.getAllByRole('link', { name: 'Sign in' })).toHaveLength(2);
 });

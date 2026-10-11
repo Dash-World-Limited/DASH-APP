@@ -64,9 +64,9 @@ export interface HubSummary {
   };
 }
 export const hubButton =
-  'inline-flex min-h-12 items-center justify-center rounded-full border border-[var(--line-strong)] px-5 py-3 text-sm font-bold disabled:opacity-50';
+  'dcl-hub-button inline-flex min-h-12 items-center justify-center rounded-full border border-[var(--line-strong)] px-5 py-3 text-sm font-bold disabled:opacity-50';
 export const hubCard =
-  'dcl-glass min-w-0 rounded-[var(--radius-card)] border border-[var(--line)] p-5 sm:p-6';
+  'dcl-hub-card dcl-glass min-w-0 rounded-[var(--radius-card)] border border-[var(--line)] p-5 sm:p-6';
 export const hubInput =
   'min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3 text-sm';
 export const hubMoney = (value: number | null) =>

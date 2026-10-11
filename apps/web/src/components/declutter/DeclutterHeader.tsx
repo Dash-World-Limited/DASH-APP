@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { useSessionState } from '@/lib/session';
 import { signInHref } from '@/lib/return-to';
 import { DeclutterWordmark } from './DeclutterWordmark';
+import { DeclutterThemeToggle } from './DeclutterTheme';
 import { HubUnreadBadge } from './HubUnreadBadge';
 
 const LINKS = [
@@ -51,7 +52,7 @@ export function DeclutterHeader() {
 
   return (
     <header className="dcl-glass sticky top-0 z-50 border-x-0 border-t-0">
-      <div className="mx-auto flex w-full max-w-[1240px] items-center gap-4 px-5 py-3.5 sm:px-8">
+      <div className="mx-auto flex w-full max-w-[1240px] items-center gap-2 px-4 py-3 sm:gap-4 sm:px-8">
         <Link
           href="/declutter"
           className="-m-2 shrink-0 rounded-lg p-2"
@@ -88,7 +89,7 @@ export function DeclutterHeader() {
               </Link>
               <Link
                 href={joinHref(pathname)}
-                className="rounded-full bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+                className="rounded-full bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-[var(--on-primary)] transition-opacity hover:opacity-90"
               >
                 Create account
               </Link>
@@ -96,9 +97,10 @@ export function DeclutterHeader() {
           )}
         </nav>
 
+        <div className="ml-auto md:ml-0"><DeclutterThemeToggle /></div>
         <button
           type="button"
-          className="ml-auto inline-flex min-h-11 items-center gap-2 rounded-full border border-[var(--line-strong)] px-4 text-sm font-semibold md:hidden"
+          className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[var(--line-strong)] px-4 text-sm font-semibold md:hidden"
           aria-expanded={open}
           aria-controls="declutter-menu"
           onClick={() => setOpen((current) => !current)}
@@ -107,7 +109,7 @@ export function DeclutterHeader() {
             <span className="block h-[2px] w-4 bg-current" />
             <span className="block h-[2px] w-4 bg-current" />
           </span>
-          {open ? 'Close' : 'Menu'}
+          <span className="sr-only">{open ? 'Close menu' : 'Open menu'}</span>
         </button>
       </div>
 
@@ -144,7 +146,7 @@ export function DeclutterHeader() {
               </Link>
               <Link
                 href={joinHref(pathname)}
-                className="block rounded-full bg-[var(--primary)] px-4 py-3 text-center text-sm font-semibold text-white"
+                className="block rounded-full bg-[var(--primary)] px-4 py-3 text-center text-sm font-semibold text-[var(--on-primary)]"
               >
                 Create account
               </Link>

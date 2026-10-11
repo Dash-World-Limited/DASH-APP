@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 import { Archivo } from 'next/font/google';
 
+import { DeclutterThemeShell } from '@/components/declutter/DeclutterTheme';
+import { SellerMobileNav } from '@/components/declutter/SellerMobileNav';
 import { DeclutterHeader } from '@/components/declutter/DeclutterHeader';
 import { DeclutterFooter } from '@/components/declutter/DeclutterFooter';
 
@@ -45,18 +47,12 @@ const archivo = Archivo({
 
 export default function DeclutterSiteLayout({ children }: { children: ReactNode }) {
   return (
-    <div
-      // `data-surface` re-points the semantic tokens for this subtree only. The
-      // rest of the application keeps its own surface, and nothing here is a
-      // colour class that would have to be found and changed later.
-      data-surface="declutter"
-      className={`${archivo.variable} flex min-h-dvh flex-col`}
-    >
+    <DeclutterThemeShell className={`${archivo.variable} flex flex-col`}>
       <DeclutterHeader />
-      {/* No bottom navigation, so no reserved space for one. The footer is the
-          end of the page, the way a website ends. */}
+      {/* Seller navigation is scoped to authenticated account routes. */}
       <div className="min-w-0 flex-1">{children}</div>
       <DeclutterFooter />
-    </div>
+      <SellerMobileNav />
+    </DeclutterThemeShell>
   );
 }

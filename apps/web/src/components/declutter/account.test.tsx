@@ -27,12 +27,12 @@ it('provides signed-out sign-in and signup links that return to the Declutters a
 it('links desktop and mobile Account to the marketplace account and closes the menu accessibly', () => {
   render(<DeclutterHeader />);
   expect(screen.getByRole('link', { name: 'Account' }).getAttribute('href')).toBe('/declutter/account');
-  const menu = screen.getByRole('button', { name: 'Menu' });
+  const menu = screen.getByRole('button', { name: 'Open menu' });
   expect(menu.getAttribute('aria-expanded')).toBe('false');
   fireEvent.click(menu);
   for (const link of screen.getAllByRole('link', { name: 'Account' })) expect(link.getAttribute('href')).toBe('/declutter/account');
   expect(document.body.style.overflow).toBe('hidden');
-  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Close menu' }));
   expect(document.body.style.overflow).toBe('');
 });
 

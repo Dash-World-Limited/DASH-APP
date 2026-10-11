@@ -138,6 +138,7 @@ it('replaces selected photos through a proposed update and submits only after up
   );
   render(<SellerItemWorkspace submissionId="item-1" />);
   await screen.findByRole('heading', { name: 'Improve your item' });
+  fireEvent.click(screen.getByRole('button', { name: 'Update photos & details' }));
   fireEvent.click(screen.getByRole('checkbox', { name: /Keep photo 1/ }));
   fireEvent.change(screen.getByLabelText('New / replacement photos'), {
     target: {
@@ -218,21 +219,21 @@ it('links the staff inbox to the exact item and supports pricing/unread filters'
     screen.getByRole('link', { name: 'Manage item' }).getAttribute('href'),
   ).toBe('/ops/declutter/items/item-1');
 });
-it('wires Fully Approved to the protected backend action and shows real blockers', async () => {
+it('wires Approve & Publish to the protected backend action and shows real blockers', async () => {
   itemFetch();
   render(<OpsItemWorkspace submissionId="item-1" />);
   await screen.findByText('Seller price decision is required');
-  expect(screen.getByRole('option', { name: 'FULLY APPROVED' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Approve & Publish' })).toBeTruthy();
   const fetchExisting = state.fetch.getMockImplementation()!;
   state.fetch.mockImplementation(async (url: string) => {
-    if (url.endsWith('/fully-approve'))
+    if (url.endsWith('/approve-publish'))
       throw new Error('Mandatory item checks are still outstanding.');
     return fetchExisting(url);
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Apply final action' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Approve & Publish' }));
   await screen.findByText('Mandatory item checks are still outstanding.');
   expect(state.fetch).toHaveBeenCalledWith(
-    '/v1/admin/declutter/submissions/item-1/fully-approve',
+    '/v1/admin/declutter/submissions/item-1/approve-publish',
     { method: 'POST', body: {} },
   );
 });

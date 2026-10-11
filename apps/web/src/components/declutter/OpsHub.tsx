@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { photoSrc } from '@/lib/declutter';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { authedFetch, usePermissions, useSessionState } from '@/lib/session';
 import { useStepUp } from '@/components/StepUpPrompt';
 import { WorkspaceModal } from '@/app/ops/declutter/pricing';
@@ -55,19 +55,21 @@ export function OpsItemWorkspace({ submissionId }: { submissionId: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [reason, setReason] = useState('');
-  const [action, setAction] = useState('fully-approve');
+  const [finalPrice, setFinalPrice] = useState<string | null>(null);
   const [kycOpen, setKycOpen] = useState(false);
+  useEffect(() => { setFinalPrice(null); setReason(''); setNotice(null); setFailure(null); setKycOpen(false); }, [submissionId]);
   async function call(url: string, body: unknown) {
     setBusy(true);
     setFailure(null);
     setNotice(null);
     try {
       const result = await run(() =>
-        authedFetch(url, { method: 'POST', body }),
+        authedFetch<{ message?: string }>(url, { method: 'POST', body }),
       );
       if (result) {
         setNotice(
-          'Saved. The item’s next stage is based on its completed checks.',
+          result.message ??
+            'Saved. The item’s next stage is based on its completed checks.',
         );
         await refresh();
       }
@@ -140,7 +142,11 @@ export function OpsItemWorkspace({ submissionId }: { submissionId: string }) {
           ) : null}
           <ItemProgress item={item} />
           <section className={card}>
-            <h2 className="text-xl font-bold">Current blockers</h2>
+            <h2 className="text-xl font-bold">Review context</h2>
+            <p className="mt-2 text-sm text-[var(--ink-muted)]">
+              Internal checks inform your decision; they do not require visiting
+              separate pages. The final action below records your authority.
+            </p>
             {item.blockers.length ? (
               <ul className="mt-4 list-disc space-y-2 pl-5 text-sm">
                 {item.blockers.map((b) => (
@@ -237,37 +243,62 @@ export function OpsItemWorkspace({ submissionId }: { submissionId: string }) {
                 ) : null}
               </div>
             ))}
-            {permissions.has('declutter:pricing:authorize') ? (
-              <div className="mt-5 flex flex-wrap gap-3">
-                <label className="min-w-0 flex-1 text-sm font-bold">
-                  Final action
-                  <select
+            {permissions.has('declutter:pricing:authorize') &&
+            permissions.has('declutter:listing:publish') ? (
+              <div className="mt-6 rounded-2xl border border-[var(--primary)] bg-[var(--primary-soft)] p-4">
+                <h3 className="text-lg font-bold">Approve &amp; Publish</h3>
+                <p className="mt-2 text-sm leading-relaxed">
+                  Your final decision overrides DASH-controlled review checks
+                  and publishes the current item. Seller verification and
+                  acceptance of the exact authorised price cannot be bypassed.
+                  Proposed photo updates still need separate review.
+                </p>
+                <label className="mt-4 block text-sm font-bold">
+                  Final DASH price (₦)
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0.01"
+                    max="1000000000"
+                    step="0.01"
                     className={`${input} mt-2`}
-                    value={action}
-                    onChange={(e) => setAction(e.target.value)}
-                  >
-                    <option value="fully-approve">FULLY APPROVED</option>
-                    <option value="publish">Publish / Go live</option>
-                    {item.blockers.includes(
-                      'Source partner approval is required',
-                    ) ? (
-                      <option value="partner-approval">
-                        Record source-partner approval
-                      </option>
-                    ) : null}
-                  </select>
+                    value={
+                      finalPrice ??
+                      String(
+                        (item.authorizedPriceKobo ??
+                          data?.pricing?.proposedPriceKobo ??
+                          item.expectedPriceKobo ??
+                          0) / 100,
+                      )
+                    }
+                    onChange={(e) => setFinalPrice(e.target.value)}
+                  />
                 </label>
                 <button
-                  className={`${button} self-end bg-[var(--primary)] text-[var(--on-primary)]`}
-                  disabled={busy || Boolean(item.listing?.publishedAt)}
+                  className={`${button} mt-4 w-full bg-[var(--primary)] text-[var(--on-primary)]`}
+                  disabled={
+                    busy ||
+                    Boolean(item.listing) ||
+                    ['Removed', 'Sold'].includes(item.status) ||
+                    (finalPrice !== null && !(Number(finalPrice) > 0))
+                  }
                   onClick={() =>
                     void call(
-                      `/v1/admin/declutter/submissions/${item.id}/${action}`,
-                      action === 'partner-approval' ? { reason } : {},
+                      `/v1/admin/declutter/submissions/${item.id}/approve-publish`,
+                      {
+                        ...(finalPrice !== null
+                          ? { priceKobo: Math.round(Number(finalPrice) * 100) }
+                          : {}),
+                        ...(reason.trim() ? { reason: reason.trim() } : {}),
+                      },
                     )
                   }
                 >
-                  {busy ? 'Checking gates…' : 'Apply final action'}
+                  {busy
+                    ? 'Checking seller requirements…'
+                    : item.listing?.publishedAt
+                      ? 'Published / Live'
+                      : 'Approve & Publish'}
                 </button>
               </div>
             ) : null}

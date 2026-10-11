@@ -73,7 +73,7 @@ interface PhotoResponse {
 }
 
 const SUBMISSION_TRANSITIONS = [
-  { value: 'fully_approved', label: 'FULLY APPROVED — validate all gates' },
+  { value: 'approve_publish', label: 'Approve & Publish — final Super Admin decision' },
   { value: 'kyc_pending', label: 'Waiting on verification' },
   { value: 'details_pending', label: 'Need more detail' },
   { value: 'fraud_review', label: 'Send to fraud review' },
@@ -187,9 +187,9 @@ export function ItemReviewWorkspace({
     setBusy(true);
     setNotice(null);
     try {
-      await runWithStepUp(() => authedFetch(`/v1/admin/declutter/submissions/${submission.id}/${to === 'fully_approved' ? 'fully-approve' : 'transition'}`, {
+      await runWithStepUp(() => authedFetch(`/v1/admin/declutter/submissions/${submission.id}/${to === 'approve_publish' ? 'approve-publish' : 'transition'}`, {
         method: 'POST',
-        body: to === 'fully_approved' ? {} : { to, note: note.trim() || undefined },
+        body: to === 'approve_publish' ? { reason: note.trim() || undefined } : { to, note: note.trim() || undefined },
       }));
       onChanged();
     } catch (caught) {
@@ -395,7 +395,7 @@ export function ItemReviewWorkspace({
                     onChange={(event) => setTo(event.target.value)}
                     className="w-full rounded-xl border border-[#dcd6ca] bg-white px-3.5 py-2.5 text-sm"
                   >
-                    {SUBMISSION_TRANSITIONS.filter(option => option.value !== 'fully_approved' || permissions.has('declutter:pricing:authorize')).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    {SUBMISSION_TRANSITIONS.filter(option => option.value !== 'approve_publish' || permissions.has('declutter:pricing:authorize')).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                   </select>
                 </Field>
                 <Field label="Review note" htmlFor={`declutter-transition-note-${submission.id}`} hint="Be specific enough that another reviewer can understand the decision later.">

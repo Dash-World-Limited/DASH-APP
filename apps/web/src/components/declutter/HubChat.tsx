@@ -130,7 +130,7 @@ export function HubChat({
     }
   }
   return (
-    <section id="chat" className={`${hubCard} scroll-mt-24`}>
+    <section id="chat" className={`${hubCard} dcl-chat scroll-mt-24`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-bold">
           {staff ? 'Conversation' : 'Chat with DASH'}
@@ -213,7 +213,7 @@ export function HubChat({
         </p>
       ) : null}
       <form
-        className="mt-5 space-y-3"
+        className="dcl-chat-composer mt-5 space-y-3"
         onSubmit={(event) => {
           event.preventDefault();
           void send();
@@ -315,7 +315,7 @@ export function HubInbox({ staff = false }: { staff?: boolean }) {
       </p>
     );
   return (
-    <div className="space-y-6">
+    <div className="dcl-inbox space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-bold">
           {staff ? 'Declutters inbox' : 'Messages / Chat with DASH'}{' '}
@@ -330,7 +330,10 @@ export function HubInbox({ staff = false }: { staff?: boolean }) {
           Back to dashboard
         </Link>
       </div>
-      <nav aria-label="Message filters" className="flex flex-wrap gap-2">
+      <nav
+        aria-label="Message filters"
+        className="dcl-message-filters flex flex-wrap gap-2"
+      >
         {['all', 'unread', 'open', 'pricing', 'action', 'resolved'].map((f) => (
           <button
             key={f}
@@ -357,7 +360,7 @@ export function HubInbox({ staff = false }: { staff?: boolean }) {
       ) : !data ? (
         <p role="status">Loading conversations…</p>
       ) : null}
-      <div className="grid min-w-0 gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="dcl-inbox-grid grid min-w-0 gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
         <div className="space-y-3">
           {data && !filtered.length ? (
             <p className={hubCard}>No conversations in this view.</p>
@@ -365,7 +368,14 @@ export function HubInbox({ staff = false }: { staff?: boolean }) {
           {filtered.map((c) => (
             <button
               key={c.id}
-              onClick={() => setSelected(c.id)}
+              onClick={() => {
+                setSelected(c.id);
+                requestAnimationFrame(() =>
+                  document
+                    .getElementById('selected-chat')
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+                );
+              }}
               className={`${hubCard} w-full text-left ${selected === c.id ? 'ring-2 ring-[var(--primary)]' : ''}`}
             >
               {staff ? (
@@ -385,7 +395,7 @@ export function HubInbox({ staff = false }: { staff?: boolean }) {
             </button>
           ))}
         </div>
-        <div className="min-w-0 space-y-4">
+        <div id="selected-chat" className="min-w-0 scroll-mt-24 space-y-4">
           {active ? (
             <>
               <p className={hubCard}>
