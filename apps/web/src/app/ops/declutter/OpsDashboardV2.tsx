@@ -19,6 +19,8 @@ import { ApiRequestError } from '@/lib/api';
 import { authedFetch, usePermissions, useSessionState } from '@/lib/session';
 
 import { ItemReviewWorkspace } from './ItemReviewWorkspace';
+import { HubUnreadBadge } from '@/components/declutter/HubUnreadBadge';
+import { HubPendingUpdatesLink } from '@/components/declutter/HubPendingUpdates';
 import { PricingQueue } from './pricing';
 import { PublishQueue } from './publish';
 
@@ -244,6 +246,8 @@ export default function OpsDashboardV2() {
                 <p className="text-[11px] font-bold tracking-[0.18em] text-[#9a782f]">WORKSPACE</p>
               </div>
               <nav className="space-y-1" aria-label="Declutters operations sections">
+                <Link href="/ops/declutter/inbox" className="block min-h-12 rounded-2xl px-4 py-3 text-sm font-semibold">Inbox / Messages <HubUnreadBadge staff /></Link>
+                <HubPendingUpdatesLink />
                 {NAV.map((item) => {
                   const active = tab === item.id;
                   return (
@@ -614,7 +618,7 @@ function SellerQueue({ canReviewKyc }: { canReviewKyc: boolean }) {
   );
 }
 
-function SellerReviewDrawer({
+export function SellerReviewDrawer({
   sellerId,
   canReviewKyc,
   onClose,
@@ -1040,7 +1044,7 @@ function SubmissionQueue({ canWrite }: { canWrite: boolean }) {
                   <span className="truncate text-sm text-[#616a76]">{row.seller?.displayName ?? '—'}</span>
                   <span><Badge tone={row.seller?.kycStatus === 'verified' ? 'success' : 'warning'}>{row.seller ? readable(row.seller.kycStatus) : 'unknown'}</Badge></span>
                   <span className="text-sm font-semibold">{row.expectedPriceKobo === null ? '—' : formatNaira(row.expectedPriceKobo)}</span>
-                  <Button size="sm" variant="secondary" onClick={() => setOpen(row)}>Review item</Button>
+                  <div className="flex flex-wrap gap-2"><Link className="inline-flex min-h-11 items-center rounded-xl border px-4 text-sm font-bold" href={`/ops/declutter/items/${row.id}`}>Open workspace</Link><Button size="sm" variant="secondary" onClick={() => setOpen(row)}>Review evidence</Button></div>
                 </div>
               ))}
             </div>

@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { useSessionState } from '@/lib/session';
 import { signInHref } from '@/lib/return-to';
 import { DeclutterWordmark } from './DeclutterWordmark';
+import { HubUnreadBadge } from './HubUnreadBadge';
 
 const LINKS = [
   { href: '/declutter', label: 'Browse' },
@@ -75,7 +76,7 @@ export function DeclutterHeader() {
               href="/declutter/account"
               className="ml-2 rounded-full border border-[var(--line-strong)] px-4 py-2 text-sm font-semibold transition-colors hover:bg-[var(--dcl-glass)]"
             >
-              Account
+              Account <HubUnreadBadge />
             </Link>
           ) : sessionState === 'restoring' ? <span role="status" className="px-4 text-sm text-[var(--ink-muted)]">Checking account…</span> : (
             <>
@@ -131,7 +132,7 @@ export function DeclutterHeader() {
               href="/declutter/account"
               className="mt-4 block rounded-full border border-[var(--line-strong)] px-4 py-3 text-center text-sm font-semibold"
             >
-              Account
+              Account <HubUnreadBadge />
             </Link>
           ) : sessionState === 'restoring' ? <p role="status" className="py-4 text-sm text-[var(--ink-muted)]">Checking account…</p> : (
             <div className="mt-4 grid gap-3">
