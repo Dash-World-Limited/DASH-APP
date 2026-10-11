@@ -184,7 +184,7 @@ export default function OpsDashboardV2() {
               <p className="mt-3 max-w-xl text-sm text-white/70">
                 Seller identity evidence, item review and publication controls are restricted to authorised DASH staff.
               </p>
-              <Link href="/signin?next=%2Fops%2Fdeclutter" className="mt-6 inline-flex">
+              <Link href="/ops/declutter/signin" className="mt-6 inline-flex">
                 <span className="rounded-xl bg-[#d5b466] px-5 py-3 text-sm font-bold text-[#08111f]">
                   Sign in to DASH Ops
                 </span>
