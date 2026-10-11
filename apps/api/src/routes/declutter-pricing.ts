@@ -368,6 +368,7 @@ export async function registerDeclutterPricingRoutes(app: FastifyInstance): Prom
             ? (JSON.parse(submission.escalationReasons) as string[])
             : [],
           authorizedPriceKobo: submission.authorizedPriceKobo,
+          proposedPriceKobo: submission.finalPriceKobo,
           authorizationVersion: submission.authorizationVersion,
           sellerAcceptedPriceKobo: submission.sellerAcceptedPriceKobo,
           acceptanceValid: isEligible(submission),
@@ -745,6 +746,12 @@ export async function registerDeclutterPricingRoutes(app: FastifyInstance): Prom
         action: 'declutter.price.pre_authorization_applied', resourceType: 'DeclutterSubmission', resourceId: submissionId,
         after: { priceKobo, authorizationVersion: version, consentedAt: submission.submittedPriceConsentAt!.toISOString(), authorizedBy: identityId },
       });
+      if (!preAccepted && submission.seller.customer?.identityId) {
+        const eventKey = `price:${submissionId}:${version}`;
+        await tx.declutterHubNotification.upsert({ where: { eventKey }, create: {
+          eventKey, kind: 'price', submissionId, recipientIdentityId: submission.seller.customer.identityId,
+        }, update: {} });
+      }
       return updated;
     });
   }

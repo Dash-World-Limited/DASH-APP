@@ -59,6 +59,8 @@ import {
 import { ApiError } from '../http/errors.js';
 import { notifyListingPublished } from '../declutter/notifications.js';
 import { notificationEmail } from '../declutter/notification-delivery.js';
+import { facts, hubInclude } from '../declutter/hub.js';
+import { hubBlockers } from '@dash/domain/declutter';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import { auditContext, customerIdOf, declutterActorFor, PHOTO_LINK_SECONDS } from './declutter-shared.js';
 
@@ -255,6 +257,10 @@ export async function registerDeclutterListingRoutes(app: FastifyInstance): Prom
         });
       }
 
+      const hubSubmission = await prisma.declutterSubmission.findUniqueOrThrow({ where: { id }, include: hubInclude });
+      const blockers = hubBlockers(facts(hubSubmission));
+      if (blockers.length) throw ApiError.unprocessable('Mandatory item checks are still outstanding.', { blockers });
+
       // Narrowed by `canPublish`, but TypeScript cannot see that through a
       // boolean, and an assertion here would be the wrong kind of confidence.
       const price = submission.authorizedPriceKobo;
@@ -269,6 +275,12 @@ export async function registerDeclutterListingRoutes(app: FastifyInstance): Prom
       const slug = listingSlug(title, submission.code);
 
       const listing = await prisma.$transaction(async (tx) => {
+        // Serialise publication with proposed-update submission. Recheck after
+        // taking the row lock, so an update cannot slip past the readiness read.
+        await tx.declutterSubmission.update({ where: { id }, data: { updatedAt: new Date() } });
+        const current = await tx.declutterSubmission.findUniqueOrThrow({ where: { id }, include: hubInclude });
+        const currentBlockers = hubBlockers(facts(current));
+        if (currentBlockers.length || current.listing || current.contentRevision !== submission.contentRevision || current.authorizationVersion !== submission.authorizationVersion) throw ApiError.unprocessable('This item changed or is not ready to publish. Refresh the workspace.', { blockers: currentBlockers });
         const created = await tx.declutterListing.create({
           data: {
             slug,
