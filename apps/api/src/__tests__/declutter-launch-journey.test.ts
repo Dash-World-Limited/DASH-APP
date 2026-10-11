@@ -109,7 +109,12 @@ describe('Declutters launch journey against the real API and isolated database',
     await post(admin, `/v1/admin/declutter/sellers/${sellerId}/decision-notification`, { decision: 'verified' });
     await post(admin, `/v1/admin/declutter/sellers/${sellerId}/decision-notification`, { decision: 'verified' });
     expect(sent.filter(m => m.reference === `declutter_kyc_verified_${sellerId}`)).toHaveLength(1);
-    for (const to of ['details_pending', 'valuation_pending']) await post(admin, `/v1/admin/declutter/submissions/${id}/transition`, { to });
+    expect((await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } })).status).toBe('details_pending');
+    const releaseEvent = await context.prisma.declutterSubmissionEvent.findFirst({
+      where: { submissionId: id, fromStatus: 'kyc_pending', toStatus: 'details_pending', reasonCode: 'seller_verified' },
+    });
+    expect(releaseEvent).not.toBeNull();
+    await post(admin, `/v1/admin/declutter/submissions/${id}/transition`, { to: 'valuation_pending' });
     for (const price of [3_500_000, 3_600_000, 3_700_000]) await post(admin, `/v1/admin/declutter/submissions/${id}/comparables`, {
       source: 'Fixture marketplace', description: 'iPhone 13 Pro 128GB', soldPriceKobo: price, observedAt: new Date().toISOString(),
     }, 201);

@@ -158,7 +158,7 @@ export default function OpsDashboardV2() {
   if (sessionState === 'restoring') {
     return (
       <div className="min-h-dvh bg-[#f6f4ee]">
-        <AppHeader />
+        <AppHeader variant="staff" />
         <main className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
           <Card className="border-0 bg-white p-8 shadow-sm">
             <p className="text-sm font-semibold text-[#9a782f]">DASH DECLUTTERS OPS</p>
@@ -175,7 +175,7 @@ export default function OpsDashboardV2() {
   if (sessionState === 'unauthenticated') {
     return (
       <div className="min-h-dvh bg-[#f6f4ee]">
-        <AppHeader />
+        <AppHeader variant="staff" />
         <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6">
           <Card className="overflow-hidden border-0 shadow-sm">
             <div className="bg-[#08111f] px-6 py-10 text-white sm:px-10">
@@ -199,7 +199,7 @@ export default function OpsDashboardV2() {
   if (permissionsLoaded && !canReadSellers && !canReadSubmissions) {
     return (
       <div className="min-h-dvh bg-[#f6f4ee]">
-        <AppHeader />
+        <AppHeader variant="staff" />
         <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6">
           <EmptyState
             title="Declutters access is not assigned"
@@ -212,7 +212,7 @@ export default function OpsDashboardV2() {
 
   return (
     <div className="min-h-dvh bg-[#f6f4ee] text-[#0b1320]">
-      <AppHeader />
+      <AppHeader variant="staff" />
       <main className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
         <section className="overflow-hidden rounded-[28px] bg-[#08111f] text-white shadow-sm">
           <div className="grid gap-6 px-6 py-7 sm:px-8 lg:grid-cols-[1fr_auto] lg:items-end lg:px-10 lg:py-9">

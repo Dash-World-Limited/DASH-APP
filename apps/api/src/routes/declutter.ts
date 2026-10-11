@@ -556,15 +556,45 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
         }
       }
 
-      const updated = await prisma.declutterSeller.update({
-        where: { id: seller.id },
-        data: {
-          kycStatus: to,
-          verifiedAt: to === 'verified' ? new Date() : seller.verifiedAt,
-          verifiedBy: to === 'verified' ? actor.identityId : seller.verifiedBy,
-          rejectionReason: kycReasonRequired(to) ? (body.reason ?? null) : null,
-          adminNotes: body.note ?? seller.adminNotes,
-        },
+      const updated = await prisma.$transaction(async (tx) => {
+        const updatedSeller = await tx.declutterSeller.update({
+          where: { id: seller.id },
+          data: {
+            kycStatus: to,
+            verifiedAt: to === 'verified' ? new Date() : seller.verifiedAt,
+            verifiedBy: to === 'verified' ? actor.identityId : seller.verifiedBy,
+            rejectionReason: kycReasonRequired(to) ? (body.reason ?? null) : null,
+            adminNotes: body.note ?? seller.adminNotes,
+          },
+        });
+
+        if (to === 'verified') {
+          const waiting = await tx.declutterSubmission.findMany({
+            where: { sellerId: seller.id, status: 'kyc_pending' },
+            select: { id: true },
+          });
+
+          for (const submission of waiting) {
+            await tx.declutterSubmission.update({
+              where: { id: submission.id },
+              data: {
+                status: 'details_pending',
+                events: {
+                  create: {
+                    fromStatus: 'kyc_pending',
+                    toStatus: 'details_pending',
+                    actorType: acting,
+                    actorId: actor.identityId,
+                    reasonCode: 'seller_verified',
+                    note: 'Seller verification completed; item released for detail review.',
+                  },
+                },
+              },
+            });
+          }
+        }
+
+        return updatedSeller;
       });
 
       await writeAudit(prisma, {

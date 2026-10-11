@@ -13,7 +13,7 @@ import type { MerchantServiceCategoryId } from '@dash/domain/services';
 
 export const API_BASE =
   // Next replaces direct NEXT_PUBLIC_* property reads in browser builds.
-  process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:4000';
+  process.env.NEXT_PUBLIC_API_URL ?? 'https://api.dashworldng.com';
 
 /**
  * The CSRF cookie name, mirrored from the API.
@@ -139,7 +139,7 @@ export class ApiRequestError extends Error {
   }
 
   get needsStepUp(): boolean {
-    return this.code === 'step_up_required';
+    return this.code === 'step_up_required' || this.code === 'step_up_expired';
   }
 }
 

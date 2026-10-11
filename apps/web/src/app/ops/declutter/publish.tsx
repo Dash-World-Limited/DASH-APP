@@ -16,6 +16,7 @@ interface SubmissionRow {
 
 interface ReadyRow extends SubmissionRow {
   gaps: string[];
+  canPublish: boolean;
 }
 
 interface PublishedListing {
@@ -46,14 +47,14 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
             const readiness = await authedFetch<{ gaps: string[]; canPublish: boolean }>(
               `/v1/admin/declutter/submissions/${submission.id}/publication-readiness`,
             );
-            return readiness.canPublish ? { ...submission, gaps: readiness.gaps } : null;
+            return { ...submission, gaps: readiness.gaps, canPublish: readiness.canPublish };
           } catch {
-            return null;
+            return { ...submission, gaps: ['readiness_check_failed'], canPublish: false };
           }
         }),
       );
 
-      setRows(checked.filter((row): row is ReadyRow => row !== null));
+      setRows(checked);
     } catch (caught) {
       setError(messageFor(caught));
       setRows([]);
@@ -95,19 +96,18 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
   }
 
   return (
-    <section className="space-y-4" aria-label="Ready to publish">
+    <section className="space-y-4" aria-label="Publication review">
       <div>
-        <h2 className="text-sm font-semibold">Ready to publish</h2>
+        <h2 className="text-sm font-semibold">Publication review</h2>
         <p className="mt-1 text-xs text-[var(--ink-muted)]">
-          Only submissions that passed seller verification, pricing, seller acceptance, photo,
-          location and fraud checks appear here.
+          Review each submission status and resolve any blockers before publishing.
         </p>
       </div>
 
       {error ? <ErrorState title="Could not load publication queue" message={error} onRetry={() => void load()} /> : null}
       {rows === null && !error ? <LoadingBlock label="Checking publication readiness" /> : null}
       {rows !== null && rows.length === 0 && !error ? (
-        <EmptyState title="Nothing ready" description="Approved items will appear here after every publication check passes." />
+        <EmptyState title="No submissions to review" description="Submissions will appear here as they move toward publication." />
       ) : null}
 
       <ul className="space-y-2">
@@ -119,10 +119,17 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
                 <p className="text-xs text-[var(--ink-muted)]">
                   {row.code}{row.seller ? ` · ${row.seller.displayName}` : ''}
                 </p>
+                {row.canPublish ? (
+                  <p className="mt-1 text-xs font-medium">All publication checks passed.</p>
+                ) : (
+                  <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                    Blocked: {row.gaps.length > 0 ? row.gaps.map((gap) => gap.replace(/_/g, ' ')).join(' · ') : 'Publication checks are incomplete.'}
+                  </p>
+                )}
               </div>
               <Button
                 size="sm"
-                disabled={!canPublish || busyId === row.id}
+                disabled={!canPublish || !row.canPublish || busyId === row.id}
                 onClick={() => void publish(row)}
               >
                 {busyId === row.id ? 'Publishing…' : 'Publish'}
