@@ -478,6 +478,72 @@ export async function registerDeclutterPhotoRoutes(app: FastifyInstance): Promis
     },
   );
 
+  /**
+   * GET /v1/admin/declutter/submissions/:id/photos — private item evidence for staff review.
+   *
+   * Item photographs are not public until DASH publishes the listing, but they
+   * are the primary evidence an admin uses to verify condition, serial labels,
+   * visible defects and whether the seller actually possesses the item. Staff
+   * access therefore gets the same short-lived signed-link treatment as the
+   * seller view, behind the submission-read permission. Storage keys never
+   * leave the API and every access is recorded in the audit trail.
+   */
+  app.get(
+    '/v1/admin/declutter/submissions/:id/photos',
+    { preHandler: requirePermission('declutter:submission:read') },
+    async (request) => {
+      const actor = actorOf(request);
+      const { id } = z.object({ id: z.string().min(1).max(40) }).parse(request.params);
+      const submission = await prisma.declutterSubmission.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          title: true,
+          photos: {
+            orderBy: { position: 'asc' },
+            select: {
+              id: true,
+              role: true,
+              position: true,
+              caption: true,
+              storageKey: true,
+              width: true,
+              height: true,
+              bytes: true,
+            },
+          },
+        },
+      });
+      if (!submission) throw ApiError.notFound();
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'declutter.submission.photos_viewed',
+        resourceType: 'DeclutterSubmission',
+        resourceId: submission.id,
+        after: { photoCount: submission.photos.length },
+        ...auditContext(request),
+      });
+
+      return {
+        photos: await Promise.all(
+          submission.photos.map(async (photo) => ({
+            id: photo.id,
+            role: photo.role,
+            position: photo.position,
+            caption: photo.caption,
+            width: photo.width,
+            height: photo.height,
+            bytes: photo.bytes,
+            alt: photoAlt(submission.title ?? 'Item', photo.role, photo.caption),
+            url: await app.services.storage.signedUrl(photo.storageKey, PHOTO_LINK_SECONDS),
+            expiresInSeconds: PHOTO_LINK_SECONDS,
+          })),
+        ),
+      };
+    },
+  );
+
   app.delete(
     '/v1/declutter/submissions/:id/photos/:photoId',
     { preHandler: requireAuth },
