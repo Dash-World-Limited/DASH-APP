@@ -388,8 +388,8 @@ it.each([true, false])(
     expect(item.priceAcceptanceValid).toBe(consent);
     expect(
       item.progress.find((p: { key: string }) => p.key === 'seller_price')
-        .state,
-    ).toBe(consent ? 'completed' : 'action_required');
+        ?.state,
+    ).toBe(consent ? undefined : 'action_required');
     expect(sent.filter((m) => m.reference === `price:${id}:1`)).toHaveLength(
       consent ? 0 : 1,
     );
@@ -676,4 +676,150 @@ it('does not let the legacy transition dropdown manufacture approval without the
   expect(
     (await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } })).fullyApprovedAt,
   ).toBeNull();
+});
+it('Approve & Publish overrides internal checks, keeps evidence, and honours exact-price consent without emailing twice', async () => {
+  await elevate();
+  const id = await submit(true);
+  await context.prisma.declutterSubmission.update({ where: { id }, data: { partnerApprovalRequired: true } });
+  const flag = await context.prisma.declutterFraudFlag.create({ data: { submissionId: id, kind: 'identity_mismatch', severity: 'high', detail: 'Retained risk evidence' } });
+  const final = await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { priceKobo: 1_500_000, reason: 'Super Admin reviewed the retained evidence and approves publication.' });
+  expect(final.published).toBe(true);
+  const s = await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id }, include: { listing: true, valuations: true } });
+  expect(s.status).toBe('published');
+  expect(s.fullyApprovedBy).toBe(world.admin.identityId);
+  expect(s.safetyReviewedAt).toBeNull();
+  expect(s.itemReviewedAt).toBeNull();
+  expect(s.valuations).toHaveLength(0);
+  expect(s.partnerApprovedAt).toBeNull();
+  expect(s.valueCheckStatus).toBe('seller_accepted');
+  const evidence = await context.prisma.declutterFraudFlag.findUniqueOrThrow({ where: { id: flag.id } });
+  expect(evidence.status).toBe('dismissed');
+  expect(evidence.detail).toBe('Retained risk evidence');
+  expect(evidence.resolvedBy).toBe(world.admin.identityId);
+  const audit = await context.prisma.auditLog.findFirstOrThrow({ where: { action: 'declutter.submission.approve_publish', resourceId: id } });
+  expect(JSON.parse(audit.after!).fraudFlagIds).toContain(flag.id);
+  expect(audit.identityId).toBe(world.admin.identityId);
+  const item = (await get(seller, `/v1/declutter/account/items/${id}`)).item;
+  expect(item.progress.map((p: { label: string }) => p.label)).toEqual(['Submitted', 'Under Review', 'Approved', 'Live']);
+  expect(item.progress.every((p: { state: string }) => p.state === 'completed')).toBe(true);
+  expect(sent.filter(m => m.reference === `price:${id}:1`)).toHaveLength(0);
+  await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { priceKobo: 900_000 });
+  expect(await context.prisma.declutterListing.count({ where: { submissionId: id } })).toBe(1);
+  expect((await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } })).authorizedPriceKobo).toBe(1_500_000);
+  await get(null, `/v1/declutter/listings/${final.listing.slug}`);
+});
+
+it.each([true, false])('never bypasses changed-price consent (original consent: %s) and publishes on the real seller acceptance event', async consent => {
+  const id = await submit(consent);
+  const final = await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { priceKobo: 1_000_000 });
+  expect(final.published).toBe(false);
+  expect(final.blockers).toContain('Seller price decision is required');
+  expect(await context.prisma.declutterListing.count({ where: { submissionId: id } })).toBe(0);
+  expect(sent.filter(m => m.reference === `price:${id}:1`)).toHaveLength(1);
+  const before = await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } });
+  await get(seller, `/v1/declutter/account/items/${id}`);
+  await get(admin, `/v1/admin/declutter/submissions/${id}/workspace`);
+  expect((await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } })).updatedAt).toEqual(before.updatedAt);
+  await post(seller, `/v1/declutter/submissions/${id}/price-response`, { response: 'accept', priceKobo: 900_000 }, 409);
+  await post(seller, `/v1/declutter/submissions/${id}/price-response`, { response: 'accept', priceKobo: 1_000_000 });
+  expect(await context.prisma.declutterListing.count({ where: { submissionId: id } })).toBe(1);
+  expect((await get(seller, `/v1/declutter/account/items/${id}`)).item.status).toBe('Live');
+});
+
+it('legacy same-price submissions still require explicit acceptance', async () => {
+  const id = await submit(false);
+  const final = await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { priceKobo: 1_500_000 });
+  expect(final.published).toBe(false);
+  expect((await get(seller, `/v1/declutter/account/items/${id}`)).item.priceAcceptanceValid).toBe(false);
+  await post(seller, `/v1/declutter/submissions/${id}/price-response`, { response: 'decline', priceKobo: 1_500_000 });
+  expect(await context.prisma.declutterListing.count({ where: { submissionId: id } })).toBe(0);
+});
+
+it('cannot bypass required verification even with Super Admin approval and exact-price consent', async () => {
+  const id = await submit(true);
+  await context.prisma.declutterSeller.update({ where: { id: sellerId }, data: { kycStatus: 'pending' } });
+  try {
+    const final = await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { priceKobo: 1_500_000 });
+    expect(final.published).toBe(false);
+    expect(final.blockers).toContain('Seller verification is required');
+    expect(await context.prisma.declutterListing.count({ where: { submissionId: id } })).toBe(0);
+  } finally { await context.prisma.declutterSeller.update({ where: { id: sellerId }, data: { kycStatus: 'verified' } }); }
+});
+
+it('keeps Super Admin permissions and step-up mandatory for final authority', async () => {
+  const id = await submit(true);
+  const url = `/v1/admin/declutter/submissions/${id}/approve-publish`;
+  await post(seller, url, {}, 403);
+  await post(staff, url, {}, 403);
+  await post(null, url, {}, 401);
+  await elevate(null);
+  await post(admin, url, {}, 403);
+  await elevate();
+  expect((await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } })).fullyApprovedAt).toBeNull();
+});
+
+it('publishes the current version while preserving a proposed replacement for separate review', async () => {
+  const id = await submit(true);
+  const item = (await get(seller, `/v1/declutter/account/items/${id}`)).item;
+  const { updateId } = await post(seller, `/v1/declutter/account/items/${id}/updates`, { title: 'Replacement proposed chair', description: 'This proposed description still needs review.', condition: 'fair', keepPhotoIds: item.photos.map((p: { id: string }) => p.id) }, 201);
+  await post(seller, `/v1/declutter/updates/${updateId}/submit`);
+  const final = await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { priceKobo: 1_500_000 });
+  expect(final.published).toBe(true);
+  expect((await context.prisma.declutterListing.findUniqueOrThrow({ where: { id: final.listing.id } })).title).toBe(item.title);
+  expect((await context.prisma.declutterSubmissionUpdate.findUniqueOrThrow({ where: { id: updateId } })).status).toBe('pending');
+});
+
+it('soft-removes a live listing immediately, keeps chat/audit/photos, and cannot republish it', async () => {
+  const id = await submit(true);
+  const final = await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { priceKobo: 1_500_000 });
+  const { conversationId } = await post(seller, '/v1/declutter/conversations', { submissionId: id }, 201);
+  await post(seller, `/v1/declutter/conversations/${conversationId}/messages`, { body: 'Please keep this history.', clientMessageId: 'removal-history-001' });
+  const before = await get(seller, '/v1/declutter/hub');
+  await post(seller, `/v1/declutter/account/items/${id}/remove`, { confirmed: true });
+  await post(seller, `/v1/declutter/account/items/${id}/remove`, { confirmed: true });
+  await get(null, `/v1/declutter/listings/${final.listing.slug}`, 404);
+  const feed = await get(null, '/v1/declutter/listings');
+  expect(JSON.stringify(feed)).not.toContain(final.listing.slug);
+  const s = await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id }, include: { listing: { include: { photos: true } }, events: true } });
+  expect(s.status).toBe('withdrawn');
+  expect(s.listing?.availability).toBe('archived');
+  expect(s.listing?.photos.length).toBeGreaterThan(0);
+  expect(s.events.some(e => e.toStatus === 'withdrawn')).toBe(true);
+  expect(await context.prisma.auditLog.count({ where: { action: 'declutter.submission.removed', resourceId: id } })).toBe(1);
+  expect((await get(seller, `/v1/declutter/conversations/${conversationId}`)).messages[0].body).toBe('Please keep this history.');
+  const dashboard = await get(seller, '/v1/declutter/hub');
+  expect(dashboard.totals.total).toBe(before.totals.total - 1);
+  expect(dashboard.items.find((i: { id: string }) => i.id === id).status).toBe('Removed');
+  expect((await get(seller, `/v1/declutter/account/items/${id}`)).item.actions).toEqual([]);
+  await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, {}, 409);
+  await post(admin, `/v1/admin/declutter/submissions/${id}/publish`, {}, 422);
+});
+
+it('requires removal confirmation and enforces seller ownership server-side', async () => {
+  const id = await submit();
+  const url = `/v1/declutter/account/items/${id}/remove`;
+  await post(seller, url, {}, 400);
+  await post(stranger, url, { confirmed: true }, 404);
+  await post(null, url, { confirmed: true }, 401);
+  expect((await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } })).status).not.toBe('withdrawn');
+  await post(seller, url, { confirmed: true });
+  expect((await context.prisma.declutterSubmission.findUniqueOrThrow({ where: { id } })).status).toBe('withdrawn');
+});
+
+it('keeps sold items Sold with their listing and history intact', async () => {
+  const id = await submit(true);
+  const final = await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { priceKobo: 1_500_000 });
+  await context.prisma.declutterListing.update({ where: { id: final.listing.id }, data: { availability: 'sold' } });
+  await post(seller, `/v1/declutter/account/items/${id}/remove`, { confirmed: true }, 409);
+  await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, {}, 409);
+  expect((await get(seller, `/v1/declutter/account/items/${id}`)).item.status).toBe('Sold');
+});
+it('new risk evidence after final approval still blocks automatic publication until a fresh Super Admin decision', async () => {
+  const id = await submit(true);
+  await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { priceKobo: 1_000_000 });
+  await context.prisma.declutterFraudFlag.create({ data: { submissionId: id, kind: 'identity_mismatch', severity: 'high', detail: 'New evidence after approval' } });
+  await post(seller, `/v1/declutter/submissions/${id}/price-response`, { response: 'accept', priceKobo: 1_000_000 });
+  expect(await context.prisma.declutterListing.count({ where: { submissionId: id } })).toBe(0);
+  const final = await post(admin, `/v1/admin/declutter/submissions/${id}/approve-publish`, { reason: 'Super Admin explicitly reviewed the newly recorded evidence.' });
+  expect(final.published).toBe(true);
 });

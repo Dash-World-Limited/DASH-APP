@@ -3,7 +3,11 @@ import type { FastifyInstance } from 'fastify';
 import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { writeAudit } from '@dash/db';
-import { hubBlockers } from '@dash/domain/declutter';
+import {
+  approvePublishBlockers,
+  HUB_BLOCKER_LABELS,
+  hubBlockers,
+} from '@dash/domain/declutter';
 import { PHOTO_ROLES } from '@dash/domain/valuecheck';
 import {
   hubInclude,
@@ -12,6 +16,12 @@ import {
   reconcileHub,
   deliverHubNotifications,
 } from '../declutter/hub.js';
+import { authorizeSubmissionPrice } from '../declutter/price-authority.js';
+import {
+  publishSnapshot,
+  sendPublicationEmail,
+  publishRecordedDecision,
+} from '../declutter/publication.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import { ApiError } from '../http/errors.js';
 import { auditContext, customerIdOf } from './declutter-shared.js';
@@ -50,14 +60,20 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
     )
       return payload;
     const id = (request.params as { id?: string }).id;
-    if (id && /\/submissions\//.test(request.url))
+    if (id && /\/submissions\//.test(request.url)) {
       await reconcileHub(prisma, id);
+      if (/\/price-response$/.test(request.url))
+        await publishRecordedDecision(app, id, auditContext(request));
+    }
     if (/\/sellers\/[^/]+\/decision/.test(request.url) && id) {
       const items = await prisma.declutterSubmission.findMany({
         where: { sellerId: id },
         select: { id: true },
       });
-      for (const s of items) await reconcileHub(prisma, s.id);
+      for (const s of items) {
+        await reconcileHub(prisma, s.id);
+        await publishRecordedDecision(app, s.id, auditContext(request));
+      }
     }
     await deliverHubNotifications(app);
     return payload;
@@ -110,13 +126,9 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
         items,
         unreadCount,
         totals: {
-          total: items.length,
+          total: items.filter((i) => i.status !== 'Removed').length,
           underReview: items.filter((i) =>
-            [
-              'Under review',
-              'Changes under review',
-              'Ready for final approval',
-            ].includes(i.status),
+            ['Under Review', 'Changes under review'].includes(i.status),
           ).length,
           actionRequired: items.filter((i) => i.actions.length).length,
           approved: items.filter((i) => i.status === 'Approved').length,
@@ -138,6 +150,270 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
       };
     },
   );
+  app.post(
+    '/v1/declutter/account/items/:id/remove',
+    { preHandler: requireAuth },
+    async (request) => {
+      const id = idParam.parse(request.params).id;
+      z.object({ confirmed: z.literal(true) })
+        .strict()
+        .parse(request.body);
+      await own(request, id);
+      await prisma.$transaction(async (tx) => {
+        await tx.declutterSubmission.update({
+          where: { id },
+          data: { updatedAt: new Date() },
+        });
+        const s = await tx.declutterSubmission.findUniqueOrThrow({
+          where: { id },
+          include: hubInclude,
+        });
+        if (s.seller.customerId !== customerIdOf(actorOf(request)))
+          throw ApiError.notFound();
+        if (s.listing?.availability === 'sold')
+          throw ApiError.conflict(
+            'Sold items stay in your sales history and cannot be removed.',
+          );
+        if (
+          s.status === 'withdrawn' &&
+          (!s.listing || s.listing.availability === 'archived')
+        )
+          return;
+        const identityId = actorOf(request).identityId;
+        if (s.listing)
+          await tx.declutterListing.update({
+            where: { id: s.listing.id },
+            data: {
+              availability: 'archived',
+              events: {
+                create: {
+                  axis: 'availability',
+                  fromStatus: s.listing.availability,
+                  toStatus: 'archived',
+                  actorType: 'seller',
+                  actorId: identityId,
+                  note: 'Seller removed listing.',
+                },
+              },
+            },
+          });
+        await tx.declutterSubmission.update({
+          where: { id },
+          data: {
+            status: 'withdrawn',
+            events: {
+              create: {
+                fromStatus: s.status,
+                toStatus: 'withdrawn',
+                actorType: 'seller',
+                actorId: identityId,
+              },
+            },
+          },
+        });
+        await tx.declutterSubmissionUpdate.updateMany({
+          where: { submissionId: id, status: { in: ['draft', 'pending'] } },
+          data: {
+            status: 'discarded',
+            activeKey: null,
+            sellerMessage:
+              'This item was removed; its proposed changes will not be published.',
+          },
+        });
+        await writeAudit(tx, {
+          identityId,
+          action: 'declutter.submission.removed',
+          resourceType: 'DeclutterSubmission',
+          resourceId: id,
+          after: { listingId: s.listing?.id ?? null },
+          ...auditContext(request),
+        });
+      });
+      return { ok: true, item: await hubView(app, await row(id)) };
+    },
+  );
+  app.post(
+    '/v1/admin/declutter/submissions/:id/approve-publish',
+    {
+      preHandler: [
+        requirePermission('declutter:pricing:authorize'),
+        requirePermission('declutter:listing:publish'),
+      ],
+    },
+    async (request) => {
+      const id = idParam.parse(request.params).id;
+      const body = z
+        .object({
+          priceKobo: z
+            .number()
+            .int()
+            .positive()
+            .max(100_000_000_000)
+            .optional(),
+          reason: z.string().trim().max(500).optional(),
+        })
+        .strict()
+        .parse(request.body);
+      await row(id);
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.declutterSubmission.update({
+          where: { id },
+          data: { updatedAt: new Date() },
+        });
+        let s = await tx.declutterSubmission.findUniqueOrThrow({
+          where: { id },
+          include: hubInclude,
+        });
+        if (
+          s.status === 'withdrawn' ||
+          ['archived', 'sold'].includes(s.listing?.availability ?? '')
+        )
+          throw ApiError.conflict('Removed or sold items cannot be published.');
+        // A retry never changes a previously published listing or its price.
+        if (s.listing) {
+          if (
+            s.listing.moderationStatus !== 'approved' ||
+            !['available', 'reserved'].includes(s.listing.availability)
+          )
+            throw ApiError.conflict(
+              'Use the existing listing moderation controls to review this listing.',
+            );
+          return {
+            published: true,
+            listing: s.listing,
+            created: false,
+            blockers: [] as string[],
+          };
+        }
+        const identityId = actorOf(request).identityId;
+        const price =
+          body.priceKobo ??
+          s.authorizedPriceKobo ??
+          s.finalPriceKobo ??
+          s.expectedPriceKobo;
+        if (!price) throw ApiError.unprocessable('Enter the final DASH price.');
+        const contentGaps = approvePublishBlockers(facts(s)).filter(
+          (b) =>
+            ![
+              'seller_not_verified',
+              'price_not_authorized',
+              'seller_has_not_accepted',
+              'acceptance_stale',
+            ].includes(b),
+        );
+        if (contentGaps.length)
+          throw ApiError.unprocessable(
+            'Complete the item details before approving publication.',
+            { blockers: contentGaps },
+          );
+        if (
+          s.authorizedPriceKobo !== price ||
+          ![
+            'seller_acceptance_pending',
+            'seller_accepted',
+            'seller_declined',
+          ].includes(s.valueCheckStatus)
+        ) {
+          await authorizeSubmissionPrice(tx, id, price, identityId);
+          s = await tx.declutterSubmission.findUniqueOrThrow({
+            where: { id },
+            include: hubInclude,
+          });
+        }
+        const overridden = hubBlockers(facts(s)).filter(
+          (b) =>
+            ![
+              'seller_not_verified',
+              'price_not_authorized',
+              'seller_has_not_accepted',
+              'acceptance_stale',
+            ].includes(b),
+        );
+        await tx.declutterFraudFlag.updateMany({
+          where: {
+            submissionId: id,
+            status: { in: ['open', 'reviewing', 'upheld'] },
+          },
+          data: {
+            status: 'dismissed',
+            resolvedAt: new Date(),
+            resolvedBy: identityId,
+            resolutionReason:
+              body.reason ||
+              'Super Admin final approval and publication decision.',
+          },
+        });
+        await tx.declutterSubmission.update({
+          where: { id },
+          data: {
+            fullyApprovedAt: new Date(),
+            fullyApprovedBy: identityId,
+            status: 'pricing_review',
+            events: {
+              create: {
+                fromStatus: s.status,
+                toStatus: 'final_approval',
+                actorType: 'super_admin',
+                actorId: identityId,
+              },
+            },
+          },
+        });
+        await writeAudit(tx, {
+          identityId,
+          action: 'declutter.submission.approve_publish',
+          resourceType: 'DeclutterSubmission',
+          resourceId: id,
+          after: {
+            priceKobo: price,
+            overridden,
+            fraudFlagIds: s.fraudFlags.map((f) => f.id),
+            pendingUpdatePreserved: s.updates.some(
+              (u) => u.status === 'pending',
+            ),
+            reason: body.reason ?? null,
+          },
+          ...auditContext(request),
+        });
+        s = await tx.declutterSubmission.findUniqueOrThrow({
+          where: { id },
+          include: hubInclude,
+        });
+        const blockers = approvePublishBlockers(facts(s));
+        if (blockers.length)
+          return { published: false, listing: null, created: false, blockers };
+        return {
+          published: true,
+          listing: await publishSnapshot(
+            tx,
+            s,
+            identityId,
+            'super_admin',
+            true,
+            auditContext(request),
+          ),
+          created: true,
+          blockers: [] as string[],
+        };
+      });
+      if (result.created && result.listing)
+        await sendPublicationEmail(app, result.listing);
+      return {
+        published: result.published,
+        listing: result.listing
+          ? {
+              id: result.listing.id,
+              slug: result.listing.slug,
+              priceKobo: result.listing.priceKobo,
+            }
+          : null,
+        blockers: result.blockers.map((b) => HUB_BLOCKER_LABELS[b] ?? b),
+        message: result.published
+          ? 'Your item is approved and live.'
+          : 'DASH approval is recorded. Publication will follow when the seller completes the required action.',
+      };
+    },
+  );
   app.get(
     '/v1/admin/declutter/submissions/:id/workspace',
     { preHandler: requirePermission('declutter:submission:read') },
@@ -146,7 +422,7 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
       const s = await row(idParam.parse(request.params).id);
       return {
         sellerId: s.sellerId,
-        item: await hubView(app, s),
+        item: await hubView(app, s, true),
         fraudFlags: s.fraudFlags.map((f) => ({
           id: f.id,
           kind: f.kind,

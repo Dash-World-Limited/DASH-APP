@@ -707,7 +707,7 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
         throw ApiError.forbidden('Publishing is not available yet.');
       }
       if (to === 'approved') {
-        throw ApiError.forbidden('Use Fully Approved in the item workspace. It validates the mandatory gates and requires Super Admin step-up.');
+        throw ApiError.forbidden('Use Approve & Publish in the item workspace. It preserves required seller verification and price consent and requires Super Admin step-up.');
       }
 
       const updated = await prisma.declutterSubmission.update({

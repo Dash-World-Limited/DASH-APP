@@ -44,14 +44,10 @@ export function facts(s: HubRow): HubFacts {
     sellerVerifiedAt: s.seller.verifiedAt,
     availability: s.listing?.availability ?? null,
     moderationStatus: s.listing?.moderationStatus ?? null,
-    publishedAt:
-      s.listing?.moderationStatus === 'approved' &&
-      ['available', 'reserved'].includes(s.listing.availability)
-        ? s.listing.publishedAt
-        : null,
+    publishedAt: s.listing?.publishedAt ?? null,
   };
 }
-export async function hubView(app: FastifyInstance, s: HubRow) {
+export async function hubView(app: FastifyInstance, s: HubRow, staff = false) {
   const f = facts(s);
   const conversations =
     await app.services.prisma.declutterConversation.findMany({
@@ -103,7 +99,8 @@ export async function hubView(app: FastifyInstance, s: HubRow) {
   const eventLabels: Record<string, string> = {
     details_pending: 'DASH requested more information',
     rejected: 'Item not approved',
-    withdrawn: 'Item withdrawn',
+    withdrawn: 'Item removed',
+    final_approval: 'DASH approved the item',
     update_submitted: 'Seller submitted an item update',
     update_approved: 'Item update approved',
     update_rejected: 'Item update not approved',
@@ -113,49 +110,63 @@ export async function hubView(app: FastifyInstance, s: HubRow) {
   for (const e of s.events)
     if (eventLabels[e.toStatus])
       history.push({ label: eventLabels[e.toStatus]!, at: e.createdAt });
+  if (s.authorizedAt && s.authorizedPriceKobo)
+    history.push({
+      label: `DASH authorised ${money(s.authorizedPriceKobo)}`,
+      at: s.authorizedAt,
+    });
+  if (s.sellerAcceptedAt && s.valueCheckStatus === 'seller_accepted')
+    history.push({
+      label: `Seller accepted ${money(s.sellerAcceptedPriceKobo)}`,
+      at: s.sellerAcceptedAt,
+    });
   const priceAction = s.valueCheckStatus === 'seller_acceptance_pending';
-  const actions = [
-    ...(priceAction
-      ? [
-          {
-            label: 'Price decision required',
-            cta: 'Review price',
-            href: '#price',
-          },
-        ]
-      : []),
-    ...(['unverified', 'rejected', 'suspended'].includes(s.seller.kycStatus)
-      ? [
-          {
-            label: 'Seller verification required',
-            cta: 'Review verification',
-            href:
-              s.seller.kycStatus === 'suspended'
-                ? '/declutter/account/messages'
-                : '/declutter/seller/verify',
-          },
-        ]
-      : []),
-    ...(unreadCount
-      ? [
-          {
-            label: `${unreadCount} new message${unreadCount === 1 ? '' : 's'} from DASH`,
-            cta: 'View messages',
-            href: '#chat',
-          },
-        ]
-      : []),
-    ...(s.status === 'details_pending' ||
-    s.updates[0]?.status === 'changes_requested'
-      ? [
-          {
-            label: 'Additional information requested',
-            cta: 'Update item',
-            href: '#edit',
-          },
-        ]
-      : []),
-  ];
+  const removed =
+    s.status === 'withdrawn' || s.listing?.availability === 'archived';
+  const actions = removed
+    ? []
+    : [
+        ...(priceAction
+          ? [
+              {
+                label: 'Price decision required',
+                cta: 'Review price',
+                href: '#price',
+              },
+            ]
+          : []),
+        ...(['unverified', 'rejected', 'suspended'].includes(s.seller.kycStatus)
+          ? [
+              {
+                label: 'Seller verification required',
+                cta: 'Review verification',
+                href:
+                  s.seller.kycStatus === 'suspended'
+                    ? '/declutter/account/messages'
+                    : '/declutter/seller/verify',
+              },
+            ]
+          : []),
+        ...(unreadCount
+          ? [
+              {
+                label: `${unreadCount} new message${unreadCount === 1 ? '' : 's'} from DASH`,
+                cta: 'View messages',
+                href: '#chat',
+              },
+            ]
+          : []),
+        ...(s.status === 'details_pending' ||
+        s.updates[0]?.status === 'changes_requested'
+          ? [
+              {
+                label: 'Additional information requested',
+                cta: 'Update item',
+                href: '#edit',
+              },
+            ]
+          : []),
+      ];
   return {
     id: s.id,
     code: s.code,
@@ -174,7 +185,10 @@ export async function hubView(app: FastifyInstance, s: HubRow) {
     expectedPriceKobo: s.expectedPriceKobo,
     authorizedPriceKobo: s.authorizedPriceKobo,
     priceAcceptanceValid:
-      progress.find((p) => p.key === 'seller_price')?.state === 'completed',
+      s.valueCheckStatus === 'seller_accepted' &&
+      s.authorizedPriceKobo !== null &&
+      s.sellerAcceptedPriceKobo === s.authorizedPriceKobo &&
+      s.sellerAcceptedVersion === s.authorizationVersion,
     preConsented: Boolean(
       s.submittedPriceConsentAt &&
         s.submittedPriceConsentBy === s.seller.customer?.identityId &&
@@ -196,18 +210,32 @@ export async function hubView(app: FastifyInstance, s: HubRow) {
     unreadCount,
     conversationId: conversations[0]?.id ?? null,
     actions,
-    blockers: hubBlockers(f).map(
-      (code) => HUB_BLOCKER_LABELS[code] ?? 'DASH review is required',
-    ),
-    next:
-      actions[0]?.label ??
-      (f.publishedAt
-        ? 'Your item is live. You can contact DASH or submit an update.'
-        : !hubBlockers(f).length
-          ? 'All checks have passed. DASH can give final approval and publish your item.'
-          : s.valueCheckStatus === 'seller_declined'
-            ? 'You declined the price. Chat with DASH to discuss the next step.'
-            : 'DASH is reviewing your item. No action is required from you.'),
+    blockers: (staff
+      ? hubBlockers(f)
+      : hubBlockers(f).filter((code) =>
+          [
+            'seller_not_verified',
+            'seller_has_not_accepted',
+            'acceptance_stale',
+            'no_category',
+            'no_location',
+            'no_photographs',
+            'no_title',
+            'no_description',
+            'item_paused',
+          ].includes(code),
+        )
+    ).map((code) => HUB_BLOCKER_LABELS[code] ?? 'DASH review is required'),
+    next: removed
+      ? 'This item was removed. Its history and messages are kept.'
+      : (actions[0]?.label ??
+        (hubStatus(f) === 'Live'
+          ? 'Your item is live. You can contact DASH or submit an update.'
+          : !hubBlockers(f).length
+            ? 'DASH can approve and publish your item.'
+            : s.valueCheckStatus === 'seller_declined'
+              ? 'You declined the price. Chat with DASH to discuss the next step.'
+              : 'DASH is reviewing your item. No action is required from you.')),
     photos: await Promise.all(
       s.photos.map(async (p) => ({
         id: p.id,
@@ -259,15 +287,17 @@ export async function reconcileHub(prisma: PrismaClient, id: string) {
       ? 'approved'
       : s.seller.kycStatus !== 'verified'
         ? 'kyc_pending'
-        : s.fraudFlags.length || !s.safetyReviewedAt
-          ? 'fraud_review'
-          : !s.itemReviewedAt
-            ? 'intake'
-            : !s.valuations.length
-              ? 'valuation_pending'
-              : s.valueCheckStatus === 'seller_acceptance_pending'
-                ? 'seller_acceptance_pending'
-                : 'pricing_review';
+        : s.fullyApprovedAt
+          ? 'seller_acceptance_pending'
+          : s.fraudFlags.length || !s.safetyReviewedAt
+            ? 'fraud_review'
+            : !s.itemReviewedAt
+              ? 'intake'
+              : !s.valuations.length
+                ? 'valuation_pending'
+                : s.valueCheckStatus === 'seller_acceptance_pending'
+                  ? 'seller_acceptance_pending'
+                  : 'pricing_review';
   if (
     !['published', 'rejected', 'withdrawn', 'details_pending'].includes(
       s.status,
