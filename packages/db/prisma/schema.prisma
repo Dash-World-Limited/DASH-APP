@@ -1983,6 +1983,12 @@ model DeclutterSubmission {
   /// price — it is an input to valuation and a signal in its own right.
   expectedPriceKobo Int?
 
+  /// Explicit, optional seller consent to the first DASH authorisation of this
+  /// exact submitted price. Null on legacy submissions; never inferred from price.
+  submittedPriceConsentKobo Int?
+  submittedPriceConsentAt   DateTime?
+  submittedPriceConsentBy   String?
+
   locationId String?
 
   /// The final DASH price, in kobo. Written only by an admin decision.

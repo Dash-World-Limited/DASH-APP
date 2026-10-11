@@ -56,7 +56,7 @@ import {
   type ValueCheckActor,
   type ValueCheckState,
 } from '@dash/domain/valuecheck';
-import { publicAttributes } from '@dash/domain/declutter';
+import { canApplySubmittedPriceConsent, publicAttributes } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import type { Actor } from '@dash/domain/permissions';
@@ -359,6 +359,8 @@ export async function registerDeclutterPricingRoutes(app: FastifyInstance): Prom
           condition: submission.condition,
           categoryKey: submission.category?.key ?? null,
           expectedPriceKobo: submission.expectedPriceKobo,
+          submittedPriceConsentKobo: submission.submittedPriceConsentKobo,
+          submittedPriceConsentAt: submission.submittedPriceConsentAt,
           attributes: submission.attributes ? JSON.parse(submission.attributes) : {},
           photoCount: submission.photos.length,
           valueCheckStatus: submission.valueCheckStatus,
@@ -711,23 +713,39 @@ export async function registerDeclutterPricingRoutes(app: FastifyInstance): Prom
     const authorizedState = nextState(from, 'price_authorized', acting);
     const presented = assertTransition(authorizedState, 'seller_acceptance_pending', 'system');
 
-    return prisma.declutterSubmission.update({
-      where: { id: submissionId },
-      data: {
-        valueCheckStatus: presented,
-        authorizedPriceKobo: priceKobo,
-        finalPriceKobo: priceKobo,
-        // Every authorisation is a new version, so an acceptance of the
-        // previous one stops being valid even at the same figure.
-        authorizationVersion: { increment: 1 },
-        authorizedAt: new Date(),
-        authorizedBy: identityId,
-        // A price that moved invalidates what the seller agreed to. Cleared
-        // rather than left to look current.
-        sellerAcceptedAt: null,
-        sellerAcceptedPriceKobo: null,
-        sellerAcceptedVersion: null,
-      },
+    return prisma.$transaction(async tx => {
+      const submission = await tx.declutterSubmission.findUniqueOrThrow({
+        where: { id: submissionId }, include: { seller: { include: { customer: true } } },
+      });
+      const preAccepted = canApplySubmittedPriceConsent({
+        ...submission, sellerIdentityId: submission.seller.customer?.identityId ?? null,
+      }, priceKobo);
+      const version = submission.authorizationVersion + 1;
+      const acceptedAt = new Date();
+      const updated = await tx.declutterSubmission.update({
+        where: { id: submissionId, authorizationVersion: submission.authorizationVersion },
+        data: {
+          valueCheckStatus: preAccepted ? nextState(presented, 'seller_accepted', 'seller') : presented,
+          authorizedPriceKobo: priceKobo,
+          finalPriceKobo: priceKobo,
+          // Every authorisation is a new version. Submitted-price consent
+          // applies only to the first; later reviews need fresh acceptance.
+          authorizationVersion: { increment: 1 },
+          authorizedAt: acceptedAt,
+          authorizedBy: identityId,
+          sellerAcceptedAt: preAccepted ? acceptedAt : null,
+          sellerAcceptanceBy: preAccepted ? submission.submittedPriceConsentBy : null,
+          sellerAcceptanceNote: preAccepted ? 'Seller explicitly pre-authorised this exact submitted price.' : null,
+          sellerAcceptedPriceKobo: preAccepted ? priceKobo : null,
+          sellerAcceptedVersion: preAccepted ? version : null,
+        },
+      });
+      if (preAccepted) await writeAudit(tx, {
+        identityId: submission.submittedPriceConsentBy!,
+        action: 'declutter.price.pre_authorization_applied', resourceType: 'DeclutterSubmission', resourceId: submissionId,
+        after: { priceKobo, authorizationVersion: version, consentedAt: submission.submittedPriceConsentAt!.toISOString(), authorizedBy: identityId },
+      });
+      return updated;
     });
   }
 

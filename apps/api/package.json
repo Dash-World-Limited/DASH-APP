@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "tsc --project tsconfig.json",
     "dev": "tsx watch --clear-screen=false src/main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc --noEmit"

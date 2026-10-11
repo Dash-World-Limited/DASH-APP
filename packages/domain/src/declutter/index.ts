@@ -23,3 +23,4 @@ export * from './identity.js';
 export * from './taxonomy.js';
 export * from './seller.js';
 export * from './listing.js';
+export * from './price-consent.js';
