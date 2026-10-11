@@ -13,6 +13,7 @@ import {
   formatNaira,
 } from '@/components/ui';
 import { Modal } from '@/components/Modal';
+import { useStepUp } from '@/components/StepUpPrompt';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch } from '@/lib/session';
 
@@ -190,6 +191,7 @@ export function PricingQueue({ canAuthorize }: { canAuthorize: boolean }) {
 
 /** Prices waiting on a super admin, and why each is here. */
 function ApprovalQueue({ onOpen }: { onOpen: (id: string) => void }) {
+  const { run: runWithStepUp, prompt: stepUpPrompt } = useStepUp();
   const [rows, setRows] = useState<
     | {
         id: string;
@@ -205,15 +207,18 @@ function ApprovalQueue({ onOpen }: { onOpen: (id: string) => void }) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const data = await authedFetch<{ approvals: NonNullable<typeof rows> }>(
-        '/v1/admin/declutter/approvals',
+      const data = await runWithStepUp(() =>
+        authedFetch<{ approvals: NonNullable<typeof rows> }>(
+          '/v1/admin/declutter/approvals',
+        ),
       );
+      if (data === undefined) return;
       setRows(data.approvals);
     } catch (caught) {
       setError(messageFor(caught));
       setRows([]);
     }
-  }, []);
+  }, [runWithStepUp]);
 
   useEffect(() => {
     void load();
@@ -222,13 +227,14 @@ function ApprovalQueue({ onOpen }: { onOpen: (id: string) => void }) {
   if (error) {
     // Most often a missing step-up. The API's own wording is the useful thing
     // to show, rather than hiding the queue and explaining nothing.
-    return <ErrorState title="Approvals unavailable" message={error} onRetry={() => void load()} />;
+    return <>{stepUpPrompt}<ErrorState title="Approvals unavailable" message={error} onRetry={() => void load()} /></>;
   }
-  if (rows === null) return <LoadingBlock label="Loading approvals" />;
-  if (rows.length === 0) return null;
+  if (rows === null) return <>{stepUpPrompt}<LoadingBlock label="Loading approvals" /></>;
+  if (rows.length === 0) return <>{stepUpPrompt}</>;
 
   return (
     <div className="space-y-2">
+      {stepUpPrompt}
       <h2 className="text-sm font-semibold">Waiting on your approval</h2>
       <ul className="space-y-2">
         {rows.map((row) => (
@@ -280,6 +286,7 @@ function WorkspaceModal({
   const [busy, setBusy] = useState(false);
   const [priceNaira, setPriceNaira] = useState('');
   const [reason, setReason] = useState('');
+  const { run: runWithStepUp, prompt: stepUpPrompt } = useStepUp();
 
   const load = useCallback(async () => {
     setError(null);
@@ -306,10 +313,14 @@ function WorkspaceModal({
     setBusy(true);
     setNotice(null);
     try {
-      await authedFetch(`/v1/admin/declutter/submissions/${submissionId}/${path}`, {
-        method: 'POST',
-        body,
+      const completed = await runWithStepUp(async () => {
+        await authedFetch(`/v1/admin/declutter/submissions/${submissionId}/${path}`, {
+          method: 'POST',
+          body,
+        });
+        return true;
       });
+      if (!completed) return;
       await load();
       onChanged();
     } catch (caught) {
@@ -325,6 +336,7 @@ function WorkspaceModal({
 
   return (
     <Modal title="DASH ValueCheck" onClose={onClose}>
+      {stepUpPrompt}
       {error ? <ErrorState title="Could not open" message={error} onRetry={() => void load()} /> : null}
       {!data && !error ? <LoadingBlock label="Loading" /> : null}
 
