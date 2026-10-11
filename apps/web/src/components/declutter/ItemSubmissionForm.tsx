@@ -69,6 +69,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
   const [locationSlug, setLocationSlug] = useState('');
   const [condition, setCondition] = useState<'new' | 'like_new' | 'good' | 'fair'>('good');
   const [expectedPrice, setExpectedPrice] = useState('');
+  const [preAuthorizePrice, setPreAuthorizePrice] = useState(false);
   const [photos, setPhotos] = useState<SelectedPhoto[]>([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
@@ -138,6 +139,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
     setTitle('');
     setDescription('');
     setExpectedPrice('');
+    setPreAuthorizePrice(false);
     setCondition('good');
     setPhotos([]);
     setCreated(null);
@@ -156,6 +158,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
       if (parsedNaira !== null && (!Number.isFinite(parsedNaira) || parsedNaira <= 0)) {
         throw new Error('Enter a valid expected price or leave it blank.');
       }
+      if (preAuthorizePrice && parsedNaira === null) throw new Error('Enter a price before pre-authorising it.');
 
       const response = await authedFetch<{ submission: Submission }>('/v1/declutter/submissions', {
         method: 'POST',
@@ -166,6 +169,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
           condition,
           locationSlug,
           ...(parsedNaira !== null ? { expectedPriceKobo: Math.round(parsedNaira * 100) } : {}),
+          preAuthorizePrice,
         },
       });
 
@@ -318,7 +322,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
               <input
                 value={expectedPrice}
                 inputMode="numeric"
-                onChange={(event) => setExpectedPrice(event.target.value.replace(/[^0-9,]/g, ''))}
+                onChange={(event) => { setExpectedPrice(event.target.value.replace(/[^0-9,]/g, '')); setPreAuthorizePrice(false); }}
                 placeholder="250,000"
                 className="min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] pl-9 pr-4 text-sm outline-none focus:border-[var(--primary)]"
               />
@@ -326,6 +330,14 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
           </label>
         </div>
       </div>
+
+      <label className="mt-5 flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm leading-relaxed">
+        <input type="checkbox" checked={preAuthorizePrice} disabled={busy || !expectedPrice.trim() || Number(expectedPrice.replace(/,/g, '')) <= 0}
+          onChange={event => setPreAuthorizePrice(event.target.checked)} className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" />
+        <span>I pre-authorise my submitted price if DASH's first price approval is for that exact amount.
+          <span className="mt-1 block text-xs text-[var(--ink-muted)]">Optional. DASH must still review and authorise the price. If it changes, or you leave this unchecked, we will ask you to accept it before publication.</span>
+        </span>
+      </label>
 
       <div className="mt-7 border-t border-[var(--line)] pt-6">
         <p className="text-sm font-bold">Photographs</p>

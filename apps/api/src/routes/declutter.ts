@@ -95,8 +95,11 @@ const submissionSchema = z.object({
   categoryKey: z.string().trim().max(60).optional(),
   condition: z.enum(['new', 'like_new', 'good', 'fair']).optional(),
   expectedPriceKobo: z.number().int().positive().max(1_000_000_000).optional(),
+  preAuthorizePrice: z.boolean().default(false),
   locationSlug: z.string().trim().max(80).optional(),
   attributes: z.record(z.unknown()).optional(),
+}).refine(body => !body.preAuthorizePrice || body.expectedPriceKobo !== undefined, {
+  path: ['expectedPriceKobo'], message: 'Enter your submitted price before pre-authorising it.',
 });
 
 const sellerDecisionSchema = z.object({
@@ -353,6 +356,9 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
         categoryId: category?.id ?? null,
         condition: body.condition ?? null,
         expectedPriceKobo: body.expectedPriceKobo ?? null,
+        submittedPriceConsentKobo: body.preAuthorizePrice ? body.expectedPriceKobo : null,
+        submittedPriceConsentAt: body.preAuthorizePrice ? new Date() : null,
+        submittedPriceConsentBy: body.preAuthorizePrice ? actor.identityId : null,
         locationId: location?.id ?? null,
         attributes: body.attributes ? JSON.stringify(body.attributes) : null,
         events: {
@@ -371,7 +377,7 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
       action: 'declutter.submission.created',
       resourceType: 'DeclutterSubmission',
       resourceId: submission.id,
-      after: { status, code: submission.code },
+      after: { status, code: submission.code, preAuthorizePrice: body.preAuthorizePrice, submittedPriceConsentKobo: submission.submittedPriceConsentKobo },
       ...auditContext(request),
     });
 

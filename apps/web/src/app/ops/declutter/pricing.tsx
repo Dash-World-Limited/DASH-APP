@@ -86,6 +86,8 @@ interface Workspace {
     condition: string | null;
     categoryKey: string | null;
     expectedPriceKobo: number | null;
+    submittedPriceConsentKobo: number | null;
+    submittedPriceConsentAt: string | null;
     attributes: Record<string, unknown>;
     photoCount: number;
     valueCheckStatus: string;
@@ -362,7 +364,8 @@ function WorkspaceModal({
                   : formatNaira(data.submission.expectedPriceKobo)
               }
             />
-            <Row label="Photographs" value={String(data.submission.photoCount)} />
+              <Row label="Seller price pre-authorisation" value={data.submission.submittedPriceConsentAt && data.submission.submittedPriceConsentKobo !== null ? `Exact submitted price only: ${formatNaira(data.submission.submittedPriceConsentKobo)}` : 'Not given — seller must accept the authorised price'} />
+              <Row label="Photographs" value={String(data.submission.photoCount)} />
             {Object.entries(data.submission.attributes).map(([key, value]) => (
               <Row key={key} label={readable(key)} value={String(value)} />
             ))}

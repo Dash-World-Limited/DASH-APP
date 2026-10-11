@@ -59,3 +59,30 @@ it('finishes an item only after all photos upload and reports pending email hone
   const mutationUrls = state.fetch.mock.calls.map(([url]) => url).filter(url => url !== '/v1/declutter/taxonomy');
   expect(mutationUrls).toEqual(['/v1/declutter/submissions', '/v1/declutter/submissions/item-ui/photos', '/v1/declutter/submissions/item-ui/photos', '/v1/declutter/submissions/item-ui/complete']);
 });
+
+it.each([false, true])('requires an explicit price opt-in and submits consent %s', async consent => {
+  state.fetch.mockImplementation(async url => url.endsWith('/taxonomy')
+    ? { categories: [{ key: 'phones-tablets', name: 'Phones' }], locations: [{ slug: 'lagos-lekki', label: 'Lekki' }] }
+    : url.endsWith('/complete') ? { notified: true }
+    : { submission: { id: 'consent-item', code: 'DCL-CONSENT', title: 'Phone', status: 'intake' } });
+  render(<ItemSubmissionForm kycStatus="verified" />);
+  await screen.findByText('Phones');
+  const checkbox = screen.getByRole('checkbox', { name: /I pre-authorise my submitted price/ }) as HTMLInputElement;
+  expect(checkbox.checked).toBe(false);
+  expect(checkbox.disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText('Item title'), { target: { value: 'Phone' } });
+  fireEvent.change(screen.getByLabelText(/Price you have in mind/), { target: { value: '25,000' } });
+  fireEvent.click(checkbox);
+  expect(checkbox.checked).toBe(true);
+  // Changing the price requires a fresh explicit opt-in.
+  fireEvent.change(screen.getByLabelText(/Price you have in mind/), { target: { value: '26,000' } });
+  expect(checkbox.checked).toBe(false);
+  if (consent) fireEvent.click(checkbox);
+  fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'A real phone with charger.' } });
+  fireEvent.change(screen.getByLabelText(/Choose photos/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+  fireEvent.click(screen.getByRole('button', { name: 'Submit item to DASH' }));
+  await waitFor(() => expect(state.fetch.mock.calls.some(([url]) => url === '/v1/declutter/submissions')).toBe(true));
+  const payload = state.fetch.mock.calls.find(([url]) => url === '/v1/declutter/submissions')![1].body;
+  expect(payload.expectedPriceKobo).toBe(2_600_000);
+  expect(payload.preAuthorizePrice).toBe(consent);
+});
