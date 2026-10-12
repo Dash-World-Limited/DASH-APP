@@ -40,7 +40,8 @@ jobs:
       # Repository variable set for connected staging device builds.
       EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
       # Optional OSM-compatible MapLibre style. Staging falls back to
-      # MapLibre's official demo style; production builds must provide one.
+      # OpenFreeMap's street-level Liberty style (plugins/releaseConfig.js);
+      # production builds use mobile-production-aab.yml and must provide one.
       EXPO_PUBLIC_MAP_STYLE_URL: ${{ vars.EXPO_PUBLIC_MAP_STYLE_URL }}
 
     steps:
@@ -108,7 +109,13 @@ jobs:
         run: |
           set -euo pipefail
           test '"index.js"' = "$(node -p "JSON.stringify(require('./apps/mobile/package.json').main)")"
-          ! grep -rn "from 'expo-router'\|from \"expo-router\"\|from 'react-native-screens'\|from \"react-native-screens\"" apps/mobile/src apps/mobile/index.js
+          # `if grep`, not `! grep`: bash's set -e never stops on a command
+          # negated with `!`, so the bare negated grep this replaced could never
+          # fail the step, whatever it found.
+          if grep -rn "from 'expo-router'\|from \"expo-router\"\|from 'react-native-screens'\|from \"react-native-screens\"" apps/mobile/src apps/mobile/index.js; then
+            echo 'A native navigator is imported again.' >&2
+            exit 1
+          fi
           node -e "
             const p = require('./apps/mobile/package.json');
             const deps = { ...p.dependencies, ...p.devDependencies };

@@ -1,0 +1,342 @@
+name: Mobile production AAB (Play upload candidate)
+
+# Builds the signed Android App Bundle that is uploaded to Google Play. It
+# never uploads anything: the verified AAB is a workflow artifact, and putting
+# it on a Play track is a person's decision in Play Console.
+#
+# Fail-closed by design. Every value that ends up inside the upload is
+# required, checked before the build starts, checked again by app.config.ts
+# (prebuild and the Gradle build both evaluate it), and checked a third time
+# in the AAB itself. There is no default for any of them and no fallback to
+# debug signing: if the upload key is missing the Gradle build stops.
+#
+# The staging APK for device testing is a separate workflow
+# (mobile-release-apk.yml) and is unaffected by this one.
+#
+# Configuration, all on the `production` environment (Settings → Environments
+# → production; add required reviewers there so a production build needs a
+# second person's approval):
+#
+#   Variables (public values — they ship inside the app or are fingerprints):
+#     DASH_PRODUCTION_API_URL        https origin of the production API
+#     DASH_PRODUCTION_MAP_STYLE_URL  https URL of the production MapLibre style
+#     DASH_UPLOAD_CERT_SHA256        SHA-256 fingerprint of the upload certificate
+#
+#   Secrets:
+#     DASH_UPLOAD_KEYSTORE_BASE64    the upload keystore (.jks), base64-encoded
+#     DASH_UPLOAD_STORE_PASSWORD
+#     DASH_UPLOAD_KEY_ALIAS
+#     DASH_UPLOAD_KEY_PASSWORD
+#
+# The repository variable EXPO_PUBLIC_API_URL (the staging origin used by the
+# APK workflow) is read only to prove it is NOT inside the production bundle.
+#
+# See docs/release/PRODUCTION-AAB.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: Android versionCode. Must be higher than every code already uploaded to Play for com.dashworldng.dash.
+        required: true
+        type: string
+      version_name:
+        description: Version name people see (MAJOR.MINOR.PATCH, e.g. 1.0.0).
+        required: true
+        type: string
+
+# One production build at a time, and never cancelled halfway: a cancelled run
+# could leave nothing to compare a version code against.
+concurrency:
+  group: mobile-production-aab
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  production-aab:
+    name: Verify, build and verify the production AAB
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    environment: production
+
+    env:
+      APP_VARIANT: production
+      NODE_ENV: production
+      # Inputs and variables reach scripts only through the environment, never
+      # through ${{ }} expansion inside a script, so no value can become shell.
+      DASH_VERSION_CODE: ${{ inputs.version_code }}
+      DASH_VERSION_NAME: ${{ inputs.version_name }}
+      EXPO_PUBLIC_API_URL: ${{ vars.DASH_PRODUCTION_API_URL }}
+      EXPO_PUBLIC_MAP_STYLE_URL: ${{ vars.DASH_PRODUCTION_MAP_STYLE_URL }}
+      DASH_UPLOAD_CERT_SHA256: ${{ vars.DASH_UPLOAD_CERT_SHA256 }}
+      STAGING_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
+      PRODUCTION_PACKAGE: com.dashworldng.dash
+      # armeabi-v7a for the many 32-bit Android phones in Nigeria, arm64-v8a
+      # for everything current (the A55 included), x86_64 for Chromebooks.
+      # Play delivers each device only its own ABI from the bundle.
+      ABIS: armeabi-v7a,arm64-v8a,x86_64
+
+    steps:
+      - name: Check out the requested commit
+        uses: actions/checkout@v4
+
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/mobile/package-lock.json
+
+      # Before anything is installed or compiled: every value present, and
+      # every value valid by the same rules app.config.ts applies. Secret
+      # values are never read here — only whether each one is set.
+      - name: Refuse to start without a complete production configuration
+        env:
+          HAS_KEYSTORE: ${{ secrets.DASH_UPLOAD_KEYSTORE_BASE64 != '' }}
+          HAS_STORE_PASSWORD: ${{ secrets.DASH_UPLOAD_STORE_PASSWORD != '' }}
+          HAS_KEY_ALIAS: ${{ secrets.DASH_UPLOAD_KEY_ALIAS != '' }}
+          HAS_KEY_PASSWORD: ${{ secrets.DASH_UPLOAD_KEY_PASSWORD != '' }}
+        run: |
+          set -euo pipefail
+          problems=()
+          [ "$HAS_KEYSTORE" = true ] || problems+=("secret DASH_UPLOAD_KEYSTORE_BASE64 is not set")
+          [ "$HAS_STORE_PASSWORD" = true ] || problems+=("secret DASH_UPLOAD_STORE_PASSWORD is not set")
+          [ "$HAS_KEY_ALIAS" = true ] || problems+=("secret DASH_UPLOAD_KEY_ALIAS is not set")
+          [ "$HAS_KEY_PASSWORD" = true ] || problems+=("secret DASH_UPLOAD_KEY_PASSWORD is not set")
+          [ -n "${EXPO_PUBLIC_API_URL:-}" ] || problems+=("variable DASH_PRODUCTION_API_URL is not set")
+          [ -n "${EXPO_PUBLIC_MAP_STYLE_URL:-}" ] || problems+=("variable DASH_PRODUCTION_MAP_STYLE_URL is not set")
+          fingerprint=$(printf '%s' "${DASH_UPLOAD_CERT_SHA256:-}" | tr -d ': ' | tr 'a-f' 'A-F')
+          [[ "$fingerprint" =~ ^[0-9A-F]{64}$ ]] || problems+=("variable DASH_UPLOAD_CERT_SHA256 must be the upload certificate's SHA-256 fingerprint (64 hex digits)")
+          if [ -n "${STAGING_API_URL:-}" ] && [ "${STAGING_API_URL%/}" = "${EXPO_PUBLIC_API_URL%/}" ]; then
+            problems+=("DASH_PRODUCTION_API_URL is the same origin as the staging EXPO_PUBLIC_API_URL")
+          fi
+          if [ ${#problems[@]} -gt 0 ]; then
+            printf 'Production build refused:\n' >&2
+            printf '  - %s\n' "${problems[@]}" >&2
+            exit 1
+          fi
+          # The same rules app.config.ts enforces: https, a public host, no
+          # staging hostname, a real version code and name.
+          node -e '
+            const { resolveReleaseConfig } = require("./apps/mobile/plugins/releaseConfig.js");
+            const release = resolveReleaseConfig("production", process.env);
+            console.log(`Production build: ${process.env.PRODUCTION_PACKAGE} ${release.versionName} (${release.versionCode})`);
+            console.log(`API origin: ${release.apiUrl}`);
+            console.log(`Map style: ${release.mapStyleUrl}`);
+          '
+          echo "Commit: $(git rev-parse HEAD) on ${GITHUB_REF_NAME}"
+
+      - name: Use JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      # Only platform-tools: Gradle fetches the platform, build tools and NDK
+      # the generated project names.
+      - name: Configure Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install the locked dependencies
+        run: |
+          npm ci --include=dev
+          npm ci --prefix apps/mobile --include=dev
+
+      # The one value that decides whether the app can reach DASH at all is
+      # compiled into the bundle rather than read from Expo Constants. The
+      # generated file stays in this workspace and is never committed.
+      - name: Compile the production API origin into the native bundle
+        run: |
+          node -e '
+            const { writeFileSync } = require("node:fs");
+            const { resolveReleaseConfig } = require("./apps/mobile/plugins/releaseConfig.js");
+            const { apiUrl } = resolveReleaseConfig("production", process.env);
+            writeFileSync(
+              "apps/mobile/src/api/buildConfig.ts",
+              `/** Generated by the production AAB workflow. Do not commit this workspace copy. */\nexport const COMPILED_API_URL: string | null = ${JSON.stringify(apiUrl)};\n`,
+            );
+          '
+
+      - name: Typecheck the native app
+        run: npm run typecheck --prefix apps/mobile
+
+      - name: Run the native unit tests
+        run: npx vitest run apps/mobile
+
+      - name: Check the Expo dependency contract
+        working-directory: apps/mobile
+        run: npx expo-doctor
+
+      - name: Check the launcher icon and splash match the wordmark
+        run: npm run brand:assets -- --check
+
+      # The Android crash v2 fixed was a react-native-screens fragment being
+      # re-parented on a face change. v2 owns one React root; nothing reachable
+      # from the entry point may bring a native navigator back.
+      - name: Prove the navigation boundary
+        run: |
+          set -euo pipefail
+          test '"index.js"' = "$(node -p "JSON.stringify(require('./apps/mobile/package.json').main)")"
+          # `if grep`, not `! grep`: bash's set -e never stops on a command
+          # negated with `!`, so a bare negated grep here could not fail the step.
+          if grep -rn "from 'expo-router'\|from \"expo-router\"\|from 'react-native-screens'\|from \"react-native-screens\"" apps/mobile/src apps/mobile/index.js; then
+            echo 'A native navigator is imported again.' >&2
+            exit 1
+          fi
+          node -e "
+            const p = require('./apps/mobile/package.json');
+            const deps = { ...p.dependencies, ...p.devDependencies };
+            for (const name of ['expo-router', 'react-native-screens']) {
+              if (name in deps) { console.error(name + ' is a dependency again'); process.exit(1); }
+            }
+          "
+
+      - name: Generate the production Android project
+        working-directory: apps/mobile
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Confirm the generated project is production
+        working-directory: apps/mobile/android
+        run: |
+          set -euo pipefail
+          grep -q "applicationId '${PRODUCTION_PACKAGE}'" app/build.gradle
+          grep -q "versionCode ${DASH_VERSION_CODE}$" app/build.gradle
+          grep -q "versionName \"${DASH_VERSION_NAME}\"" app/build.gradle
+          grep -q 'dash-release-signing (production: upload key required)' app/build.gradle
+          echo "Generated project: ${PRODUCTION_PACKAGE} ${DASH_VERSION_NAME} (${DASH_VERSION_CODE}), upload signing required."
+
+      # The keystore exists on disk only for the length of the Gradle build,
+      # readable only by this user, under the runner's temporary directory.
+      - name: Place the upload keystore
+        env:
+          DASH_UPLOAD_KEYSTORE_BASE64: ${{ secrets.DASH_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$DASH_UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/dash-upload.jks"
+          test -s "$RUNNER_TEMP/dash-upload.jks"
+          echo "DASH_UPLOAD_STORE_FILE=$RUNNER_TEMP/dash-upload.jks" >> "$GITHUB_ENV"
+
+      - name: Build the signed release AAB
+        working-directory: apps/mobile/android
+        env:
+          DASH_UPLOAD_STORE_PASSWORD: ${{ secrets.DASH_UPLOAD_STORE_PASSWORD }}
+          DASH_UPLOAD_KEY_ALIAS: ${{ secrets.DASH_UPLOAD_KEY_ALIAS }}
+          DASH_UPLOAD_KEY_PASSWORD: ${{ secrets.DASH_UPLOAD_KEY_PASSWORD }}
+        run: ./gradlew :app:bundleRelease -PreactNativeArchitectures="$ABIS" --no-daemon --stacktrace
+
+      - name: Remove the upload keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dash-upload.jks"
+
+      # Everything below reads the AAB Play will receive, not the inputs that
+      # produced it.
+      - name: Verify the AAB
+        working-directory: apps/mobile
+        run: |
+          set -euo pipefail
+          aab=android/app/build/outputs/bundle/release/app-release.aab
+          test -s "$aab"
+          work="$RUNNER_TEMP/aab-verify"
+          rm -rf "$work" && mkdir -p "$work"
+
+          # Signed, by the upload key, and by nothing else.
+          # Not -strict: that turns jarsigner's "self-signed certificate"
+          # warning into an error, and every Play upload key is self-signed.
+          jarsigner -verify "$aab" > "$work/jarsigner.txt" 2>&1 || { cat "$work/jarsigner.txt" >&2; echo 'The AAB signature does not verify.' >&2; exit 1; }
+          # jarsigner exits 0 for an unsigned file too ("jar is unsigned").
+          grep -q 'jar verified' "$work/jarsigner.txt" || { cat "$work/jarsigner.txt" >&2; echo 'The AAB is not signed.' >&2; exit 1; }
+          keytool -printcert -jarfile "$aab" > "$work/cert.txt"
+          if grep -qi 'CN=Android Debug' "$work/cert.txt"; then echo 'The AAB is signed with the Android debug key.' >&2; exit 1; fi
+          signers=$(grep -c 'SHA256:' "$work/cert.txt")
+          test "$signers" -eq 1 || { echo "Expected exactly one signing certificate, found $signers." >&2; exit 1; }
+          actual=$(sed -n 's/.*SHA256: *//p' "$work/cert.txt" | head -1 | tr -d ': ' | tr 'a-f' 'A-F')
+          expected=$(printf '%s' "$DASH_UPLOAD_CERT_SHA256" | tr -d ': ' | tr 'a-f' 'A-F')
+          test "$actual" = "$expected" || { echo "The AAB is signed by $actual, not the upload certificate $expected." >&2; exit 1; }
+
+          # The files the app runs from, straight out of the bundle.
+          unzip -Z1 "$aab" > "$work/entries.txt"
+          grep -qx 'base/assets/index.android.bundle' "$work/entries.txt"
+          grep -qx 'base/assets/app.config' "$work/entries.txt"
+          grep -qx 'base/manifest/AndroidManifest.xml' "$work/entries.txt"
+          if grep -q 'assets/staging' "$work/entries.txt"; then echo 'The AAB contains staging assets.' >&2; exit 1; fi
+          for abi in ${ABIS//,/ }; do grep -q "^base/lib/$abi/" "$work/entries.txt" || { echo "No native libraries for $abi." >&2; exit 1; }; done
+          unzip -p "$aab" base/assets/index.android.bundle > "$work/index.android.bundle"
+          unzip -p "$aab" base/assets/app.config > "$work/app.config"
+
+          # The bundle's manifest is protobuf. Its strings are enough to prove
+          # the package; the permission review below reads Gradle's merged
+          # XML manifest, which is what the protobuf was compiled from.
+          unzip -p "$aab" base/manifest/AndroidManifest.xml > "$work/manifest.pb"
+          grep -a -q -F "$PRODUCTION_PACKAGE" "$work/manifest.pb"
+          for suffix in staging dev; do
+            if grep -a -q -F "${PRODUCTION_PACKAGE}.${suffix}" "$work/manifest.pb"; then echo "The AAB manifest names ${PRODUCTION_PACKAGE}.${suffix}." >&2; exit 1; fi
+          done
+          merged=""
+          for candidate in \
+            android/app/build/intermediates/bundle_manifest/release \
+            android/app/build/intermediates/merged_manifests/release \
+            android/app/build/intermediates/merged_manifest/release; do
+            found=$(find "$candidate" -name AndroidManifest.xml 2>/dev/null | head -1 || true)
+            if [ -n "$found" ]; then merged="$found"; break; fi
+          done
+          test -n "$merged" || { echo 'Could not find the merged release manifest.' >&2; exit 1; }
+          echo "Merged manifest: $merged"
+          cp "$merged" "$work/AndroidManifest.merged.xml"
+
+          forbid=()
+          if [ -n "${STAGING_API_URL:-}" ]; then forbid=(--forbid-api "$STAGING_API_URL"); fi
+          cd "$GITHUB_WORKSPACE"
+          npx tsx apps/mobile/scripts/release-verify.ts \
+            --bundle "$work/index.android.bundle" \
+            --app-config "$work/app.config" \
+            --manifest "$work/AndroidManifest.merged.xml" \
+            --expect-api "$EXPO_PUBLIC_API_URL" \
+            "${forbid[@]}" \
+            --package "$PRODUCTION_PACKAGE" \
+            --version-code "$DASH_VERSION_CODE" \
+            --version-name "$DASH_VERSION_NAME" | tee "$work/release-verify.txt"
+
+      - name: Name the verified AAB
+        working-directory: apps/mobile
+        run: |
+          set -euo pipefail
+          short_sha=$(git rev-parse --short=7 HEAD)
+          name="DASH-${DASH_VERSION_NAME}-${DASH_VERSION_CODE}-${short_sha}.aab"
+          cp android/app/build/outputs/bundle/release/app-release.aab "$name"
+          sha256sum "$name" > "$name.sha256"
+          {
+            echo "DASH production AAB"
+            echo "Package:      $PRODUCTION_PACKAGE"
+            echo "Version:      $DASH_VERSION_NAME ($DASH_VERSION_CODE)"
+            echo "Commit:       $(git rev-parse HEAD)"
+            echo "Ref:          $GITHUB_REF_NAME"
+            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "API origin:   $EXPO_PUBLIC_API_URL"
+            echo "Map style:    $EXPO_PUBLIC_MAP_STYLE_URL"
+            echo "ABIs:         $ABIS"
+            echo "Signed by:    $DASH_UPLOAD_CERT_SHA256"
+            echo
+            cat "$RUNNER_TEMP/aab-verify/release-verify.txt"
+          } > "$name.verification.txt"
+          echo "AAB_NAME=$name" >> "$GITHUB_ENV"
+          ls -lh "$name" "$name.sha256" "$name.verification.txt"
+          cat "$name.verification.txt"
+
+      - name: Upload the verified AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-production-aab-${{ inputs.version_code }}-${{ github.sha }}
+          path: |
+            apps/mobile/${{ env.AAB_NAME }}
+            apps/mobile/${{ env.AAB_NAME }}.sha256
+            apps/mobile/${{ env.AAB_NAME }}.verification.txt
+          if-no-files-found: error
+          retention-days: 30
