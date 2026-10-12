@@ -31,14 +31,14 @@ a phone in this pass; that is `A55-PRODUCTION-ACCEPTANCE.md`.
 | Cart | Built | — | Persists across launches; one merchant per cart |
 | Checkout, addresses | Built | `/v1/addresses`, `/v1/orders/quote`, `/v1/orders` | Server quote only; idempotency key per attempt; address position from the phone's location |
 | Paystack payment, return, retry | Built | `/payment/verify`, `/payment/retry` | Opens Paystack's page; checks on return to the foreground; "Pay again" only where the outcome allows |
-| Orders, tracking, cancellation, refunds | Built | `/v1/orders`, `/v1/orders/:id`, `/cancel` | Live map once a rider reports a position; refunds in the server's wording, green only once Paystack confirms |
+| Orders, tracking, cancellation, refunds | Built | `/v1/orders`, `/v1/orders/:id`, `/cancel` | Live map once a rider reports a position, joined to the address by a dashed straight line (no routing provider; no drawn route); refunds in the server's wording, green only once Paystack confirms |
 | DASH Wallet | Built (read-only) | `/v1/wallet` | Balance and last 50 ledger entries. No top-up or spending from the app |
 | Customer ↔ rider order chat | Built | `/v1/orders/:orderId/chat`, `/chat/messages` | Order-scoped: only the order's customer and its assigned rider; from rider assignment; read-only once closed. Polled, not pushed |
 | Rider application and approval | Built | `/v1/rider/applications`, `/v1/rider/application` | The Rider face is locked unless the server says `approved` |
-| Rider online/offline | Built | `/v1/rider/availability`, `/v1/rider/location` | Foreground GPS, high accuracy, at most every 5 s / 5 m while online. No background location |
-| Rider offers | Built | `/v1/rider/offers`, `/offers/:id/respond` | Polled every 8 s while online |
-| Pickup, delivery, PIN | Built | `/v1/rider/deliveries*`, `/progress`, `/complete` | Pickup code for the shop shown while awaiting collection (restored this pass); customer's 4-digit PIN completes the delivery |
-| Rider earnings and history | Built | `/v1/rider/earnings`, `/v1/rider/history` | From the payout ledger |
+| Rider online/offline | Built | `/v1/rider/availability`, `/v1/rider/location` | One live workspace (map + state panel; see `RIDER-EXPERIENCE.md`). Foreground GPS, high accuracy, at most every 5 s; a fix at least every 20 s even when stationary, so dispatch and the 15-minute online lease stay fresh. No background location |
+| Rider offers | Built | `/v1/rider/offers`, `/offers/:id/respond` | Polled every 8 s while online and on return to the app; no manual check needed. Countdown from the server's `expiresAt`; drop-off is an approximate area until acceptance. A banner shows an open offer on every other rider screen |
+| Pickup, delivery, PIN | Built | `/v1/rider/deliveries*`, `/progress`, `/complete` | Accepting turns the same screen into the journey: step bar, destination, Navigate (hands off to the phone's maps app), pickup code while awaiting collection, customer call/chat after acceptance, then the customer's 4-digit PIN |
+| Rider earnings and history | Built | `/v1/rider/earnings`, `/v1/rider/history` | From the payout ledger. Rider Home shows the real balance owed; its former hard-coded "Today's Earnings" and "Current Zone" figures are gone |
 | Declutters feed and detail | Built | `/v1/declutter/listings`, `/listings/:slug` | **The same endpoints and the same server filter as the website** (approved, available or reserved; newest first). No second catalogue. Limit: the app loads the 40 newest with no "load more" |
 | Account deletion | Built | `POST/GET/DELETE /v1/account/deletion` | Cooling-off period, cancellable |
 | Terms and Privacy | Built | `/v1/legal/:slug` | Server-published, versioned; reachable from sign-up and Account |
@@ -73,13 +73,31 @@ a phone in this pass; that is `A55-PRODUCTION-ACCEPTANCE.md`.
   `set -e`). Fixed.
 - **No production build path.** Added, fail-closed (`PRODUCTION-AAB.md`).
 
+## Rider pass (12 October)
+
+- **Fabricated routes.** The rider route screen and customer tracking drew
+  road-like lines that no routing service computed. Both now show a dashed
+  straight bearing line, and the rider gets a Navigate hand-off.
+- **Five disconnected rider pages** merged into one live workspace.
+  Accepting an offer turns into the journey on the same screen.
+- **Manual "Check for orders now"** while polling was already running,
+  plus a dead "Preview an incoming order" button. Replaced by an automatic
+  searching state with a real "checked Ns ago" and a small Refresh link.
+- **Hard-coded Rider Home figures** replaced by the payout ledger's balance.
+- **Stationary riders dropped offline.** No GPS fixes without 5 m of
+  movement meant a stale position after 2 minutes and a lapsed online lease
+  after 15. Fixed with a 20-second heartbeat fix.
+- **Offers visible only inside the online page.** Now a banner on every
+  other rider screen.
+
 ## Found and not changed
 
-- **`chatgpt/a55-rider-polish`** has 18 commits not in this branch — DASH
-  tones (`expo-audio`), two-way delivery calling and a rebuilt rider online
-  workspace. The last staging APK (run 57, 5 October) was built from it, so
-  A55 results from that APK describe that branch, not this one. If it is
-  merged later, expect `expo-audio`'s permissions (likely `RECORD_AUDIO`) to
-  fail the production permission check until reviewed.
+- **`chatgpt/a55-rider-polish`** (18 commits) was triaged commit by commit
+  in `RIDER-EXPERIENCE.md`. Nothing was merged. DASH tones are deferred to
+  v1.1 (new native audio dependencies, likely `RECORD_AUDIO`). Two-way
+  calling is deferred pending a privacy decision, because it would send the
+  rider's personal number to customers. The workspace rebuild and its CI
+  workflows are obsolete. The last staging APK (run 57) was built from that
+  branch, not this one.
 - **Declutters shows at most 40 listings** in the app.
 - **Product photographs** are not shown; category artwork stands in.

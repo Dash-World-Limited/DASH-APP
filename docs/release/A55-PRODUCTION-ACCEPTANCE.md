@@ -43,13 +43,32 @@ do not share data. Use a fresh email address for section 1.
 - [ ] **Order chat** (after a rider is assigned): customer → rider and rider → customer messages both arrive; keyboard does not cover the composer
 
 ## 4. Rider
+The rider screens are one live workspace (see `RIDER-EXPERIENCE.md`). Use a
+real test order from the vendor console. Never judge an empty map as broken
+when no orders exist. Keep **Automatic date and time** on: the offer
+countdown compares the server's deadline with the phone's clock.
 - [ ] Apply to ride from Account; status shows pending; Rider face stays locked until approved
-- [ ] After approval: switch to Rider; header shows your **first name only**, no greeting
-- [ ] Go online (location prompt, foreground only); map shows your position; go offline
-- [ ] Receive an offer, accept; delivery screen shows the **pickup code**; the vendor console accepts it
-- [ ] Mark arrived → picked up (code disappears) → on the way → arrived → enter the customer's PIN → complete
+- [ ] After approval: switch to Rider; header shows your **first name only**, no greeting; Rider Home shows no invented figures ("Owed to you" is the payout ledger's, or absent)
+- [ ] Go online (location prompt, foreground only): the map fills the screen with your position; the top bar says **ONLINE** with a pulsing dot; the GPS chip reads "GPS live ±N m"
+- [ ] Searching panel: radar animates, "Dispatch checked Ns ago" keeps counting up from 0–8 s; no "Check for orders now" button (only a small Refresh link)
+- [ ] **Stationary for 20+ minutes** (phone on a table, DASH open, screen on): still ONLINE, GPS chip stays live, an offer still arrives afterwards
+- [ ] Location turned off while online: GPS chip goes stale and the panel warns; turn it back on and it recovers
+- [ ] Receive an offer: bronze panel, countdown ring from about 30, shop name and address, distance to pickup (+ "about N min" if shown), trip distance, item count; **no customer name, phone or exact address**
+- [ ] While on Rider Home / Orders, an offer shows the bronze **NEW DELIVERY OFFER** banner with seconds left; tapping it opens the workspace
+- [ ] Let one offer run out: Accept disables at 0 and the panel returns to searching (and does not reappear on the next poll)
+- [ ] Decline one offer: returns to searching
+- [ ] Accept: the **same screen** becomes the journey (no page jump); map re-frames on the shop with a dashed straight line; top bar says **ON DELIVERY**
+- [ ] **Pickup code** shown; the vendor console accepts it
+- [ ] **Navigate** opens Google Maps (or the chosen maps app) with the shop as destination; return to DASH and the journey is unchanged
+- [ ] "I've arrived at the shop" → "I have the order" (code disappears) → "Start trip to customer" (map re-frames on the drop-off; customer name/address, Call customer, Chat in DASH now shown) → "I've arrived at drop-off"
+- [ ] PIN field: number keypad opens and the field and Complete button stay **above the keyboard**; a wrong PIN shows the server's error; the right PIN completes
+- [ ] Delivery complete panel → "Find the next order" returns to searching
+- [ ] During a delivery no Go offline control is offered (workspace or Rider Home); going offline while idle works
+- [ ] Force-stop mid-delivery and reopen: the delivery and pickup code are restored at the right step
+- [ ] Android's reduce/remove-animations setting on (Accessibility): radar and pulse stop, everything still readable
 - [ ] Earnings and history show the completed delivery
 - [ ] Switch back to Customer and back again repeatedly — no crash
+- [ ] Customer tracking map: rider position and home pin joined by a dashed straight line (no wiggly route)
 
 ## 5. Declutters
 - [ ] Declutter category opens the live feed

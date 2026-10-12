@@ -31,6 +31,7 @@ release — nothing more.
 | `V2-FEATURE-AUDIT.md` | **current** code-verified feature state (12 October) |
 | `PRODUCTION-AAB.md` | **current** production AAB workflow and the GitHub variables/secrets |
 | `A55-PRODUCTION-ACCEPTANCE.md` | **current** production device sign-off |
+| `RIDER-EXPERIENCE.md` | **current** rider workspace, data sources, map/routing limits, `a55-rider-polish` triage |
 
 ## Proven (with the evidence)
 
