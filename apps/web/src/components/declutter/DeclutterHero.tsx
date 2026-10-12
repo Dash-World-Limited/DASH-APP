@@ -1,33 +1,22 @@
 import Link from 'next/link';
 
-import { formatPrice, photoSrc, type ListingCard } from '@/lib/declutter';
+import { DeclutterPromoCarousel } from '@/components/declutter/DeclutterPromoCarousel';
 
 /**
  * The first screen.
  *
- * Built around real photographs of real items that are genuinely for sale right
- * now, not stock imagery and not an illustration. That is a deliberate
- * constraint rather than a shortcut: a second-hand marketplace whose hero shows
- * a studio photograph of a phone nobody is selling has told its first lie
- * before the visitor has scrolled.
+ * The marketplace inventory already has its own dedicated browsing section
+ * immediately below this hero. Repeating live listings here made the hero do
+ * the catalogue's job twice, so the desktop companion area is now reserved for
+ * intentional DASH World promotions instead.
  *
- * When there is nothing listed yet the collage simply does not render and the
- * headline stands on its own. An empty marketplace should look like a new one,
- * not like a broken one.
- *
- * A server component — no state, no effects, and its images are in the first
- * HTML the browser receives.
+ * Mobile deliberately stays clean for now: no compressed desktop advert block.
+ * A mobile-native promotional treatment can be introduced separately after the
+ * desktop carousel and its final campaign artwork are approved.
  */
-export function DeclutterHero({ featured }: { featured: ListingCard[] }) {
-  // Three is enough to suggest a marketplace and few enough to stay sharp on a
-  // handset. Only items with a photograph, because the whole point is the
-  // photograph.
-  const collage = featured.filter((listing) => listing.photo).slice(0, 3);
-
+export function DeclutterHero() {
   return (
     <section className="relative overflow-hidden border-b border-[var(--line)]">
-      {/* Two very soft washes of brand colour. Restrained: they read as depth
-          on a dark ground rather than as a gradient anybody notices. */}
       <div
         aria-hidden
         className="pointer-events-none absolute -left-40 -top-52 h-[36rem] w-[36rem] rounded-full opacity-40 blur-[120px]"
@@ -72,9 +61,6 @@ export function DeclutterHero({ featured }: { featured: ListingCard[] }) {
             </Link>
           </div>
 
-          {/* The four promises, compressed to their names. The trust band
-              further down the page explains each one; here they are a
-              reassurance, not an argument. */}
           <ul className="mt-10 flex flex-wrap gap-x-6 gap-y-2 text-xs font-semibold text-[var(--ink-muted)]">
             {['DASH Reviewed', 'Verified Listing', 'Fixed Price', 'No Negotiation'].map((promise) => (
               <li key={promise} className="flex items-center gap-2">
@@ -85,35 +71,9 @@ export function DeclutterHero({ featured }: { featured: ListingCard[] }) {
           </ul>
         </div>
 
-        {collage.length > 0 ? (
-          <div className="dcl-rise grid grid-cols-2 gap-3 sm:gap-4" style={{ animationDelay: '90ms' }}>
-            {collage.map((listing, index) => (
-              <Link
-                key={listing.slug}
-                href={`/declutter/${listing.slug}`}
-                className={`dcl-card group relative block overflow-hidden rounded-[var(--radius-card)] border border-[var(--line)] ${
-                  index === 0 ? 'col-span-2 aspect-[16/10]' : 'aspect-square'
-                }`}
-              >
-                <div className="dcl-media dcl-scrim h-full w-full">
-                  <img
-                    src={photoSrc(listing.photo!.url)}
-                    alt={listing.photo!.alt}
-                    // The hero images are the largest thing on the first screen.
-                    fetchPriority={index === 0 ? 'high' : 'auto'}
-                    className="h-full w-full object-cover"
-                  />
-                </div>
-                <div className="absolute inset-x-0 bottom-0 z-10 p-4">
-                  <p className="dcl-display text-base text-white sm:text-lg">
-                    {formatPrice(listing.priceKobo)}
-                  </p>
-                  <p className="mt-0.5 line-clamp-1 text-xs text-white/80">{listing.title}</p>
-                </div>
-              </Link>
-            ))}
-          </div>
-        ) : null}
+        <div className="dcl-rise hidden lg:block" style={{ animationDelay: '90ms' }}>
+          <DeclutterPromoCarousel />
+        </div>
       </div>
     </section>
   );
