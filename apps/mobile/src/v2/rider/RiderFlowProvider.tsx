@@ -13,13 +13,23 @@ export interface Coordinate {
 export interface RiderOffer {
   id: string;
   expiresAt: string;
+  /** Straight-line metres from the rider's last reported position to the shop. */
   pickupDistanceMetres: number;
+  /**
+   * The dispatch engine's estimate of the ride to the shop: straight-line
+   * distance times a detour factor over the vehicle's typical speed. An
+   * estimate, and shown as one.
+   */
+  pickupEtaSeconds?: number | null;
   order: {
     code: string;
     pickup: { name: string; address: string; latitude: number; longitude: number };
+    /** Coarsened by the server to three decimal places (~100 m). Not the customer's address. */
     dropoffArea: { latitude: number; longitude: number } | null;
     tripDistanceMetres: number;
     itemCount: number;
+    /** When the shop expects the order to be ready, if it has said. */
+    estimatedReadyAt?: string | null;
   };
 }
 
@@ -71,14 +81,26 @@ interface RiderFlowValue {
   busy: boolean;
   error: string | null;
   offer: RiderOffer | null;
+  /** When this phone first saw the current offer, for the countdown ring's full width. */
+  offerSeenAt: number | null;
+  /** When dispatch was last asked for offers successfully. Real, so "checked 4s ago" is true. */
+  offersCheckedAt: number | null;
   delivery: RiderDelivery | null;
   riderPosition: Coordinate | null;
+  /** When the last GPS fix arrived on this phone. */
+  positionUpdatedAt: number | null;
+  /** That fix's reported accuracy radius, when the platform gives one. */
+  positionAccuracyMetres: number | null;
   goOnline(): Promise<boolean>;
   goOffline(): Promise<boolean>;
   findOffers(): Promise<void>;
   respondToOffer(accept: boolean): Promise<string | null>;
+  /** Drop an offer whose server deadline has passed, without waiting for the next poll. */
+  expireOffer(offerId: string): void;
   progress(to: Exclude<DeliveryStatus, 'rider_assigned' | 'delivered'>): Promise<boolean>;
   complete(pin: string): Promise<boolean>;
+  /** Put a finished delivery away so the workspace returns to searching. */
+  clearCompletedDelivery(): void;
   clearError(): void;
 }
 
@@ -86,7 +108,8 @@ interface RiderFlowValue {
  * The message for a rider action attempted on a build with no API address.
  *
  * This used to be a preview mode: an invented offer, an invented delivery
- * address and a fixed handover PIN, all compiled into every build. The app's front door now requires a signed-in session, which requires
+ * address and a fixed handover PIN, all compiled into every build. The app's
+ * front door now requires a signed-in session, which requires
  * an API, so no rider screen can mount on an unconnected build and the preview
  * could never run — it only shipped invented people and places inside the
  * bundle. A rider action without an API now refuses, plainly.
@@ -96,6 +119,16 @@ const NOT_CONNECTED = 'This build has no DASH API address, so rider actions are 
 const RiderFlowContext = createContext<RiderFlowValue | null>(null);
 
 const LOCATION_UPLOAD_INTERVAL_MS = 5_000;
+/**
+ * The longest an online rider goes without reporting a position. The watch
+ * below only fires after 5 m of movement, so a rider parked and waiting for
+ * work produced no fixes at all: their position went stale for dispatch after
+ * two minutes, and the server's fifteen-minute online lease — renewed only by
+ * position reports — then lapsed and signed them out of work. The API is
+ * written for a live app reporting about every twenty seconds; this keeps it
+ * one.
+ */
+const LOCATION_HEARTBEAT_MS = 20_000;
 
 export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const auth = useAppSession();
@@ -105,6 +138,11 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const [offer, setOffer] = useState<RiderOffer | null>(null);
   const [delivery, setDelivery] = useState<RiderDelivery | null>(null);
   const [riderPosition, setRiderPosition] = useState<Coordinate | null>(null);
+  const [positionUpdatedAt, setPositionUpdatedAt] = useState<number | null>(null);
+  const [positionAccuracyMetres, setPositionAccuracyMetres] = useState<number | null>(null);
+  const [offersCheckedAt, setOffersCheckedAt] = useState<number | null>(null);
+  const [offerSeenAt, setOfferSeenAt] = useState<number | null>(null);
+  const seenOfferId = useRef<string | null>(null);
   const lastLocationUploadAt = useRef(0);
   const locationUploadInFlight = useRef(false);
 
@@ -119,6 +157,10 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     // is configured. Without an application-level guard those bursts can flood
     // /v1/rider/location and trip the server rate limit.
     setRiderPosition(point);
+    setPositionUpdatedAt(Date.now());
+    setPositionAccuracyMetres(
+      typeof position.coords.accuracy === 'number' && Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null,
+    );
     if (!api.configured) return;
 
     const now = Date.now();
@@ -158,7 +200,11 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     if (!api.configured || !online) return;
     try {
       const response = await api.request<{ offers: RiderOffer[] }>('/v1/rider/offers');
-      setOffer(response.offers[0] ?? null);
+      const next = response.offers[0] ?? null;
+      if (next && next.id !== seenOfferId.current) setOfferSeenAt(Date.now());
+      seenOfferId.current = next?.id ?? null;
+      setOffer(next);
+      setOffersCheckedAt(Date.now());
     } catch (caught) {
       fail(caught);
     }
@@ -205,6 +251,30 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     };
   }, [fail, online, publishPosition]);
 
+  useEffect(() => {
+    if (!online || !api.configured) return;
+    // A high-accuracy fix indoors can take longer than the tick; never ask
+    // for a second while the first is still searching.
+    let fixPending = false;
+    const timer = setInterval(() => {
+      if (fixPending || Date.now() - lastLocationUploadAt.current < LOCATION_HEARTBEAT_MS) return;
+      fixPending = true;
+      // A real fix, uploaded through the same path as the watch. A phone that
+      // cannot get one (indoors, location off) simply reports nothing and the
+      // GPS chip shows the position going stale; a server refusal — an
+      // expired lease, say — is shown like any other.
+      void Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High })
+        .then(
+          (position) => publishPosition(position).catch(fail),
+          () => undefined,
+        )
+        .finally(() => {
+          fixPending = false;
+        });
+    }, 5_000);
+    return () => clearInterval(timer);
+  }, [fail, online, publishPosition]);
+
   const restoreDelivery = useCallback(async () => {
     if (!api.configured) return;
     const response = await api.request<{ deliveries: ApiRiderDelivery[] }>('/v1/rider/deliveries');
@@ -248,12 +318,15 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       if (nextState === 'active') {
         // Android may suspend foreground GPS while DASH is backgrounded. As
         // soon as the rider returns, push a fresh fix immediately rather than
-        // waiting for the next watchPosition callback.
+        // waiting for the next watchPosition callback — and ask dispatch at
+        // once, so an offer made while the app was hidden is not left to the
+        // next eight-second poll.
         void reportCurrentPosition().catch(fail);
+        void findOffers();
       }
     });
     return () => subscription.remove();
-  }, [auth.state, fail, online, reportCurrentPosition]);
+  }, [auth.state, fail, findOffers, online, reportCurrentPosition]);
 
   const goOnline = useCallback(async (): Promise<boolean> => {
     setBusy(true);
@@ -388,10 +461,16 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     goOffline,
     findOffers,
     respondToOffer,
+    expireOffer: (offerId: string) => setOffer((current) => (current?.id === offerId ? null : current)),
     progress,
     complete,
+    clearCompletedDelivery: () => setDelivery((current) => (current?.status === 'delivered' ? null : current)),
     clearError: () => setError(null),
-  }), [busy, complete, delivery, error, findOffers, goOffline, goOnline, offer, online, progress, respondToOffer, riderPosition]);
+    offerSeenAt,
+    offersCheckedAt,
+    positionUpdatedAt,
+    positionAccuracyMetres,
+  }), [busy, complete, delivery, error, findOffers, goOffline, goOnline, offer, offerSeenAt, offersCheckedAt, online, positionAccuracyMetres, positionUpdatedAt, progress, respondToOffer, riderPosition]);
 
   return <RiderFlowContext.Provider value={value}>{children}</RiderFlowContext.Provider>;
 }
