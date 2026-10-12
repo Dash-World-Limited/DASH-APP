@@ -208,6 +208,7 @@ export const PRIVATE_SELLER_FIELDS: readonly string[] = [
   'nationalIdLast4',
   'phoneE164',
   'addressLine',
+  'socialHandle',
   'bankName',
   'bankAccountLast4',
   'bankAccountCipher',

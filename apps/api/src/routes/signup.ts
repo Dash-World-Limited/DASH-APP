@@ -55,6 +55,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { e164PhoneSchema } from '@dash/domain/phone';
 import { generateOtp, generateReference, hashOtp, verifyOtp } from '@dash/domain/crypto';
 import { writeAudit, PRIVACY_SLUG, TERMS_SLUG } from '@dash/db';
 import {
@@ -70,12 +71,11 @@ import { createSession } from '../auth/sessions.js';
 import { issueAccessFor } from '../auth/issue.js';
 import { issueAuthCookies } from '../auth/cookies.js';
 import { ensureCustomerRole } from '../auth/customer-role.js';
+import { otpEmailContent } from '../auth/otp-delivery.js';
+import { dashEmailHtml } from '../email/dash-brand.js';
 
-/** E.164, matching the auth routes exactly. One definition of a phone number. */
-const phoneSchema = z
-  .string()
-  .trim()
-  .regex(/^\+[1-9]\d{7,14}$/, 'Enter a valid phone number including the country code');
+/** Signup accepts valid national numbering plans in canonical E.164 form. */
+const phoneSchema = e164PhoneSchema;
 
 const emailSchema = z.string().trim().toLowerCase().email('Enter a valid email address');
 
@@ -101,16 +101,12 @@ const signupSchema = z
     usageIntent: z.enum(USAGE_INTENTS),
     acquisitionSource: z.enum(ACQUISITION_SOURCES),
     acquisitionDetail: z.string().trim().max(120).optional(),
-    // An attestation with a timestamp, never a date of birth. DASH has no
-    // reason to hold the birthday of somebody who wants to buy a sofa.
     confirmedAdult: z.literal(true, {
       errorMap: () => ({ message: 'You must confirm you are 18 or older' }),
     }),
     acceptedTerms: z.literal(true, {
       errorMap: () => ({ message: 'You must accept the terms to create an account' }),
     }),
-    // Optional, always. Marketing consent is never a condition of holding a
-    // DASH account, so there is no value of this that can fail validation.
     marketingOptIn: z.boolean().default(false),
   })
   .refine(
@@ -119,8 +115,6 @@ const signupSchema = z
       (value.acquisitionDetail ?? '').trim().length >= 2,
     {
       path: ['acquisitionDetail'],
-      // An empty "who referred you?" is worse than not asking, because it looks
-      // like data.
       message: 'Tell us a little more',
     },
   );
@@ -133,61 +127,21 @@ const verifySchema = z.object({
 const resendSchema = z.object({ email: emailSchema });
 
 const PURPOSE = 'email_verify';
-
-/**
- * How long between codes to the same address.
- *
- * Long enough that a resend button cannot be used to post a stranger's mailbox
- * once a second, short enough that somebody who genuinely did not receive the
- * first one is not left waiting. The endpoint's rate limit is the outer bound;
- * this is the per-address one, which a rate limit keyed on IP cannot express.
- */
 const RESEND_COOLDOWN_SECONDS = 60;
 
 export async function registerSignupRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, config, email } = app.services;
 
-  const expiresInMinutes = Math.round(config.OTP_TTL_SECONDS / 60);
-
-  /**
-   * Addresses allowed to create an account right now.
-   *
-   * Empty means everybody, which is the normal state. It is populated only
-   * while SES is in its sandbox, where AWS delivers to verified addresses and
-   * silently drops everything else.
-   */
   const allowlist = new Set(
     config.SIGNUP_ALLOWLIST.split(',')
       .map((entry) => entry.trim().toLowerCase())
       .filter((entry) => entry.length > 0),
   );
 
-  /**
-   * Refused with a plain answer, not the enumeration-safe one.
-   *
-   * "Signup is not open yet" is a fact about DASH, not about whether an account
-   * exists, so saying it leaks nothing — and the alternative is worse than a
-   * leak: accepting somebody, creating their identity, and sending a code the
-   * mail provider will never deliver leaves them with an account they can never
-   * open and no way to know why.
-   */
   function signupPermitted(address: string): boolean {
     return allowlist.size === 0 || allowlist.has(address);
   }
 
-  /**
-   * Write the profile, the age attestation and both consents.
-   *
-   * The customer row is created at signup rather than at verification, because
-   * the profile arrives with the form and has to live somewhere until the
-   * address is proved. An unverified identity holds no session, so a customer
-   * row attached to one can never act.
-   *
-   * Terms and privacy acceptance go to `LegalAcceptance`, which points at a
-   * specific `LegalDocument` version — that record is the evidence, and it
-   * answers "which text, in which version, did this person agree to, and when".
-   * Recording a boolean instead would answer none of that.
-   */
   async function writeProfile(
     identityId: string,
     body: z.infer<typeof signupSchema>,
@@ -217,19 +171,11 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         acquisitionDetail: body.acquisitionDetail ?? null,
         ageConfirmedAt: now,
         marketingOptIn: body.marketingOptIn,
-        // Cleared when consent is withdrawn, so a stale timestamp cannot
-        // outlive the agreement it recorded.
         marketingOptInAt: body.marketingOptIn ? now : null,
         marketingOptInIp: body.marketingOptIn ? ipAddress : null,
       },
     });
 
-    // Resolved exactly the way `GET /v1/legal/:slug` resolves it: the newest
-    // version that is actually in effect. Looking these up by version constant
-    // instead is what let the two paths disagree — the page served the
-    // previous text because the newer version was future-dated, while this
-    // recorded acceptance of the newer one, so a person read one document and
-    // was recorded as agreeing to another.
     const documents = await Promise.all(
       [TERMS_SLUG, PRIVACY_SLUG].map((slug) =>
         prisma.legalDocument.findFirst({
@@ -244,8 +190,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
       await prisma.legalAcceptance.upsert({
         where: { identityId_documentId: { identityId, documentId: document.id } },
         create: { identityId, documentId: document.id, ipAddress },
-        // Already accepted this exact version. The original timestamp is the
-        // evidence and must not be moved by a retry.
         update: {},
       });
     }
@@ -255,8 +199,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
   async function issueCode(identityId: string, address: string, name: string | null) {
     const code = generateOtp(6);
 
-    // Any outstanding code for this address is dead the moment a new one is
-    // issued, so a code read from an older email cannot be used after a resend.
     await prisma.otpChallenge.updateMany({
       where: { destination: address, purpose: PURPOSE, consumedAt: null },
       data: { consumedAt: new Date() },
@@ -267,7 +209,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         identityId,
         destination: address,
         channel: 'email',
-        // Hashed. A database read must not hand somebody a working code.
         codeHash: await hashOtp(code),
         purpose: PURPOSE,
         maxAttempts: config.OTP_MAX_ATTEMPTS,
@@ -275,25 +216,20 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
       },
     });
 
-    const greeting = name ? `Hello ${name},` : 'Hello,';
     await email.send({
       to: address,
-      subject: `${code} is your DASH verification code`,
-      text: `${greeting}\n\nYour DASH verification code is ${code}.\nIt expires in ${expiresInMinutes} minutes.\n\nIf you did not create a DASH account, ignore this email and nothing will happen.\n\nDASH World Limited`,
-      html: `<p>${greeting}</p><p>Your DASH verification code is <strong style="font-size:20px;letter-spacing:2px">${code}</strong></p><p>It expires in ${expiresInMinutes} minutes.</p><p>If you did not create a DASH account, ignore this email and nothing will happen.</p><p>DASH World Limited</p>`,
+      ...otpEmailContent({
+        code,
+        ttlSeconds: config.OTP_TTL_SECONDS,
+        purpose: 'email_verify',
+        displayName: name,
+      }),
       reference: `email_verify_${identityId}`,
     });
 
     return code;
   }
 
-  /**
-   * The one response every signup gets.
-   *
-   * `devCode` is present only outside production and only behind the same flag
-   * the SMS path uses, which `config.ts` refuses to start a production process
-   * with. Tests and local work read it instead of scraping a mail log.
-   */
   function accepted(code: string | null) {
     const expose = config.DEV_EXPOSE_OTP && config.NODE_ENV !== 'production' && code !== null;
     return {
@@ -304,14 +240,10 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
     };
   }
 
-  // ==========================================================================
-  // POST /v1/auth/signup
-  // ==========================================================================
   app.post(
     '/v1/auth/signup',
     {
       config: {
-        // Sends email, which costs money and reaches a real person's inbox.
         rateLimit: { max: 5, timeWindow: '15 minutes' },
       },
     },
@@ -334,8 +266,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
           select: {
             id: true,
             status: true,
-            // Everything the reclaim decision below needs. An identity that has
-            // proved nothing and done nothing is not somebody's account yet.
             emailVerifiedAt: true,
             email: true,
             customer: { select: { id: true, orders: { select: { id: true }, take: 1 } } },
@@ -345,15 +275,25 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         }),
       ]);
 
-      // --- The address is already somebody's, and proved ---------------------
       if (byEmail && byEmail.emailVerifiedAt !== null) {
-        // Told to the mailbox, not to the caller. Whoever owns this address
-        // learns that somebody tried; whoever typed it learns nothing.
+        const existingAccountText = `Somebody entered this address on the DASH signup form.\n\nYou already have an account with it, so there is nothing to create. Sign in with this email address instead, and we will send you a code.\n\nIf that was not you, no action is needed — nothing has changed on your account.\n\nDASH\nBeyond the Digital`;
         await email.send({
           to: body.email,
           subject: 'You already have a DASH account',
-          text: `Somebody entered this address on the DASH signup form.\n\nYou already have an account with it, so there is nothing to create. Sign in with this email address instead, and we will send you a code.\n\nIf that was not you, no action is needed — nothing has changed on your account.\n\nDASH World Limited`,
-          html: `<p>Somebody entered this address on the DASH signup form.</p><p>You already have an account with it, so there is nothing to create. Sign in with this email address instead and we will send you a code.</p><p>If that was not you, no action is needed — nothing has changed on your account.</p><p>DASH World Limited</p>`,
+          text: existingAccountText,
+          html: dashEmailHtml({
+            previewText: 'You already have a DASH account. Nothing has changed on your account.',
+            eyebrow: 'Account notice',
+            title: 'You already have a DASH account',
+            greeting: byEmail.displayName ? `Hello ${byEmail.displayName},` : 'Hello,',
+            paragraphs: [
+              'Somebody entered this email address on the DASH signup form.',
+              'You already have an account with this email address, so there is nothing to create. Sign in using this email address and we will send you a code.',
+              'If that was not you, no action is needed — nothing has changed on your account.',
+            ],
+            securityNote:
+              'DASH will never ask you to share a verification code by phone, chat or social media.',
+          }),
           reference: 'signup_existing_account',
         });
 
@@ -370,38 +310,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         return accepted(null);
       }
 
-      // --- The phone belongs to somebody else --------------------------------
-      //
-      // Not merged, not attached, not created. The phone number is the one
-      // credential nothing is currently verifying, so treating it as proof of
-      // sameness would let anyone join themselves to a stranger's account by
-      // typing their number.
-      /**
-       * The typo case.
-       *
-       * Somebody enters `ada@gmial.com`, never receives a code, and never
-       * verifies. Their phone number is now attached to an identity nobody has
-       * proved anything about. When they come back and type the address
-       * correctly, the phone-conflict rule below would refuse them — and they
-       * would be locked out of DASH by their own spelling mistake, with no way
-       * through except emailing support.
-       *
-       * So a phone number is released from an identity that has proved nothing
-       * and done nothing. This is **not** an identity merge and not a
-       * verification: it is recognising that an unproven claim has no standing.
-       * Nothing is copied from the old identity to the new one, and the person
-       * still has to prove the new address before anything works.
-       *
-       * The conditions are deliberately narrow, and each one has to hold:
-       *
-       *   * the email on it was never verified, so nobody ever proved it;
-       *   * it holds no session, so nobody has ever signed in as it;
-       *   * it has no roles, so it is not staff;
-       *   * its customer profile has no orders, so it has no history.
-       *
-       * A verified identity is never touched, whatever else is true, because
-       * the phone number is exactly the credential nothing here is checking.
-       */
       const reclaimable =
         byPhone !== null &&
         (byEmail === null || byPhone.id !== byEmail.id) &&
@@ -411,9 +319,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         (byPhone.customer?.orders.length ?? 0) === 0;
 
       if (byPhone && reclaimable) {
-        // Released, not deleted. The abandoned identity keeps its mistyped
-        // address so that whoever genuinely owns *that* mailbox can still claim
-        // it later, and keeps its own record of having existed.
         await prisma.identity.update({
           where: { id: byPhone.id },
           data: { phone: null },
@@ -435,16 +340,27 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         !reclaimable &&
         (byEmail === null || byPhone.id !== byEmail.id);
       if (phoneConflict) {
+        const phoneConflictText = `Hello ${body.name},\n\nThat phone number is already associated with a DASH account.\n\nWe have not created a second account and we have not changed the existing one. If the existing account belongs to you, sign in using the email address already linked to your DASH account.\n\nIf you believe this is a mistake, reply to this email or contact DASH support and a person will look at it.\n\nDASH\nBeyond the Digital`;
         await email.send({
           to: body.email,
           subject: 'We could not finish creating your DASH account',
-          text: `That phone number is already registered to a DASH account.\n\nWe have not created a second account and we have not changed the existing one. If the account is yours, sign in with that phone number. If you think this is a mistake, reply to this email and a person will look at it.\n\nDASH World Limited`,
-          html: `<p>That phone number is already registered to a DASH account.</p><p>We have not created a second account and we have not changed the existing one. If the account is yours, sign in with that phone number. If you think this is a mistake, reply to this email and a person will look at it.</p><p>DASH World Limited</p>`,
+          text: phoneConflictText,
+          html: dashEmailHtml({
+            previewText: 'We could not finish creating your DASH account.',
+            eyebrow: 'Account notice',
+            title: 'We could not create another DASH account',
+            greeting: `Hello ${body.name},`,
+            paragraphs: [
+              'That phone number is already associated with a DASH account.',
+              'We have not created a second account and we have not changed the existing one. If the existing account belongs to you, sign in using the email address already linked to your DASH account.',
+              'If you believe this is a mistake, reply to this email or contact DASH support and a person will look at it.',
+            ],
+            securityNote:
+              'For your privacy, this message does not reveal any details about the existing DASH account.',
+          }),
           reference: 'signup_phone_conflict',
         });
 
-        // A security event, not a debug line. Repeated conflicts against one
-        // number is what an account-takeover attempt looks like from here.
         await writeAudit(prisma, {
           identityId: byPhone.id,
           action: 'auth.signup.phone_conflict',
@@ -459,12 +375,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         return accepted(null);
       }
 
-      // --- An unverified row for this address already exists ------------------
-      //
-      // Nothing was ever proved about it, so it is not anybody's account yet.
-      // Treating this as a retry rather than a conflict is also what stops
-      // signup from being an email-squatting tool: a stranger starting signup
-      // with your address cannot lock you out of it.
       if (byEmail) {
         const updated = await prisma.identity.update({
           where: { id: byEmail.id },
@@ -476,15 +386,12 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         return accepted(code);
       }
 
-      // --- A new identity -----------------------------------------------------
       const identity = await prisma.identity.create({
         data: {
           email: body.email,
           phone: body.phone,
           displayName: body.name,
           status: 'active',
-          // No password. Customers authenticate by code, exactly as they do in
-          // the app; only staff carry a password hash.
         },
         select: { id: true, displayName: true },
       });
@@ -506,18 +413,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  // ==========================================================================
-  // GET /v1/legal/:slug
-  //
-  // The current text of a policy, so the checkbox that asks somebody to accept
-  // it can link to what they are accepting. Public and unauthenticated: a
-  // policy nobody can read before agreeing to it is not a policy.
-  //
-  // Serves the newest effective version, which is by definition the one signup
-  // records acceptance of. Older versions stay in the table because acceptances
-  // point at them, and are deliberately not addressable here — a URL that
-  // served superseded terms would eventually be quoted as current.
-  // ==========================================================================
   app.get('/v1/legal/:slug', async (request) => {
     const { slug } = z
       .object({ slug: z.enum([TERMS_SLUG, PRIVACY_SLUG]) })
@@ -538,9 +433,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
     };
   });
 
-  // ==========================================================================
-  // POST /v1/auth/email/resend
-  // ==========================================================================
   app.post(
     '/v1/auth/email/resend',
     { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } },
@@ -552,8 +444,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         select: { id: true, status: true, emailVerifiedAt: true, displayName: true },
       });
 
-      // Nothing to resend for an unknown address, a suspended account or one
-      // that is already verified — and all three answer identically.
       if (!identity || identity.status !== 'active' || identity.emailVerifiedAt !== null) {
         return accepted(null);
       }
@@ -569,8 +459,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
       });
 
       if (recent) {
-        // A real refusal, because the caller here is the person waiting for the
-        // email and a silent no-op would look like the button was broken.
         const waitSeconds = Math.max(
           1,
           RESEND_COOLDOWN_SECONDS - Math.floor((Date.now() - recent.createdAt.getTime()) / 1000),
@@ -585,9 +473,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
     },
   );
 
-  // ==========================================================================
-  // POST /v1/auth/email/verify
-  // ==========================================================================
   app.post(
     '/v1/auth/email/verify',
     { config: { rateLimit: { max: 10, timeWindow: '10 minutes' } } },
@@ -607,8 +492,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
       const invalid = ApiError.badRequest('That code is not valid or has expired.');
       if (!challenge || !challenge.identityId) throw invalid;
 
-      // The attempt is burned before the code is checked, so a crash or a
-      // dropped connection mid-verify cannot be used to get unlimited tries.
       if (challenge.attempts >= challenge.maxAttempts) {
         await prisma.otpChallenge.update({
           where: { id: challenge.id },
@@ -623,8 +506,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
 
       if (!(await verifyOtp(body.code, challenge.codeHash))) throw invalid;
 
-      // One-time. Consumed before anything else happens, so the same code
-      // cannot be redeemed twice by two concurrent requests.
       await prisma.otpChallenge.update({
         where: { id: challenge.id },
         data: { consumedAt: new Date() },
@@ -638,10 +519,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         throw ApiError.unauthorized('This account is not available.');
       }
 
-      // The customer row normally arrives with the signup form. The fallback
-      // is for an identity created some other way — seeded staff, an account
-      // made before this form existed — which must not end up verified with no
-      // profile to act through.
       await prisma.$transaction(async (tx) => {
         if (identity.emailVerifiedAt === null) {
           await tx.identity.update({
@@ -654,9 +531,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
             data: { identityId: identity.id, referralCode: generateReference('DW') },
           });
         }
-        // The profile alone grants nothing: every customer permission comes
-        // from the role. Without it a verified account could not save an
-        // address or place an order.
         await ensureCustomerRole(tx, identity.id);
       });
 
@@ -670,9 +544,6 @@ export async function registerSignupRoutes(app: FastifyInstance): Promise<void> 
         requestId: request.id,
       });
 
-      // Signed in on the spot. Redeeming a code sent to the address is exactly
-      // the proof a sign-in asks for, and making somebody verify and then
-      // immediately sign in again is a step that protects nothing.
       const session = await createSession(
         prisma,
         identity.id,

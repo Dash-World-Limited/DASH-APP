@@ -69,11 +69,13 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
   const [locationSlug, setLocationSlug] = useState('');
   const [condition, setCondition] = useState<'new' | 'like_new' | 'good' | 'fair'>('good');
   const [expectedPrice, setExpectedPrice] = useState('');
+  const [preAuthorizePrice, setPreAuthorizePrice] = useState(false);
   const [photos, setPhotos] = useState<SelectedPhoto[]>([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<Submission | null>(null);
+  const [notified, setNotified] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,6 +139,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
     setTitle('');
     setDescription('');
     setExpectedPrice('');
+    setPreAuthorizePrice(false);
     setCondition('good');
     setPhotos([]);
     setCreated(null);
@@ -155,6 +158,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
       if (parsedNaira !== null && (!Number.isFinite(parsedNaira) || parsedNaira <= 0)) {
         throw new Error('Enter a valid expected price or leave it blank.');
       }
+      if (preAuthorizePrice && parsedNaira === null) throw new Error('Enter a price before pre-authorising it.');
 
       const response = await authedFetch<{ submission: Submission }>('/v1/declutter/submissions', {
         method: 'POST',
@@ -165,6 +169,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
           condition,
           locationSlug,
           ...(parsedNaira !== null ? { expectedPriceKobo: Math.round(parsedNaira * 100) } : {}),
+          preAuthorizePrice,
         },
       });
 
@@ -182,6 +187,14 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
         });
       }
 
+      // This is the notification boundary. The API refuses to complete an item
+      // with no photos, and sends the seller/admin emails idempotently here.
+      setProgress('Finishing your submission…');
+      const completion = await authedFetch<{ notified: boolean }>(`/v1/declutter/submissions/${response.submission.id}/complete`, {
+        method: 'POST',
+      });
+
+      setNotified(completion.notified);
       setCreated(response.submission);
       setProgress('');
     } catch (caught) {
@@ -199,7 +212,7 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
         <h2 className="mt-3 text-xl font-bold">{created.title ?? title}</h2>
         <p className="mt-2 text-sm leading-relaxed text-[var(--ink-muted)]">
           Reference <strong>{created.code}</strong>. Your photos are uploaded and the item is now in
-          the DASH review flow.
+          the DASH review flow. {notified ? 'Your confirmation email has been accepted for delivery.' : 'Email confirmation is pending; your item is safely submitted.'}
         </p>
         <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface-sunken)] p-4 text-sm text-[var(--ink-muted)]">
           {kycStatus === 'verified'
@@ -263,35 +276,22 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
             <select
               value={categoryKey}
               onChange={(event) => setCategoryKey(event.target.value)}
-              className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm"
+              className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm outline-none focus:border-[var(--primary)]"
             >
               {(taxonomy?.categories ?? []).map((category) => (
-                <option key={category.key} value={category.key}>{category.name}</option>
+                <option key={category.key} value={category.key}>
+                  {category.name}
+                </option>
               ))}
             </select>
           </label>
 
-          <label className="block text-sm font-semibold">
-            Area
-            <select
-              value={locationSlug}
-              onChange={(event) => setLocationSlug(event.target.value)}
-              className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm"
-            >
-              {(taxonomy?.locations ?? []).map((location) => (
-                <option key={location.slug} value={location.slug}>{location.label}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
           <label className="block text-sm font-semibold">
             Condition
             <select
               value={condition}
               onChange={(event) => setCondition(event.target.value as typeof condition)}
-              className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm"
+              className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm outline-none focus:border-[var(--primary)]"
             >
               <option value="new">New</option>
               <option value="like_new">Like new</option>
@@ -301,86 +301,121 @@ export function ItemSubmissionForm({ kycStatus }: { kycStatus: string }) {
           </label>
 
           <label className="block text-sm font-semibold">
-            Expected price (₦) <span className="font-normal text-[var(--ink-muted)]">(optional)</span>
-            <input
-              inputMode="numeric"
-              value={expectedPrice}
-              onChange={(event) => setExpectedPrice(event.target.value.replace(/[^0-9,]/g, ''))}
-              placeholder="250000"
+            Area
+            <select
+              value={locationSlug}
+              onChange={(event) => setLocationSlug(event.target.value)}
               className="mt-2 min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] px-4 text-sm outline-none focus:border-[var(--primary)]"
-            />
+            >
+              {(taxonomy?.locations ?? []).map((location) => (
+                <option key={location.slug} value={location.slug}>
+                  {location.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block text-sm font-semibold">
+            Price you have in mind <span className="font-normal text-[var(--ink-muted)]">(optional)</span>
+            <div className="relative mt-2">
+              <span className="pointer-events-none absolute left-4 top-3 text-sm text-[var(--ink-muted)]">₦</span>
+              <input
+                value={expectedPrice}
+                inputMode="numeric"
+                onChange={(event) => { setExpectedPrice(event.target.value.replace(/[^0-9,]/g, '')); setPreAuthorizePrice(false); }}
+                placeholder="250,000"
+                className="min-h-12 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-sunken)] pl-9 pr-4 text-sm outline-none focus:border-[var(--primary)]"
+              />
+            </div>
           </label>
         </div>
+      </div>
 
-        <div>
-          <label className="block text-sm font-semibold" htmlFor="declutter-item-photos">
-            Item photos
-          </label>
-          <p className="mt-1 text-xs text-[var(--ink-muted)]">
-            1–12 JPEG, PNG or WebP images, up to 8 MB each. Photograph the real item.
-          </p>
+      <label className="mt-5 flex items-start gap-3 rounded-xl border border-[var(--line)] p-4 text-sm leading-relaxed">
+        <input type="checkbox" checked={preAuthorizePrice} disabled={busy || !expectedPrice.trim() || Number(expectedPrice.replace(/,/g, '')) <= 0}
+          onChange={event => setPreAuthorizePrice(event.target.checked)} className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" />
+        <span>I pre-authorise my submitted price if DASH's first price approval is for that exact amount.
+          <span className="mt-1 block text-xs text-[var(--ink-muted)]">Optional. DASH must still review and authorise the price. If it changes, or you leave this unchecked, we will ask you to accept it before publication.</span>
+        </span>
+      </label>
+
+      <div className="mt-7 border-t border-[var(--line)] pt-6">
+        <p className="text-sm font-bold">Photographs</p>
+        <p className="mt-1 text-xs leading-relaxed text-[var(--ink-muted)]">
+          Upload the actual item, not catalogue photos. Add clear views of defects, labels and accessories.
+        </p>
+        <label className="mt-4 block cursor-pointer rounded-2xl border border-dashed border-[var(--line-strong)] p-5 text-center transition-colors hover:bg-[var(--surface-sunken)]">
+          <span className="text-sm font-bold">Choose photos</span>
+          <span className="mt-1 block text-xs text-[var(--ink-muted)]">JPEG, PNG or WebP · up to {MAX_PHOTOS} photos · 8 MB each</span>
           <input
-            id="declutter-item-photos"
             type="file"
-            accept="image/jpeg,image/png,image/webp"
             multiple
-            onChange={(event) => {
-              choosePhotos(event.target.files);
-              event.currentTarget.value = '';
-            }}
-            className="mt-3 block w-full text-sm"
+            accept="image/jpeg,image/png,image/webp"
+            className="sr-only"
+            onChange={(event) => choosePhotos(event.target.files)}
           />
+        </label>
 
-          {photos.length > 0 ? (
-            <div className="mt-4 space-y-2">
-              {photos.map((photo, index) => (
-                <div key={`${photo.file.name}-${index}`} className="grid gap-2 rounded-xl border border-[var(--line)] p-3 sm:grid-cols-[1fr_12rem_auto] sm:items-center">
+        {photos.length > 0 ? (
+          <div className="mt-4 space-y-3">
+            {photos.map((selected, index) => (
+              <div key={`${selected.file.name}-${index}`} className="rounded-xl border border-[var(--line)] p-3">
+                <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold">{photo.file.name}</p>
-                    <p className="text-xs text-[var(--ink-muted)]">{Math.max(1, Math.round(photo.file.size / 1024))} KB</p>
+                    <p className="truncate text-xs font-bold">{selected.file.name}</p>
+                    <p className="mt-0.5 text-[11px] text-[var(--ink-muted)]">{Math.max(1, Math.round(selected.file.size / 1024))} KB</p>
                   </div>
-                  <select
-                    value={photo.role}
-                    onChange={(event) =>
-                      setPhotos((current) =>
-                        current.map((candidate, candidateIndex) =>
-                          candidateIndex === index
-                            ? { ...candidate, role: event.target.value as PhotoRole }
-                            : candidate,
-                        ),
-                      )
-                    }
-                    className="min-h-10 rounded-lg border border-[var(--line)] bg-[var(--surface-sunken)] px-3 text-xs"
-                    aria-label={`What ${photo.file.name} shows`}
-                  >
-                    {PHOTO_ROLES.map((role) => (
-                      <option key={role.value} value={role.value}>{role.label}</option>
-                    ))}
-                  </select>
                   <button
                     type="button"
-                    onClick={() => setPhotos((current) => current.filter((_, candidateIndex) => candidateIndex !== index))}
-                    className="min-h-10 rounded-lg border border-[var(--line)] px-3 text-xs font-bold"
+                    onClick={() => setPhotos((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                    className="text-xs font-bold text-[var(--danger)]"
                   >
                     Remove
                   </button>
                 </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
+                <label className="mt-3 block text-xs font-semibold">
+                  What does this photo show?
+                  <select
+                    value={selected.role}
+                    onChange={(event) =>
+                      setPhotos((current) =>
+                        current.map((photo, itemIndex) =>
+                          itemIndex === index
+                            ? { ...photo, role: event.target.value as PhotoRole }
+                            : photo,
+                        ),
+                      )
+                    }
+                    className="mt-1.5 min-h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--surface-sunken)] px-3 text-xs"
+                  >
+                    {PHOTO_ROLES.map((role) => (
+                      <option key={role.value} value={role.value}>
+                        {role.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
 
-      {progress ? <p className="mt-5 text-sm font-semibold text-[var(--primary)]">{progress}</p> : null}
-      {error ? <p role="alert" className="mt-5 text-sm font-semibold text-[var(--danger)]">{error}</p> : null}
+      {error ? (
+        <p role="alert" className="mt-5 text-sm font-semibold text-[var(--danger)]">
+          {error}
+        </p>
+      ) : null}
+
+      {progress ? <p className="mt-5 text-center text-xs font-semibold text-[var(--ink-muted)]">{progress}</p> : null}
 
       <button
         type="button"
         disabled={!canSubmit}
         onClick={() => void submit()}
-        className="mt-6 min-h-12 w-full rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)] disabled:opacity-50"
+        className="mt-5 min-h-12 w-full rounded-full bg-[var(--primary)] px-7 text-sm font-bold text-[var(--on-primary)] transition-colors hover:bg-[var(--primary-hover)] disabled:opacity-50"
       >
-        {busy ? 'Uploading…' : 'Submit item to DASH'}
+        {busy ? 'Submitting…' : 'Submit item to DASH'}
       </button>
     </div>
   );

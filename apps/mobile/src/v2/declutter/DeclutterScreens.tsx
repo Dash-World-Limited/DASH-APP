@@ -5,7 +5,7 @@ import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 
 import { api, apiBaseUrl, ApiError } from '../../api';
 import { useTheme } from '../../theme/ThemeProvider';
-import { radius, space } from '../../theme/tokens';
+import { declutterHero, radius, space } from '../../theme/tokens';
 import { Icon } from '../../ui/Icon';
 import { Text } from '../../ui/Text';
 
@@ -163,10 +163,10 @@ export function DeclutterFeedScreen({
         </View>
       </View>
 
-      <View style={{ minHeight: 132, borderRadius: radius.xl, padding: space.lg, overflow: 'hidden', backgroundColor: '#E6DCEB', justifyContent: 'center' }}>
+      <View style={{ minHeight: 132, borderRadius: radius.xl, padding: space.lg, overflow: 'hidden', backgroundColor: declutterHero.background, justifyContent: 'center' }}>
         <View style={{ position: 'absolute', width: 150, height: 150, borderRadius: 75, right: -28, top: -12, backgroundColor: 'rgba(255,255,255,0.52)' }} />
-        <Text variant="title" style={{ color: '#30243A', maxWidth: '70%' }}>Good items deserve another life.</Text>
-        <Text variant="caption" style={{ color: '#5A4A62', maxWidth: '72%', marginTop: space.sm }}>
+        <Text variant="title" style={{ color: declutterHero.title, maxWidth: '70%' }}>Good items deserve another life.</Text>
+        <Text variant="caption" style={{ color: declutterHero.caption, maxWidth: '72%', marginTop: space.sm }}>
           Listings shown here have passed the DASH publication flow.
         </Text>
       </View>

@@ -39,10 +39,13 @@ import {
 } from '@aws-sdk/client-sesv2';
 import type { DeliveryReceipt, EmailPort } from '@dash/domain/ports';
 
+const DASH_SENDER_NAME = 'DASH';
+
 export interface SesEmailOptions {
   region: string;
   /** A verified identity in `region`. SES rejects anything else outright. */
   fromAddress: string;
+  /** Retained for configuration compatibility; DASH owns the visible identity. */
   fromName: string;
   /**
    * Where replies go, and it must be a monitored mailbox.
@@ -101,7 +104,9 @@ export class SesEmailAdapter implements EmailPort {
     reference: string;
   }): Promise<DeliveryReceipt> {
     const command = new SendEmailCommand({
-      FromEmailAddress: `${this.options.fromName} <${this.options.fromAddress}>`,
+      // Match the Brevo identity exactly. Transactional provider changes must
+      // never change who a DASH code appears to come from in the inbox.
+      FromEmailAddress: `${DASH_SENDER_NAME} <${this.options.fromAddress}>`,
       ReplyToAddresses: [this.options.replyTo],
       Destination: { ToAddresses: [input.to] },
       ...(this.options.configurationSet

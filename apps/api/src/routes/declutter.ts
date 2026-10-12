@@ -27,6 +27,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { e164PhoneSchema } from '@dash/domain/phone';
 import { writeAudit } from '@dash/db';
 import { encrypt } from '@dash/domain/envelope';
 import { generateReference } from '@dash/domain/crypto';
@@ -47,6 +48,8 @@ import {
   type SubmissionState,
 } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
+import { notifySellerDecision } from '../declutter/notifications.js';
+import { notificationEmail, sellerNotificationEvent } from '../declutter/notification-delivery.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import { auditContext, customerIdOf, declutterActorFor } from './declutter-shared.js';
 import type { Actor } from '@dash/domain/permissions';
@@ -64,8 +67,9 @@ const becomeSellerSchema = z.object({
 const verificationSchema = z.object({
   legalName: z.string().trim().min(2).max(120),
   nationalId: z.string().trim().min(6).max(32),
-  phoneE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/, 'Use international format, e.g. +234…'),
+  phoneE164: e164PhoneSchema,
   addressLine: z.string().trim().min(4).max(200),
+  socialHandle: z.string().trim().max(81).regex(/^@?[A-Za-z0-9_][A-Za-z0-9_.]{0,79}$/, 'Enter a social handle, e.g. @ada_seller.').nullable().optional(),
   // Optional. A bank account exists to be paid into, and nobody has been paid
   // yet — collecting an account number so somebody can list a sofa asks for
   // the most sensitive thing they have in exchange for nothing. Settlement
@@ -91,8 +95,11 @@ const submissionSchema = z.object({
   categoryKey: z.string().trim().max(60).optional(),
   condition: z.enum(['new', 'like_new', 'good', 'fair']).optional(),
   expectedPriceKobo: z.number().int().positive().max(1_000_000_000).optional(),
+  preAuthorizePrice: z.boolean().default(false),
   locationSlug: z.string().trim().max(80).optional(),
   attributes: z.record(z.unknown()).optional(),
+}).refine(body => !body.preAuthorizePrice || body.expectedPriceKobo !== undefined, {
+  path: ['expectedPriceKobo'], message: 'Enter your submitted price before pre-authorising it.',
 });
 
 const sellerDecisionSchema = z.object({
@@ -266,6 +273,7 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
           nationalIdLast4: body.nationalId.slice(-4),
           phoneE164: body.phoneE164,
           addressLine: body.addressLine,
+          socialHandle: body.socialHandle ?? null,
           bankName: body.bankName ?? null,
           bankAccountCipher: body.bankAccountNumber
             ? encrypt(body.bankAccountNumber, keyring, context)
@@ -348,6 +356,9 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
         categoryId: category?.id ?? null,
         condition: body.condition ?? null,
         expectedPriceKobo: body.expectedPriceKobo ?? null,
+        submittedPriceConsentKobo: body.preAuthorizePrice ? body.expectedPriceKobo : null,
+        submittedPriceConsentAt: body.preAuthorizePrice ? new Date() : null,
+        submittedPriceConsentBy: body.preAuthorizePrice ? actor.identityId : null,
         locationId: location?.id ?? null,
         attributes: body.attributes ? JSON.stringify(body.attributes) : null,
         events: {
@@ -366,12 +377,34 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
       action: 'declutter.submission.created',
       resourceType: 'DeclutterSubmission',
       resourceId: submission.id,
-      after: { status, code: submission.code },
+      after: { status, code: submission.code, preAuthorizePrice: body.preAuthorizePrice, submittedPriceConsentKobo: submission.submittedPriceConsentKobo },
       ...auditContext(request),
     });
 
     reply.code(201);
     return { submission: submissionView(submission) };
+  });
+
+  /** Minimal account summary. Explicit selects keep KYC and admin data out. */
+  app.get('/v1/declutter/account', { preHandler: requireAuth }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const seller = await prisma.declutterSeller.findUnique({
+      where: { customerId: customerIdOf(actorOf(request)) },
+      select: { id: true, kycStatus: true },
+    });
+    if (!seller) return { seller: null, submissions: [], listings: [] };
+    const [submissions, listings] = await Promise.all([
+      prisma.declutterSubmission.findMany({
+        where: { sellerId: seller.id }, orderBy: { createdAt: 'desc' }, take: 50,
+        select: { id: true, code: true, title: true, status: true },
+      }),
+      prisma.declutterListing.findMany({
+        where: { sellerId: seller.id }, orderBy: { createdAt: 'desc' }, take: 50,
+        select: { id: true, submissionId: true, slug: true, title: true, moderationStatus: true,
+          availability: true, publishedAt: true, priceKobo: true },
+      }),
+    ]);
+    return { seller: { kycStatus: seller.kycStatus, canSubmit: canSellerSubmit(seller.kycStatus as KycState) }, submissions, listings };
   });
 
   /** GET /v1/declutter/submissions — the caller's own submissions, only. */
@@ -529,15 +562,46 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
         }
       }
 
-      const updated = await prisma.declutterSeller.update({
-        where: { id: seller.id },
-        data: {
-          kycStatus: to,
-          verifiedAt: to === 'verified' ? new Date() : seller.verifiedAt,
-          verifiedBy: to === 'verified' ? actor.identityId : seller.verifiedBy,
-          rejectionReason: kycReasonRequired(to) ? (body.reason ?? null) : null,
-          adminNotes: body.note ?? seller.adminNotes,
-        },
+      const updated = await prisma.$transaction(async (tx) => {
+        const updatedSeller = await tx.declutterSeller.update({
+          where: { id: seller.id },
+          data: {
+            kycStatus: to,
+            verifiedAt: to === 'verified' ? new Date() : seller.verifiedAt,
+            verifiedBy: to === 'verified' ? actor.identityId : seller.verifiedBy,
+            rejectionReason: kycReasonRequired(to) ? (body.reason ?? null) : null,
+            adminNotes: body.note ?? seller.adminNotes,
+          },
+        });
+
+        if (to === 'verified') {
+          const waiting = await tx.declutterSubmission.findMany({
+            where: { sellerId: seller.id, status: 'kyc_pending' },
+            select: { id: true, title: true, description: true, categoryId: true, locationId: true, photos: { select: { id: true } } },
+          });
+
+          for (const submission of waiting) {
+            const releasedStatus = submission.title && submission.description && submission.categoryId && submission.locationId && submission.photos.length ? 'fraud_review' : 'details_pending';
+            await tx.declutterSubmission.update({
+              where: { id: submission.id },
+              data: {
+                status: releasedStatus,
+                events: {
+                  create: {
+                    fromStatus: 'kyc_pending',
+                    toStatus: releasedStatus,
+                    actorType: acting,
+                    actorId: actor.identityId,
+                    reasonCode: 'seller_verified',
+                    note: 'Seller verification completed; item released to its next required review.',
+                  },
+                },
+              },
+            });
+          }
+        }
+
+        return updatedSeller;
       });
 
       await writeAudit(prisma, {
@@ -550,6 +614,23 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
         ...auditContext(request),
       });
 
+      if (to === 'verified' || to === 'rejected' || to === 'suspended') {
+        // The decision is committed; delivery failures must not undo KYC.
+        try {
+          const customer = updated.customerId ? await prisma.customer.findUnique({
+            where: { id: updated.customerId }, include: { identity: { select: { email: true } } },
+          }) : null;
+          const result = await notifySellerDecision(notificationEmail(prisma, app.services.email,
+            await sellerNotificationEvent(prisma, updated.id, `declutter.seller.${to}`)), {
+            sellerId: updated.id, sellerName: updated.displayName,
+            sellerEmail: customer?.identity.email ?? null, decision: to,
+            reason: updated.rejectionReason, publicWebUrl: app.services.config.PUBLIC_WEB_URL,
+          });
+          if (result.failed) request.log.warn({ failed: result.failed }, 'declutter seller-decision notification failed');
+        } catch {
+          request.log.warn('declutter seller-decision notification failed');
+        }
+      }
       return { seller: queueView(updated) };
     },
   );
@@ -624,6 +705,9 @@ export async function registerDeclutterRoutes(app: FastifyInstance): Promise<voi
       // seller accepted, and `declutter:listing:publish` — a later milestone.
       if (to === 'published') {
         throw ApiError.forbidden('Publishing is not available yet.');
+      }
+      if (to === 'approved') {
+        throw ApiError.forbidden('Use Approve & Publish in the item workspace. It preserves required seller verification and price consent and requires Super Admin step-up.');
       }
 
       const updated = await prisma.declutterSubmission.update({
@@ -915,6 +999,7 @@ interface SellerRow {
   legalName: string | null;
   phoneE164: string | null;
   addressLine: string | null;
+  socialHandle: string | null;
   adminNotes: string | null;
   verifiedAt: Date | null;
   createdAt: Date;
@@ -934,6 +1019,7 @@ function selfView(seller: SellerRow) {
     displayName: seller.displayName,
     sellerType: seller.sellerType,
     publicArea: seller.publicArea,
+    socialHandle: seller.socialHandle,
     kycStatus: seller.kycStatus,
     rejectionReason: seller.rejectionReason,
     canSubmit: canSellerSubmit(seller.kycStatus as KycState),
@@ -961,6 +1047,7 @@ function adminView(seller: SellerRow & { documents: { id: string; kind: string; 
     legalName: seller.legalName,
     phoneE164: seller.phoneE164,
     addressLine: seller.addressLine,
+    socialHandle: seller.socialHandle,
     nationalIdLast4: seller.nationalIdLast4,
     bankName: seller.bankName,
     bankAccountLast4: seller.bankAccountLast4,

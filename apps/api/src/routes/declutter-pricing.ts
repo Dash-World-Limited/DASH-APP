@@ -57,6 +57,7 @@ import {
   type ValueCheckState,
 } from '@dash/domain/valuecheck';
 import { publicAttributes } from '@dash/domain/declutter';
+import { authorizeSubmissionPrice } from '../declutter/price-authority.js';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import type { Actor } from '@dash/domain/permissions';
@@ -359,6 +360,8 @@ export async function registerDeclutterPricingRoutes(app: FastifyInstance): Prom
           condition: submission.condition,
           categoryKey: submission.category?.key ?? null,
           expectedPriceKobo: submission.expectedPriceKobo,
+          submittedPriceConsentKobo: submission.submittedPriceConsentKobo,
+          submittedPriceConsentAt: submission.submittedPriceConsentAt,
           attributes: submission.attributes ? JSON.parse(submission.attributes) : {},
           photoCount: submission.photos.length,
           valueCheckStatus: submission.valueCheckStatus,
@@ -366,6 +369,7 @@ export async function registerDeclutterPricingRoutes(app: FastifyInstance): Prom
             ? (JSON.parse(submission.escalationReasons) as string[])
             : [],
           authorizedPriceKobo: submission.authorizedPriceKobo,
+          proposedPriceKobo: submission.finalPriceKobo,
           authorizationVersion: submission.authorizationVersion,
           sellerAcceptedPriceKobo: submission.sellerAcceptedPriceKobo,
           acceptanceValid: isEligible(submission),
@@ -614,59 +618,71 @@ export async function registerDeclutterPricingRoutes(app: FastifyInstance): Prom
     const { id } = z.object({ id: z.string().min(1).max(40) }).parse(request.params);
     const body = sellerResponseInput.parse(request.body);
 
-    const submission = await prisma.declutterSubmission.findUnique({
-      where: { id },
-      include: { seller: true },
-    });
-    // Scoped to the owner, and 404 rather than 403 — a 403 would confirm the
-    // submission exists.
-    if (!submission || submission.seller.customerId !== actor.customerId) throw ApiError.notFound();
+    // Scope before taking the row lock, then re-read the authorised version
+    // inside the same transaction as acceptance so a concurrent price change
+    // cannot make an old acceptance count for the new price.
+    const owner = await prisma.declutterSubmission.findUnique({ where: { id }, include: { seller: true } });
+    if (!owner || owner.seller.customerId !== actor.customerId) throw ApiError.notFound();
+    const updated = await prisma.$transaction(async tx => {
+      await tx.declutterSubmission.update({ where: { id }, data: { updatedAt: new Date() } });
+      const submission = await tx.declutterSubmission.findUnique({
+        where: { id },
+        include: { seller: true },
+      });
+      // Scoped to the owner, and 404 rather than 403 — a 403 would confirm the
+      // submission exists.
+      if (!submission || submission.seller.customerId !== actor.customerId) throw ApiError.notFound();
 
-    if (submission.authorizedPriceKobo === null) {
-      throw ApiError.conflict('There is no price to answer yet.');
-    }
-    if (body.priceKobo !== submission.authorizedPriceKobo) {
-      // A stale screen. The seller must answer the price that is actually on
-      // the table, not the one they were shown before it moved.
-      throw ApiError.conflict('That price is no longer the one being offered. Reload and check.');
-    }
+      if (submission.status === 'withdrawn') throw ApiError.conflict('Removed items cannot proceed to publication.');
+      if (submission.authorizedPriceKobo === null) {
+        throw ApiError.conflict('There is no price to answer yet.');
+      }
+      if (body.priceKobo !== submission.authorizedPriceKobo) {
+        // A stale screen. The seller must answer the price that is actually on
+        // the table, not the one they were shown before it moved.
+        throw ApiError.conflict('That price is no longer the one being offered. Reload and check.');
+      }
 
-    const to = nextState(
-      submission.valueCheckStatus,
-      body.response === 'accept' ? 'seller_accepted' : 'seller_declined',
-      'seller',
-    );
+      if (body.response === 'accept' && submission.valueCheckStatus === 'seller_accepted' && submission.sellerAcceptedPriceKobo === submission.authorizedPriceKobo && submission.sellerAcceptedVersion === submission.authorizationVersion) return submission;
+      const to = nextState(
+        submission.valueCheckStatus,
+        body.response === 'accept' ? 'seller_accepted' : 'seller_declined',
+        'seller',
+      );
 
-    const updated = await prisma.declutterSubmission.update({
-      where: { id },
-      data:
-        body.response === 'accept'
-          ? {
-              valueCheckStatus: to,
-              sellerAcceptedAt: new Date(),
-              sellerAcceptanceBy: actor.identityId,
-              sellerAcceptedPriceKobo: submission.authorizedPriceKobo,
-              sellerAcceptedVersion: submission.authorizationVersion,
-              sellerDeclinedAt: null,
-              sellerDeclineReason: null,
-            }
-          : {
-              valueCheckStatus: to,
-              sellerDeclinedAt: new Date(),
-              sellerDeclineReason: body.reason ?? null,
-            },
-    });
+      const updated = await tx.declutterSubmission.update({
+        where: { id },
+        data:
+          body.response === 'accept'
+            ? {
+                valueCheckStatus: to,
+                sellerAcceptedAt: new Date(),
+                sellerAcceptanceBy: actor.identityId,
+                sellerAcceptedPriceKobo: submission.authorizedPriceKobo,
+                sellerAcceptedVersion: submission.authorizationVersion,
+                sellerDeclinedAt: null,
+                sellerDeclineReason: null,
+              }
+            : {
+                valueCheckStatus: to,
+                sellerDeclinedAt: new Date(),
+                sellerDeclineReason: body.reason ?? null,
+              },
+      });
 
-    await writeAudit(prisma, {
-      identityId: actor.identityId,
-      action: `declutter.price.${body.response === 'accept' ? 'accepted' : 'declined'}`,
-      resourceType: 'DeclutterSubmission',
-      resourceId: id,
-      after: {
-        priceKobo: submission.authorizedPriceKobo,
-        authorizationVersion: submission.authorizationVersion,
-      },
-      ...auditContext(request),
+      await writeAudit(tx, {
+        identityId: actor.identityId,
+        action: `declutter.price.${body.response === 'accept' ? 'accepted' : 'declined'}`,
+        resourceType: 'DeclutterSubmission',
+        resourceId: id,
+        after: {
+          priceKobo: submission.authorizedPriceKobo,
+          authorizationVersion: submission.authorizationVersion,
+        },
+        ...auditContext(request),
+      });
+
+      return updated;
     });
 
     return { valueCheckStatus: updated.valueCheckStatus, eligibleForPublication: isEligible(updated) };
@@ -711,24 +727,7 @@ export async function registerDeclutterPricingRoutes(app: FastifyInstance): Prom
     const authorizedState = nextState(from, 'price_authorized', acting);
     const presented = assertTransition(authorizedState, 'seller_acceptance_pending', 'system');
 
-    return prisma.declutterSubmission.update({
-      where: { id: submissionId },
-      data: {
-        valueCheckStatus: presented,
-        authorizedPriceKobo: priceKobo,
-        finalPriceKobo: priceKobo,
-        // Every authorisation is a new version, so an acceptance of the
-        // previous one stops being valid even at the same figure.
-        authorizationVersion: { increment: 1 },
-        authorizedAt: new Date(),
-        authorizedBy: identityId,
-        // A price that moved invalidates what the seller agreed to. Cleared
-        // rather than left to look current.
-        sellerAcceptedAt: null,
-        sellerAcceptedPriceKobo: null,
-        sellerAcceptedVersion: null,
-      },
-    });
+    return prisma.$transaction(tx => authorizeSubmissionPrice(tx, submissionId, priceKobo, identityId, presented));
   }
 
   async function auditDecision(

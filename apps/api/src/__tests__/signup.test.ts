@@ -74,6 +74,17 @@ async function post(url: string, payload: Record<string, unknown>) {
 
 let counter = 0;
 
+it('persists international E.164 and rejects invalid numbering plans before signup', async () => {
+  const person = freshPerson({ phone: '+447400123456' });
+  expect((await post('/v1/auth/signup', person)).statusCode).toBe(200);
+  expect((await context.prisma.identity.findUniqueOrThrow({ where: { email: person.email } })).phone).toBe('+447400123456');
+  for (const phone of ['+2340000000000', '+4474001', '07400123456']) {
+    const invalid = freshPerson({ phone });
+    expect((await post('/v1/auth/signup', invalid)).statusCode).toBe(400);
+    expect(await context.prisma.identity.findUnique({ where: { email: invalid.email } })).toBeNull();
+  }
+});
+
 /**
  * A complete, valid signup body.
  *
@@ -111,7 +122,7 @@ describe('creating an account', () => {
     expect(response.json().sent).toBe(true);
 
     const message = mailbox.lastTo(person.email);
-    expect(message?.subject).toMatch(/is your DASH verification code/);
+    expect(message?.subject).toMatch(/is your DASH code/);
     expect(message?.reference).toMatch(/^email_verify_/);
   });
 

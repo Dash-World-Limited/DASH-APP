@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,6 +113,9 @@ function buildTemplateDatabase(): string {
 
   const directory = mkdtempSync(join(tmpdir(), 'dash-template-'));
   const file = join(directory, 'template.db');
+  // Prisma's Windows schema engine can fail to open a nonexistent SQLite file.
+  // SQLite accepts an empty file and initialises it on the first connection.
+  writeFileSync(file, '');
 
   // Invoke the Prisma CLI's JS entry point through the current Node binary
   // rather than through `npx`. On Windows, `npx` resolves to `npx.cmd`, and

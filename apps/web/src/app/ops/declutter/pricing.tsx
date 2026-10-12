@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   Badge,
   Button,
@@ -13,6 +13,7 @@ import {
   formatNaira,
 } from '@/components/ui';
 import { Modal } from '@/components/Modal';
+import { useStepUp } from '@/components/StepUpPrompt';
 import { ApiRequestError } from '@/lib/api';
 import { authedFetch } from '@/lib/session';
 
@@ -85,11 +86,14 @@ interface Workspace {
     condition: string | null;
     categoryKey: string | null;
     expectedPriceKobo: number | null;
+    submittedPriceConsentKobo: number | null;
+    submittedPriceConsentAt: string | null;
     attributes: Record<string, unknown>;
     photoCount: number;
     valueCheckStatus: string;
     escalationReasons: string[];
     authorizedPriceKobo: number | null;
+    proposedPriceKobo: number | null;
     authorizationVersion: number;
     sellerAcceptedPriceKobo: number | null;
     acceptanceValid: boolean;
@@ -190,6 +194,7 @@ export function PricingQueue({ canAuthorize }: { canAuthorize: boolean }) {
 
 /** Prices waiting on a super admin, and why each is here. */
 function ApprovalQueue({ onOpen }: { onOpen: (id: string) => void }) {
+  const { run: runWithStepUp, prompt: stepUpPrompt } = useStepUp();
   const [rows, setRows] = useState<
     | {
         id: string;
@@ -205,15 +210,18 @@ function ApprovalQueue({ onOpen }: { onOpen: (id: string) => void }) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const data = await authedFetch<{ approvals: NonNullable<typeof rows> }>(
-        '/v1/admin/declutter/approvals',
+      const data = await runWithStepUp(() =>
+        authedFetch<{ approvals: NonNullable<typeof rows> }>(
+          '/v1/admin/declutter/approvals',
+        ),
       );
+      if (data === undefined) return;
       setRows(data.approvals);
     } catch (caught) {
       setError(messageFor(caught));
       setRows([]);
     }
-  }, []);
+  }, [runWithStepUp]);
 
   useEffect(() => {
     void load();
@@ -222,13 +230,14 @@ function ApprovalQueue({ onOpen }: { onOpen: (id: string) => void }) {
   if (error) {
     // Most often a missing step-up. The API's own wording is the useful thing
     // to show, rather than hiding the queue and explaining nothing.
-    return <ErrorState title="Approvals unavailable" message={error} onRetry={() => void load()} />;
+    return <>{stepUpPrompt}<ErrorState title="Approvals unavailable" message={error} onRetry={() => void load()} /></>;
   }
-  if (rows === null) return <LoadingBlock label="Loading approvals" />;
-  if (rows.length === 0) return null;
+  if (rows === null) return <>{stepUpPrompt}<LoadingBlock label="Loading approvals" /></>;
+  if (rows.length === 0) return <>{stepUpPrompt}</>;
 
   return (
     <div className="space-y-2">
+      {stepUpPrompt}
       <h2 className="text-sm font-semibold">Waiting on your approval</h2>
       <ul className="space-y-2">
         {rows.map((row) => (
@@ -263,16 +272,18 @@ function ApprovalQueue({ onOpen }: { onOpen: (id: string) => void }) {
 
 // ---------------------------------------------------------------------------
 
-function WorkspaceModal({
+export function WorkspaceModal({
   submissionId,
   canAuthorize,
   onClose,
   onChanged,
+  inline = false,
 }: {
   submissionId: string;
   canAuthorize: boolean;
   onClose: () => void;
   onChanged: () => void;
+  inline?: boolean;
 }) {
   const [data, setData] = useState<Workspace | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -280,6 +291,7 @@ function WorkspaceModal({
   const [busy, setBusy] = useState(false);
   const [priceNaira, setPriceNaira] = useState('');
   const [reason, setReason] = useState('');
+  const { run: runWithStepUp, prompt: stepUpPrompt } = useStepUp();
 
   const load = useCallback(async () => {
     setError(null);
@@ -290,8 +302,10 @@ function WorkspaceModal({
       setData(body);
       // Pre-filled with the recommendation, so an adjustment is something the
       // reviewer types rather than something that happens by default.
-      if (body.valuation?.recommendedPriceKobo) {
-        setPriceNaira(String(body.valuation.recommendedPriceKobo / 100));
+      const shownPrice = body.submission.valueCheckStatus === 'super_admin_approval_pending'
+        ? body.submission.proposedPriceKobo : body.valuation?.recommendedPriceKobo;
+      if (shownPrice) {
+        setPriceNaira(String(shownPrice / 100));
       }
     } catch (caught) {
       setError(messageFor(caught));
@@ -306,10 +320,14 @@ function WorkspaceModal({
     setBusy(true);
     setNotice(null);
     try {
-      await authedFetch(`/v1/admin/declutter/submissions/${submissionId}/${path}`, {
-        method: 'POST',
-        body,
+      const completed = await runWithStepUp(async () => {
+        await authedFetch(`/v1/admin/declutter/submissions/${submissionId}/${path}`, {
+          method: 'POST',
+          body,
+        });
+        return true;
       });
+      if (!completed) return;
       await load();
       onChanged();
     } catch (caught) {
@@ -322,9 +340,12 @@ function WorkspaceModal({
   const recommended = data?.valuation?.recommendedPriceKobo ?? null;
   const typedKobo = Math.round(Number(priceNaira || '0') * 100);
   const isAdjustment = recommended !== null && typedKobo !== recommended;
+  const isAuthorizationAdjustment = typedKobo !== data?.submission.proposedPriceKobo;
 
+  const Frame = inline ? InlinePricingFrame : Modal;
   return (
-    <Modal title="DASH ValueCheck" onClose={onClose}>
+    <Frame title="DASH ValueCheck" onClose={onClose}>
+      {stepUpPrompt}
       {error ? <ErrorState title="Could not open" message={error} onRetry={() => void load()} /> : null}
       {!data && !error ? <LoadingBlock label="Loading" /> : null}
 
@@ -350,7 +371,8 @@ function WorkspaceModal({
                   : formatNaira(data.submission.expectedPriceKobo)
               }
             />
-            <Row label="Photographs" value={String(data.submission.photoCount)} />
+              <Row label="Seller price pre-authorisation" value={data.submission.submittedPriceConsentAt && data.submission.submittedPriceConsentKobo !== null ? `Exact submitted price only: ${formatNaira(data.submission.submittedPriceConsentKobo)}` : 'Not given — seller must accept the authorised price'} />
+              <Row label="Photographs" value={String(data.submission.photoCount)} />
             {Object.entries(data.submission.attributes).map(([key, value]) => (
               <Row key={key} label={readable(key)} value={String(value)} />
             ))}
@@ -525,12 +547,12 @@ function WorkspaceModal({
                   disabled={busy}
                   onClick={() =>
                     void call('authorize', {
-                      kind: isAdjustment ? 'adjusted' : 'approved',
-                      ...(isAdjustment ? { priceKobo: typedKobo, reason: reason.trim() } : {}),
+                      kind: isAuthorizationAdjustment ? 'adjusted' : 'approved',
+                      ...(isAuthorizationAdjustment ? { priceKobo: typedKobo, reason: reason.trim() } : {}),
                     })
                   }
                 >
-                  {isAdjustment ? 'Adjust & authorise' : 'Authorise'}
+                  {isAuthorizationAdjustment ? 'Adjust & authorise' : 'Authorise'}
                 </Button>
                 <Button
                   variant="secondary"
@@ -551,8 +573,12 @@ function WorkspaceModal({
           ) : null}
         </div>
       ) : null}
-    </Modal>
+    </Frame>
   );
+}
+
+function InlinePricingFrame({ title, children }: { title: string; children: ReactNode; onClose: () => void }) {
+  return <section className="dcl-glass rounded-2xl border border-[var(--line)] p-5 sm:p-6"><h2 className="mb-5 text-xl font-bold">{title}</h2>{children}</section>;
 }
 
 function ComparableSection({

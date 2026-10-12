@@ -15,5 +15,8 @@ regexes = [
   '''YpTt1KNH1JtX0eaiUaPNFWHApAQl8BggrrhxcNgy604=''',
   '''k9Xm2Qp7Rt4Vw8Zb1Nc5Hj3Lf6Yg0Ds-aVbNmQwErTyUi''',
   '''Pq3Wz8Rx1Ty6Ui4Op9As2Df7Gh5Jk0Lm-zXcVbNmQwErT''',
-  '''MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY='''
+  '''MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=''',
+  # Historical unencoded form of the same synthetic encryption fixture above.
+  # Match only this exact assignment, not a test file or an entire rule.
+  '''ENCRYPTION_KEY:\s*['"]0123456789abcdef0123456789abcdef['"]'''
 ]

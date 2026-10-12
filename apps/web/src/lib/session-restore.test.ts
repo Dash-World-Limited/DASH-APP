@@ -96,12 +96,13 @@ describe('useSessionState', () => {
     await waitFor(() => expect(result.current).toBe('unauthenticated'));
   });
 
-  it('does not spin for a visitor who has never signed in', async () => {
-    // No cookie, no session to restore, no request, no spinner.
+  it('checks the API before reporting a visitor without a readable cookie signed out', async () => {
     setCookie(false);
     const mod = await loadHook('failure');
     const { result } = renderHook(() => mod.useSessionState());
-    expect(result.current).toBe('unauthenticated');
+    expect(result.current).toBe('restoring');
+    await waitFor(() => expect(result.current).toBe('unauthenticated'));
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('reports authenticated as a boolean only when genuinely restored', async () => {

@@ -58,7 +58,7 @@ async function requestCode(context: TestContext, payload: Record<string, string>
 describe('the message, apart from the provider', () => {
   it('carries the code and its expiry in every part of the email', () => {
     const content = otpEmailContent({ code: '048213', ttlSeconds: 300, purpose: 'login', displayName: 'Ada' });
-    expect(content.subject).toBe('048213 is your DASH sign-in code');
+    expect(content.subject).toBe('048213 is your DASH code');
     expect(content.text).toContain('048213');
     expect(content.text).toContain('5 minutes');
     expect(content.text.startsWith('Hello Ada,')).toBe(true);
@@ -79,7 +79,7 @@ describe('the message, apart from the provider', () => {
   it('greets someone with no name plainly, and words the SMS with the code', () => {
     expect(otpEmailContent({ code: '222222', ttlSeconds: 600, purpose: 'login' }).text.startsWith('Hello,')).toBe(true);
     expect(otpSmsBody({ code: '333333', ttlSeconds: 600, purpose: 'step_up' })).toBe(
-      'Your DASH APP code is 333333. It expires in 10 minutes.',
+      'Your DASH code is 333333. It expires in 10 minutes. Never share this code.',
     );
   });
 
@@ -140,7 +140,7 @@ describe('per-destination cooldown', () => {
     const code = response.json<{ devCode?: string }>().devCode;
     expect(email.sent).toHaveLength(1);
     expect(email.sent[0]?.to).toBe(TEST_CUSTOMER_EMAIL);
-    expect(email.sent[0]?.subject).toBe(`${code} is your DASH sign-in code`);
+    expect(email.sent[0]?.subject).toBe(`${code} is your DASH code`);
     expect(email.sent[0]?.reference).toBe('otp_login');
   });
 });

@@ -149,6 +149,7 @@ const SUBMISSION_TRANSITIONS: Readonly<Record<SubmissionState, readonly Rule<Sub
       { to: 'withdrawn', actors: ['seller', 'staff', 'admin', 'super_admin'] },
     ],
     kyc_pending: [
+      { to: 'fraud_review', actors: ['system'], note: 'verification completed and item details are present' },
       { to: 'details_pending', actors: ['admin', 'super_admin'] },
       { to: 'rejected', actors: ['admin', 'super_admin'] },
       { to: 'withdrawn', actors: ['seller', 'staff', 'admin', 'super_admin'] },

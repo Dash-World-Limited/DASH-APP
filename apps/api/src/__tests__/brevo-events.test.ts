@@ -150,7 +150,7 @@ describe('end to end', () => {
       payload: {
         name: 'Bounced Person',
         email,
-        phone: `+23482${String(Date.now()).slice(-8)}`,
+        phone: `+23481${String(Date.now()).slice(-8)}`,
         state: 'Lagos',
         cityArea: 'Yaba',
         usageIntent: 'mainly_buying',

@@ -51,6 +51,11 @@ datasource db {
 // ===========================================================================
 
 model Identity {
+  declutterConversations DeclutterConversation[] @relation("ConversationSeller")
+  assignedDeclutterConversations DeclutterConversation[] @relation("ConversationAssignee")
+  declutterMessages DeclutterMessage[]
+  declutterUpdates DeclutterSubmissionUpdate[]
+
   id String @id @default(cuid())
 
   // E.164. Nullable because staff may sign in by email only.
@@ -1921,6 +1926,8 @@ model DeclutterSeller {
   phoneE164        String?
   phoneVerifiedAt  DateTime?
   addressLine      String?
+  /// Private review contact; never included in the public seller profile.
+  socialHandle     String?
 
   bankName          String?
   bankAccountLast4  String?
@@ -1980,6 +1987,14 @@ model DeclutterSellerDocument {
 
 /// Someone asking DASH to consider an item. Private, never public.
 model DeclutterSubmission {
+  safetyReviewedAt DateTime?
+  itemReviewedAt DateTime?
+  fullyApprovedAt DateTime?
+  fullyApprovedBy String?
+  contentRevision Int @default(0)
+  conversations DeclutterConversation[]
+  updates DeclutterSubmissionUpdate[]
+
   id       String @id @default(cuid())
   code     String @unique
   sellerId String
@@ -2002,6 +2017,12 @@ model DeclutterSubmission {
   /// What the seller hopes for, in kobo. Never shown publicly, and never the
   /// price — it is an input to valuation and a signal in its own right.
   expectedPriceKobo Int?
+
+  /// Explicit, optional seller consent to the first DASH authorisation of this
+  /// exact submitted price. Null on legacy submissions; never inferred from price.
+  submittedPriceConsentKobo Int?
+  submittedPriceConsentAt   DateTime?
+  submittedPriceConsentBy   String?
 
   locationId String?
 
@@ -2402,6 +2423,8 @@ model DeclutterContactDisclosure {
 /// perceptual comparison worth doing properly rather than quickly. The column
 /// exists now so backfilling later is a job, not a migration.
 model DeclutterImageFingerprint {
+  updatePhotos DeclutterUpdatePhoto[]
+
   id     String @id @default(cuid())
   sha256 String @unique
 
@@ -2598,4 +2621,88 @@ model EmailSuppression {
   clearedBy   String?
 
   @@index([reason, lastSeenAt])
+}
+
+// Seller support is independent of pricing. Permissions, not a named admin,
+// control access; nullable assignment supports future customer-care teams.
+model DeclutterConversation {
+  id String @id @default(cuid())
+  sellerIdentityId String
+  submissionId String?
+  scopeKey String @unique
+  assignedIdentityId String?
+  status String @default("open")
+  sellerViewedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  seller Identity @relation("ConversationSeller", fields: [sellerIdentityId], references: [id])
+  assigned Identity? @relation("ConversationAssignee", fields: [assignedIdentityId], references: [id])
+  submission DeclutterSubmission? @relation(fields: [submissionId], references: [id])
+  messages DeclutterMessage[]
+  @@index([sellerIdentityId, updatedAt])
+  @@index([status, updatedAt])
+  @@index([assignedIdentityId, status])
+}
+model DeclutterMessage {
+  id String @id @default(cuid())
+  conversationId String
+  senderIdentityId String
+  senderType String
+  clientMessageId String
+  body String
+  createdAt DateTime @default(now())
+  readAt DateTime?
+  conversation DeclutterConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender Identity @relation(fields: [senderIdentityId], references: [id])
+  @@unique([conversationId, senderIdentityId, clientMessageId])
+  @@index([conversationId, createdAt])
+  @@index([conversationId, senderType, readAt])
+}
+// A complete proposed snapshot. Approved data is never overwritten by uploads.
+model DeclutterSubmissionUpdate {
+  id String @id @default(cuid())
+  submissionId String
+  submittedBy String
+  activeKey String? @unique
+  status String @default("draft")
+  baseRevision Int
+  title String
+  description String
+  condition String
+  sellerMessage String?
+  submittedAt DateTime?
+  reviewedAt DateTime?
+  reviewedBy String?
+  createdAt DateTime @default(now())
+  submission DeclutterSubmission @relation(fields: [submissionId], references: [id])
+  author Identity @relation(fields: [submittedBy], references: [id])
+  photos DeclutterUpdatePhoto[]
+  @@index([submissionId, createdAt])
+  @@index([status, submittedAt])
+}
+model DeclutterUpdatePhoto {
+  id String @id @default(cuid())
+  updateId String
+  fingerprintId String
+  storageKey String
+  position Int
+  role String @default("other")
+  caption String?
+  update DeclutterSubmissionUpdate @relation(fields: [updateId], references: [id], onDelete: Cascade)
+  fingerprint DeclutterImageFingerprint @relation(fields: [fingerprintId], references: [id])
+  @@unique([updateId, position])
+  @@index([fingerprintId])
+}
+// Retryable email intent, with the existing notificationEmail delivery claim.
+model DeclutterHubNotification {
+  id String @id @default(cuid())
+  eventKey String @unique
+  kind String
+  submissionId String?
+  messageId String?
+  recipientIdentityId String
+  deliveredAt DateTime?
+  attempts Int @default(0)
+  createdAt DateTime @default(now())
+  @@index([deliveredAt, createdAt])
 }

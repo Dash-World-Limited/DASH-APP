@@ -31,7 +31,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
@@ -49,6 +49,7 @@ let seededAt: number;
 beforeAll(() => {
   directory = mkdtempSync(join(tmpdir(), 'dash-seed-'));
   const file = join(directory, 'seed.db');
+  writeFileSync(file, '');
   const databaseUrl = `file:${file}`;
 
   // The Prisma CLI's JS entry point through the current Node binary rather
@@ -61,7 +62,6 @@ beforeAll(() => {
     { cwd: process.cwd(), env: { ...process.env, DATABASE_URL: databaseUrl }, stdio: 'pipe' },
   );
 
-  seededAt = Date.now();
   execFileSync(process.execPath, ['--import', 'tsx', 'packages/db/src/seed.ts'], {
     cwd: process.cwd(),
     // No ENCRYPTION_KEY: the seed treats the keyring as optional and simply
@@ -69,6 +69,9 @@ beforeAll(() => {
     env: { ...process.env, DATABASE_URL: databaseUrl },
     stdio: 'pipe',
   });
+  // Evaluate freshness after the child has reported its location. Sampling
+  // before the seed starts makes a valid position look like it is in the future.
+  seededAt = Date.now();
 
   prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
 }, 180_000);

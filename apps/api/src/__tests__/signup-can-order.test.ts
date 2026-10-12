@@ -38,7 +38,7 @@ async function signUpAndVerify(): Promise<{ token: string; email: string; identi
     payload: {
       name: 'New Customer',
       email,
-      phone: `+23480${String(Date.now()).slice(-6)}${counter}`,
+      phone: `+23480${String(Date.now()).slice(-7)}${counter}`,
       state: 'Lagos',
       cityArea: 'Lekki',
       usageIntent: 'mainly_buying',
@@ -47,6 +47,7 @@ async function signUpAndVerify(): Promise<{ token: string; email: string; identi
       acceptedTerms: true,
     },
   });
+  expect(signup.statusCode, signup.body).toBe(200);
   const code = signup.json<{ devCode: string }>().devCode;
   const verified = await context.app.inject({ method: 'POST', url: '/v1/auth/email/verify', payload: { email, code } });
   expect(verified.statusCode, verified.body).toBe(200);

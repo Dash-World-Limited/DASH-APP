@@ -1,10 +1,13 @@
 'use client';
 
+import Link from 'next/link';
+import { useStepUp } from '@/components/StepUpPrompt';
+import { HUB_BLOCKER_LABELS } from '@dash/domain/declutter';
 import { useCallback, useEffect, useState } from 'react';
 
 import { Button, Card, EmptyState, ErrorState, LoadingBlock } from '@/components/ui';
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch } from '@/lib/session';
+import { authedFetch, usePermissions } from '@/lib/session';
 
 interface SubmissionRow {
   id: string;
@@ -16,6 +19,13 @@ interface SubmissionRow {
 
 interface ReadyRow extends SubmissionRow {
   gaps: string[];
+  canPublish: boolean;
+}
+
+interface PublishedListing {
+  id: string;
+  slug: string;
+  priceKobo: number;
 }
 
 function messageFor(error: unknown): string {
@@ -23,6 +33,9 @@ function messageFor(error: unknown): string {
 }
 
 export function PublishQueue({ canPublish }: { canPublish: boolean }) {
+  const { run, prompt } = useStepUp();
+  const { permissions } = usePermissions();
+  const [notice, setNotice] = useState<string | null>(null);
   const [rows, setRows] = useState<ReadyRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -40,14 +53,14 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
             const readiness = await authedFetch<{ gaps: string[]; canPublish: boolean }>(
               `/v1/admin/declutter/submissions/${submission.id}/publication-readiness`,
             );
-            return readiness.canPublish ? { ...submission, gaps: readiness.gaps } : null;
+            return { ...submission, gaps: readiness.gaps, canPublish: readiness.canPublish };
           } catch {
-            return null;
+            return { ...submission, gaps: ['readiness_check_failed'], canPublish: false };
           }
         }),
       );
 
-      setRows(checked.filter((row): row is ReadyRow => row !== null));
+      setRows(checked);
     } catch (caught) {
       setError(messageFor(caught));
       setRows([]);
@@ -62,9 +75,10 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
     setBusyId(row.id);
     setError(null);
     try {
-      await authedFetch(`/v1/admin/declutter/submissions/${row.id}/publish`, {
-        method: 'POST',
-      });
+      const result = await run(() => authedFetch<{ published: boolean; listing: PublishedListing | null; message: string }>(
+        `/v1/admin/declutter/submissions/${row.id}/approve-publish`, { method: 'POST', body: {} },
+      ));
+      if (result) setNotice(result.message);
       await load();
     } catch (caught) {
       setError(messageFor(caught));
@@ -74,19 +88,20 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
   }
 
   return (
-    <section className="space-y-4" aria-label="Ready to publish">
+    <section className="space-y-4" aria-label="Publication review">
+      {prompt}
+      {notice ? <p role="status" className="text-sm">{notice}</p> : null}
       <div>
-        <h2 className="text-sm font-semibold">Ready to publish</h2>
+        <h2 className="text-sm font-semibold">Publication review</h2>
         <p className="mt-1 text-xs text-[var(--ink-muted)]">
-          Only submissions that passed seller verification, pricing, seller acceptance, photo,
-          location and fraud checks appear here.
+          Approve and publish with Super Admin authority. Required seller verification and current-price consent remain mandatory.
         </p>
       </div>
 
       {error ? <ErrorState title="Could not load publication queue" message={error} onRetry={() => void load()} /> : null}
       {rows === null && !error ? <LoadingBlock label="Checking publication readiness" /> : null}
       {rows !== null && rows.length === 0 && !error ? (
-        <EmptyState title="Nothing ready" description="Approved items will appear here after every publication check passes." />
+        <EmptyState title="No submissions to review" description="Submissions will appear here as they move toward publication." />
       ) : null}
 
       <ul className="space-y-2">
@@ -98,13 +113,21 @@ export function PublishQueue({ canPublish }: { canPublish: boolean }) {
                 <p className="text-xs text-[var(--ink-muted)]">
                   {row.code}{row.seller ? ` · ${row.seller.displayName}` : ''}
                 </p>
+                {row.canPublish ? (
+                  <p className="mt-1 text-xs font-medium">All publication checks passed.</p>
+                ) : (
+                  <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                    Blocked: {row.gaps.length > 0 ? row.gaps.map((gap) => HUB_BLOCKER_LABELS[gap] ?? 'Publication review required').join(' · ') : 'Publication checks are incomplete.'}
+                  </p>
+                )}
               </div>
+              <Link className="min-h-11 py-3 text-sm font-bold underline" href={`/ops/declutter/items/${row.id}`}>Review item</Link>
               <Button
                 size="sm"
-                disabled={!canPublish || busyId === row.id}
+                disabled={!canPublish || !permissions.has('declutter:pricing:authorize') || row.gaps.includes('already_published') || ['withdrawn', 'rejected'].includes(row.status) || busyId === row.id}
                 onClick={() => void publish(row)}
               >
-                {busyId === row.id ? 'Publishing…' : 'Publish'}
+                {busyId === row.id ? 'Checking requirements…' : 'Approve & Publish'}
               </Button>
             </Card>
           </li>
