@@ -4,6 +4,7 @@ import { AppState } from 'react-native';
 
 import { api, ApiError } from '../../api';
 import { useAppSession } from '../auth/AppSessionProvider';
+import { createForegroundPermission } from './locationPermission';
 
 export interface Coordinate {
   latitude: number;
@@ -116,6 +117,8 @@ interface RiderFlowValue {
  */
 const NOT_CONNECTED = 'This build has no DASH API address, so rider actions are unavailable.';
 
+const LOCATION_REQUIRED = 'Location permission is required while a rider is online.';
+
 const RiderFlowContext = createContext<RiderFlowValue | null>(null);
 
 const LOCATION_UPLOAD_INTERVAL_MS = 5_000;
@@ -145,6 +148,12 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const seenOfferId = useRef<string | null>(null);
   const lastLocationUploadAt = useRef(0);
   const locationUploadInFlight = useRef(false);
+  // One permission reader for the whole rider flow, so overlapping lifecycle
+  // events share a single check and Go online a single request.
+  const [permission] = useState(() => createForegroundPermission(Location));
+  const freshFix = useRef<Promise<boolean> | null>(null);
+  const watchState = useRef<'idle' | 'starting' | 'running'>('idle');
+  const [watchAttempt, setWatchAttempt] = useState(0);
 
   const fail = useCallback((caught: unknown) => {
     setError(caught instanceof ApiError ? caught.message : 'Something went wrong. Please try again.');
@@ -185,16 +194,34 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const reportCurrentPosition = useCallback(async (): Promise<boolean> => {
-    const permission = await Location.requestForegroundPermissionsAsync();
-    if (!permission.granted) {
-      setError('Location permission is required while a rider is online.');
-      return false;
+  /**
+   * Take one fresh fix and report it. Only Go online may ask for the
+   * permission (`mayAsk`). Restoring a working rider and returning to the app
+   * read it silently: asking there opened Android's permission activity on
+   * every resume, and that activity's own pause and resume triggered the next
+   * request (see locationPermission.ts). Silent reports share one in-flight fix.
+   */
+  const reportCurrentPosition = useCallback((mayAsk: boolean): Promise<boolean> => {
+    if (!mayAsk && freshFix.current) return freshFix.current;
+    const run = (async () => {
+      if (!(await (mayAsk ? permission.ensure() : permission.check()))) {
+        setError(LOCATION_REQUIRED);
+        return false;
+      }
+      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      await publishPosition(position);
+      return true;
+    })();
+    if (!mayAsk) {
+      freshFix.current = run;
+      run
+        .finally(() => {
+          if (freshFix.current === run) freshFix.current = null;
+        })
+        .catch(() => undefined);
     }
-    const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-    await publishPosition(position);
-    return true;
-  }, [publishPosition]);
+    return run;
+  }, [permission, publishPosition]);
 
   const findOffers = useCallback(async () => {
     if (!api.configured || !online) return;
@@ -222,11 +249,16 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
 
     let subscription: Location.LocationSubscription | null = null;
     let cancelled = false;
+    watchState.current = 'starting';
 
     void (async () => {
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (!permission.granted) {
-        setError('Location permission is required while a rider is online.');
+      // Read, never request: Go online has already asked, and a request here
+      // would open the permission activity every time the watch starts.
+      if (!(await permission.check())) {
+        if (!cancelled) {
+          watchState.current = 'idle';
+          setError(LOCATION_REQUIRED);
+        }
         return;
       }
 
@@ -242,14 +274,21 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       );
 
       if (cancelled) next.remove();
-      else subscription = next;
-    })().catch(fail);
+      else {
+        subscription = next;
+        watchState.current = 'running';
+      }
+    })().catch((caught) => {
+      if (!cancelled) watchState.current = 'idle';
+      fail(caught);
+    });
 
     return () => {
       cancelled = true;
+      watchState.current = 'idle';
       subscription?.remove();
     };
-  }, [fail, online, publishPosition]);
+  }, [fail, online, permission, publishPosition, watchAttempt]);
 
   useEffect(() => {
     if (!online || !api.configured) return;
@@ -307,7 +346,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       // online lease has expired because the app was closed. Publishing one
       // real GPS fix renews that lease and makes them discoverable again
       // without forcing them to toggle Offline -> Online.
-      void reportCurrentPosition().catch(fail);
+      void reportCurrentPosition(false).catch(fail);
       void restoreDelivery().catch(fail);
     }
   }, [auth.state, auth.viewer?.riderAvailability, fail, reportCurrentPosition, restoreDelivery]);
@@ -320,8 +359,11 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
         // soon as the rider returns, push a fresh fix immediately rather than
         // waiting for the next watchPosition callback — and ask dispatch at
         // once, so an offer made while the app was hidden is not left to the
-        // next eight-second poll.
-        void reportCurrentPosition().catch(fail);
+        // next eight-second poll. The permission is only read here, never
+        // requested. expo-location resumes a running watch by itself; a watch
+        // that could not start (no permission at the time) is tried again.
+        void reportCurrentPosition(false).catch(fail);
+        if (watchState.current === 'idle') setWatchAttempt((attempt) => attempt + 1);
         void findOffers();
       }
     });
@@ -340,7 +382,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       // Going online starts a new server lease. Do not let a very recent fix
       // from the previous online session suppress the first fresh report.
       lastLocationUploadAt.current = 0;
-      if (!(await reportCurrentPosition())) {
+      if (!(await reportCurrentPosition(true))) {
         await api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'offline' } }).catch(() => undefined);
         return false;
       }
