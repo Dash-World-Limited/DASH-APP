@@ -1,5 +1,13 @@
 # Customer ↔ rider messaging: what exists, and what building it would take
 
+> **Superseded (12 October 2026).** Order chat has since been built
+> (`apps/api/src/routes/chat.ts`, `apps/mobile/src/v2/chat/OrderChatScreen.tsx`)
+> along the lines this report recommended: scoped to the order, only its
+> customer and assigned rider, available from rider assignment. The rider's
+> Message button opens it. Push notifications are still not built, so chat
+> works only with the app open. This page is kept as the reasoning record;
+> current state is in `docs/release/V2-FEATURE-AUDIT.md`.
+
 **Status: nothing is built, and nothing was built in this pass.** This is the
 report asked for before any in-app chat is written, so the decision to build it
 is taken deliberately rather than arrived at halfway through.

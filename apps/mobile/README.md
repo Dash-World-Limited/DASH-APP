@@ -99,19 +99,23 @@ Read at build time by `app.config.ts`; nothing is hard-coded.
 | Variable | Meaning | Default |
 |---|---|---|
 | `APP_VARIANT` | `development` · `staging` · `production`; each installs as its own app | `development` |
-| `EXPO_PUBLIC_API_URL` | The API origin, e.g. the staging API | none — the app uses staging fixtures, and Sign in says the build is not connected |
-| `GOOGLE_MAPS_ANDROID_API_KEY` | Android map tiles. Compiled into the APK and restricted by package signature | none — Android shows a designed "map needs a key" fallback |
+| `EXPO_PUBLIC_API_URL` | The API origin, e.g. the staging API | none — the app stops at sign-in and says the build is not connected. **Required (https, public, not staging) for production** |
+| `EXPO_PUBLIC_MAP_STYLE_URL` | The MapLibre style | OpenFreeMap Liberty for development/staging. **Required (https) for production** |
+| `DASH_VERSION_CODE` | Android versionCode | `1`. **Required for production**, higher than every uploaded code |
+| `DASH_VERSION_NAME` | Version name | `0.1.0`. **Required for production** (`MAJOR.MINOR.PATCH`) |
+| ~~`GOOGLE_MAPS_ANDROID_API_KEY`~~ | No longer used: maps are MapLibre | — |
 
 Identifiers: `com.dashworldng.dash` (+`.dev` / `.staging`). The production id is
 permanent once published and needs director confirmation first.
 
-**Maps key.** Create an Android key in Google Cloud with the *Maps SDK for
-Android* enabled, restricted to Android apps: package `com.dashworldng.dash.dev`
-(and `.staging` / the production id when they exist) with the signing
-certificate's SHA-1. Debug builds are signed with the standard React Native
-debug keystore, SHA-1 `5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25`;
-release builds need the upload/app-signing key's SHA-1 instead. Supply it as
-`GOOGLE_MAPS_ANDROID_API_KEY` in the build environment, never in the repo.
+**Maps.** MapLibre renders an OSM-compatible style; no Google Maps key or
+Google Cloud project is involved. A missing style shows a designed "map
+unavailable" state instead of a blank map. Production builds refuse to be
+configured without an https style (`plugins/releaseConfig.js`); confirm the
+tile provider's terms allow a production app before choosing one.
+
+**Production builds** are made by `.github/workflows/mobile-production-aab.yml`
+and fail closed; see `docs/release/PRODUCTION-AAB.md`.
 
 **Email codes.** Sign-in is by emailed code because SMS is off for V1. While
 Amazon SES is in sandbox it delivers only to verified recipient addresses, so

@@ -1,11 +1,22 @@
 # DASH APP — Play Store release candidate: status
 
-Branch `claude/awesome-bardeen-95lgbd`: a fast-forward of
+> **12 October 2026 — start here instead:**
+> [`V2-FEATURE-AUDIT.md`](V2-FEATURE-AUDIT.md) is the current, code-verified
+> state of the app; [`PRODUCTION-AAB.md`](PRODUCTION-AAB.md) is how the Play
+> bundle is built and what to configure; and
+> [`A55-PRODUCTION-ACCEPTANCE.md`](A55-PRODUCTION-ACCEPTANCE.md) is the device
+> sign-off. The release branch is now `claude/dash-app-production-release`,
+> from `feature/declutters-launch-readiness`. Sections below this note were
+> written on 28–29 September against `claude/awesome-bardeen-95lgbd`; their
+> CI and commit references are historical, and the "Deliberately not in this
+> release" table has been corrected where the app has since changed.
+
+Branch (September): `claude/awesome-bardeen-95lgbd`: a fast-forward of
 `claude/playstore-readiness` (`7b7f860`), which was based on
-`claude/native-mobile-v1` (`88f7104`); both release branches run CI. `main` is
-untouched (GitHub `43790ca`). Nothing has been deployed. No real card has been
-charged. This page states what is proven, what is built but unproven, and
-what blocks release — nothing more.
+`claude/native-mobile-v1` (`88f7104`). `main` is untouched (GitHub
+`43790ca`). Nothing has been deployed. No real card has been charged. This
+page states what is proven, what is built but unproven, and what blocks
+release — nothing more.
 
 | Document | For |
 |---|---|
@@ -16,7 +27,10 @@ what blocks release — nothing more.
 | `STORE-LISTING-DRAFT.md` | listing text for David to edit |
 | `PRIVACY-POLICY-DASH-APP-DRAFT.md` | a draft policy for the delivery app (not published) |
 | `TERMS-DASH-APP-DRAFT.md` | draft Terms for the delivery app (not published) |
-| `A55-TEST-SHEET.md` | the manual device test |
+| `A55-TEST-SHEET.md` | the September staging device test (superseded for production) |
+| `V2-FEATURE-AUDIT.md` | **current** code-verified feature state (12 October) |
+| `PRODUCTION-AAB.md` | **current** production AAB workflow and the GitHub variables/secrets |
+| `A55-PRODUCTION-ACCEPTANCE.md` | **current** production device sign-off |
 
 ## Proven (with the evidence)
 
@@ -129,14 +143,13 @@ what blocks release — nothing more.
 | Item | Why |
 |---|---|
 | Rides (passenger transport) | No foundations exist — no model, pricing, routes or screens. Not presented anywhere in the app |
-| Cash on delivery, DASH Wallet, saved cards | Not built; hidden (no Wallet tab, no such payment options) |
+| Cash on delivery, saved cards, paying from the Wallet | Not built. The DASH Wallet tab shows a balance and its history read-only (`/v1/wallet`); it cannot be topped up or spent |
 | SMS / phone verification | Off (`SMS_ENABLED=false`); phones shown as unverified; the flag cannot be switched on while SMS is off |
 | Automatic refunds | Owed refunds are recorded as `refund_pending_manual_review`; a person refunds in the Paystack dashboard and links the refund ID at `/ops/refunds`; DASH marks it refunded only when Paystack reports it processed for that payment and amount (see `docs/RUNBOOKS.md`, "Returning an owed refund") |
-| Background rider location / push notifications | Rider reports and offers work only with the app open; offers are polled every 5 s, not pushed |
-| Live map for the customer | Status and the rider's name/vehicle are shown; no map |
+| Background rider location / push notifications | Rider reports and offers work only with the app open; offers are polled every 8 s and order chat every 4 s, not pushed |
 | Product photographs | The API cannot serve product images yet; designed placeholders are shown |
 | DASH wordmark refinements | **S rebalance:** four measured options prepared, one command to apply, awaiting David's choice (the live S is unchanged; `docs/design/boards/2026-09-13/wordmark/README.md`). **A-with-gold-dot options:** not started |
-| Declutters in the Android app | Declutters is the website; the app does not include it |
+| Declutters selling in the Android app | The app shows the live Declutters inventory (the same endpoints as the website) and listing details; selling, offers and seller tools are on the website. The app loads the 40 newest listings |
 | Vendor tools in the app | Vendors apply at `/vendor/apply` and work in the web console |
 
 ## Known risks

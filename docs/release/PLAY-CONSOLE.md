@@ -83,10 +83,13 @@ Text: `STORE-LISTING-DRAFT.md`. Graphics Play requires:
 ## 4. Internal testing
 
 Testing → **Internal testing** → Create new release
-1. Upload the **signed** bundle (`SIGNING.md`). Play App Signing: accept
+1. Upload the **verified** bundle from the production workflow
+   (`PRODUCTION-AAB.md`) — the `.aab` from its artifact, after checking its
+   `.sha256` and reading its `.verification.txt`. Play App Signing: accept
    Google-managed app signing key.
-2. Release name: e.g. `0.1.0 (1) RC1`.
-3. Release notes: what testers should try (the A55 sheet).
+2. Release name: the version name and code you dispatched with, e.g.
+   `1.0.0 (12) RC1`.
+3. Release notes: what testers should try (`A55-PRODUCTION-ACCEPTANCE.md`).
 4. Testers tab → create an email list with the testers' Google accounts.
 5. Save → Review release → **Start rollout to Internal testing**.
 6. Copy the **opt-in link** and send it to testers. Each tester opens it on

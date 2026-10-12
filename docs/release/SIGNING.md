@@ -7,10 +7,19 @@ app signing key never leaves Google.
 
 The repository never contains a key. `withReleaseSigning` (an Expo config
 plugin in `apps/mobile/plugins/`) writes only the *names* of four environment
-variables into the generated Gradle file. A release build signs with your
-upload key only when all four are set; otherwise it uses the Android debug
-key, which Play rejects — so an unsigned-for-Play bundle cannot be uploaded
-by mistake.
+variables into the generated Gradle file.
+
+- **Production** (`APP_VARIANT=production`): the release build is signed with
+  the upload key or **not built at all** — Gradle stops, naming any missing
+  variable or a keystore path that is not a file. There is no debug fallback.
+- **Development and staging**: the upload key is used when all four are set;
+  otherwise the Android debug key, which Play rejects, so the staging APK can
+  be sideloaded without the key and never mistaken for an upload.
+
+**The normal path for a Play upload is the GitHub workflow**, not a laptop
+build: see [`PRODUCTION-AAB.md`](PRODUCTION-AAB.md). It verifies the AAB's
+signature against the upload certificate's fingerprint before releasing it.
+The local steps below remain for an emergency build.
 
 ## 1. Create the upload key (once, by David)
 
@@ -40,9 +49,11 @@ export DASH_UPLOAD_STORE_FILE="$HOME/dash-keys/dash-upload.jks"
 export DASH_UPLOAD_KEY_ALIAS=dash-upload
 read -s -p "Keystore password: " DASH_UPLOAD_STORE_PASSWORD; echo; export DASH_UPLOAD_STORE_PASSWORD
 export DASH_UPLOAD_KEY_PASSWORD="$DASH_UPLOAD_STORE_PASSWORD"
-export DASH_VERSION_CODE=1          # increase by 1 for every upload
+export DASH_VERSION_CODE=1          # higher than every code already uploaded
+export DASH_VERSION_NAME=1.0.0      # required for production
 export APP_VARIANT=production       # only after the application ID is confirmed
-export EXPO_PUBLIC_API_URL=https://api.example.invalid   # the HTTPS staging/production API
+export EXPO_PUBLIC_API_URL=https://api.example.invalid          # the HTTPS production API origin
+export EXPO_PUBLIC_MAP_STYLE_URL=https://maps.example.invalid/style.json   # required for production
 cd apps/mobile
 npx expo prebuild --platform android --clean --no-install
 cd android && ./gradlew :app:bundleRelease

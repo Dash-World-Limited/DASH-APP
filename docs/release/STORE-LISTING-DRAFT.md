@@ -54,7 +54,11 @@ delete your account from the app at any time.
 
 ## Do not claim (not built or not true yet)
 
-- Cash on delivery, DASH Wallet, saved cards (not built — hidden in the app)
+- Cash on delivery, saved cards, or paying from the DASH Wallet (not built). The
+  Wallet tab exists but only **shows** a balance and its history; it cannot be
+  topped up or spent from the app
+- Push notifications, or that chat messages arrive when the app is closed
+  (order chat works only with the app open)
 - Phone verification (numbers are collected and not verified in V1)
 - Rides (the ride-request journey is not in this release)
 - Any city or area DASH does not actually deliver to on launch day

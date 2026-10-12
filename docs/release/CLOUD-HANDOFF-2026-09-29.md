@@ -1,5 +1,10 @@
 # Cloud phase handoff — 29 September 2026
 
+> **Historical.** Superseded by `V2-FEATURE-AUDIT.md`,
+> `PRODUCTION-AAB.md` and `A55-PRODUCTION-ACCEPTANCE.md` (12 October). Chat,
+> the Wallet and MapLibre have been built since; the Google Maps key below no
+> longer applies.
+
 For the next local session. Pull this branch and you have the exact state
 described below.
 
