@@ -9,20 +9,9 @@ import { Marketplace } from './marketplace';
 /**
  * The Declutters front door.
  *
- * This page used to render `SectionPage`, the shared "pick a seller, browse
- * their catalogue" screen that Shops, Restaurants, Local Market and Pharmacy
- * all use. That shape was right while Declutter was proven rider infrastructure
- * sitting on the vendor tables, and it is wrong for the real marketplace: each
- * seller here has one sofa, and making a buyer choose a stranger before seeing
- * what they were selling would be a worse product wearing a consistent shape.
- * The vendor path is untouched and still serves `/browse/[slug]`; only this
- * front door now points at listings.
- *
- * A server component, and the first page of listings is fetched here rather
- * than in the browser. The hero is built from photographs of items genuinely
- * for sale, and an image-led page whose images arrive after a round trip is a
- * grey page — which is the difference between a marketplace and a loading
- * spinner on the connection a Lagos handset actually has.
+ * Marketplace inventory is fetched on the server for the catalogue below the
+ * hero. The hero itself is intentionally promotional rather than another copy
+ * of the current inventory grid.
  */
 
 const DESCRIPTION =
@@ -49,16 +38,12 @@ export default async function DeclutterPage() {
 
   return (
     <main id="main">
-      <DeclutterHero featured={listings} />
+      <DeclutterHero />
 
       <Marketplace initialListings={listings} initialCategories={categories} />
 
       <TrustBand />
 
-      {/* The way in for the other half of the marketplace. Below the trust band
-          rather than in the header: most people arrive wanting to buy, and by
-          the time somebody has read why DASH checks every item, they are in a
-          position to believe the same will happen to theirs. */}
       <section className="mx-auto w-full max-w-[1240px] px-5 py-20 sm:px-8">
         <div className="dcl-glass relative overflow-hidden rounded-[var(--radius-card)] px-6 py-14 text-center sm:px-14">
           <div
