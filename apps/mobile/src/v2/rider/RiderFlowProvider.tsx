@@ -45,6 +45,14 @@ export interface RiderDelivery {
     longitude: number;
   };
   items: readonly { name: string; quantity: number }[];
+  /**
+   * The four digits the rider reads to the shop at the counter, which the
+   * vendor types into the console's pickup check — the only thing tying the
+   * person collecting to this order. The server sends it only while the order
+   * is waiting for collection (rider assigned or arrived), and only to the
+   * assigned rider.
+   */
+  pickupCode: string | null;
 }
 
 interface ApiRiderDelivery {
@@ -54,6 +62,8 @@ interface ApiRiderDelivery {
   branch: RiderDelivery['branch'];
   address: RiderDelivery['address'] | null;
   items: readonly { nameSnapshot: string; quantity: number }[];
+  /** Sent by GET /v1/rider/deliveries/:id only; the list omits it. */
+  pickupCode?: string | null;
 }
 
 interface RiderFlowValue {
@@ -199,7 +209,15 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     if (!api.configured) return;
     const response = await api.request<{ deliveries: ApiRiderDelivery[] }>('/v1/rider/deliveries');
     const active = response.deliveries[0];
-    setDelivery(active ? normaliseDelivery(active) : null);
+    if (!active) {
+      setDelivery(null);
+      return;
+    }
+    // The list leaves out the pickup code, so a delivery restored after a
+    // relaunch is read in full — otherwise the rider would arrive at the shop
+    // with no code to give.
+    const detail = await api.request<{ delivery: ApiRiderDelivery }>(`/v1/rider/deliveries/${encodeURIComponent(active.id)}`);
+    setDelivery(normaliseDelivery(detail.delivery));
   }, []);
 
   useEffect(() => {
@@ -393,5 +411,6 @@ function normaliseDelivery(delivery: ApiRiderDelivery): RiderDelivery {
     branch: delivery.branch,
     address: delivery.address,
     items: delivery.items.map((item) => ({ name: item.nameSnapshot, quantity: item.quantity })),
+    pickupCode: typeof delivery.pickupCode === 'string' && /^\d{4}$/.test(delivery.pickupCode) ? delivery.pickupCode : null,
   };
 }

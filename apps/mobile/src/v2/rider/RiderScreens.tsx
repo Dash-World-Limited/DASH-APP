@@ -195,6 +195,13 @@ export function RiderDeliveryScreen({ onBack, onPush, onChat }: ScreenProps & { 
       <Card>
         <RouteStops pickup={{ title: delivery.branch.name, detail: delivery.branch.address }} dropoff={{ title: delivery.address.line1, detail: delivery.address.landmark }} />
       </Card>
+      {delivery.pickupCode && (delivery.status === 'rider_assigned' || delivery.status === 'rider_arrived') ? (
+        <Card>
+          <Text variant="micro" tone="muted">Pickup code</Text>
+          <Text variant="display" accessibilityLabel={`Pickup code ${delivery.pickupCode.split('').join(' ')}`}>{delivery.pickupCode}</Text>
+          <Text variant="caption" tone="muted">Read this to the shop. They enter it to confirm the order is going to you.</Text>
+        </Card>
+      ) : null}
       <ContactRow phone={delivery.address.contactPhone} onMessage={() => onChat(delivery.id)} />
       <Card>
         <Text variant="label" weight="bold">Order items ({delivery.items.reduce((total, item) => total + item.quantity, 0)})</Text>
@@ -233,6 +240,8 @@ export function RiderHistoryDetailScreen({ orderId, onBack }: { orderId: string;
           branch: response.delivery.branch,
           address: response.delivery.address,
           items: response.delivery.items.map((item) => ({ name: item.nameSnapshot, quantity: item.quantity })),
+          // A completed delivery has been collected; there is no code to give.
+          pickupCode: null,
         });
         setError(null);
       })
