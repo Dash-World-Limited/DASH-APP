@@ -40,7 +40,6 @@ export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
   return (
     <RiderPage>
       <RiderHeader title="You’re online" onBack={onBack} />
-      <StatusNotice preview={flow.preview} />
       {flow.riderPosition ? (
         <View style={{ borderRadius: radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: palette.line }}>
           <MapShell
@@ -70,8 +69,6 @@ export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
 
       {flow.offer ? (
         <ActionCard icon="bell-ring-outline" title="New delivery offer" body={`${flow.offer.order.pickup.name} · ${metres(flow.offer.pickupDistanceMetres)} away`} action="Review offer" onPress={() => onPush('offer')} />
-      ) : flow.preview ? (
-        <PrimaryButton label="Preview an incoming order" icon="package-variant-closed" onPress={() => { flow.previewOffer(); onPush('offer'); }} />
       ) : (
         <SecondaryButton label="Check for orders now" onPress={() => void flow.findOffers()} />
       )}
@@ -133,9 +130,8 @@ export function RiderOrdersScreen({ onOpen, onOpenHistory }: { onOpen: () => voi
           onPress={() => onOpenHistory(item.id)}
         />
       ))}
-      {flow.preview ? <><HistoryCard code="DASH710842" merchant="Wellspring Pharmacy" status="Delivered" /><HistoryCard code="DASH692015" merchant="TechWorld" status="Delivered" /><StatusNotice preview /></> : null}
       {historyError ? <ErrorNotice message={historyError} /> : null}
-      {!historyBusy && !flow.preview && history.length === 0 && !historyError ? <Empty icon="clipboard-text-clock-outline" title="No completed deliveries yet" body="Completed deliveries will appear here after handover." compact /> : null}
+      {!historyBusy && history.length === 0 && !historyError ? <Empty icon="clipboard-text-clock-outline" title="No completed deliveries yet" body="Completed deliveries will appear here after handover." compact /> : null}
     </RiderPage>
   );
 }
@@ -192,7 +188,6 @@ export function RiderDeliveryScreen({ onBack, onPush, onChat }: ScreenProps & { 
   return (
     <RiderPage>
       <RiderHeader title="Order details" onBack={onBack} />
-      <StatusNotice preview={flow.preview} />
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
         <View><Text variant="micro" tone="muted">Order</Text><Text variant="heading">{delivery.code}</Text></View>
         <StatusPill status={delivery.status} />
@@ -337,7 +332,6 @@ export function RiderCompleteScreen({ onBack }: Pick<ScreenProps, 'onBack'>) {
     <RiderPage>
       <RiderHeader title="Complete delivery" onBack={onBack} />
       <Empty icon="shield-key-outline" title="Ask for the delivery PIN" body="The customer reads the four-digit code from their tracking screen. This proves handover." compact />
-      {flow.preview ? <InfoNotice icon="flask-outline" message="Interactive preview PIN: 2468" /> : null}
       <TextInput
         value={pin}
         onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 4))}
@@ -366,10 +360,6 @@ function RiderHeader({ title, onBack }: { title: string; onBack: () => void }) {
 function Card({ children }: { children: ReactNode }) {
   const { palette } = useTheme();
   return <View style={{ padding: space.lg, gap: space.md, borderRadius: radius.lg, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line }}>{children}</View>;
-}
-
-function StatusNotice({ preview }: { preview: boolean }) {
-  return preview ? <InfoNotice icon="flask-outline" message="Interactive development preview. No real order, customer or payment is involved." /> : null;
 }
 
 function InfoNotice({ icon, message }: { icon: IconName; message: string }) {

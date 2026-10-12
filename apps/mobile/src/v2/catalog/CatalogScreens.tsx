@@ -672,8 +672,8 @@ function serviceIdFor(serviceCategory: string | null): ServiceId {
 
 /**
  * Search asks the server and shows what comes back. There is no local index
- * to fall back on: an app that answers "Urban Bites" to a search when no such
- * merchant exists is worse than one that says it cannot search yet.
+ * to fall back on: an app that answers a search with a merchant that does not
+ * exist is worse than one that says it cannot search yet.
  *
  * The server needs two characters, and the keystrokes are debounced, so
  * typing a word is one request rather than one per letter.

@@ -57,7 +57,6 @@ interface ApiRiderDelivery {
 }
 
 interface RiderFlowValue {
-  preview: boolean;
   online: boolean;
   busy: boolean;
   error: string | null;
@@ -67,52 +66,22 @@ interface RiderFlowValue {
   goOnline(): Promise<boolean>;
   goOffline(): Promise<boolean>;
   findOffers(): Promise<void>;
-  previewOffer(): void;
   respondToOffer(accept: boolean): Promise<string | null>;
   progress(to: Exclude<DeliveryStatus, 'rider_assigned' | 'delivered'>): Promise<boolean>;
   complete(pin: string): Promise<boolean>;
   clearError(): void;
 }
 
-const PICKUP = { latitude: 6.4474, longitude: 3.4722 };
-const RIDER_START = { latitude: 6.4406, longitude: 3.4623 };
-
-function makePreviewOffer(): RiderOffer {
-  return {
-    id: 'preview-offer-1',
-    expiresAt: new Date(Date.now() + 90_000).toISOString(),
-    pickupDistanceMetres: 1_200,
-    order: {
-      code: 'DASH782910',
-      pickup: { name: 'Urban Bites', address: '12 Admiralty Way, Lekki Phase 1', ...PICKUP },
-      dropoffArea: { latitude: 6.438, longitude: 3.526 },
-      tripDistanceMetres: 4_800,
-      itemCount: 3,
-    },
-  };
-}
-
-function makePreviewDelivery(): RiderDelivery {
-  return {
-    id: 'preview-delivery-1',
-    code: 'DASH782910',
-    status: 'rider_assigned',
-    branch: { name: 'Urban Bites', address: '12 Admiralty Way, Lekki Phase 1', phone: '+234 800 000 0000', ...PICKUP },
-    address: {
-      line1: 'Chevron Drive, Lekki',
-      landmark: 'Near the second gate',
-      instructions: 'Please call when you arrive.',
-      contactPhone: '+234 800 000 0001',
-      latitude: 6.4384,
-      longitude: 3.5262,
-    },
-    items: [
-      { name: 'Spicy Chicken Burger', quantity: 1 },
-      { name: 'French Fries (Large)', quantity: 1 },
-      { name: 'Iced Lemon Tea', quantity: 1 },
-    ],
-  };
-}
+/**
+ * The message for a rider action attempted on a build with no API address.
+ *
+ * This used to be a preview mode: an invented offer, an invented delivery
+ * address and a fixed handover PIN, all compiled into every build. The app's front door now requires a signed-in session, which requires
+ * an API, so no rider screen can mount on an unconnected build and the preview
+ * could never run — it only shipped invented people and places inside the
+ * bundle. A rider action without an API now refuses, plainly.
+ */
+const NOT_CONNECTED = 'This build has no DASH API address, so rider actions are unavailable.';
 
 const RiderFlowContext = createContext<RiderFlowValue | null>(null);
 
@@ -120,13 +89,12 @@ const LOCATION_UPLOAD_INTERVAL_MS = 5_000;
 
 export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const auth = useAppSession();
-  const preview = !api.configured;
   const [online, setOnline] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [offer, setOffer] = useState<RiderOffer | null>(null);
   const [delivery, setDelivery] = useState<RiderDelivery | null>(null);
-  const [riderPosition, setRiderPosition] = useState<Coordinate | null>(api.configured ? null : RIDER_START);
+  const [riderPosition, setRiderPosition] = useState<Coordinate | null>(null);
   const lastLocationUploadAt = useRef(0);
   const locationUploadInFlight = useRef(false);
 
@@ -273,17 +241,19 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     setBusy(true);
     setError(null);
     try {
-      if (api.configured) {
-        await api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'idle' } });
-        // Going online starts a new server lease. Do not let a very recent fix
-        // from the previous online session suppress the first fresh report.
-        lastLocationUploadAt.current = 0;
-        if (!(await reportCurrentPosition())) {
-          await api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'offline' } }).catch(() => undefined);
-          return false;
-        }
-        await restoreDelivery();
+      if (!api.configured) {
+        setError(NOT_CONNECTED);
+        return false;
       }
+      await api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'idle' } });
+      // Going online starts a new server lease. Do not let a very recent fix
+      // from the previous online session suppress the first fresh report.
+      lastLocationUploadAt.current = 0;
+      if (!(await reportCurrentPosition())) {
+        await api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'offline' } }).catch(() => undefined);
+        return false;
+      }
+      await restoreDelivery();
       setOnline(true);
       return true;
     } catch (caught) {
@@ -319,11 +289,8 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     setError(null);
     try {
       if (!api.configured) {
-        setOffer(null);
-        if (!accept) return null;
-        const next = makePreviewDelivery();
-        setDelivery(next);
-        return next.id;
+        setError(NOT_CONNECTED);
+        return null;
       }
       const response = await api.request<{ accepted: boolean; orderId?: string }>(`/v1/rider/offers/${encodeURIComponent(offer.id)}/respond`, {
         method: 'POST',
@@ -348,9 +315,11 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     setBusy(true);
     setError(null);
     try {
-      if (api.configured) {
-        await api.request(`/v1/rider/deliveries/${encodeURIComponent(delivery.id)}/progress`, { method: 'POST', body: { to } });
+      if (!api.configured) {
+        setError(NOT_CONNECTED);
+        return false;
       }
+      await api.request(`/v1/rider/deliveries/${encodeURIComponent(delivery.id)}/progress`, { method: 'POST', body: { to } });
       setDelivery((current) => current ? { ...current, status: to } : current);
       return true;
     } catch (caught) {
@@ -366,21 +335,19 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     setBusy(true);
     setError(null);
     try {
-      if (!api.configured && pin !== '2468') {
-        setError('For this interactive preview, enter 2468.');
+      if (!api.configured) {
+        setError(NOT_CONNECTED);
         return false;
       }
-      if (api.configured) {
-        await api.request(`/v1/rider/deliveries/${encodeURIComponent(delivery.id)}/complete`, {
-          method: 'POST',
-          body: {
-            pin,
-            ...(riderPosition
-              ? { latitude: riderPosition.latitude, longitude: riderPosition.longitude }
-              : {}),
-          },
-        });
-      }
+      await api.request(`/v1/rider/deliveries/${encodeURIComponent(delivery.id)}/complete`, {
+        method: 'POST',
+        body: {
+          pin,
+          ...(riderPosition
+            ? { latitude: riderPosition.latitude, longitude: riderPosition.longitude }
+            : {}),
+        },
+      });
       setDelivery((current) => current ? { ...current, status: 'delivered' } : current);
       setOnline(true);
       return true;
@@ -393,7 +360,6 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   }, [delivery, fail, riderPosition]);
 
   const value = useMemo<RiderFlowValue>(() => ({
-    preview,
     online,
     busy,
     error,
@@ -403,12 +369,11 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     goOnline,
     goOffline,
     findOffers,
-    previewOffer: () => setOffer(makePreviewOffer()),
     respondToOffer,
     progress,
     complete,
     clearError: () => setError(null),
-  }), [busy, complete, delivery, error, findOffers, goOffline, goOnline, offer, online, preview, progress, respondToOffer, riderPosition]);
+  }), [busy, complete, delivery, error, findOffers, goOffline, goOnline, offer, online, progress, respondToOffer, riderPosition]);
 
   return <RiderFlowContext.Provider value={value}>{children}</RiderFlowContext.Provider>;
 }

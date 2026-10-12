@@ -248,7 +248,6 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
         <View style={{ marginHorizontal: space.gutter }}><Notice icon="map-clock-outline" text={order.status === 'delivered' ? 'This delivery is complete, so rider location is no longer shared.' : 'The live map appears after a rider is assigned and has reported a current location.'} /></View>
       )}
       <View style={{ padding: space.gutter, gap: space.lg }}>
-        {!api.configured ? <Notice icon="flask-outline" text="Interactive tracking preview. The real screen polls the protected order endpoint and uses only server-accepted rider coordinates." /> : null}
         <View><Text variant="title">{order.statusLabel}</Text><Text variant="caption" tone="muted">{order.vendor.name} · {order.items.reduce((total, item) => total + item.quantity, 0)} items</Text></View>
         {order.rider ? <Card><View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}><View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}><Icon name="moped" color={palette.textOnInverse} /></View><View style={{ flex: 1 }}><Text variant="label" weight="bold">{order.rider.name ?? 'Your DASH rider'}</Text><Text variant="caption" tone={order.rider.isStale ? 'muted' : 'success'}>{order.rider.isStale ? 'Location temporarily delayed' : 'Location updated recently'}</Text></View></View></Card> : null}
         {order.rider ? <SecondaryButton label="Message your rider" onPress={() => onChat(order.id)} /> : null}
