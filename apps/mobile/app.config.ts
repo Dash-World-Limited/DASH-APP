@@ -25,6 +25,14 @@
 
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plain CommonJS so Expo's config loader and the tests can both load it without a build step
+const { resolveReleaseConfig } = require('./plugins/releaseConfig') as {
+  resolveReleaseConfig: (
+    variant: string,
+    env: NodeJS.ProcessEnv,
+  ) => { versionCode: number; versionName: string; apiUrl: string | null; mapStyleUrl: string };
+};
+
 type Variant = 'development' | 'staging' | 'production';
 
 const variant: Variant = (() => {
@@ -42,21 +50,26 @@ const identity: Record<Variant, { name: string; id: string }> = {
 };
 
 /**
- * DASH uses MapLibre, so Android is not coupled to Google Maps or a Google
- * Maps API key. Development and staging use OpenFreeMap's street-level Liberty
- * style so device testing shows real roads and labels without an API key.
- * Production must still provide its own reviewed OSM-compatible style URL
- * through EXPO_PUBLIC_MAP_STYLE_URL.
+ * Every value that varies per build, resolved and checked in one place
+ * (plugins/releaseConfig.js).
+ *
+ * - MapLibre style: development and staging fall back to OpenFreeMap's
+ *   street-level Liberty style so device testing shows real roads without an
+ *   API key. Production must name its own reviewed style through
+ *   EXPO_PUBLIC_MAP_STYLE_URL.
+ * - versionCode (DASH_VERSION_CODE): must increase with every bundle uploaded
+ *   to Play. Development and staging default to 1.
+ * - versionName (DASH_VERSION_NAME): what Play and the device show.
+ *   Development and staging default to 0.1.0.
+ * - API origin (EXPO_PUBLIC_API_URL): optional outside production, where a
+ *   missing value makes an honest "not connected" client.
+ *
+ * For production every one of them is required and checked — https, a public
+ * host, no staging hostname, a real version — and this file throws before any
+ * native project or bundle can be generated from a configuration that fails.
  */
-const mapStyleUrl =
-  process.env.EXPO_PUBLIC_MAP_STYLE_URL?.trim() ||
-  (variant === 'production' ? null : 'https://tiles.openfreemap.org/styles/liberty');
+const release = resolveReleaseConfig(variant, process.env);
 
-/**
- * Android's versionCode: a positive integer that must increase with every
- * bundle uploaded to Play. Set per build with DASH_VERSION_CODE; a build
- * without it is version code 1, which is only ever the first upload.
- */
 /**
  * The launcher icon and splash: the measured DASH wordmark in its approved
  * graphite and bronze on the Light ground, generated from the wordmark
@@ -72,21 +85,12 @@ const BRAND_GROUND = '#F8F7F2';
  */
 export const SPLASH_MARK_WIDTH_DP = 176;
 
-const versionCode = (() => {
-  const raw = process.env.DASH_VERSION_CODE ?? '1';
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value < 1 || value > 2_100_000_000) {
-    throw new Error(`DASH_VERSION_CODE must be a positive integer — got "${raw}".`);
-  }
-  return value;
-})();
-
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: identity[variant].name,
   slug: 'dash',
   scheme: 'dash',
-  version: '0.1.0',
+  version: release.versionName,
   orientation: 'portrait',
   icon: './assets/brand/icon.png',
   // The app decides, not the OS: Light is the default, and a person can choose
@@ -105,7 +109,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   android: {
     package: identity[variant].id,
-    versionCode,
+    versionCode: release.versionCode,
     // Keep focused inputs visible when Android opens the software keyboard.
     // Chat and other bottom-anchored forms must resize with the IME instead of
     // being panned underneath it.
@@ -143,6 +147,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'android.permission.USE_FINGERPRINT',
       'android.permission.FOREGROUND_SERVICE',
       'android.permission.RECEIVE_BOOT_COMPLETED',
+      // Expo's base manifest lists VIBRATE under "optional permissions, remove
+      // whatever you do not need". Nothing in the app vibrates (there is no
+      // haptics module and no Vibration call), so it goes until a feature does.
+      'android.permission.VIBRATE',
     ],
   },
   web: {
@@ -181,8 +189,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     variant,
     // The API the app talks to. Never defaulted to localhost: on a phone that
-    // is the phone. Missing means the app shows staging fixtures and says so.
-    apiUrl: process.env.EXPO_PUBLIC_API_URL ?? null,
-    mapStyleUrl,
+    // is the phone. Missing (outside production) means the app says it is not
+    // connected; it has no fixtures to fall back on.
+    apiUrl: release.apiUrl,
+    mapStyleUrl: release.mapStyleUrl,
   },
 });
