@@ -19,8 +19,12 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { effectiveCapabilities } from '../deployment/profile.js';
 import { z } from 'zod';
+import { writeAudit } from '@dash/db';
+import { e164PhoneSchema } from '@dash/domain/phone';
 import { ApiError } from '../http/errors.js';
+import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import { actorOf, requireAuth, requirePermission, withIdempotency } from '../http/context.js';
 import {
   cancelAccountDeletion,
@@ -40,7 +44,47 @@ function downloadSecret(jwtAccessSecret: string): string {
 }
 
 export async function registerAccountRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * Whether personal-data export is offered.
+   *
+   * Deletion is always available — it is a right the Privacy Policy promises,
+   * and it needs no archive. Export needs somewhere durable to put the file,
+   * and the archive adapter still writes to local disk: an archive built in
+   * production would be lost on the next deploy. Rather than offer a download
+   * that quietly disappears, the endpoints are not registered at all.
+   */
+  const exportEnabled = effectiveCapabilities(app.services.config).has('dataExport');
   const { prisma, config, queue } = app.services;
+
+  // This edits the canonical account contact, never seller KYC evidence. SMS
+  // identities need a proved-number change flow; Declutters uses email sign-in.
+  app.patch('/v1/account/phone', {
+    preHandler: requireAuth,
+    config: { rateLimit: { max: 5, timeWindow: '10 minutes' } },
+  }, async (request, reply) => {
+    const actor = actorOf(request);
+    customerIdOrForbid(request);
+    if (effectiveCapabilities(config).has('sms')) {
+      throw ApiError.forbidden('Phone changes require a verified-number flow when SMS sign-in is enabled.');
+    }
+    const { phone } = z.object({ phone: e164PhoneSchema }).strict().parse(request.body);
+    try {
+      await prisma.$transaction(async tx => {
+        await tx.identity.update({ where: { id: actor.identityId }, data: { phone } });
+        await writeAudit(tx, {
+          identityId: actor.identityId, action: 'account.phone.updated',
+          resourceType: 'identity', resourceId: actor.identityId,
+          ipAddress: request.ip, requestId: request.id,
+        });
+      });
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+        throw ApiError.conflict('That number cannot be used. Please use another number or contact DASH support.');
+      }
+      throw error;
+    }
+    return reply.header('cache-control', 'no-store').send({ saved: true });
+  });
 
   /** Deletion and export are a customer flow. Staff/vendor/rider are out of scope. */
   function customerIdOrForbid(request: Parameters<typeof actorOf>[0]): string {
@@ -135,6 +179,8 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
   // Export
   // -------------------------------------------------------------------------
 
+  if (!exportEnabled) return;
+
   app.post(
     '/v1/account/export',
     {
@@ -146,19 +192,30 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
       customerIdOrForbid(request);
 
       return withIdempotency(request, 'POST /v1/account/export', async () => {
-        const { view, jobRequestId } = await requestDataExport(prisma, {
-          identityId: actor.identityId,
-          ipAddress: request.ip,
-          requestId: request.id,
+        // The request row and the instruction to build it commit together, so
+        // a queue outage can no longer strand an export in `pending` with
+        // nothing scheduled to pick it up.
+        const { view } = await prisma.$transaction(async (tx) => {
+          const created = await requestDataExport(tx, {
+            identityId: actor.identityId,
+            ipAddress: request.ip,
+            requestId: request.id,
+          });
+
+          if (created.jobRequestId) {
+            await enqueueViaOutbox(tx, {
+              name: 'account.export.build',
+              payload: { requestId: created.jobRequestId },
+              idempotencyKey: `export_build_${created.jobRequestId}`,
+            });
+          }
+
+          return created;
         });
 
-        if (jobRequestId) {
-          await queue.enqueue({
-            name: 'account.export.build',
-            payload: { requestId: jobRequestId },
-            idempotencyKey: `export_build_${jobRequestId}`,
-          });
-        }
+        // Publish now if the queue is reachable; the scheduled relay covers it
+        // if not. Never raises — the row is already durable.
+        await flushOutbox(prisma, queue);
 
         return {
           export: { id: view.id, status: view.status, requestedAt: view.requestedAt },

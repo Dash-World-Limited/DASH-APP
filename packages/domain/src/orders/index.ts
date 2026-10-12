@@ -293,6 +293,161 @@ export type CancellationReasonCode =
   | 'vendor_rejected'
   | 'ops_override';
 
+// ---------------------------------------------------------------------------
+// Refunds
+// ---------------------------------------------------------------------------
+
+/**
+ * The states a `Refund` row can be in.
+ *
+ * V1 moves no money back automatically. A refund that is owed is recorded as
+ * `refund_pending_manual_review`; the DASH team returns it through Paystack
+ * and it becomes `refunded` only once Paystack confirms the refund exists
+ * and has been processed. Nothing — no screen, no email, no API answer —
+ * says "refunded" before that.
+ *
+ * `refund_processing` is a refund Paystack has accepted and not yet finished:
+ * linked to a real Paystack refund, but the money is not back yet.
+ */
+export const REFUND_STATES = [
+  'refund_pending_manual_review',
+  'refund_processing',
+  'refunded',
+  'refund_failed',
+] as const;
+export type RefundState = (typeof REFUND_STATES)[number];
+
+/**
+ * States from which a refund may be linked to the provider's refund and
+ * checked. `pending` is the table default, kept for rows written before the
+ * states above existed. `refund_failed` is included so a second attempt made
+ * at Paystack can be linked after the first one failed.
+ */
+const CONFIRMABLE_REFUND_STATES: ReadonlySet<string> = new Set([
+  'pending',
+  'refund_pending_manual_review',
+  'refund_processing',
+  'refund_failed',
+]);
+
+/** What the payment provider says about one refund, in provider-neutral terms. */
+export interface ProviderRefundFacts {
+  /** The refund exists at the provider and was made against this payment's transaction. */
+  readonly matchesPayment: boolean;
+  /** `processed` is the only state meaning the money has gone back. */
+  readonly status: 'processed' | 'pending' | 'failed';
+  /** Integer kobo. */
+  readonly amount: number;
+  readonly currency: string;
+}
+
+export type RefundConfirmation =
+  | { readonly kind: 'move'; readonly to: 'refunded' | 'refund_processing' | 'refund_failed' }
+  | {
+      readonly kind: 'refuse';
+      readonly reason: 'not_confirmable' | 'not_this_payment' | 'currency_mismatch' | 'amount_mismatch';
+    };
+
+/**
+ * Whether the provider's account of a refund lets our refund move, and where to.
+ *
+ * The only road to `refunded` runs through here, and it needs the provider to
+ * say three things at once: this refund is against *our* transaction, for
+ * *exactly* the amount we recorded (and booked in the ledger), and it has been
+ * processed. A person cannot declare a refund done; they can only point at the
+ * provider's refund and let the provider answer.
+ *
+ * An amount that differs is refused rather than accepted as partial. The
+ * ledger was booked for the recorded amount when the refund was approved, and
+ * silently accepting a different figure would leave the books and the bank
+ * disagreeing with nobody told.
+ */
+export function decideRefundConfirmation(
+  current: { readonly status: string; readonly amount: number },
+  facts: ProviderRefundFacts,
+): RefundConfirmation {
+  if (!CONFIRMABLE_REFUND_STATES.has(current.status)) return { kind: 'refuse', reason: 'not_confirmable' };
+  if (!facts.matchesPayment) return { kind: 'refuse', reason: 'not_this_payment' };
+  if (facts.currency !== 'NGN') return { kind: 'refuse', reason: 'currency_mismatch' };
+  if (!Number.isInteger(facts.amount) || facts.amount !== current.amount) {
+    return { kind: 'refuse', reason: 'amount_mismatch' };
+  }
+
+  switch (facts.status) {
+    case 'processed':
+      return { kind: 'move', to: 'refunded' };
+    case 'failed':
+      return { kind: 'move', to: 'refund_failed' };
+    default:
+      return { kind: 'move', to: 'refund_processing' };
+  }
+}
+
+/**
+ * An owed refund not returned at the provider within this long is waiting on
+ * a person. Refunds are made by hand in the Paystack dashboard, so a deadline
+ * is the only thing that notices one nobody made.
+ */
+export const REFUND_OVERDUE_MS = 48 * 60 * 60_000;
+
+/** Owed, and not yet returned at the provider (`pending` is the older default). */
+export const OWED_REFUND_STATES: readonly string[] = ['pending', 'refund_pending_manual_review'];
+
+/** Paystack's word for a refund it cannot finish until someone acts in its dashboard. */
+export const PROVIDER_REFUND_NEEDS_ATTENTION: readonly string[] = ['needs-attention', 'needs_attention'];
+
+/** Why a refund is waiting on a person, if it is. */
+export type RefundAwaitingPerson = 'overdue' | 'failed' | 'needs_attention';
+
+/**
+ * Whether a refund needs a person to act now, and why:
+ *
+ *   - `overdue` — owed for longer than `REFUND_OVERDUE_MS` and nobody has
+ *     returned it at the provider yet;
+ *   - `failed` — the provider reported the refund failed; the customer is
+ *     still owed, and a new refund has to be issued and linked;
+ *   - `needs_attention` — linked, but the provider cannot finish it until
+ *     someone acts in its dashboard.
+ *
+ * The maintenance job reports these on every run until they clear, and the
+ * finance console marks them. Neither changes the refund.
+ */
+export function refundAwaitingPerson(
+  refund: { readonly status: string; readonly providerStatus: string | null; readonly createdAt: Date },
+  now: Date,
+): RefundAwaitingPerson | null {
+  if (refund.status === 'refund_failed') return 'failed';
+  if (refund.status === 'refund_processing' && refund.providerStatus !== null) {
+    return PROVIDER_REFUND_NEEDS_ATTENTION.includes(refund.providerStatus) ? 'needs_attention' : null;
+  }
+  if (OWED_REFUND_STATES.includes(refund.status) && now.getTime() - refund.createdAt.getTime() > REFUND_OVERDUE_MS) {
+    return 'overdue';
+  }
+  return null;
+}
+
+/** What the customer is told about how a refund reaches them. */
+export const REFUND_PROCESS =
+  'Refunds are checked by the DASH team and returned to your card through Paystack. We will tell you when it has been returned.';
+
+/** The customer-facing sentence for a refund's current state. */
+export function describeRefund(state: string): { label: string; body: string } {
+  switch (state) {
+    case 'refunded':
+      return { label: 'Refunded', body: 'Paystack has confirmed this refund to your card. Banks can take a few days to show it.' };
+    case 'refund_processing':
+      return {
+        label: 'Refund on its way',
+        body: 'Paystack has accepted this refund and is processing it. It will show as refunded here once Paystack confirms it.',
+      };
+    case 'refund_failed':
+      return { label: 'Refund needs attention', body: 'This refund could not be completed. The DASH team will contact you.' };
+    default:
+      // `refund_pending_manual_review`, and the older `pending` rows.
+      return { label: 'Refund pending review', body: REFUND_PROCESS };
+  }
+}
+
 /**
  * Customer-initiated cancellation policy.
  *
@@ -312,6 +467,17 @@ export function evaluateCustomerCancellation(status: OrderStatus): CancellationO
       };
 
     case 'payment_pending':
+      // Payment has not been confirmed. Should a charge land after all, the
+      // whole of it is owed back — the basis points say so — but the customer
+      // is told what is true now.
+      return {
+        allowed: true,
+        feeBasisPoints: 0,
+        refundBasisPoints: 10_000,
+        explanation: 'Your payment has not been confirmed, so nothing has been charged.',
+        reasonCode: 'free_before_vendor_accepts',
+      };
+
     case 'placed':
     case 'vendor_reviewing':
     case 'accepted':
@@ -319,7 +485,7 @@ export function evaluateCustomerCancellation(status: OrderStatus): CancellationO
         allowed: true,
         feeBasisPoints: 0,
         refundBasisPoints: 10_000,
-        explanation: 'Your order has not been prepared yet, so you get a full refund.',
+        explanation: `Your order has not been prepared yet, so the full amount is owed back to you. ${REFUND_PROCESS}`,
         reasonCode: 'free_before_vendor_accepts',
       };
 
@@ -331,8 +497,7 @@ export function evaluateCustomerCancellation(status: OrderStatus): CancellationO
         allowed: true,
         feeBasisPoints: 3_000, // 30% — covers vendor ingredient and labour cost
         refundBasisPoints: 7_000,
-        explanation:
-          'Your order is already being prepared. A 30% charge covers the vendor, and the rest is refunded.',
+        explanation: `Your order is already being prepared. A 30% charge covers the vendor, and the rest is owed back to you. ${REFUND_PROCESS}`,
         reasonCode: 'fee_after_preparation_started',
       };
 
@@ -414,42 +579,20 @@ export function phaseOf(status: OrderStatus): OrderPhase {
   }
 }
 
-/** Short customer-facing label. Never exposes internal status names. */
-export function customerLabel(status: OrderStatus): string {
-  switch (status) {
-    case 'draft':
-      return 'Basket';
-    case 'payment_pending':
-      return 'Confirming payment';
-    case 'placed':
-      return 'Sent to vendor';
-    case 'vendor_reviewing':
-      return 'Vendor is reviewing';
-    case 'accepted':
-      return 'Order confirmed';
-    case 'preparing':
-      return 'Being prepared';
-    case 'ready':
-      return 'Ready for pickup';
-    case 'rider_assigned':
-      return 'Rider on the way to vendor';
-    case 'rider_arrived':
-      return 'Rider at the vendor';
-    case 'picked_up':
-      return 'Picked up';
-    case 'en_route':
-      return 'On the way to you';
-    case 'arrived':
-      return 'Rider has arrived';
-    case 'delivered':
-      return 'Delivered';
-    case 'cancelled':
-      return 'Cancelled';
-    case 'rejected':
-      return 'Could not be fulfilled';
-    case 'refunded':
-      return 'Refunded';
-    case 'disputed':
-      return 'Under review';
-  }
-}
+/**
+ * Order vocabulary, per section.
+ *
+ * `customerLabel` moved to vocabulary.ts when it became vertical-aware: one
+ * state machine, five ways of describing the same work. Re-exported here so the
+ * import site does not have to know which file the words live in.
+ */
+export {
+  customerLabel,
+  customerTimeline,
+  vendorStartActionLabel,
+  vendorStatusLabel,
+  verticalOf,
+  type Vertical,
+  type VendorCategory,
+} from './vocabulary.js';
+

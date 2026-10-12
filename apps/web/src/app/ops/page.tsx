@@ -12,8 +12,10 @@ import {
   LoadingBlock,
   formatNaira,
 } from '@/components/ui';
+import { Modal } from '@/components/Modal';
 import { ApiRequestError } from '@/lib/api';
-import { authedFetch, useHasSession, usePermissions } from '@/lib/session';
+import { authedFetch, useHasSession, useMe, usePermissions } from '@/lib/session';
+import { useLive } from '@/lib/useLive';
 
 /**
  * Operations console.
@@ -22,6 +24,24 @@ import { authedFetch, useHasSession, usePermissions } from '@/lib/session';
  * problems, not for browsing — so anything wrong is loud and everything normal
  * is quiet.
  */
+
+/**
+ * The reasons the API accepts for a reassignment.
+ *
+ * Mirrors the enum in `POST /v1/ops/orders/:id/reassign`. This used to be a
+ * `window.prompt()` asking the dispatcher to type one of these strings from
+ * memory: a typo produced a 400, and in a sandboxed browser the prompt threw
+ * and the reassignment silently never happened. A reassignment is the most
+ * audited action in the console — it must be the easiest one to record
+ * correctly.
+ */
+const REASSIGN_REASONS = [
+  { value: 'rider_unresponsive', label: 'Rider is unresponsive' },
+  { value: 'rider_incident', label: 'Rider had an incident' },
+  { value: 'wrong_vehicle', label: 'Wrong vehicle for this order' },
+  { value: 'customer_request', label: 'Customer asked for a change' },
+  { value: 'other', label: 'Another reason' },
+] as const;
 
 interface LiveOrder {
   id: string;
@@ -53,13 +73,120 @@ const ALERT_LABELS: Record<LiveOrder['alerts'][number], string> = {
   rider_location_stale: 'Rider signal lost',
 };
 
+/**
+ * Take an order off its rider and return it to the dispatch pool.
+ *
+ * The reason is mandatory and audited, so it is picked rather than typed, and
+ * the note is free text because the enum never quite covers what happened.
+ */
+function ReassignDialog({
+  order,
+  onClose,
+  onDone,
+}: {
+  order: { id: string; code: string };
+  onClose: () => void;
+  onDone: () => Promise<void> | void;
+}) {
+  const [reason, setReason] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const submit = async (): Promise<void> => {
+    if (!reason) return;
+    setBusy(true);
+    setFailure(null);
+    try {
+      await authedFetch(`/v1/ops/orders/${order.id}/reassign`, {
+        method: 'POST',
+        body: { reasonCode: reason, ...(note.trim() ? { note: note.trim() } : {}) },
+      });
+      await onDone();
+      onClose();
+    } catch (caught) {
+      setFailure(
+        caught instanceof ApiRequestError
+          ? caught.message
+          : 'The reassignment did not go through.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Reassign ${order.code}`}
+      description="The current rider is released and the order returns to dispatch."
+      onClose={onClose}
+      labelledBy="reassign-title"
+    >
+      <fieldset disabled={busy}>
+        <legend className="sr-only">Reason for reassigning {order.code}</legend>
+        <div className="space-y-2">
+          {REASSIGN_REASONS.map((option) => (
+            <label
+              key={option.value}
+              className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm transition-colors ${
+                reason === option.value ? 'border-gold-400 bg-white/5' : 'hover:bg-white/5'
+              }`}
+            >
+              <input
+                type="radio"
+                name="reassign-reason"
+                value={option.value}
+                checked={reason === option.value}
+                onChange={() => setReason(option.value)}
+                className="h-4 w-4"
+              />
+              <span className="font-medium">{option.label}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <label htmlFor="reassign-note" className="mt-4 block text-sm font-medium">
+        Note <span className="font-normal text-[var(--ink-muted)]">(optional)</span>
+      </label>
+      <textarea
+        id="reassign-note"
+        value={note}
+        onChange={(event) => setNote(event.target.value.slice(0, 280))}
+        disabled={busy}
+        rows={2}
+        placeholder="Anything the next dispatcher should know."
+        className="mt-1.5 w-full rounded-xl border bg-[var(--surface-raised)] px-3.5 py-2.5 text-sm text-[var(--ink)] placeholder:text-graphite-400"
+      />
+
+      {failure ? (
+        <p role="alert" className="mt-3 text-sm font-medium text-coral-600">
+          {failure}
+        </p>
+      ) : null}
+
+      <div className="mt-5 flex gap-2">
+        <Button variant="ghost" onClick={onClose} disabled={busy} className="flex-1">
+          Cancel
+        </Button>
+        <Button onClick={() => void submit()} disabled={!reason || busy} className="flex-1">
+          {busy ? 'Reassigning…' : 'Reassign'}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
 export default function OpsPage() {
   const [orders, setOrders] = useState<LiveOrder[] | null>(null);
+  const [reassigning, setReassigning] = useState<LiveOrder | null>(null);
   const [ledger, setLedger] = useState<LedgerIntegrity | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
   const signedIn = useHasSession();
+  const { me } = useMe();
   const { permissions } = usePermissions();
   const canReadLedger = permissions.has('finance:ledger:read');
+  const [cityIds, setCityIds] = useState<string[]>([]);
 
   const load = useCallback(async (): Promise<void> => {
     if (!signedIn) return;
@@ -91,15 +218,42 @@ export default function OpsPage() {
     }
   }, [signedIn, canReadLedger]);
 
+  /**
+   * Which city boards to follow.
+   *
+   * A city-scoped dispatcher gets their own cities from `/v1/auth/me`. An
+   * unscoped ops role — platform or super admin — reaches every city and has no
+   * list of its own, so it takes the live cities from the public catalogue.
+   * Neither is a grant: the server refuses any city topic the actor is not
+   * entitled to, and the board's own query is filtered by `actor.cityIds`
+   * regardless of what is subscribed here.
+   */
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!signedIn || !me) return;
+    if (me.cityIds.length > 0) {
+      setCityIds(me.cityIds);
+      return;
+    }
+    let cancelled = false;
+    void authedFetch<{ cities: { id: string }[] }>('/v1/cities')
+      .then((result) => {
+        if (!cancelled) setCityIds(result.cities.map((city) => city.id));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [signedIn, me]);
 
-  useEffect(() => {
-    if (!signedIn) return;
-    const timer = setInterval(() => void load(), 7000);
-    return () => clearInterval(timer);
-  }, [load, signedIn]);
+  // Realtime over the seven-second poll. An escalation is the case this
+  // matters for: it happens when dispatch has given up, often minutes after the
+  // customer ordered, and nobody is watching the screen at that moment.
+  const { status } = useLive({
+    topics: cityIds.map((cityId) => `city:${cityId}`),
+    load,
+    pollMs: 7_000,
+    enabled: signedIn,
+  });
 
   if (!signedIn) {
     return (
@@ -129,9 +283,30 @@ export default function OpsPage() {
       <main id="main" className="mx-auto max-w-5xl px-5 py-8">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-3xl font-extrabold tracking-tight">Live operations</h1>
-          <Button variant="ghost" size="sm" onClick={() => void load()}>
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Link href="/ops/declutter">
+              <Button variant="ghost" size="sm">
+                Declutters
+              </Button>
+            </Link>
+            {permissions.has('admin:vendor:approve') || permissions.has('admin:rider:approve') ? (
+              <Link href="/ops/partners">
+                <Button variant="ghost" size="sm">
+                  Partners
+                </Button>
+              </Link>
+            ) : null}
+            {permissions.has('finance:payment:read') ? (
+              <Link href="/ops/refunds">
+                <Button variant="ghost" size="sm">
+                  Refunds
+                </Button>
+              </Link>
+            ) : null}
+            <Button variant="ghost" size="sm" onClick={() => void load()}>
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* --- Summary -------------------------------------------------------- */}
@@ -252,21 +427,7 @@ export default function OpsPage() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => {
-                              const note = window.prompt(
-                                `Reassign ${order.code}. Why? (rider_unresponsive, rider_incident, wrong_vehicle, customer_request, other)`,
-                                'rider_unresponsive',
-                              );
-                              if (!note) return;
-                              void authedFetch(`/v1/ops/orders/${order.id}/reassign`, {
-                                method: 'POST',
-                                body: { reasonCode: note },
-                              })
-                                .then(() => load())
-                                .catch((caught: unknown) => {
-                                  if (caught instanceof ApiRequestError) setError(caught);
-                                });
-                            }}
+                            onClick={() => setReassigning(order)}
                           >
                             Reassign
                           </Button>
@@ -280,9 +441,19 @@ export default function OpsPage() {
         </section>
 
         <p className="mt-8 text-xs text-[var(--ink-muted)]">
-          This board polls every 7 seconds. Live websocket push is not built yet.
+          {status === 'live'
+            ? 'Live. Changes appear as they happen, and the board still re-reads every 30 seconds in case one is missed.'
+            : 'Not connected for live updates — re-reading every 7 seconds instead.'}
         </p>
       </main>
+
+      {reassigning ? (
+        <ReassignDialog
+          order={reassigning}
+          onClose={() => setReassigning(null)}
+          onDone={load}
+        />
+      ) : null}
     </div>
   );
 }

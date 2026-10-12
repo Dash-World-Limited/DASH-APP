@@ -325,7 +325,7 @@ The obvious hazard is that the two drift. Three things stop that:
    genuinely the same document in both dialects.
 
 **Alternatives rejected.** Moving development to PostgreSQL would have meant the
-887-test suite could not run without a database server — it builds a per-worker
+test suite could not run without a database server — it builds a per-worker
 SQLite template file — and would have added exactly the local-development
 friction ADR-0003 exists to avoid. A runtime-switched datasource is not
 available to us at any price: Prisma forbids it.
@@ -427,3 +427,628 @@ it was not is how an export sits `pending` for ever with nobody aware.
 is written down above, asserted in tests, and visible in readiness — which
 reports the dependency by role (`queue`) rather than by technology, preserving
 the `/health/ready` non-disclosure contract from Milestone G.
+
+---
+
+## ADR-0011 — Runtime environment injection as the secret-source contract
+
+**Status:** Accepted · Milestone III
+
+### Context
+
+Milestone III is production secret management. The obvious reading of that
+brief is "integrate a secret manager", and the obvious implementations are AWS
+Secrets Manager, GCP Secret Manager, or HashiCorp Vault.
+
+DASH APP has not chosen a deployment platform. It has never been deployed, and
+the hosting decision is open (see `ROADMAP.md` Gate 2). Choosing a secret store
+now would be choosing a cloud vendor now, by a side door, on the strength of an
+infrastructure milestone rather than a deployment decision.
+
+Meanwhile the actual risks are not hypothetical and are not vendor-specific:
+
+- Secret values could reach a log, an error, or a health response.
+- A misconfigured keyring could boot and silently make rows unreadable.
+- `.env.example` could grow something that looks like a real credential.
+- No inventory said which variables were secret in the first place.
+
+None of those is fixed by an SDK.
+
+### Decision
+
+**Secrets enter the process through the environment. The application does not
+know, and must not ask, what put them there.**
+
+`loadConfig(source: NodeJS.ProcessEnv)` already takes the environment as an
+argument. That parameter *is* the injection seam, and no further abstraction is
+introduced. Specifically:
+
+- **No secret-store SDK is added.** Not AWS, not GCP, not Azure, not Vault.
+- **No `SecretSource` interface is added** either. An interface with exactly one
+  implementation is ceremony that makes the codebase look like it supports
+  something it does not.
+- Investment goes instead into the parts that are vendor-independent and were
+  genuinely missing: an explicit classification of every variable, redaction
+  driven by that classification, hardened key custody, and a rotation procedure
+  with a verifiable retirement gate.
+
+### What this supports
+
+| Environment | How values arrive |
+|---|---|
+| Development, test | A `.env` file, or the harness passing an object directly |
+| Staging, production | The platform's own injection — Kubernetes secrets projected as env vars, AWS/GCP secret managers through the platform, Vault's agent, a hosting provider's secret UI |
+| A future direct integration | An adapter that fetches from a store and returns a populated object, passed to the same `loadConfig(source)` |
+
+The third row is why no abstraction is needed today: the seam for it already
+exists and is already exercised, because every test in the suite uses it.
+
+### Consequences
+
+**The application stays portable.** Any platform that can set an environment
+variable can run this, which is all of them. Nothing needs rewriting when the
+hosting decision is finally made.
+
+**No dependency, no credential, no IAM policy** is required to run the service
+locally or in CI, and no cloud SDK sits in the dependency tree carrying its own
+advisories.
+
+**The honest status is "secret-store-ready", not "secret store integrated".**
+Documentation must say so. A reader who takes this for a managed secret store
+would skip provisioning one.
+
+**Injection quality is the platform's responsibility, and unverified here.**
+Whether the platform's environment injection is itself secure — whether the
+values appear in a pod spec, a build log, or a process listing — is outside what
+this repository can check. It is on the production readiness checklist.
+
+**The classification table becomes load-bearing.** Log redaction, the leak
+tests, and the `.env.example` gate all read from
+`apps/api/src/secrets/classification.ts`. A secret variable that is not
+classified is not protected, so classifying one is part of adding one.
+
+### Rejected alternatives
+
+**Integrate AWS Secrets Manager.** Picks a cloud vendor as a side effect of a
+security milestone, adds an SDK and IAM setup to run the app locally, and would
+have to be rewritten if the platform decision goes elsewhere.
+
+**Write a `SecretSource` interface with an `EnvironmentSecretSource`.** Looks
+like extensibility and provides none: the single implementation reads
+`process.env`, which is what `loadConfig` already does. It would also invite the
+next contributor to write a stub `VaultSecretSource` that nothing uses — a fake
+integration, which is worse than an absent one.
+
+**Write a stub adapter for each cloud provider.** Explicitly rejected. A stub
+that claims a provider is supported is a lie in the shape of a file.
+
+---
+
+## ADR-0012 — A transactional outbox, and a scheduler this repository does not own
+
+**Status:** Accepted · Milestone IV
+
+### Context
+
+Every background job was scheduled by a dual write:
+
+```ts
+await prisma.order.update({ ... });           // committed
+await queue.enqueue({ name: 'dispatch...' }); // separate network call
+```
+
+Two systems, no shared transaction. The gap between them is where work
+disappears, and it was not theoretical: `redis/client.ts` already classified an
+enqueue failure as `retryable` and noted that the caller's durable row is
+already committed. So a vendor accepts an order, the row commits, Redis is
+briefly unreachable — and the endpoint returns **500** for an order that is, in
+the database, accepted. A rider is never dispatched. Nothing records that one
+was supposed to be. A test added in this milestone reproduces exactly that
+against the pre-existing code.
+
+Five call sites had this shape, and the worst was vendor rejection: the customer
+is charged, the order is dead, and the refund the platform owes is queued by a
+network call that may not happen.
+
+Separately, four maintenance jobs — retention, session pruning, account deletion
+finalisation, export expiry — were implemented, tested, and run by nothing.
+`HANDOFF.md` had said "nothing schedules them" since Milestone C.
+
+### Decision
+
+**Two things, deliberately separate.**
+
+**1. A transactional outbox for domain events.** The intent to enqueue is a row
+written inside the caller's transaction (`enqueueViaOutbox(tx, …)`). A relay
+publishes it afterwards. If the transaction rolls back, the intent rolls back;
+if it commits, the intent is durable and will be published however long the
+queue is down.
+
+Delivery is **at-least-once** and that is stated rather than wished away: the
+relay can publish and crash before marking, so a duplicate is possible. The
+dedupe key is therefore mandatory (`assertPublishable` refuses an event without
+one) and passed straight through to the queue. Exactly-once across two systems
+is not purchasable; a harmless duplicate is.
+
+Latency is preserved by a best-effort `flushOutbox` immediately after commit.
+When the queue is healthy the job is published in-request exactly as before;
+when it is not, the flush swallows the failure and the scheduled relay takes
+over. A durable row must never become a failed customer request.
+
+**2. A single maintenance command, not an in-process scheduler.**
+`npm run maintenance:all` runs the outbox relay, retention, account
+maintenance, and ledger reconciliation, in that order, each under a lease.
+
+### Why not an in-process timer
+
+A `setInterval` in the API means every instance runs every job, so how often the
+ledger gets reconciled becomes a function of how many pods happen to be up.
+Queue-based self-scheduling is worse: the queue is Redis, Redis is precisely
+what maintenance must keep working without, and a job that schedules its own
+successor stops for ever the first time one run dies.
+
+What this repository does not have is a deployment platform — the same fact
+behind [ADR-0011](#adr-0011--runtime-environment-injection-as-the-secret-source-contract).
+cron, systemd timers, and Kubernetes CronJobs all exist, are operated by people
+who understand the platform, and restart on their own. Inventing a worse one
+here would be the same mistake as inventing a secret store.
+
+### The lease
+
+Two instances firing the same cron minute is ordinary. The jobs are individually
+safe to run concurrently, but doing the same work twice still costs two full
+ledger scans and two audit rows for one fact.
+
+Acquisition uses nothing provider-specific, because this repository runs SQLite
+in development and PostgreSQL in production: a guarded `updateMany` takes over a
+lease whose expiry has passed, and a `create` claims a job that has never run,
+with the primary key deciding that race. No advisory locks, no `SELECT … FOR
+UPDATE`.
+
+The lease **expires** rather than being held until success, so an instance
+killed mid-run does not block the job until a human notices. It prevents waste,
+not corruption — correctness still comes from the jobs' own idempotency.
+
+### Consequences
+
+**The dual write is gone from all five call sites**, and the routes no longer
+reference the queue at all — the compiler confirmed that by reporting `queue` as
+unused in four files.
+
+**The outbox table needs its own retention.** An append-only record of every
+domain event that ever fired grows without bound and holds nothing the audit log
+does not, so `published_outbox_events` is deleted after 14 days. `pending` and
+`failed` events are never deleted: those are outstanding work.
+
+**Payloads are identifiers only.** This table is unencrypted, widely read, and
+lives in backups — exactly where Milestone III keeps personal data out of. The
+same `isSensitiveKey` vocabulary the logger and audit log use refuses a payload
+carrying a phone number or a secret.
+
+**Staleness is the alert that matters.** A job that fails loudly gets noticed; a
+job that silently stops being scheduled is the one that goes unnoticed for a
+quarter — which is exactly how four implemented jobs came to be run by nothing.
+`maintenanceStaleness` treats "never succeeded" and "succeeded long ago" as the
+same fact, and the runner exits non-zero for both.
+
+**Key rotation is deliberately excluded.** Its primitives exist and are not
+scheduled, because rotation is a supervised operation with a runbook. That
+remains true.
+
+### Rejected alternatives
+
+**Keep the dual write and retry the enqueue in-process.** A retry loop holds the
+request open while Redis is down and still loses the work when the process
+restarts. The durability has to be in the database.
+
+**Publish inside the transaction.** A transaction that waits on Redis holds
+database locks while a third party is unreachable, which turns a queue outage
+into a database outage.
+
+**Change nothing and rely on the queue's own durability.** BullMQ is durable
+once it has the job. The failure is in never getting it.
+
+---
+
+## ADR-0013 — Realtime carries notifications, not data
+
+**Status:** Accepted · Milestone V
+
+### Context
+
+Tracking, the vendor queue, and the ops board all polled. Polling is honest but
+wrong-shaped for this product: a rider's dispatch offer times out in seconds, a
+vendor needs to see an incoming order before the customer wonders why nothing
+has happened, and a dispatcher watching an escalation wants it on the board when
+it escalates, not up to a poll interval later.
+
+The obvious design is to push the changed record down the socket. It is also the
+one that quietly undoes the access-control work of every previous milestone.
+
+Field-level projection rules live in the route handlers, and they are not
+uniform: the vendor list returns the customer's **first name only** and no phone
+number, the customer's tracking route returns the rider's coarse position **only
+while the order is active**, the ops board returns a different shape again, and
+the delivery PIN is returned to nobody. Those rules took the whole project to
+get right. A socket that pushed rows out of the outbox would bypass every one of
+them, silently, for every subscriber at once — and the bypass would not show up
+in any test of the HTTP routes, because the HTTP routes would still be correct.
+
+### Decision
+
+**A realtime message carries identifiers and a version. Never domain data.**
+
+```json
+{ "type": "event", "topics": ["order:abc"], "subject": "order:abc",
+  "version": 12, "eventId": "order:abc@12", "occurredAt": 1788000000000 }
+```
+
+The client answers it by re-reading through the ordinary authorized HTTP route.
+That is an extra round trip, and it buys the only property that matters: the
+projection rules apply to realtime automatically, and they can never drift from
+the ones the API already enforces, because they *are* the ones the API enforces.
+
+Four consequences follow, and each removes a problem rather than adding one.
+
+**Ordering and duplicates stop being dangerous.** Delivery is at-least-once and
+unordered. Acting on a duplicate means re-reading state that is already current;
+acting on a stale one means re-reading state that is newer than the notification
+claimed. Neither can corrupt anything. `version` exists so a client can skip
+work it has already done — not so it can reconstruct state from the stream,
+which would be event sourcing, and this is not that.
+
+**Reconnection needs no replay.** There is no per-topic log and none is needed:
+a client that subscribes is told `resync: true` and reads the current state.
+There is no gap to replay, only a screen to refresh.
+
+**Degrading is not a second code path.** With no socket, the client polls the
+same route on a timer — which is what every one of these screens did before this
+milestone and still does. Losing realtime costs freshness and nothing else.
+
+**Authorization is one decision, made twice.** `canSubscribe` answers "could
+this actor ever watch a topic of this kind?" from the actor alone;
+`canReachOrder` / `canReachVendor` answer "may they watch *this* one?" against
+the row. Both are pure functions in `@dash/domain/realtime` with truth-table
+tests, and both mirror the checks the corresponding routes already make. A
+refusal is always `not_found`, never `forbidden` — the same reason `assertScope`
+returns 404 rather than 403.
+
+### Authentication is a frame, not a handshake
+
+A browser cannot set an `Authorization` header on a WebSocket. Of the four ways
+round that, three are worse:
+
+| Approach | Why not |
+|---|---|
+| Token in the query string | Lands in access logs, proxy logs, URL sampling. This codebase already refuses to put personal data in a URL; a 15-minute credential is worse. |
+| Cookie | Upgrades are not subject to CORS and browsers send cookies on them — cross-site WebSocket hijacking. The refresh cookie is scoped to `/v1/auth` for this family of reasons. |
+| `Sec-WebSocket-Protocol` | Keeps it out of the URL, but overloads a negotiation header with a credential and is awkward to rotate on a live socket. |
+
+So the socket opens with no privilege at all and authenticates from an
+`authenticate` frame carrying the ordinary access token. Unauthenticated sockets
+are closed after ten seconds; the `Origin` header is checked against the same
+allowlist CORS uses.
+
+This also solves the problem long-lived sockets usually ignore. An access token
+expires in fifteen minutes; a socket lives for hours. Because authentication is
+a frame, the client simply sends another — and **authority on a socket can never
+outlive authority on an HTTP request**, because the socket is closed when its
+token lapses. A revocation sweep re-reads the session on a timer, closing that
+window further, and re-authentication clears the connection's subscriptions so
+their ownership checks are re-run rather than assumed.
+
+### Queue *then* broadcast
+
+`QueuePort` and `RealtimeBroadcastPort` look similar and do opposite things. A
+queue job goes to exactly one consumer — that is what stops two instances
+dispatching the same order twice. A notification has to reach **every** instance,
+because the customer watching an order is connected to whichever instance the
+load balancer picked, and that is rarely the one whose worker took the job.
+
+Routing notifications through the queue alone would deliver to one instance and
+silently drop them for everyone connected elsewhere: perfect on a developer's
+machine, losing most updates in production in proportion to how well the
+deployment is scaled. So the path is outbox → relay → queue → one worker →
+broadcast → every hub. `REALTIME_BROADCAST=memory` is refused in production for
+the same reason `QUEUE_PROVIDER=memory` is.
+
+Redis pub/sub is classified **degradable** in `REDIS_RESPONSIBILITIES`: losing
+it makes screens refresh on a timer instead of on a change. Nothing is lost,
+because the state was committed to PostgreSQL before any notification existed.
+
+### The outbox, again — not a new dual write
+
+Notifications are recorded with `enqueueViaOutbox` inside the transaction that
+caused them, exactly as dispatch and refund intents are
+([ADR-0012](#adr-0012--a-transactional-outbox-and-a-scheduler-this-repository-does-not-own)).
+Publishing before the commit would announce a state the order never reached, and
+a rolled-back transaction would leave clients re-reading and watching the screen
+move backwards. Publishing after it would lose the notification in the gap with
+nothing recording that it was owed.
+
+### `Order.revision`
+
+Ordering needs a monotonic value per order, and nothing existing could be one.
+`updatedAt` cannot: two writes in the same millisecond are indistinguishable,
+and wall clocks on different instances do not agree closely enough to order
+anything. A notification wrongly judged older than what a client holds is
+dropped, and the symptom is a screen that stays stale — the exact failure this
+milestone exists to prevent. So a counter, incremented inside the transaction,
+in the one helper that also records the notification, where it cannot be
+forgotten.
+
+It is per *subject*, not per topic. A client watching a vendor queue sees
+notifications about many orders and tracks each order's version separately;
+comparing two different orders' revisions would be meaningless.
+
+### On the client
+
+The same rule, enforced by shape rather than by discipline. The browser client's
+refresh callback receives `{reason, subjects}` — a reason and identifiers — and
+nothing from the frame. A screen therefore *cannot* render notification content
+even by accident: there is no field to reach for. Its only possible response is
+to call its own authorized read, which is the same fetch it made on a timer
+before any of this existed.
+
+Polling is slowed, never removed: 6–10 seconds becomes a 30-second safety net
+while the socket is live, and returns when it is not. At-least-once delivery
+promises a notification may arrive *twice*; nothing promises one always arrives.
+A dropped frame with no poll behind it is a screen that is silently wrong until
+someone reloads — a worse failure than the polling it replaced, and an invisible
+one.
+
+### Consequences
+
+- Rider **location** streaming is deliberately **not** included. Position updates
+  arrive every few seconds per rider and have different economics — a
+  notification-then-re-read design would multiply them by the number of
+  watchers. Tracking screens still poll for the rider pin. Doing it properly
+  means pushing coarse position on its own channel, and that is its own piece of
+  work.
+- An ownership relationship that ends mid-socket — a rider reassigned off an
+  order — is not re-derived on every sweep, because that would mean loading
+  every subscribed order. It is bounded instead: re-authentication clears
+  subscriptions, so a stale relationship cannot outlive one access token, and
+  what it exposes in the meantime is a version number for an order the actor was
+  legitimately attached to minutes earlier — never any of its data.
+- `canSubscribe` is **stricter** than `GET /v1/ops/live` in one case: that route
+  applies its city filter only when the actor has cities listed, so a dispatcher
+  with an empty list sees every city there and none here. Failing closed is the
+  right direction for the looser of two checks to be corrected towards; the
+  route itself is left alone rather than changed as a side effect of this
+  milestone.
+
+### Rejected alternatives
+
+**Push the changed record.** The reason this ADR exists. It bypasses every
+field-level projection rule in the API, for every subscriber, invisibly.
+
+**Server-Sent Events instead of WebSockets.** SSE is simpler and would carry
+these notifications adequately. It is also one-directional, so subscription
+management would need a parallel HTTP API and per-connection state keyed by
+something other than the connection — which is more moving parts, not fewer, and
+the client-side reconnect semantics are the same either way.
+
+**A durable per-topic event log for replay.** Would let a reconnecting client
+receive what it missed. It is also a second source of truth for state that
+PostgreSQL already holds, with its own retention, compaction, and drift
+problems, in exchange for saving one HTTP read on reconnect.
+
+**A short-lived ticket endpoint.** Genuinely reasonable, and rejected only
+because in-band authentication needs no new endpoint, no new token type, no new
+secret, and no new table — and solves token renewal on a live socket, which a
+ticket does not.
+
+---
+
+## ADR-0014 — Deployment profiles: a disabled capability is unreachable, not mocked
+
+**Status:** Accepted · Declutters launch
+
+### Context
+
+DASH World Declutters is deployed on its own — `declutters.dashworldng.com` — and it
+is a marketplace. It takes no money, dispatches no rider, sends no SMS, pushes to
+no device and geocodes no address. It needs PostgreSQL, PostGIS (because the
+database is shared with DASH APP's schema), Redis, S3 and SES, and nothing else
+external.
+
+The production boot guards refused it. They require a real payment provider, a
+real maps provider, a real SMS provider and a real push provider whenever
+`NODE_ENV=production`, because each mock or console adapter reports success and
+does nothing — a production service that claims to charge a card and settles
+nothing, or logs a login code to stdout and tells the customer it was sent. Those
+guards are correct. They were also, for this deployment, asking a question with
+no subject: there is no payment to mock because there is no payment.
+
+The effect was that the documented Declutters deployment could not boot without
+being handed Paystack keys it would never use, a Google Maps key for addresses it
+would never geocode, and an SMS provider for codes it would never send. Unused
+production credentials are a liability with no corresponding benefit.
+
+### Decision
+
+`DEPLOYMENT_PROFILE` selects a named set of **capabilities**
+(`apps/api/src/deployment/profile.ts`). `full` has all nine. `declutters` has
+`email` and `storage`.
+
+A capability does three things:
+
+1. **It chooses the adapter.** A disabled capability gets an adapter from
+   `apps/api/src/adapters/disabled.ts` whose every method throws
+   `CapabilityDisabledError`. `providerName` is `disabled` and `isLive` is
+   `false`.
+2. **It decides whether routes are registered.** Without `delivery`, the
+   catalogue, order, vendor and rider routes are never mounted. Without
+   `payments`, neither is the Paystack webhook. Without `push`, neither is device
+   registration. Without `dataExport`, neither is the export half of the account
+   routes. They answer `404`.
+3. **It scopes the guard.** Each provider guard runs only when the deployment has
+   the capability it is about.
+
+The same variable is read by `apps/web`, where a middleware serves only
+`/declutter`, `/ops/declutter` and `/signin` and answers 404 for the rest. Without
+it the marketplace host would serve DASH APP's customer shell, vendor console and
+rider app against an API that no longer has their endpoints — a *broken* DASH APP
+rather than no DASH APP — and the landing page, which lists every internal console
+by name. That one is a deployment boundary rather than a security boundary: those
+pages already require a session and a server-side permission check.
+
+The default is `full`. A deployment that forgets to declare itself gets the
+strictest checks, not the loosest.
+
+### Consequences
+
+- The `full` profile is unchanged. Every guard behaves exactly as before, and
+  `deployment-profile.test.ts` asserts that a `full` production boot still
+  refuses all four mock providers by name.
+- Guards that are not about a capability still apply everywhere: email, storage,
+  PostgreSQL-not-SQLite, PostGIS, Redis-backed rate limiting, a durable queue,
+  secret strength, `ENCRYPTION_KEY`, SES and S3 completeness.
+- `zonesContaining` is deliberately *not* disabled with `maps`. PostGIS answers
+  it from the database, so it needs no provider; routing and geocoding do, and
+  those throw.
+- `realtime` became the ninth capability for the same reason as the other four,
+  found late: `REALTIME_ENABLED` defaults to on and `REALTIME_BROADCAST` defaults
+  to in-memory, which production refuses, so a Declutters deployment was still
+  refused at boot — over a variable the runbook never mentioned. Both the
+  capability and the flag must now agree before a socket is served, so the flag
+  cannot re-enable fan-out on a profile that has no realtime.
+- The capability set is what documentation is checked against. `CONFIG_VARIABLE_NAMES`
+  is derived from the config schema, and a test asserts the runbook names nothing
+  outside it — after the runbook was found requiring `ENCRYPTION_KEYS`,
+  `ENCRYPTION_ACTIVE_KEY` and `REFRESH_TOKEN_PEPPER`, none of which any code has
+  ever read, while omitting three variables production refuses to start without.
+- A disabled `parseWebhook` returns `null` rather than throwing, because `null`
+  already means "this did not verify, act on nothing" — which is precisely how a
+  deployment with payments off should treat a payment webhook.
+- Adding a capability means adding it in one table, not auditing every guard and
+  route again.
+
+### Rejected alternatives
+
+**Relax the four guards in production.** The smallest diff, and the worst
+outcome. It leaves `MockPaymentAdapter` and `ConsoleSmsAdapter` wired into a
+production process with nothing left to object, which recreates the exact silent
+failure the guards existed to prevent. The guard was never the safety property;
+the absence of a lying adapter is.
+
+**A boolean per feature (`PAYMENTS_ENABLED`, `SMS_ENABLED`, …).** Eight
+independent switches is 256 combinations, most of them incoherent — delivery
+without payments, push without devices — and each one a configuration a
+deployment could reach by accident. A named profile is a reviewed combination.
+
+**A separate API service containing only the marketplace.** The honest long-term
+answer, and far too much for a launch: it means splitting the schema, the
+identity system and the admin console, when there is deliberately **one** DASH
+identity and **one** source of truth.
+
+**`NODE_ENV=staging` or a looser environment.** Would relax the guards by
+relaxing production itself, including the ones about secrets, SQLite and rate
+limiting. This deployment is production. It serves real sellers' identity
+documents.
+
+## ADR-0015 — Native-first clients and a stable six-service product contract
+
+**Status:** Accepted · Product foundation
+
+*Numbered ADR-0011 on `codex/native-service-foundation`, which was cut from
+`main` before ADR-0011 to ADR-0014 landed on the V1 line. Renumbered on
+integration; the content is unchanged.*
+
+**Context.** The current milestone proved the core flow through one responsive
+Next.js application. Product review established that the customer and rider
+experiences must be genuine mobile applications, while vendor and operations
+work remain browser-based. The earlier public category names also mixed UI
+language with legacy Vendor.category storage values.
+
+**Decision.**
+
+- Customer and rider are separate React Native / Expo applications. They call
+  the existing API directly and must not embed the web app in a WebView.
+- Vendor, admin, support and finance remain web surfaces, designed to feel like
+  purpose-built operational applications rather than a wrapped consumer site.
+- The permanent public service ids, in order, are: food, shops, pharmacy,
+  local_market, declutter, logistics. Their visible navigation labels are
+  FOOD, SHOPS, PHARMACY, LOCAL MARKET, DECLUTTER and LOGISTICS.
+- Food, Shops, Pharmacy and Local Market are merchant-commerce services.
+  Declutter is a marketplace domain. Logistics is a shipment-request domain.
+- Existing Vendor.category values remain compatibility storage until a later
+  additive migration. No historical row is reinterpreted or destructively
+  renamed for this decision.
+- The existing merchant Order aggregate keeps its required vendor and branch.
+  Declutter and Logistics must receive separate aggregates and may share a
+  fulfilment abstraction only after their different ownership, pricing,
+  cancellation, dispute and proof-of-delivery rules are explicit.
+
+**Consequences.** The current customer and rider web routes remain useful as a
+staging harness while native clients are built, but they are no longer the
+official end-product direction. Legacy API clients may continue using the
+category filter during a measured compatibility window; new clients use the
+service filter and the public service-category endpoint.
+
+**Supersedes.** This supersedes ADR-0004 only for client topology. Its rule
+that authorization is enforced by the API remains fully in force.
+
+**Migration safety.** Future database work is additive: create new structures,
+dual-read or backfill in bounded batches, observe, cut over, and only then
+remove old paths in a later release. A migration may not make merchant-order
+fields nullable merely to squeeze a different business model into Order.
+
+## ADR-0016 — One native app with two faces, built outside the npm workspaces
+
+**Status:** Proposed · Native mobile Checkpoint 1 · awaiting director review
+
+**Context.** ADR-0015 made Customer and Rider genuine React Native / Expo
+clients and described them as *separate* applications. The director's
+13 September instruction asks for one `apps/mobile` holding a Customer shell and
+a Rider shell, and the earlier product decision (9 September) was that every
+consumer identity is a Customer and an approved rider switches to the Rider
+face inside the same identity and session. The approved Customer and Rider
+boards were supplied the same day.
+
+**Decision.**
+
+- **One app, two faces.** `apps/mobile` is a single Expo app. The Customer face
+  lives at the root; the Rider face under `/rider`. Switching is a profile
+  action that changes which face is shown — no second sign-in, no second
+  session. In a production build the switch is offered only to an identity the
+  server has approved as a rider; every rider route still authorises on the
+  server regardless. This supersedes ADR-0015's "separate applications" line
+  only; the rest of ADR-0015 stands.
+- **A standalone project, not a workspace.** React Native requires React to
+  match its renderer exactly; Expo SDK 57 pins React 19.2.3 while the web app
+  runs 19.2.8. `apps/mobile` therefore has its own lockfile and is excluded from
+  the npm workspaces (which become an explicit list). It shares *source* with
+  the monorepo: Metro bundles `@dash/domain` through a `file:` link, with a
+  resolver shim for the domain's `.js`-named TypeScript imports. The web and API
+  dependency graphs are unchanged. `scripts/typecheck.mjs` checks the app with
+  its own TypeScript and fails, never skips, when its dependencies are absent;
+  CI installs them.
+- **Expo development builds.** Native projects are generated from
+  `app.config.ts` by `expo prebuild` and not committed. Variants
+  (`development`, `staging`, `production`) install side by side under
+  `com.dashworldng.dash[.dev|.staging]`; the production identifier is permanent
+  once published and needs confirmation first.
+- **Auth needs no backend change.** The HttpOnly refresh cookie (path
+  `/v1/auth`) is kept by the platform HTTP cookie store and never reaches
+  JavaScript; the double-submit CSRF value the server already returns in the
+  body is kept in SecureStore and echoed on refresh and logout; the access
+  token stays in memory. ADR-0008 holds unchanged.
+- **The server's projections are the client's models.** Where a board shows
+  data the API does not serve, the client model marks it as a gap rather than
+  inventing it. Where a board shows data the API *withholds by rule* — the
+  customer's name on an offer before acceptance — the model has no field for
+  it, and the difference is reported.
+- **Tokens from the boards.** Colours are sampled from the approved board
+  pixels; the bronze is the midpoint of the two boards' renderings. Blue is
+  retired as a brand colour. Dark mode shares every token key and is marked as
+  a derivation pending approval.
+
+**Consequences.** The Capacitor WebView shell moved to `apps/android-shell`,
+history intact, and remains the only physically proven rider client until the
+native Rider reaches parity. Native Checkpoint 1 is visually complete against
+the boards for its screens, wired only for the service list, and not yet
+device-verified. Merchant imagery, vendor cover and logo fields, product
+galleries and variants, rider earnings, demand signals and customer names after
+acceptance are backend gaps listed in `apps/mobile/src/data/models.ts`.

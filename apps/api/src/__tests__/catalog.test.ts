@@ -125,6 +125,43 @@ describe('GET /v1/vendors', () => {
     expect(response.json<{ vendors: unknown[] }>().vendors.length).toBeGreaterThan(0);
   });
 
+  it('returns no delivery vendors when the origin is outside every service area', async () => {
+    const response = await get('/v1/vendors?latitude=51.5&longitude=-0.12');
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ vendors: unknown[]; nextCursor: string | null }>()).toEqual({
+      vendors: [],
+      nextCursor: null,
+    });
+  });
+
+  it('does not leak vendors from another city into a serviceable origin', async () => {
+    const otherCity = await context.prisma.city.create({
+      data: {
+        slug: 'catalog-other-city',
+        name: 'Catalog Other City',
+        centreLatitude: 6.2,
+        centreLongitude: 6.7,
+        isLive: true,
+      },
+    });
+    const otherVendor = await context.prisma.vendor.create({
+      data: {
+        cityId: otherCity.id,
+        name: 'Far Away Test Store',
+        slug: 'far-away-test-store',
+        category: 'retail',
+        status: 'approved',
+      },
+    });
+
+    const response = await get('/v1/vendors?latitude=6.4281&longitude=3.4219');
+    expect(response.statusCode).toBe(200);
+    const { vendors } = response.json<{ vendors: { id: string }[] }>();
+
+    expect(vendors.map((vendor) => vendor.id)).not.toContain(otherVendor.id);
+    expect(vendors.map((vendor) => vendor.id)).toContain(world.vendorA.vendorId);
+  });
+
   it('never exposes commercial or banking fields', async () => {
     const body = (await get('/v1/vendors')).body;
 

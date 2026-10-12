@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +36,8 @@ const totp = new TOTP({
 export const TEST_PASSWORD = 'HarnessOnly!2026';
 export const TEST_EMAIL = 'harness-staff@dashapp.test';
 export const TEST_PHONE = '+2347000009001';
+export const TEST_CUSTOMER_EMAIL = 'harness-customer@dashapp.test';
+export const TEST_CUSTOMER_PHONE = '+2347000009002';
 
 export interface TestContext {
   app: FastifyInstance;
@@ -62,12 +64,19 @@ function testEnv(databaseUrl: string): NodeJS.ProcessEnv {
     REFRESH_TOKEN_TTL_SECONDS: '2592000',
     OTP_TTL_SECONDS: '300',
     OTP_MAX_ATTEMPTS: '5',
+    // Off for the suite at large, which requests codes back to back; the OTP
+    // delivery suite turns both on to test them.
+    OTP_RESEND_COOLDOWN_SECONDS: '0',
+    OTP_MAX_CODES_PER_HOUR: '1000',
     DEV_EXPOSE_OTP: 'true',
     LOG_LEVEL: 'silent',
     PUBLIC_WEB_URL: 'http://127.0.0.1:3000',
     PAYMENT_PROVIDER: 'mock',
     MAPS_PROVIDER: 'local',
     SMS_PROVIDER: 'console',
+    // On, so the phone-code path (built, and switched off in V1 deployments)
+    // stays covered. sms-disabled.test.ts runs the V1 default.
+    SMS_ENABLED: 'true',
     EMAIL_PROVIDER: 'console',
     PUSH_PROVIDER: 'console',
     STORAGE_PROVIDER: 'local',
@@ -104,6 +113,9 @@ function buildTemplateDatabase(): string {
 
   const directory = mkdtempSync(join(tmpdir(), 'dash-template-'));
   const file = join(directory, 'template.db');
+  // Prisma's Windows schema engine can fail to open a nonexistent SQLite file.
+  // SQLite accepts an empty file and initialises it on the first connection.
+  writeFileSync(file, '');
 
   // Invoke the Prisma CLI's JS entry point through the current Node binary
   // rather than through `npx`. On Windows, `npx` resolves to `npx.cmd`, and
@@ -132,12 +144,41 @@ export async function createTestContext(
    * be sent to an error tracker or metrics backend instead of printing it.
    */
   serviceOverrides: Partial<Services> = {},
+  /**
+   * Where the logger writes. The secret-leak suite passes a collector so it can
+   * assert on what the real logger actually emitted; every other suite leaves
+   * it unset and runs at `silent`.
+   */
+  logDestination?: { write(chunk: string): void },
+  /**
+   * Realtime timings.
+   *
+   * The defaults are a 25-second heartbeat, a 10-second handshake deadline, and
+   * a 60-second revalidation sweep. A suite cannot wait for any of those, and
+   * shortening the constants themselves would be changing production behaviour
+   * to suit a test. The realtime suite passes small numbers here instead.
+   */
+  realtime?: {
+    heartbeatMs?: number;
+    authenticateDeadlineMs?: number;
+    revalidateIntervalMs?: number;
+    maxConnectionsPerIdentity?: number;
+  },
 ): Promise<TestContext> {
   const template = buildTemplateDatabase();
 
   const directory = mkdtempSync(join(tmpdir(), 'dash-test-'));
   const databaseFile = join(directory, 'test.db');
-  const databaseUrl = `file:${databaseFile}`;
+  // One connection per test database. SQLite has a single write lock per
+  // file, and two DEFERRED transactions on different connections that each
+  // read and then write can wait on each other until the lock timeout: the
+  // first holds RESERVED and needs the second's SHARED to go before it can
+  // commit, the second waits for RESERVED. Locally they rarely overlap; on a
+  // loaded CI runner the webhook-and-app race and the offer-grace suite did,
+  // and failed with P1008 (28 September). A longer lock wait only lengthened
+  // the stall; one connection removes the overlap. PostgreSQL, which
+  // production runs, uses row locks and MVCC and has no such upgrade.
+  const databaseUrl = `file:${databaseFile}?connection_limit=1`;
 
   copyFileSync(template, databaseFile);
 
@@ -155,9 +196,30 @@ export async function createTestContext(
     select: { id: true },
   });
 
+  // Keep OTP tests on a genuine customer identity. Staff OTP is intentionally
+  // forbidden because staff must complete password + MFA instead.
+  await prisma.identity.create({
+    data: {
+      email: TEST_CUSTOMER_EMAIL,
+      emailVerifiedAt: new Date(),
+      phone: TEST_CUSTOMER_PHONE,
+      displayName: 'Harness Customer',
+      roles: { create: { role: 'customer' } },
+      customer: { create: { referralCode: 'HARNESS-CUSTOMER-9002' } },
+    },
+  });
+
   resetConfigCache();
   const config = loadConfig({ ...testEnv(databaseUrl), ...envOverrides });
-  const app = await buildServer({ config, services: { prisma, ...serviceOverrides } });
+  const app = await buildServer({
+    config,
+    services: { prisma, ...serviceOverrides },
+    ...(logDestination ? { logDestination } : {}),
+    // Off unless a suite asks for it: a sweep timer firing under every other
+    // suite would run database queries after the test that owns them has
+    // finished, which is how a suite becomes intermittently flaky.
+    realtime: { revalidateIntervalMs: 0, ...(realtime ?? {}) },
+  });
   await app.ready();
 
   return {

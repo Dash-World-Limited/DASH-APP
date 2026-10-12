@@ -14,6 +14,7 @@
 import { generateToken, hashToken } from '@dash/domain/crypto';
 import {
   buildActor,
+  VENDOR_SCOPED_ROLES,
   type Actor,
   type Role,
 } from '@dash/domain/permissions';
@@ -239,11 +240,35 @@ export async function loadActor(
       status: true,
       roles: { select: { role: true, vendorId: true, branchId: true, cityId: true } },
       customer: { select: { id: true } },
-      rider: { select: { id: true } },
+      rider: { select: { id: true, status: true } },
     },
   });
 
   if (!identity || identity.status !== 'active') return null;
+
+  // A role row says what someone was granted; the vendor or rider record says
+  // whether that grant is currently in force. A suspended vendor's staff and a
+  // suspended rider keep their role rows — so the history of who held what
+  // survives — but hold none of the permissions while the record is not
+  // approved. Read on every request, so a suspension takes effect on the next
+  // call rather than when an access token happens to expire.
+  const scopedVendorIds = [...new Set(identity.roles.map((row) => row.vendorId).filter((id): id is string => id !== null))];
+  const approvedVendorIds = new Set(
+    scopedVendorIds.length === 0
+      ? []
+      : (
+          await prisma.vendor.findMany({
+            where: { id: { in: scopedVendorIds }, status: 'approved' },
+            select: { id: true },
+          })
+        ).map((vendor) => vendor.id),
+  );
+  const riderApproved = identity.rider?.status === 'approved';
+  const roleRows = identity.roles.filter((row) => {
+    if (VENDOR_SCOPED_ROLES.has(row.role as Role)) return row.vendorId !== null && approvedVendorIds.has(row.vendorId);
+    if (row.role === 'rider') return riderApproved;
+    return true;
+  });
 
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
@@ -254,9 +279,9 @@ export async function loadActor(
   // without waiting for the 15-minute access-token TTL to run out.
   if (!session || session.revokedAt || session.expiresAt.getTime() < Date.now()) return null;
 
-  const roles = identity.roles.map((row) => row.role as Role);
-  const vendorRole = identity.roles.find((row) => row.vendorId);
-  const cityIds = identity.roles
+  const roles = roleRows.map((row) => row.role as Role);
+  const vendorRole = roleRows.find((row) => row.vendorId);
+  const cityIds = roleRows
     .map((row) => row.cityId)
     .filter((id): id is string => id !== null);
 
@@ -268,7 +293,9 @@ export async function loadActor(
     branchId: vendorRole?.branchId ?? undefined,
     cityIds: cityIds.length > 0 ? cityIds : undefined,
     customerId: identity.customer?.id ?? undefined,
-    riderId: identity.rider?.id ?? undefined,
+    // Only an approved rider is a rider. A pending applicant has a Rider row
+    // and nothing else, and must not reach anything scoped by it.
+    riderId: riderApproved ? identity.rider?.id : undefined,
     steppedUpAt: session.steppedUpAt ?? undefined,
     impersonating: session.impersonatedBy !== null,
   });

@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  # Feature branches are verified through their pull request, not twice through
+  # both push and pull_request events. Main still verifies every direct update.
   push:
     branches: [main]
   pull_request:
@@ -48,6 +50,13 @@ jobs:
       - name: Install
         run: npm ci
 
+      # The native app is a standalone project, outside the npm workspaces:
+      # React Native requires React to match its renderer exactly, and the web
+      # app pins a different release. It has its own lockfile, installed here
+      # so the typecheck below can check it rather than fail it.
+      - name: Install the native app
+        run: npm ci --prefix apps/mobile
+
       # Generated explicitly rather than relying on Prisma's postinstall.
       #
       # npm 11 gates install scripts behind an `allowScripts` allowlist in
@@ -78,6 +87,13 @@ jobs:
       - name: Coverage thresholds
         run: npx vitest run --coverage packages/domain
 
+      # Rehearses the custody procedure in docs/KEY_MANAGEMENT.md against
+      # synthetic keys generated in memory for the run: backup separation,
+      # rotation order, and the configurations that must not boot. Reads no
+      # secret store, creates no backup, and prints no key value.
+      - name: Key custody drill
+        run: npm run check:keys
+
       # Named explicitly so a failure in the money or authorization suites is
       # obvious in the job list rather than buried in a single "Test" step.
       # `npm test` above already runs these. Naming them again is deliberate:
@@ -98,6 +114,8 @@ jobs:
           apps/api/src/__tests__/webhooks.test.ts
           apps/api/src/__tests__/catalog.test.ts
           apps/api/src/__tests__/config.test.ts
+          apps/api/src/__tests__/secrets.test.ts
+          apps/api/src/__tests__/key-rotation.test.ts
 
   fresh-boot:
     name: Fresh database boot and seed
@@ -135,9 +153,11 @@ jobs:
       # The retention job is scheduled infrastructure that does not exist yet,
       # so this is the only place it runs against a real database. Dry run:
       # CI asserts it executes and reports, never that it deletes.
+      # Against the database the steps above created and seeded (the job's
+      # DATABASE_URL). This step used to point at `file:./dev.db`, a file no
+      # step creates, so every rule failed on "table does not exist".
       - name: Retention job dry run
         env:
-          DATABASE_URL: file:./dev.db
           JWT_ACCESS_SECRET: ci-only-access-secret-not-used-for-anything-real
           JWT_REFRESH_SECRET: ci-only-refresh-secret-not-used-for-anything-real
           # No ENCRYPTION_KEY, and MFA off to match: config validates key
@@ -147,10 +167,71 @@ jobs:
           MFA_ENABLED: 'false'
         run: npm run maintenance:retention -- --dry-run
 
+  # Production runs PostgreSQL + PostGIS and Redis, which no development
+  # machine here has. This applies the whole PostgreSQL migration history to a
+  # disposable database, checks `migrate status` and `migrate diff` report no
+  # drift, proves PostGIS containment agrees with the in-process adapter, and
+  # exercises the Redis queue. The database name follows the `dash_verify`
+  # convention the script enforces, so it can never be pointed at anything
+  # that holds data.
+  postgres:
+    name: PostgreSQL migrations, PostGIS and Redis (disposable)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: dash_verify
+          POSTGRES_PASSWORD: dash_verify_ci_only
+          POSTGRES_DB: dash_verify_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U dash_verify -d dash_verify_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: The PostgreSQL schema is generated from the SQLite one, and current
+        run: node scripts/sync-postgres-schema.mjs --check
+
+      - name: Migrate a disposable database from zero and check it
+        env:
+          PG_CHECK_URL: postgresql://dash_verify:dash_verify_ci_only@127.0.0.1:5432/dash_verify_ci
+        run: npm run check:postgres
+
+      # The shared rate-limit section boots two API instances, which need the
+      # (SQLite) Prisma client this job does not otherwise generate.
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Redis queue check
+        env:
+          REDIS_CHECK_URL: redis://127.0.0.1:6379
+        run: npm run check:redis
+
   build:
     name: Production build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      NEXT_PUBLIC_API_URL: https://api.dashworldng.com
 
     steps:
       - uses: actions/checkout@v4
@@ -171,6 +252,9 @@ jobs:
       - name: Build the web app
         run: npm run build --workspace @dash/web
 
+      - name: Verify the browser API base in the emitted client bundle
+        run: node scripts/check-web-api-bundle.mjs
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
@@ -182,10 +266,26 @@ jobs:
           # gitleaks needs history to scan commits, not just the tree.
           fetch-depth: 0
 
+      # The MIT-licensed CLI has the same detection engine without the
+      # organization's paid Action wrapper. Pin and verify the release binary.
+      - name: Install Gitleaks CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          scanner_dir="${RUNNER_TEMP}/gitleaks"
+          mkdir -p "$scanner_dir"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$scanner_dir/gitleaks.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $scanner_dir/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$scanner_dir/gitleaks.tar.gz" -C "$scanner_dir" gitleaks
+
       - name: Scan for committed secrets
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/gitleaks/gitleaks" git . \
+            --config .gitleaks.toml --log-opts="--all" --redact --exit-code 1
 
   dependencies:
     name: Dependency audit
@@ -203,11 +303,26 @@ jobs:
       - name: Install
         run: npm ci
 
-      # High and critical fail the build. Moderate and below are reported but
-      # do not block, because a transitive moderate in a dev-only tool should
-      # not stop a security fix from shipping.
-      - name: Audit
+      - name: Install the native app
+        run: npm ci --prefix apps/mobile
+
+      # Enforce the release boundary rather than treating npm's entire
+      # development/build graph as if every package ships in production. The
+      # policy fails on any new high/critical advisory outside the explicitly
+      # documented Prisma CLI and Expo Node-tooling chains.
+      - name: Enforce dependency security policy
+        run: node scripts/security-audit-policy.mjs
+
+      # Keep the complete reports in the log for review. These are deliberately
+      # non-blocking because the policy step above already fails on any
+      # unexpected high/critical package.
+      - name: Report complete workspace audit
+        continue-on-error: true
         run: npm audit --audit-level=high
+
+      - name: Report complete native audit
+        continue-on-error: true
+        run: npm audit --prefix apps/mobile --audit-level=high
 
   # ---------------------------------------------------------------------------
   # Static analysis
@@ -219,6 +334,12 @@ jobs:
   # ---------------------------------------------------------------------------
   sast:
     name: CodeQL
+    # GitHub CodeQL upload is available for public repositories and for
+    # private repositories with GitHub Advanced Security enabled. This repo is
+    # private, so do not report a configuration limitation as an application
+    # failure. If GHAS is enabled later, set the repository variable
+    # GHAS_ENABLED=true and this gate becomes active without another code edit.
+    if: ${{ github.event.repository.private == false || vars.GHAS_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -249,7 +370,9 @@ jobs:
   dependency-review:
     name: Dependency review
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    # Dependency Review has the same private-repository GHAS requirement.
+    # npm audit remains mandatory regardless of this optional GitHub feature.
+    if: ${{ github.event_name == 'pull_request' && (github.event.repository.private == false || vars.GHAS_ENABLED == 'true') }}
     timeout-minutes: 10
 
     permissions:
@@ -294,18 +417,17 @@ jobs:
 
           echo "No environment files, databases, build output, or logs are tracked."
 
-      - name: Confirm .env.example holds only placeholders
-        run: |
-          set -euo pipefail
-
-          # A real 32-byte base64 key or a long random-looking secret in the
-          # example file means someone pasted their own by mistake.
-          if grep -qE '^(ENCRYPTION_KEY|JWT_[A-Z_]+SECRET)=' .env.example; then
-            if ! grep -qE '^(ENCRYPTION_KEY|JWT_[A-Z_]+SECRET)=replace-me' .env.example; then
-              echo ".env.example must use replace-me placeholders, not real values."
-              grep -nE '^(ENCRYPTION_KEY|JWT_[A-Z_]+SECRET)=' .env.example
-              exit 1
-            fi
-          fi
-
-          echo ".env.example contains placeholders only."
+      # Checks every classified secret in `.env.example` individually, by the
+      # shape of its value rather than by the absence of the word "replace-me",
+      # and confirms that no key file, dump, or backup is tracked.
+      #
+      # This replaces a `grep -q '=replace-me'` step that only looked like a
+      # gate: it passed as long as *any one* of the lines it knew about still
+      # matched, so a real encryption key pasted into the file sailed through
+      # while the JWT line above it kept the check green. It also covered three
+      # variable names out of seventeen.
+      #
+      # Deliberately runs with no `npm ci` before it: it is plain Node with no
+      # dependencies, so it gates the repository even if an install fails.
+      - name: Secret hygiene
+        run: node scripts/check-secrets.mjs

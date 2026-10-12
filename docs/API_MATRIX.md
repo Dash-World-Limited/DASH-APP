@@ -97,7 +97,9 @@ Notes:
 | `/v1/ops/zones/:id/surge` | POST | `ops:surge:write` | `requireScope(cityId)` | — (capped by city rule) | ✅ |
 | `/v1/support/cases` | GET | `support:case:read` | global for support roles | — | ✅ |
 | `/v1/support/cases/:id/compensate` | POST | `support:compensation:issue` **+ step-up** | global for support roles | — (credits wallet) | ✅ |
-| `/v1/finance/orders/:id/refund` | POST | `finance:refund:approve` **+ step-up** | global for finance roles | — (posts refund) | ✅ |
+| `/v1/finance/orders/:id/refund` | POST | `finance:refund:approve` **+ step-up** | global for finance roles | — (books the ledger; records `refund_pending_manual_review`; moves no money) | ✅ |
+| `/v1/finance/refunds` | GET | `finance:payment:read` | global for finance roles | — (refunds owed, with the payment reference to find in Paystack, and `awaitingPerson`: overdue / failed / needs-attention) | ✅ |
+| `/v1/finance/refunds/:id/confirm` | POST | `finance:refund:approve` **+ step-up** | global for finance roles | links a Paystack refund id; `→ refunded` only when Paystack reports it processed for this payment and amount, else `refund_processing` / `refund_failed` or refused | ✅ |
 | `/v1/finance/ledger/integrity` | GET | `finance:ledger:read` | — | — | ✅ |
 | `/v1/admin/audit` | GET | `admin:audit:read` | — | — | ✅ |
 | `/v1/admin/feature-flags` | GET | `admin:featureflag:write` | — | — | ✅ |
@@ -144,6 +146,8 @@ search bounds are enforced rather than silently ignored.
 | Endpoint | Method | Auth | Cov |
 |---|---|---|---|
 | `/v1/webhooks/payments` | POST | provider signature; CSRF-exempt; replay-protected on `(provider, eventId)` | ✅ |
+| `/v1/webhooks/email-events` | POST | SNS signature from the configured SES topic | ✅ |
+| `/v1/webhooks/brevo-events` | POST | `BREVO_WEBHOOK_TOKEN` as bearer or Basic password, constant-time; unset refuses everything; idempotent per message and event | ✅ `brevo-events.test.ts` (9) |
 
 Covered by `webhooks.test.ts` (24 tests): missing, wrong, and post-signing
 tampered signatures; duplicate and concurrent delivery of one event id;
@@ -166,7 +170,7 @@ Two properties worth naming because they are easy to get backwards:
 | Endpoint | Method | Auth | Notes | Cov |
 |---|---|---|---|---|
 | `/v1/auth/login` | POST | none | Staff receive an MFA challenge, **not** a session | ✅ |
-| `/v1/auth/otp/request` | POST | none | Identical response whether or not the number exists | ✅ |
+| `/v1/auth/otp/request` | POST | none | Identical response whether or not the number or address exists, including when throttled per destination or when delivery fails | ✅ |
 | `/v1/auth/otp/verify` | POST | none | Single-use, attempt-limited | ✅ |
 | `/v1/auth/refresh` | POST | refresh cookie + CSRF | Rotates; reuse revokes the family | ✅ |
 | `/v1/auth/logout` | POST | session | | ✅ |
@@ -247,6 +251,44 @@ settlement path only.
 | `/health` | GET | none | Liveness. Touches no dependency, so a database blip cannot trigger a restart loop. |
 | `/health/ready` | GET | none | Readiness. Dependency name and status only — no provider, host, version, or failure reason. 503 when not ready. |
 
+## Realtime
+
+`apps/api/src/routes/realtime.ts`
+
+One endpoint, and it is a WebSocket upgrade rather than a request/response pair,
+so the table below describes frames instead of methods.
+
+| Endpoint | Method | Permission | Scope | Notes |
+|---|---|---|---|---|
+| `/v1/realtime` | GET (upgrade) | none at the upgrade | — | Opens with **no privilege**. `Origin` is checked against the CORS allowlist. Rate-limited as an ordinary GET. Closes with 4013 when `REALTIME_ENABLED=false`, 4001 if no `authenticate` frame arrives within 10s. |
+
+**Client frames**
+
+| Frame | Requires | Scope | Notes |
+|---|---|---|---|
+| `authenticate` | a valid access token | — | The same credential every HTTP request uses; verified, then the actor is rebuilt from the database exactly as `authenticate()` does. Renewing on a live socket clears its subscriptions and returns `resync`. |
+| `subscribe` | authenticated | `canSubscribe` **and** `canReachOrder` / `canReachVendor` | Per-topic result. A refusal is always `not_found`, never `forbidden`, so it cannot be used to test whether an order exists. Max 50 topics per frame, 200 subscriptions per socket. |
+| `unsubscribe` | authenticated | — | Can only remove something the socket already holds, so it needs no check. |
+| `ping` | none | — | Answered with `pong`. |
+
+**Topics**
+
+| Topic | Who may hold it |
+|---|---|
+| `order:<id>` | the customer who placed it, the assigned rider, the fulfilling vendor (and branch, if branch-bound), and `ops:order:read:all` within the order's city |
+| `vendor:<id>` | that vendor's users; `ops:order:read:all` within the vendor's city |
+| `rider:<id>` | that rider only — deliberately narrower than `ops:rider:read:all` |
+| `city:<id>` | `ops:livemap:read`, restricted to the actor's own cities when the role is city-scoped |
+
+**Server frames** carry `{topics, subject, version, eventId, occurredAt}` and
+**never domain data** — the client re-reads through the authorized routes above,
+which is what keeps their field-level projection rules applying to realtime
+([ADR-0013](DECISIONS.md#adr-0013--realtime-carries-notifications-not-data)).
+
+**Close codes:** 4001 unauthenticated · 4002 protocol violation or bad origin ·
+4003 session invalid · 4008 rate limited · 4009 slow consumer · 4013 disabled ·
+4014 going away.
+
 ## Coverage summary
 
 | Area | Automated integration tests |
@@ -267,6 +309,12 @@ settlement path only.
 | Observability and health | 22 |
 | Config guards | 40 |
 | Rate limiting | 4 |
+| Realtime protocol and authorization (domain) | 76 |
+| Realtime sockets, end to end | 49 |
+| Realtime hub: fan-out, backpressure, revalidation | 24 |
+| Realtime and the outbox seam | 13 |
+| Realtime browser client (fake socket) | 23 |
+| Realtime in a rendered component (jsdom) | 11 |
 
 Every business and public endpoint above now has automated integration
 coverage that runs in `npm test` and in CI without a manually started server.

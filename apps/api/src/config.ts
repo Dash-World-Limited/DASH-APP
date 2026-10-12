@@ -10,7 +10,13 @@
  */
 
 import { z } from 'zod';
-import { parseKey, type EncryptionKey, type Keyring } from '@dash/domain/envelope';
+import {
+  assembleKeyring,
+  assertValidKeyId,
+  parseKey,
+  parseRetiredKeys,
+  type Keyring,
+} from '@dash/domain/envelope';
 import { assertRetentionDays } from '@dash/domain/retention';
 import {
   assertCoolingOffDays,
@@ -18,12 +24,15 @@ import {
   DELETION_COOLING_OFF_DAYS,
   EXPORT_DOWNLOAD_TTL_HOURS,
 } from '@dash/domain/account';
+import { redactSecretsInText } from '@dash/domain/redaction';
+import { presentSecretValues } from './secrets/classification.js';
+import { DEPLOYMENT_PROFILES, effectiveCapabilities } from './deployment/profile.js';
 
 const booleanish = z
   .enum(['true', 'false', '1', '0'])
   .transform((value) => value === 'true' || value === '1');
 
-const schema = z
+const shape = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
@@ -43,6 +52,15 @@ const schema = z
 
     OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
     OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+    /**
+     * Per destination (phone or email address), not per client: the IP rate
+     * limit alone lets anyone with rotating addresses flood one inbox, and
+     * every email or SMS costs money. Within the cooldown, or past the hourly
+     * cap, a request is answered exactly like any other and nothing is sent;
+     * the code already issued stays valid.
+     */
+    OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(60),
+    OTP_MAX_CODES_PER_HOUR: z.coerce.number().int().positive().default(5),
     DEV_EXPOSE_OTP: booleanish.default('false'),
 
     DEFAULT_CURRENCY: z.literal('NGN').default('NGN'),
@@ -51,21 +69,181 @@ const schema = z
 
     PAYMENT_PROVIDER: z.enum(['mock', 'paystack']).default('mock'),
     PAYSTACK_SECRET_KEY: z.string().optional(),
+    /**
+     * Not used. Paystack signs webhooks with the secret key itself, so a
+     * separate value here can only disagree with it. Accepted, so an existing
+     * environment still parses, and refused below unless empty or identical.
+     */
     PAYSTACK_WEBHOOK_SECRET: z.string().optional(),
+    /**
+     * The explicit switch for real money. A `sk_live_` key is refused unless
+     * this is true *and* NODE_ENV is production, so a live key pasted into a
+     * staging or developer environment cannot charge anybody.
+     */
+    PAYSTACK_ALLOW_LIVE: booleanish.default('false'),
+    /** Where Paystack returns the customer's browser. Defaults to PUBLIC_WEB_URL/pay/complete. */
+    PAYSTACK_CALLBACK_URL: z.string().url().optional(),
 
     MAPS_PROVIDER: z.enum(['local', 'google', 'mapbox']).default('local'),
     GOOGLE_MAPS_API_KEY: z.string().optional(),
     MAPBOX_ACCESS_TOKEN: z.string().optional(),
 
     SMS_PROVIDER: z.enum(['console', 'termii', 'twilio']).default('console'),
-    EMAIL_PROVIDER: z.enum(['console', 'smtp']).default('console'),
+    /**
+     * Off in V1. Sign-in is by emailed code and phone numbers are unverified,
+     * so no SMS is ever sent and no SMS provider is required — in production
+     * included. Switched on together with phone verification.
+     */
+    SMS_ENABLED: booleanish.default('false'),
+    EMAIL_PROVIDER: z.enum(['console', 'ses', 'brevo']).default('console'),
+
+    /**
+     * Brevo, the V1 transactional email provider (`EMAIL_PROVIDER=brevo`).
+     *
+     * An API v3 key (`xkeysib-…`), a secret. The sender (`EMAIL_FROM_ADDRESS`)
+     * must be verified in the same Brevo account, or Brevo refuses every send.
+     * SES remains available and optional; nothing in the release needs it.
+     */
+    BREVO_API_KEY: z.string().optional(),
+    /**
+     * The credential Brevo's webhook sends with bounce and complaint events
+     * (as a bearer token, or Basic auth's password). Unset, the Brevo event
+     * route refuses everything. A secret: whoever holds it can suppress mail
+     * to any address.
+     */
+    BREVO_WEBHOOK_TOKEN: z.string().optional(),
+
+    /**
+     * Amazon SES, for transactional email.
+     *
+     * `smtp` was removed from the enum above rather than left in place. It was
+     * never implemented, and a value that passes validation while having no
+     * adapter behind it is how a deployment boots believing it sends email.
+     *
+     * The credential is deliberately absent: the SDK resolves it through its own
+     * default chain, so an instance role works and no key need exist in the
+     * environment at all.
+     */
+    SES_REGION: z.string().trim().min(1).optional(),
+    /** A sender the provider has verified: an SES identity in `SES_REGION`, or a Brevo sender. */
+    EMAIL_FROM_ADDRESS: z.string().trim().email().optional(),
+    EMAIL_FROM_NAME: z.string().trim().min(1).max(60).default('DASH World'),
+    /**
+     * Where replies go, and it must be a monitored mailbox.
+     *
+     * The identity-conflict email tells a genuine user to reply to it. That is
+     * their only route through the one case the system deliberately refuses to
+     * resolve automatically.
+     */
+    EMAIL_REPLY_TO: z.string().trim().email().optional(),
+    /** Groups messages so bounce and complaint events can be attributed. */
+    SES_CONFIGURATION_SET: z.string().trim().min(1).optional(),
+    /**
+     * The SNS topic bounce and complaint notifications arrive on.
+     *
+     * When set, a message from any other topic is refused even if its signature
+     * is perfect — a valid signature from a topic we never subscribed to is
+     * still somebody else's traffic.
+     */
+    SES_EVENT_TOPIC_ARN: z.string().trim().min(1).optional(),
+
+    /**
+     * Who may create an account, while SES is still in the sandbox.
+     *
+     * A comma-separated list of addresses. Empty — the default — means signup is
+     * open to everybody.
+     *
+     * This exists because of a specific, silent failure. Inside the SES
+     * sandbox AWS delivers *only* to addresses verified individually in the
+     * console. Signup would otherwise accept anybody, create their identity,
+     * report success, and send a verification code that never arrives — and
+     * the person has no way to tell that from a code lost in spam. They would
+     * simply be stuck, with an account they can never open.
+     *
+     * So the application mirrors what the mail provider will actually do. An
+     * address that cannot receive a code is told signup is not open yet, which
+     * is true, instead of being handed an account that cannot work.
+     *
+     * Remove it once production access is granted. It is not a launch feature
+     * and nothing else in the product reads it.
+     */
+    SIGNUP_ALLOWLIST: z.string().trim().default(''),
     PUSH_PROVIDER: z.enum(['console', 'fcm']).default('console'),
+    /**
+     * Which engine answers a DASH ValueCheck.
+     *
+     * Only `local` exists today — the deterministic adapter, which is
+     * arithmetic over declared evidence and says so in every result it
+     * returns. The enum is here so a live provider is a new value plus an
+     * adapter rather than a change to any marketplace code.
+     *
+     * Deliberately *not* in the production boot guards below yet. Those refuse
+     * to start when a development-only adapter is configured, and adding
+     * ValueCheck to them today would block a production deploy over a feature
+     * that has not launched. The guard belongs in the commit that adds the
+     * first live provider, alongside the credential it needs.
+     */
+    VALUECHECK_PROVIDER: z.enum(['local']).default('local'),
+    /**
+     * Path to the service-account JSON, read by the Firebase SDK itself.
+     *
+     * Declared here rather than reached for from `process.env` at the point of
+     * use, so it is validated with everything else and a test can supply it.
+     * The value is a path and never the credential; nothing in this project
+     * opens the file.
+     *
+     * Optional because a Google-hosted runtime supplies its own service
+     * identity with no file at all.
+     */
+    GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),
+
+    /**
+     * Which parts of DASH this deployment runs.
+     *
+     * `full` is DASH APP: payments, delivery, dispatch, SMS, push and maps, and
+     * every strict production guard below applies. `declutters` is the
+     * marketplace alone — see `deployment/profile.ts` for what each capability
+     * means and why the marketplace has none of those.
+     *
+     * Defaults to `full` deliberately. A deployment that forgets to name its
+     * profile gets the strictest checks, not the loosest.
+     */
+    DEPLOYMENT_PROFILE: z.enum(DEPLOYMENT_PROFILES).default('full'),
 
     STORAGE_PROVIDER: z.enum(['local', 's3']).default('local'),
+    /**
+     * Object storage.
+     *
+     * `S3_ENDPOINT` and `S3_FORCE_PATH_STYLE` are what make this
+     * S3-*compatible* rather than S3-only: MinIO, R2, Spaces and B2 differ from
+     * AWS by configuration, not by code, and keeping it that way means the
+     * storage decision stays reversible.
+     */
+    S3_BUCKET: z.string().trim().min(1).optional(),
+    S3_REGION: z.string().trim().min(1).optional(),
+    S3_ENDPOINT: z.string().trim().url().optional(),
+    S3_FORCE_PATH_STYLE: z.coerce.boolean().default(false),
     STORAGE_LOCAL_DIR: z.string().default('./.storage'),
 
     QUEUE_PROVIDER: z.enum(['memory', 'redis']).default('memory'),
     REDIS_URL: z.string().optional(),
+
+    // --- Realtime ------------------------------------------------------------
+    // Switches off the WebSocket endpoint. It stays reachable when off and
+    // closes each socket with a code that means "this deployment does not do
+    // realtime", so clients fall back to polling in one round trip instead of
+    // retrying into an opaque connection error. Every screen it feeds worked by
+    // polling before this milestone and still does, so turning it off degrades
+    // freshness and nothing else.
+    REALTIME_ENABLED: booleanish.default('true'),
+
+    // How a notification reaches the *other* instances. `memory` repeats it
+    // inside this process only, which is correct on one instance and silently
+    // wrong on more than one — the customer watching an order is connected to
+    // whichever instance the load balancer picked, and it is rarely the one
+    // whose worker handled the job. Production is refused it below, exactly as
+    // it is refused the in-memory queue.
+    REALTIME_BROADCAST: z.enum(['memory', 'redis']).default('memory'),
 
     // Which implementation answers `GeoPort.zonesContaining`. `postgis` pushes
     // the point-in-polygon test into the database as `ST_Contains`; `local`
@@ -142,7 +320,25 @@ const schema = z
       .positive()
       .default(DELETION_COOLING_OFF_DAYS),
     DATA_EXPORT_TTL_HOURS: z.coerce.number().int().positive().default(EXPORT_DOWNLOAD_TTL_HOURS),
-  })
+  });
+
+/**
+ * Every variable this application reads, as a sorted list.
+ *
+ * Exported so documentation can be checked against it rather than proof-read.
+ * `.env.example` and the production runbook twice drifted into naming variables
+ * no code reads: `ENCRYPTION_KEYS`, `ENCRYPTION_ACTIVE_KEY` and
+ * `REFRESH_TOKEN_PEPPER` were all documented as required while the schema knew
+ * nothing about them. Each looked harmless on its own. Together they meant a
+ * deployment could follow the runbook exactly and still be refused at boot over a
+ * variable the runbook never mentioned — which is the same failure as a
+ * validated-but-never-read provider setting, arriving from the other direction.
+ *
+ * A list derived from the schema cannot drift from the schema.
+ */
+export const CONFIG_VARIABLE_NAMES: readonly string[] = Object.keys(shape.shape).sort();
+
+const schema = shape
   .superRefine((env, ctx) => {
     const fail = (path: string, message: string): void => {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
@@ -168,9 +364,58 @@ const schema = z
       }
     }
 
+    // The active key id travels inside every envelope this key writes and must
+    // survive being parsed back out. An id the format cannot carry produces
+    // ciphertext that encrypts fine and can never be decrypted — the loss is
+    // silent until someone tries to read it, which is why it is refused here
+    // rather than discovered later.
+    try {
+      assertValidKeyId(env.ENCRYPTION_KEY_ID, 'ENCRYPTION_KEY_ID');
+    } catch (error) {
+      fail('ENCRYPTION_KEY_ID', error instanceof Error ? error.message : 'is not a valid key id');
+    }
+
+    // --- Rotation coherence ---------------------------------------------------
+    // A keyring that is ambiguous about which key is which must not boot. Every
+    // rule below describes a rotation that has been half-applied, and each of
+    // them fails in the same expensive way: rows that cannot be decrypted, found
+    // weeks later.
     if (env.ENCRYPTION_KEYS_RETIRED.trim() !== '') {
       try {
-        parseRetiredKeys(env.ENCRYPTION_KEYS_RETIRED);
+        const retired = parseRetiredKeys(env.ENCRYPTION_KEYS_RETIRED);
+
+        // Retired keys with nothing active is not a decrypt-only mode — it is a
+        // configuration that can read old rows and write none, which fails at
+        // the first write instead of at boot.
+        if (!env.ENCRYPTION_KEY) {
+          fail(
+            'ENCRYPTION_KEYS_RETIRED',
+            'Retired keys are configured but ENCRYPTION_KEY is not — there would be nothing to encrypt new values with',
+          );
+        }
+
+        // One id naming two different keys makes decryption non-deterministic.
+        // Refused rather than resolved in favour of one, because "the active
+        // entry wins" is a guess about which rotation step was skipped.
+        if (retired.some((entry) => entry.keyId === env.ENCRYPTION_KEY_ID)) {
+          fail(
+            'ENCRYPTION_KEYS_RETIRED',
+            `Key id "${env.ENCRYPTION_KEY_ID}" is both the active key and a retired key — a rotation has been half-applied, and which key a row named cannot be answered`,
+          );
+        }
+
+        // The same bytes under two ids means a rotation that did not rotate.
+        // Comparing material rather than ids catches the case where someone
+        // copied the active key into the retired list under a new name.
+        if (env.ENCRYPTION_KEY) {
+          const active = parseKey(env.ENCRYPTION_KEY, 'ENCRYPTION_KEY');
+          if (retired.some((entry) => entry.key.equals(active))) {
+            fail(
+              'ENCRYPTION_KEYS_RETIRED',
+              'A retired key holds the same material as the active key under a different id — nothing has actually been rotated',
+            );
+          }
+        }
       } catch (error) {
         fail(
           'ENCRYPTION_KEYS_RETIRED',
@@ -206,9 +451,7 @@ const schema = z
       }
     }
 
-    // Account-deletion and export windows, against the domain policy's bounds.
-    try {
-      // --- Redis and PostGIS coherence (every environment) --------------------
+    // --- Redis and PostGIS coherence (every environment) --------------------
     // A misconfiguration that only surfaces in production is a misconfiguration
     // staging never rehearsed, so these run everywhere rather than inside the
     // production block below.
@@ -222,7 +465,9 @@ const schema = z
       );
     }
 
-    assertCoolingOffDays(env.ACCOUNT_DELETION_COOLING_OFF_DAYS);
+    // Account-deletion and export windows, against the domain policy's bounds.
+    try {
+      assertCoolingOffDays(env.ACCOUNT_DELETION_COOLING_OFF_DAYS);
     } catch (error) {
       fail(
         'ACCOUNT_DELETION_COOLING_OFF_DAYS',
@@ -235,6 +480,71 @@ const schema = z
       fail('DATA_EXPORT_TTL_HOURS', error instanceof Error ? error.message : 'is out of range');
     }
 
+    // --- Paystack (every environment) ---------------------------------------
+    // Staging is where a live key is most likely to be pasted by mistake, so
+    // these are not production-only.
+    if (env.PAYMENT_PROVIDER === 'paystack') {
+      const key = env.PAYSTACK_SECRET_KEY ?? '';
+      if (!/^sk_(test|live)_[A-Za-z0-9]{16,}$/.test(key)) {
+        fail('PAYSTACK_SECRET_KEY', 'PAYMENT_PROVIDER=paystack needs a Paystack secret key (sk_test_… or sk_live_…)');
+      } else if (key.startsWith('sk_live_') && !(env.NODE_ENV === 'production' && env.PAYSTACK_ALLOW_LIVE)) {
+        fail(
+          'PAYSTACK_SECRET_KEY',
+          'A live Paystack key is refused unless NODE_ENV=production and PAYSTACK_ALLOW_LIVE=true — use the sk_test_ key everywhere else',
+        );
+      }
+      if (env.PAYSTACK_WEBHOOK_SECRET && env.PAYSTACK_WEBHOOK_SECRET !== key) {
+        fail(
+          'PAYSTACK_WEBHOOK_SECRET',
+          'Paystack signs webhooks with the secret key; a different value here would reject every genuine event. Leave it empty',
+        );
+      }
+    }
+    if (env.PAYSTACK_ALLOW_LIVE && env.NODE_ENV !== 'production') {
+      fail('PAYSTACK_ALLOW_LIVE', 'Live payments can only be switched on in production');
+    }
+
+    // --- Brevo (every environment) ------------------------------------------
+    // A half-configured provider fails at the first signup, where it looks
+    // like a broken form. Refused at boot instead, in staging as much as in
+    // production.
+    if (env.EMAIL_PROVIDER === 'brevo') {
+      if (!/^xkeysib-[A-Za-z0-9-]{20,}$/.test(env.BREVO_API_KEY ?? '')) {
+        fail('BREVO_API_KEY', 'EMAIL_PROVIDER=brevo needs a Brevo API v3 key (xkeysib-…)');
+      }
+      if (!env.EMAIL_FROM_ADDRESS) {
+        fail('EMAIL_FROM_ADDRESS', 'Brevo refuses any sender that is not verified in the account');
+      }
+      if (!env.EMAIL_REPLY_TO) {
+        fail(
+          'EMAIL_REPLY_TO',
+          'The identity-conflict email tells people to reply to it; an unset address leaves them nowhere to go',
+        );
+      }
+    }
+    if (env.BREVO_WEBHOOK_TOKEN) {
+      const weakness =
+        env.BREVO_WEBHOOK_TOKEN.length < 32
+          ? 'is shorter than 32 characters'
+          : describeSecretWeakness(env.BREVO_WEBHOOK_TOKEN);
+      if (weakness) fail('BREVO_WEBHOOK_TOKEN', `BREVO_WEBHOOK_TOKEN ${weakness}; generate a long random value`);
+    }
+
+    // A remotely reachable full DASH deployment is already handling real
+    // identities even when it deliberately keeps NODE_ENV=development so some
+    // unfinished providers can remain non-production. HTTPS is the boundary:
+    // local HTTP development may disable MFA; connected staging may not.
+    if (
+      env.DEPLOYMENT_PROFILE === 'full' &&
+      env.PUBLIC_WEB_URL.startsWith('https://') &&
+      !env.MFA_ENABLED
+    ) {
+      fail(
+        'MFA_ENABLED',
+        'Administrator MFA cannot be disabled on an HTTPS full deployment',
+      );
+    }
+
     if (env.NODE_ENV !== 'production') return;
 
     // --- Production-only guards ---------------------------------------------
@@ -244,6 +554,13 @@ const schema = z
 
     if (env.DEV_EXPOSE_OTP) {
       fail('DEV_EXPOSE_OTP', 'DEV_EXPOSE_OTP must be false in production — it returns login codes in the API response');
+    }
+
+    if (env.OTP_RESEND_COOLDOWN_SECONDS < 30) {
+      fail(
+        'OTP_RESEND_COOLDOWN_SECONDS',
+        'OTP_RESEND_COOLDOWN_SECONDS must be at least 30 in production — without it one address can be sent a code on every request',
+      );
     }
 
     if (!env.MFA_ENABLED) {
@@ -277,23 +594,60 @@ const schema = z
     // Every one of these reports `isLive: false`. Running any of them in
     // production means the platform silently does nothing where it claims to
     // charge a card, send a code, or store a document.
-    if (env.PAYMENT_PROVIDER === 'mock') {
+    //
+    // Each check applies only to a capability this deployment actually has.
+    // Nothing is weakened: on the `full` profile every one of them runs exactly
+    // as before. On `declutters` the capability is switched off, its adapter
+    // throws on every call, and its routes are never registered — so the
+    // question the guard asks ("is this provider real?") has no subject.
+    //
+    // Checking a switched-off feature would force a Declutters deployment to be
+    // handed Paystack keys it will never use and a maps key for addresses it
+    // never geocodes, which is how unused credentials end up in production
+    // environments.
+    const capabilities = effectiveCapabilities(env);
+
+    if (capabilities.has('payments') && env.PAYMENT_PROVIDER === 'mock') {
       fail('PAYMENT_PROVIDER', 'The mock payment provider must never run in production — it settles nothing');
     }
-    if (env.MAPS_PROVIDER === 'local') {
+    if (capabilities.has('maps') && env.MAPS_PROVIDER === 'local') {
       fail('MAPS_PROVIDER', 'The local geo adapter cannot geocode an address; production needs a real provider');
     }
-    if (env.SMS_PROVIDER === 'console') {
+    if (capabilities.has('sms') && env.SMS_PROVIDER === 'console') {
       fail('SMS_PROVIDER', 'The console SMS adapter only logs — no customer would ever receive a login code');
     }
     if (env.EMAIL_PROVIDER === 'console') {
       fail('EMAIL_PROVIDER', 'The console email adapter only logs — nothing is delivered');
     }
-    if (env.PUSH_PROVIDER === 'console') {
+    if (env.EMAIL_PROVIDER === 'ses') {
+      // Checked at boot rather than at the first send. A missing sender is not
+      // discovered until somebody tries to create an account, and by then the
+      // failure looks like a broken signup form.
+      if (!env.SES_REGION) {
+        fail('SES_REGION', 'SES is regional, and the sending identity is verified per region');
+      }
+      if (!env.EMAIL_FROM_ADDRESS) {
+        fail('EMAIL_FROM_ADDRESS', 'SES refuses any sender that is not a verified identity');
+      }
+      if (!env.EMAIL_REPLY_TO) {
+        fail(
+          'EMAIL_REPLY_TO',
+          'The identity-conflict email tells people to reply to it; an unset address leaves them nowhere to go',
+        );
+      }
+    }
+    if (capabilities.has('push') && env.PUSH_PROVIDER === 'console') {
       fail('PUSH_PROVIDER', 'The console push adapter only logs — no device is notified');
     }
     if (env.STORAGE_PROVIDER === 'local') {
       fail('STORAGE_PROVIDER', 'Local disk storage is development-only and is lost on redeploy');
+    }
+    if (env.STORAGE_PROVIDER === 's3') {
+      // Checked at boot, not at the first upload. A wrong bucket name is
+      // otherwise discovered by the first seller to photograph an item, and it
+      // presents as a broken upload form.
+      if (!env.S3_BUCKET) fail('S3_BUCKET', 'Object storage needs a bucket to write to');
+      if (!env.S3_REGION) fail('S3_REGION', 'S3 is regional and the bucket lives in one region');
     }
     if (env.QUEUE_PROVIDER === 'memory') {
       fail('QUEUE_PROVIDER', 'The in-memory queue loses jobs on restart and cannot be shared across instances');
@@ -310,22 +664,49 @@ const schema = z
         'Per-process rate-limit counters multiply the real limit by the number of instances; production must share them through Redis',
       );
     }
+    // Only when realtime is on: a deployment that has deliberately turned it
+    // off has no fan-out to get wrong, and demanding Redis for a feature that
+    // is switched off would be a startup failure with no cause.
+    //
+    // The capability is checked first and the env flag second, because the
+    // capability is the stronger statement. On a profile without `realtime` the
+    // socket is never served whatever `REALTIME_ENABLED` says, so requiring
+    // Redis for its fan-out would be asking a deployment to configure the
+    // plumbing of a feature it cannot reach.
+    if (
+      capabilities.has('realtime') &&
+      env.REALTIME_ENABLED &&
+      env.REALTIME_BROADCAST === 'memory'
+    ) {
+      fail(
+        'REALTIME_BROADCAST',
+        'In-process fan-out reaches only the sockets on one instance, so most clients would silently never be notified; production must broadcast through Redis',
+      );
+    }
 
     // --- Credentials required by the chosen providers ------------------------
-    if (env.PAYMENT_PROVIDER === 'paystack') {
-      if (!env.PAYSTACK_SECRET_KEY) fail('PAYSTACK_SECRET_KEY', 'Required when using Paystack');
-      if (!env.PAYSTACK_WEBHOOK_SECRET) {
-        fail('PAYSTACK_WEBHOOK_SECRET', 'Required — unsigned webhooks cannot be trusted');
-      }
-    }
+    // Paystack's key rules run in every environment, above.
     if (env.QUEUE_PROVIDER === 'redis' && !env.REDIS_URL) {
       fail('REDIS_URL', 'Required when QUEUE_PROVIDER is redis');
+    }
+    if (env.REALTIME_BROADCAST === 'redis' && !env.REDIS_URL) {
+      fail('REDIS_URL', 'Required when REALTIME_BROADCAST is redis');
     }
     if (env.MAPS_PROVIDER === 'google' && !env.GOOGLE_MAPS_API_KEY) {
       fail('GOOGLE_MAPS_API_KEY', 'Required when MAPS_PROVIDER is google');
     }
     if (env.MAPS_PROVIDER === 'mapbox' && !env.MAPBOX_ACCESS_TOKEN) {
       fail('MAPBOX_ACCESS_TOKEN', 'Required when MAPS_PROVIDER is mapbox');
+    }
+
+    // Firebase resolves its credential from the environment, so a missing one
+    // surfaces as an opaque SDK error on the first send rather than at boot —
+    // by which time a rider has already missed an offer. Named here instead.
+    if (env.PUSH_PROVIDER === 'fcm' && !env.GOOGLE_APPLICATION_CREDENTIALS) {
+      fail(
+        'GOOGLE_APPLICATION_CREDENTIALS',
+        'Required when PUSH_PROVIDER is fcm, unless the host supplies its own service identity',
+      );
     }
 
     // --- Transport -----------------------------------------------------------
@@ -385,17 +766,42 @@ export type Config = z.infer<typeof schema>;
 
 let cached: Config | null = null;
 
+/**
+ * An empty value means "not set".
+ *
+ * `.env.example` leaves every optional value deliberately empty (`S3_BUCKET=`,
+ * `PAYSTACK_SECRET_KEY=`) and tells people to copy it. Parsed literally, an
+ * empty string is a *supplied* value, so optional fields with a format —
+ * a URL, a non-empty name — rejected the template itself and the API refused
+ * to boot from a fresh copy. Dropping empty values first makes the file mean
+ * what it says. Nothing required is weakened: a required variable that is
+ * empty is now simply missing, and is refused as missing.
+ */
+function withoutEmptyValues(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(source).filter(([, value]) => value !== ''));
+}
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
   if (cached) return cached;
 
-  const result = schema.safeParse(source);
+  const result = schema.safeParse(withoutEmptyValues(source));
   if (!result.success) {
     const lines = result.error.issues.map(
       (issue) => `  ${issue.path.join('.') || '(root)'}: ${issue.message}`,
     );
-    // Written to stderr and thrown — never log the values themselves, only the
-    // names of what failed.
-    throw new Error(`Invalid environment configuration:\n${lines.join('\n')}`);
+
+    // Every message above is written to name the variable, never its value, and
+    // the tests assert that. The scrub is the second lock on the same door: Zod
+    // echoes the received value for some built-in checks, a future refinement
+    // could interpolate one by accident, and this message is printed to stderr
+    // by `main.ts` where a container platform will capture it. Being wrong here
+    // means a secret in a boot log, so one belt and one set of braces.
+    const message = redactSecretsInText(
+      `Invalid environment configuration:\n${lines.join('\n')}`,
+      presentSecretValues(source),
+    );
+
+    throw new Error(message);
   }
 
   cached = result.data;
@@ -423,6 +829,10 @@ export function describeAdapters(config: Config): string {
     `sms=${config.SMS_PROVIDER}`,
     `storage=${config.STORAGE_PROVIDER}`,
     `queue=${config.QUEUE_PROVIDER}`,
+    // `off` rather than the broadcast provider when disabled: printing
+    // `realtime=memory` on a deployment that serves no sockets at all would
+    // describe a fan-out that is never reached.
+    `realtime=${config.REALTIME_ENABLED ? config.REALTIME_BROADCAST : 'off'}`,
   ].join('  ');
 }
 
@@ -433,31 +843,12 @@ export function describeAdapters(config: Config): string {
 /**
  * Parse `id:base64key,id2:base64key2` into retired keys.
  *
- * Exported for validation at boot. Duplicated ids are rejected: two different
- * keys claiming the same id makes decryption non-deterministic, which is the
- * kind of bug that only shows up on the rows you can no longer read.
+ * Re-exported rather than implemented here. The rules about what makes a set of
+ * keys coherent live in `@dash/domain/envelope` so that the seed — which sits
+ * below `apps/api` and cannot import this module — applies exactly the same
+ * ones. See the keyring-assembly section there.
  */
-export function parseRetiredKeys(raw: string): EncryptionKey[] {
-  const trimmed = raw.trim();
-  if (trimmed === '') return [];
-
-  const seen = new Set<string>();
-
-  return trimmed.split(',').map((entry, index) => {
-    const separator = entry.indexOf(':');
-    if (separator <= 0) {
-      throw new Error(`retired key ${index + 1} is not in "id:base64key" form`);
-    }
-
-    const keyId = entry.slice(0, separator).trim();
-    const encoded = entry.slice(separator + 1).trim();
-
-    if (seen.has(keyId)) throw new Error(`retired key id "${keyId}" appears more than once`);
-    seen.add(keyId);
-
-    return { keyId, key: parseKey(encoded, `retired key "${keyId}"`) };
-  });
-}
+export { parseRetiredKeys };
 
 /**
  * Build the keyring from validated configuration.
@@ -471,18 +862,11 @@ export function buildKeyring(config: Config): Keyring {
     throw new Error('No ENCRYPTION_KEY is configured, so nothing can be encrypted or decrypted');
   }
 
-  const active: EncryptionKey = {
-    keyId: config.ENCRYPTION_KEY_ID,
-    key: parseKey(config.ENCRYPTION_KEY, 'ENCRYPTION_KEY'),
-  };
-
-  const retired = parseRetiredKeys(config.ENCRYPTION_KEYS_RETIRED).filter(
-    // A key that is both active and retired is a rotation half-applied. The
-    // active entry wins; keeping both would be harmless but confusing.
-    (entry) => entry.keyId !== active.keyId,
-  );
-
-  return { active, retired };
+  return assembleKeyring({
+    activeKey: config.ENCRYPTION_KEY,
+    activeKeyId: config.ENCRYPTION_KEY_ID,
+    retired: config.ENCRYPTION_KEYS_RETIRED,
+  });
 }
 
 export function isEncryptionConfigured(config: Config): boolean {

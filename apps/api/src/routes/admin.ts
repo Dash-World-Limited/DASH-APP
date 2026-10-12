@@ -10,11 +10,15 @@ import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { kobo } from '@dash/domain/money';
+import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
+import { recordOrderChange } from '../realtime/notify.js';
 import { ACTIVE_STATUSES, assertTransition, type OrderStatus } from '@dash/domain/orders';
 import { buildRefund, buildWalletCredit, verifyLedgerIntegrity } from '@dash/domain/ledger';
 import { postLedgerTransaction, writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission, requireScope } from '../http/context.js';
+import { effectiveCapabilities } from '../deployment/profile.js';
+import { PHONE_VERIFICATION_FLAG } from '@dash/domain/onboarding';
 import {
   cancelAccountDeletion,
   getAccountDeletion,
@@ -64,9 +68,59 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       take: 200,
     });
 
-    const now = Date.now();
+    // The live board is also the source for the Super Admin map. An unscoped
+    // platform administrator may see every rider who is actively online;
+    // city-scoped operations staff only see riders already working an active
+    // order in one of their cities. That preserves the existing city boundary
+    // instead of turning the map into a cross-city location leak.
+    const observedAt = new Date();
+    const riders = await prisma.rider.findMany({
+      where: {
+        status: 'approved',
+        availability: { in: ['idle', 'on_delivery', 'on_break'] },
+        onlineUntil: { gt: observedAt },
+        lastLatitude: { not: null },
+        lastLongitude: { not: null },
+        ...(actor.cityIds && actor.cityIds.length > 0
+          ? {
+              orders: {
+                some: {
+                  status: { in: [...ACTIVE_STATUSES] },
+                  vendor: { cityId: { in: [...actor.cityIds] } },
+                },
+              },
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        availability: true,
+        vehicleType: true,
+        vehiclePlate: true,
+        lastLatitude: true,
+        lastLongitude: true,
+        locationReportedAt: true,
+        identity: { select: { displayName: true } },
+      },
+      orderBy: { locationReportedAt: 'desc' },
+      take: 500,
+    });
+
+    const now = observedAt.getTime();
 
     return {
+      riders: riders.map((rider) => ({
+        id: rider.id,
+        name: rider.identity.displayName,
+        availability: rider.availability,
+        vehicleType: rider.vehicleType,
+        vehiclePlate: rider.vehiclePlate,
+        latitude: rider.lastLatitude,
+        longitude: rider.lastLongitude,
+        locationAgeSeconds: rider.locationReportedAt
+          ? Math.round((now - rider.locationReportedAt.getTime()) / 1000)
+          : null,
+      })),
       orders: orders.map((order) => {
         const ageMinutes = Math.round((now - order.createdAt.getTime()) / 60_000);
         const locationAge = order.rider?.locationReportedAt
@@ -135,7 +189,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
       assertTransition(order.status as OrderStatus, 'ready', 'ops');
 
-      const reassignmentEventId = await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx) => {
         // Created first so its id can key the dispatch job below.
         const event = await tx.orderStatusEvent.create({
           data: {
@@ -166,8 +220,26 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           });
         }
 
-        return event.id;
+        // Recorded with the reassignment, in the same transaction. The key is
+        // the event id, so a genuine second reassignment still dispatches while
+        // a retried publish of this one does not.
+        await enqueueViaOutbox(tx, {
+          name: 'dispatch.find_rider',
+          payload: { orderId: order.id },
+          idempotencyKey: `dispatch_${order.id}_reassign_${event.id}`,
+        });
+
+        // Recorded after the rider is cleared, so the fan-out is computed from
+        // the order as it now stands. That matters here more than anywhere
+        // else: the reassigned rider is no longer on the order, so the
+        // `rider:` topic in this notification is absent rather than naming
+        // someone who has just been taken off the job.
+        await recordOrderChange(tx, order.id);
       });
+
+      // Publish now if the queue is reachable; the scheduled relay covers it
+      // if not. Never raises — the row is already durable.
+      await flushOutbox(prisma, queue);
 
       // Keyed on the reassignment itself rather than the clock.
       //
@@ -187,12 +259,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       // an Idempotency-Key header here, as order creation does. Recorded as an
       // open item rather than changed silently, because it alters the contract
       // for every existing ops client.
-      await queue.enqueue({
-        name: 'dispatch.find_rider',
-        payload: { orderId: order.id },
-        idempotencyKey: `dispatch_${order.id}_reassign_${reassignmentEventId}`,
-      });
-
       await writeAudit(prisma, {
         identityId: actor.identityId,
         action: 'ops.order.reassigned',
@@ -528,7 +594,9 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
             paymentId: captured.id,
             amount: body.amount,
             reason: body.reason,
-            status: 'pending',
+            // Approved and booked, but no money has moved: nothing here calls
+            // Paystack. It stays pending until Paystack confirms the refund.
+            status: 'refund_pending_manual_review',
             idempotencyKey: draft.idempotencyKey,
             requestedBy: actor.identityId,
             approvedBy: actor.identityId,
@@ -547,7 +615,9 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
         requestId: request.id,
       });
 
-      return { refunded: true, amount: body.amount, replayed: posted.replayed };
+      // Not `refunded: true`. The decision is recorded and the ledger booked;
+      // the money goes back when someone refunds it through Paystack.
+      return { status: 'refund_pending_manual_review', recorded: true, amount: body.amount, replayed: posted.replayed };
     },
   );
 
@@ -667,6 +737,16 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       const actor = actorOf(request);
       const existing = await prisma.featureFlag.findUnique({ where: { key: request.params.key } });
       if (!existing) throw ApiError.notFound();
+
+      // Requiring phone verification while no SMS can be sent would ask every
+      // account for a code that can never arrive.
+      if (
+        existing.key === PHONE_VERIFICATION_FLAG &&
+        body.isEnabled === true &&
+        !effectiveCapabilities(app.services.config).has('sms')
+      ) {
+        throw ApiError.conflict('Phone verification cannot be required while SMS is disabled (SMS_ENABLED=false).');
+      }
 
       const updated = await prisma.featureFlag.update({
         where: { key: request.params.key },

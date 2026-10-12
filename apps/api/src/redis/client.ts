@@ -66,6 +66,13 @@ export const REDIS_RESPONSIBILITIES: readonly RedisResponsibility[] = [
     rationale:
       'Jobs are follow-up work over rows already committed to PostgreSQL. An enqueue failure throws rather than dropping silently; the durable record is what the work is re-derived from.',
   },
+  {
+    name: 'realtime_fanout',
+    failureMode: 'degradable',
+    correctnessCritical: false,
+    rationale:
+      'Notifications carry identifiers and a version, never data, and every screen they feed reads its state from an authorized HTTP route either way. Losing the channel makes those screens refresh on a timer instead of on a change — slower, never wrong, and nothing is lost, because the state was committed to PostgreSQL before any notification existed.',
+  },
 ];
 
 /**
@@ -111,6 +118,25 @@ export function createRateLimitRedis(url: string): Redis {
  * worker otherwise, because its blocking reads must survive a reconnect.
  */
 export function createQueueRedis(url: string): Redis {
+  return new Redis(url, {
+    ...baseOptions(),
+    maxRetriesPerRequest: null,
+  });
+}
+
+/**
+ * A client for realtime pub/sub.
+ *
+ * `maxRetriesPerRequest: null` for the same reason the queue client uses it: a
+ * subscriber holds a long-lived connection and must survive a reconnect rather
+ * than failing its way out of subscriber mode after N attempts.
+ *
+ * Two of these are needed, not one. A client that has issued `SUBSCRIBE` is in
+ * subscriber mode and refuses `PUBLISH`, so sharing a single connection between
+ * the two halves works right up until the first notification and then fails
+ * permanently. See `RedisBroadcastAdapter`.
+ */
+export function createBroadcastRedis(url: string): Redis {
   return new Redis(url, {
     ...baseOptions(),
     maxRetriesPerRequest: null,

@@ -1,0 +1,20 @@
+{
+  "name": "@dash/android-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Android shell for the DASH APP web client. Internal testing only.",
+  "scripts": {
+    "sync": "cap sync android",
+    "open": "cap open android",
+    "apk:debug": "node scripts/build-apk.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/geolocation": "^7.1.8",
+    "@capacitor/push-notifications": "^7.0.7"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0"
+  }
+}

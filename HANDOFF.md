@@ -9,19 +9,22 @@ Everything needed to pick this up cold. Read this first, then
 ## Where this is
 
 **Code-level pre-integration readiness.** The platform runs end to end on one
-machine, with administrator MFA, encryption at rest, retention, and observability
-seams in place. It has never been deployed, and no adapter has been exercised
-against a live provider.
+machine, with administrator MFA, encryption at rest, retention, observability
+seams, and a verified PostgreSQL/PostGIS and Redis production path on `main`.
+A secret-store-ready secret-management contract (Milestone III) is implemented
+and locally verified **on an unmerged branch**, not on `main`. Nothing has ever
+been deployed, and no adapter has been exercised against a live provider.
 
-It is **not** production ready. That phrase requires deployment, observability
-wired to something real, backup and restore rehearsed, incident response
-practised, and external verification — none of which has happened.
+It is **not** production ready. That phrase requires deployment, a secret store
+and hosting platform actually chosen, observability wired to something real,
+backup and restore rehearsed, incident response practised, and external
+verification — none of which has happened.
 
 | | |
 |---|---|
 | **Branch** | `main` — the source-of-truth line. `master` is kept only as a pre-Milestone-E recovery anchor. |
 | **Latest tag** | `v0.2.0-auth` (`ad2e81b`) — this work is **untagged**, see below |
-| **Date** | 2026-09-01 |
+| **Date** | 2026-09-02 |
 
 ### Milestones on `main` since `v0.2.0-auth`
 
@@ -37,7 +40,9 @@ practised, and external verification — none of which has happened.
 | G | `8839312` | Observability seams without a vendor |
 | E | `32180ce` → `71b2fc5` | Account deletion and personal-data export — **merged on `main`** (four commits: initial, then three rounds of review corrections) |
 | I | `0f0c533` | Checkpoint reconciliation — dependency-audit analysis, smoke repair, status corrections |
-| II | *(branch `claude/milestone-ii-postgres-redis`)* | PostgreSQL/PostGIS + Redis production path — **implemented, real-infrastructure verification PENDING** |
+| II | `416b6af` → `eabaf72` | PostgreSQL/PostGIS + Redis production path — **merged on `main`, verified against real PostgreSQL 16 + PostGIS 3.4 (14/14) and Redis 7 (8/8)** |
+| III | *(branch `claude/milestone-iii-secret-management`)* | Secret management and key custody — **implemented, locally verified, not merged** |
+| IV | *(branch `claude/milestone-iv-durability-scale`, based on III)* | Transactional outbox, nightly ledger reconciliation, scheduled maintenance — **implemented, locally verified, not merged** |
 
 **Milestone E is merged on `main` and remains untagged.** It is implemented and
 **locally verified only**: the full suite, typecheck, lint, build, coverage,
@@ -121,7 +126,7 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).t
 | `npm run dev` | API on `:4000` and web on `:3000`, prefixed output, Ctrl-C stops both |
 | `npm run dev:api` | API only |
 | `npm run dev:web` | Web only |
-| `npm test` | 887 tests — domain units and API integration suites |
+| `npm test` | 1171 tests — domain units and API integration suites |
 | `npm run lint` | ESLint across all workspaces |
 | `npm run typecheck` | `tsc --build` across project references |
 | `npm run db:seed` | Wipe and reseed (safe to re-run; refuses in production) |
@@ -131,10 +136,13 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(48).t
 ### Verification
 
 ```bash
-npm test                          # 887 tests, no server needed
+npm test                          # no server needed
 npm run typecheck                 # all four workspaces
 npm run lint
 npx vitest run --coverage packages/domain
+
+npm run check:secrets             # 11 checks over 23 protected file classes
+npm run check:keys                # 31 checks — key custody drill, synthetic keys only
 
 npm run maintenance:retention -- --dry-run   # retention, reports only
 
@@ -143,9 +151,21 @@ node scripts/smoke.mjs            # 52 checks
 node scripts/dispatch-check.mjs   # 21 checks
 ```
 
-The two scripts need a **running API and a seeded database**. They are
-supplementary — every business and public endpoint also has an automated
-integration suite that runs in `npm test` and in CI.
+The two `check:` scripts need nothing — no server, no database, no credential.
+`check:secrets` is plain Node with no dependencies, so it gates the repository
+even when an install has failed. `check:keys` generates its own keys in memory,
+reads no secret store, writes nothing to disk, and prints no key value.
+
+Against real infrastructure, when you have it:
+
+```bash
+PG_CHECK_URL='postgresql://USER:PASSWORD@HOST:5432/dash_verify' npm run check:postgres
+REDIS_CHECK_URL='redis://HOST:6379' npm run check:redis
+```
+
+The smoke and dispatch scripts need a **running API and a seeded database**.
+They are supplementary — every business and public endpoint also has an
+automated integration suite that runs in `npm test` and in CI.
 
 ### Stopping a stuck server (Windows)
 
@@ -163,16 +183,44 @@ Everything below was run on this machine at this commit.
 
 | Check | Result |
 |---|---|
-| `npm test` | **938 passing**, 31 files, 0 failing |
+| `npm test` | **1171 passing**, 37 files, 0 failing |
 | `npm run typecheck` | 4 projects clean |
 | `npm run lint` | clean |
 | `npm run build` | web app builds, 11 routes |
-| Domain coverage | **97.13%** statements · 94.53% branches · 96.37% functions (`src/account` 100%, `src/geo` 99.02%) |
+| `npm run check:secrets` | 11/11, over 23 protected file classes |
+| `npm run check:keys` | 31/31 |
+| `npm run check:postgres` | **17/17** against real PostgreSQL 16 + PostGIS 3.4, from an empty database |
+| Domain coverage, full suite | **97.37%** statements · 94.67% branches · 96.62% functions (`src/retention` 100%, `src/redaction` 99.15%, `src/envelope` 98.98%) |
+| Domain coverage, `--coverage packages/domain` (the CI gate) | 95.45% statements · 95.04% branches, against thresholds of 80/75/80/80 |
 | `node scripts/smoke.mjs` | 52/52 |
 | `node scripts/dispatch-check.mjs` | 21/21 |
 | `npm run maintenance:retention -- --dry-run` | runs, reports, writes nothing |
 | `npm run maintenance:accounts -- --dry-run` | runs, reports, writes nothing |
-| `npm run db:migrate` on a fresh DB + drift check | applies `0_init` + `milestone_e`, `migrate status` clean, no drift vs schema |
+| `npm run db:migrate` on a fresh DB + drift check | applies `0_init` + `milestone_e` + `milestone_iv_outbox_maintenance`, `migrate status` clean, no drift vs schema |
+| SQLite `db push` + `db:seed` + `ci-verify-seed` on a fresh temp database | passes |
+
+> **Two coverage figures, because there are two commands.** CI runs
+> `npx vitest run --coverage packages/domain`, which restricts *which tests run*
+> to the domain suites while still counting every domain source file — so
+> `src/crypto` and `src/ports`, which only application tests exercise, read 0%
+> and pull the aggregate down to 95.44%. The full-suite run is the 97.36% figure.
+> An earlier revision of this table recorded a single number without saying which
+> command produced it; it was the full-suite one.
+
+> **The suite flakes under machine load, and always has.** Several API suites
+> build a Fastify instance and copy a SQLite template per test, and on a loaded
+> machine that overruns Vitest's 5s test / 10s hook timeouts — the failures read
+> `Test timed out in 5000ms`, never an assertion. Observed on this machine both
+> before and after Milestone III. Clean runs sit at 82–88s. The most recent
+> contended run took 174s and reported three failures whose messages were not
+> captured; the three runs either side of it were clean, and the two suites
+> changed most recently passed on repeated targeted runs, so
+> load is the likely cause rather than a defect — but that particular run was
+> not diagnosed. Previously captured contended failures all read as timeouts and
+> all passed on a serial re-run
+> (`npx vitest run --no-file-parallelism --testTimeout=30000 --hookTimeout=60000`).
+> Treat a timeout failure as an environment signal and re-run before
+> investigating; treat an assertion failure as real.
 | `npm audit --audit-level=high` | **FAILS — exit 1**, unresolved. See below. |
 
 > **`npm audit` fails, and CI's dependency job is red — deliberately left that
@@ -190,26 +238,28 @@ Everything below was run on this machine at this commit.
 > ignored, or force-upgraded to turn the gate green. Full per-advisory analysis
 > and the remediation options are in [`SECURITY.md`](SECURITY.md).
 
-### PENDING — not run, not passed
+### Milestone II — real-infrastructure verification, now PASSED
 
-Milestone II added a PostgreSQL/PostGIS and Redis production path. The machine
-it was built on has **no PostgreSQL, no PostGIS, no Redis, and no Docker**, so
-the following have never been executed. They are written, committed, and
-expected to be run before any of this is trusted. **Do not read the green table
-above as covering them.**
+These were pending when Milestone II was written and have since been run. This
+section previously still said PENDING while §*Infrastructure, in dependency
+order* below said they had passed; the two contradicted each other and this is
+the correction.
 
 | Check | Status | Command |
 |---|---|---|
-| PostgreSQL fresh migration + status + drift | **PENDING** | `PG_CHECK_URL=... npm run check:postgres` |
-| PostGIS installed and agreeing with the in-process test | **PENDING** | same script |
-| Redis healthy-path queue round trip, dedupe, delay, retry | **PENDING** | `REDIS_CHECK_URL=... npm run check:redis` |
-| Rate-limit counters shared across two instances | **PENDING** | same script |
+| PostgreSQL fresh migration + status + drift | **PASSED** | `PG_CHECK_URL=... npm run check:postgres` |
+| PostGIS installed and agreeing with the in-process test | **PASSED** — 14/14, including boundary and hole semantics | same script |
+| Redis healthy-path queue round trip, dedupe, delay, retry | **PASSED** — 8/8 | `REDIS_CHECK_URL=... npm run check:redis` |
+| Rate-limit counters shared across two instances | **PASSED** | same script |
 
-What *is* covered on this machine: the Redis **unavailable** path (fail-closed
-rate limiting, readiness, enqueue failure) in `redis.test.ts`, the PostGIS
-adapter's query construction and WKT in `postgis.test.ts` and `geo.test.ts`, and
-the two-schema drift guard in `schema-sync.test.ts`. Those are real tests
-against real code; they are not a substitute for the four rows above.
+Also covered on this machine without real infrastructure: the Redis
+**unavailable** path (fail-closed rate limiting, readiness, enqueue failure) in
+`redis.test.ts`, the PostGIS adapter's query construction and WKT in
+`postgis.test.ts` and `geo.test.ts`, and the two-schema drift guard in
+`schema-sync.test.ts`.
+
+**Still true: none of this has been deployed.** Verified against a disposable
+local service is not verified in production.
 
 Coverage thresholds are enforced in `vitest.config.ts` at 80/75/80/80.
 
@@ -385,6 +435,13 @@ has just become decoration.
 5. **`packages/domain` has no I/O.** No database, no network, no ambient clock.
 6. **An adapter is not an integration.** Nothing is described as working until a
    sandbox test proves it.
+7. **Secrets enter through `loadConfig` and nowhere else.** A `process.env` read
+   outside the configuration boundary is a lint error. It skips boot validation,
+   every production guard, and the classification that makes the value redacted.
+8. **A new secret variable is classified before it is used.** Add it to
+   `apps/api/src/secrets/classification.ts`; the leak tests and the
+   `.env.example` gate read from that table, so an unclassified secret is an
+   unprotected one.
 
 ---
 
@@ -422,9 +479,11 @@ production blockers a Codex review of that commit found. What is in place:
   single-use** capability with an expiry (`DATA_EXPORT_TTL_HOURS`, default 24).
 - `npm run maintenance:accounts` finalises due deletions, retries held ones,
   expires stale archives, fails abandoned builds, and cleans orphaned blobs.
-  Still **nothing schedules it** — see below.
+  Run by `npm run maintenance:all` since Milestone IV; a scheduler still has to
+  invoke that (see below).
 - **Checked-in Prisma migrations** (`packages/db/prisma/migrations/`): a
-  `0_init` baseline + a `milestone_e` migration. `npm run db:migrate` on a fresh
+  `0_init` baseline + `milestone_e` + `milestone_iv_outbox_maintenance`.
+  `npm run db:migrate` on a fresh
   database + a drift check reproduce `schema.prisma` exactly. `db push` is still
   the local/test path.
 - Adversarial coverage: `account-deletion.test.ts` (42), `account-export.test.ts`
@@ -437,13 +496,204 @@ production blockers a Codex review of that commit found. What is in place:
 Not done for this milestone: merge to `master`, review against `master`, a tag,
 and a production `ExportArchivePort` adapter — only the local one exists.
 
+### Implemented on a branch, NOT merged
+
+**Milestone III — secret management and key custody.** Lives on
+`claude/milestone-iii-secret-management` at the moment of writing. It has **not
+been merged to `main`**, not tagged, and not deployed, so nothing in this block
+describes code on the main line. Implemented and verified locally only. What is
+in place:
+
+- **One classification table** (`apps/api/src/secrets/classification.ts`) naming
+  every configuration variable secret or non-secret, including the seven
+  provider credentials no code reads yet. It drives log redaction, the leak
+  tests, and the `.env.example` gate, so those cannot drift apart.
+- **Redaction in two dimensions**, because one is not enough: by key fragment
+  (so `paystackSecretKey` is caught, not only `secret`) and by shape inside free
+  text (so the password in `postgresql://dash:pw@db:5432` is stripped from a
+  driver's own error message, which no key-based pass can reach). One vocabulary
+  in `@dash/domain/redaction`, shared by the audit log, the error-tracker seam,
+  the metrics seam, and Pino.
+- **Key custody hardened.** A key id the envelope format cannot carry, one id
+  that is both active and retired, the same material under two ids, a duplicate
+  retired id, and retired keys with no active key are all refused at boot. The
+  first of those could previously write ciphertext that was correctly encrypted
+  and permanently unreadable; the second used to be resolved silently in favour
+  of the active entry, which quietly destroys every row written under the other.
+- **Rotation with a real retirement gate** (`apps/api/src/secrets/rotation.ts`).
+  A survey reads each ciphertext's key id out of the envelope prefix without
+  decrypting — so it needs no key material — and answers whether destroying an
+  old key is safe. Re-encryption covers payout details **and** both TOTP columns;
+  covering only payout is how a rotation looks complete and is not.
+- **The configuration boundary is enforced.** A `process.env` read outside
+  `loadConfig` is now a lint error, with a short documented allowlist.
+- Repository hygiene: `npm run check:secrets` replaces a CI step that only
+  looked like a gate — it passed as long as any one line still said
+  `replace-me`, so a real key pasted into `.env.example` went through untouched.
+
+Not done for this milestone: merge, tag, and everything that needs a platform —
+see below.
+
+**Milestone V — realtime.** On `claude/milestone-v-realtime`, based on the
+Milestone IV commit. **Not merged.** What is in place:
+
+- **`GET /v1/realtime`** (`apps/api/src/routes/realtime.ts`), a WebSocket
+  endpoint that carries **identifiers and a version, never domain data**. The
+  client re-reads through the ordinary authorized route, which is what keeps the
+  API's field-level projection rules applying to realtime instead of being
+  bypassed by it ([ADR-0013](docs/DECISIONS.md#adr-0013--realtime-carries-notifications-not-data)).
+  A test enumerates the frame's keys so widening it fails the suite.
+- **Authorization split in two, both pure.** `canSubscribe` answers "could this
+  actor ever watch a topic of this kind?" from the actor alone; `canReachOrder`
+  and `canReachVendor` answer "may they watch *this* one?" against the row.
+  Both live in `@dash/domain/realtime` with truth-table tests, and both mirror
+  the checks the corresponding routes already make. A refusal is always
+  `not_found` — a test asserts the refusal for a real order and an invented id
+  are identical.
+- **In-band authentication.** No token in the query string, no cookie. The
+  socket opens with no privilege, authenticates from a frame carrying the
+  ordinary access token, and is closed if none arrives in ten seconds. `Origin`
+  is checked against the CORS allowlist. Renewing the token on a live socket
+  clears its subscriptions so their ownership checks are re-run.
+- **Authority on a socket cannot outlive an HTTP request's.** The socket closes
+  when its token lapses, and a sweep re-reads the session on a timer — one query
+  per session, not per socket — closing sockets whose session was revoked and
+  dropping subscriptions an actor's current roles no longer allow.
+- **The Milestone IV outbox, reused.** `recordOrderChange(tx, orderId)` bumps
+  `Order.revision` and records the notification inside the caller's transaction.
+  There is no second dual-write path, and `realtime-outbox.test.ts` asserts a
+  rolled-back transaction discards both the revision and the notification.
+- **`RealtimeBroadcastPort`** with in-process and Redis pub/sub adapters,
+  because a queue job goes to one consumer and a notification must reach every
+  instance. `REALTIME_BROADCAST=memory` is refused in production. Redis pub/sub
+  is registered as `degradable` in `REDIS_RESPONSIBILITIES`, and is
+  **verified against a real Redis**: `npm run check:redis` passes 14/14,
+  including a notification published by one instance reaching a second
+  instance's hub and becoming a frame on its socket, prefix isolation between
+  deployments sharing one server, and malformed or crafted broadcasts being
+  rejected rather than delivered.
+- **One migration**, `Order.revision`, for both dialects. The PostgreSQL one is
+  hand-written and `ALTER TABLE … ADD COLUMN` with a constant default, which is
+  catalogue-only on PostgreSQL 11+ — no table rewrite, no long lock.
+  **Verified against a real PostgreSQL 16 + PostGIS 3.4 server**:
+  `npm run check:postgres` passes **17/17** with this migration in the history,
+  from an empty database. The SQLite history also applies from zero with a clean
+  `migrate status` and no drift.
+- **196 tests**: 76 pure, 49 over real sockets on an ephemeral port, 24 on the
+  hub (fan-out, backpressure, revalidation), 13 on the outbox seam, and 34 on
+  the browser client — 23 driving a fake socket through redelivery, stale
+  arrival and reconnection, and 11 rendering a real component to prove a frame
+  never reaches the DOM.
+- **Ten suites carry integration-shaped timeouts** (`__tests__/timeouts.ts`),
+  applied per file with `vi.setConfig` because they build a Fastify instance and
+  a SQLite database per test or per file. The other thirty-three keep Vitest's
+  strict 5s/10s defaults, including all fourteen pure domain suites — a pure
+  function that suddenly takes five seconds should still fail. No assertion was
+  relaxed and nothing is skipped.
+- **Outbox volume roughly quadruples per order** — one notification per
+  transition rather than the two or three intents Milestone IV wrote. Growth
+  stays bounded because the retention job already prunes `published` rows, but
+  the relay batch size and the retention window are now worth watching on a
+  real deployment.
+
+**What Milestone V does not do**, and should not be described as doing:
+
+- **All four screens consume it, and all four keep polling.** Customer tracking,
+  the vendor queue, the dispatch board, and the rider's offer list subscribe to
+  their own topics through one shared socket per tab and re-read on a
+  notification. The poll they had before is not removed — it stretches from
+  6–10s to a 30s safety net while the socket is live and returns to its old
+  interval when it is not. At-least-once delivery promises a notification may
+  arrive twice; nothing promises one always arrives, and a dropped frame with
+  no poll behind it is a screen that is silently wrong until a reload.
+- **A notification cannot put anything on a screen.** The client's callback
+  receives `{reason, subjects}` — a reason and identifiers, no field from the
+  frame — so the only thing a screen can do with one is call its own authorized
+  read. `useLive.test.tsx` renders a real component, pushes a frame carrying
+  `status: 'delivered'`, a total, a phone number and a delivery PIN, and asserts
+  none of it reaches the DOM while the screen shows what the server returned.
+- **Rider position is deliberately still polled.** It changes every few seconds,
+  is written *by* the rider's client rather than read by it, and a
+  notify-then-re-read design would multiply it by the number of watchers to tell
+  a screen something it already knows.
+
+**What Milestone V does not do**, and should not be described as doing:
+
+- **A stale ownership relationship is bounded, not eliminated.** A rider
+  reassigned off an order keeps receiving version-only notifications for it until
+  the socket re-authenticates (≤ one access-token lifetime). Re-deriving it on
+  every sweep would mean loading every subscribed order; what leaks meanwhile is
+  a version number for an order that actor was legitimately attached to minutes
+  earlier, never any of its data.
+- **No browser has run this end to end.** The client is covered by 34 tests
+  against a fake socket and a real DOM, and the server by a real WebSocket over
+  an ephemeral port, but the two have never been connected to each other in a
+  browser. A `scripts/` journey against a running server and a seeded database
+  is the honest next check.
+- **The ops board subscribes per city.** An unscoped ops role reads the live city
+  list to know which topics to follow, so a deployment with very many cities
+  would approach the 200-subscription cap on that one screen. Not a problem at
+  Lagos scale; worth remembering before national rollout.
+
+**Milestone IV — durability.** On `claude/milestone-iv-durability-scale`, based
+on the Milestone III commit. **Not merged.** What is in place:
+
+- **A transactional outbox** (`apps/api/src/events/outbox.ts`) replacing a dual
+  write at five call sites. `enqueueViaOutbox(tx, …)` records the intent inside
+  the caller's transaction; a relay publishes it afterwards. The routes no
+  longer reference the queue at all — the compiler confirmed that by reporting
+  `queue` unused in four files.
+- **The bug it removes, reproduced.** Reinstating the dual write in the vendor
+  accept path makes the endpoint return **500** while the order is already
+  accepted in the database. `outbox-durability.test.ts` drives the real
+  endpoints through a broken queue and asserts both halves: the request
+  succeeds, *and* the work happens once the queue returns.
+- **Nightly ledger reconciliation** (`apps/api/src/jobs/ledger-reconciliation.ts`)
+  over the whole ledger by keyset pagination, not the newest 5 000 the on-demand
+  endpoint checks. Catches transactions with no entries, which balance
+  vacuously. Repairs nothing.
+- **`npm run maintenance:all`** — outbox relay, retention, accounts, ledger, in
+  that order, each under a portable lease that works identically on SQLite and
+  PostgreSQL. Exits non-zero for a failure *or* an overdue job.
+- **Two new models**, `OutboxEvent` and `MaintenanceLease`, with checked-in
+  migrations for both dialects. The PostgreSQL one was hand-written, because
+  `prisma migrate diff` needs a live PostgreSQL shadow database to generate one,
+  and has since been **verified against a real PostgreSQL 16 + PostGIS 3.4
+  server**: `npm run check:postgres` passes **17/17** from an empty database.
+- **Outbox payloads are identifiers only**, enforced by the same
+  `isSensitiveKey` vocabulary Milestone III introduced, because this table is
+  unencrypted, widely read, and lives in backups.
+
+Not done for this milestone: merge, tag, and a scheduler to invoke the command.
+
 ### Blocking production — infrastructure, all Codex
 
-- No PostgreSQL/PostGIS, no Redis/BullMQ. The in-memory queue is per-process, so
-  a second API instance would run its own dispatch worker and double-offer.
-- No secret store, no backups, no restore rehearsal.
-- The retention **and account-maintenance** jobs are implemented and tested
-  but **nothing schedules them**.
+- **A secret store and a hosting platform.** The application side is done
+  (Milestone III) and the contract is runtime environment injection
+  ([ADR-0011](docs/DECISIONS.md#adr-0011--runtime-environment-injection-as-the-secret-source-contract)),
+  so any platform that can set an environment variable works with no code
+  change. **Nothing has been chosen, and no production secret exists.**
+- **No backups and no restore rehearsal.** The procedure is documented and the
+  key half of it is rehearsed against synthetic material by `npm run check:keys`;
+  no real backup has ever been taken or restored.
+- **Break-glass role, holder, and authoriser** — the policy is written
+  (`docs/RUNBOOKS.md` §2a), the people are an owner decision.
+- PostgreSQL/PostGIS and Redis/BullMQ are implemented and verified against real
+  services (Milestone II) but **not provisioned anywhere**. Until they are, the
+  in-memory queue remains the running configuration, and it is per-process — a
+  second API instance would run its own dispatch worker and double-offer.
+- **A scheduler must invoke `npm run maintenance:all`.** Milestone IV replaced
+  "nothing schedules them" with one idempotent command that runs the outbox
+  relay, retention, account maintenance, and ledger reconciliation under a
+  lease, and exits non-zero if a job fails *or is overdue*. What it deliberately
+  does not do is schedule itself — see
+  [ADR-0012](docs/DECISIONS.md#adr-0012--a-transactional-outbox-and-a-scheduler-this-repository-does-not-own).
+  Wire it to cron, a systemd timer, or a Kubernetes CronJob. Until something
+  does, the jobs still never run, and the staleness check will say so the first
+  time it is invoked.
+- Key re-encryption is still not scheduled, which is deliberate — rotation is
+  supervised — but it does mean a half-finished rotation stays half-finished
+  until someone looks.
 - Error reporting and metrics are console implementations; nothing is wired to a
   real destination.
 - No branch protection on `master` — a repository setting, not committable.
@@ -467,13 +717,28 @@ and a failure-path test.**
 - **Rider pay is estimated at reservation.** No rider exists when payment is
   captured, so the reservation assumes a motorcycle and a zero approach leg. The
   true-up on delivery corrects it, but the reserved figure is an estimate.
-- **No websockets.** Tracking, the vendor queue, and the ops board poll.
-- **SQLite is development-only.** No concurrent writers, no PostGIS. The geo path
-  tests a city's zones in process — fine at Lagos scale, not national.
+- **Realtime carries notifications, not data.** Tracking, the vendor queue,
+  and the ops board are pushed a `{subject, version}` notification and re-read
+  through the ordinary authorized route. Losing the socket degrades to the
+  polling those screens already did. **Rider position is not pushed** — it
+  changes every few seconds and is still polled. Milestone V; unmerged.
+- **SQLite is development-only.** No concurrent writers, no PostGIS. The
+  PostgreSQL/PostGIS path landed in Milestone II and is the production target;
+  the in-process geo path remains the development default and tests a city's
+  zones in memory — fine at Lagos scale, not national.
 - **`packages/db` reads `process.env` directly** in two places (the Prisma log
   level, and the seed's encryption key). It cannot import the API's config
-  without a circular dependency. Both reads are narrow and neither bypasses a
-  production guard.
+  without a circular dependency. The log-level read is non-secret. The seed's
+  read is a secret, and since Milestone III it goes through the same
+  `assembleKeyring` the API uses, so it can no longer apply weaker validation
+  than the API does — it previously could, and would have happily seeded rows
+  under a key id the API refuses. Everywhere else, a `process.env` read outside
+  the configuration boundary is a lint error.
+- **Nothing schedules key re-encryption.** The primitives are in
+  `apps/api/src/secrets/rotation.ts` and are covered by tests, but a rotation is
+  driven by hand from the runbook. That is deliberate — rotation is a supervised
+  operation — but it does mean a rotation left half-finished stays half-finished
+  until someone looks.
 
 ### Modelled but not built
 
@@ -540,6 +805,9 @@ document.
 5. [`docs/KEY_MANAGEMENT.md`](docs/KEY_MANAGEMENT.md) and
    [`docs/RETENTION.md`](docs/RETENTION.md) — before touching keys or the
    retention schedule
+6. [`apps/api/src/secrets/classification.ts`](apps/api/src/secrets/classification.ts)
+   — which variables are secret, and why there is no cloud SDK here
+   ([ADR-0011](docs/DECISIONS.md#adr-0011--runtime-environment-injection-as-the-secret-source-contract))
 
 ### 4. Infrastructure, in dependency order
 
@@ -551,9 +819,28 @@ document.
    service, including boundary and hole semantics, with **14/14 checks passing**.
    Boundary-inclusive containment uses `ST_Covers`, and SRID parameters are
    explicitly bound as PostgreSQL integers. **Merged on `main`; not yet deployed.**
-2. **Secret store.** Before anything else touches a real key. See
-   `KEY_MANAGEMENT.md`, especially that the encryption key must be backed up
-   *separately* from the database.
+2. **Secret store — the application side is done (Milestone III); the platform
+   is not chosen.** Every variable is classified secret or non-secret in
+   `apps/api/src/secrets/classification.ts`, secrets are redacted from every
+   log, error, health response, and metric, ambiguous keyrings are refused at
+   boot, and rotation has a survey that says when destroying an old key is
+   actually safe. All locally verified.
+
+   What you provide is the injection. The contract is **runtime environment
+   injection** — the application reads its configuration from the process
+   environment and does not know what populated it, so Kubernetes secrets, AWS
+   Secrets Manager, GCP Secret Manager, Vault, or a hosting provider's secret UI
+   all work with no code change. That is a deliberate decision, recorded as
+   [ADR-0011](docs/DECISIONS.md#adr-0011--runtime-environment-injection-as-the-secret-source-contract);
+   **no cloud SDK was added, and no secret store is integrated.**
+
+   Read `docs/KEY_MANAGEMENT.md` before touching a real key — especially that
+   the encryption key is backed up *separately* from the database, and that the
+   backup must include every retired key. `npm run check:keys` rehearses that
+   procedure against synthetic material.
+
+   Two **owner decisions** block completion: who holds the break-glass role, and
+   who authorises assuming it (`docs/RUNBOOKS.md` §2a).
 3. **Redis + BullMQ — implemented and real-infrastructure verified in Milestone II.**
    Redis-backed queueing, idempotent job handling, delay/retry behaviour, and
    shared fail-closed rate limiting are implemented. Verification against Redis

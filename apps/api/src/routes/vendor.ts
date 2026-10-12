@@ -8,11 +8,14 @@
 
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { verifyOtp } from '@dash/domain/crypto';
+import sharp from 'sharp';
+import { pickupCodeMatches } from '../orders/pickup-code.js';
 import { assertTransition, type OrderStatus } from '@dash/domain/orders';
 import { writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { readMaskedPayoutDetails, setPayoutDetails } from '../vendor/payout.js';
+import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
+import { recordOrderChange } from '../realtime/notify.js';
 import {
   actorOf,
   requirePermission,
@@ -20,8 +23,67 @@ import {
   transitionActorFor,
 } from '../http/context.js';
 
+const PRODUCT_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const PRODUCT_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const PRODUCT_IMAGE_MAX_PIXELS = 25_000_000;
+const PRODUCT_IMAGE_MAX_EDGE = 8_000;
+
+function sniffProductImage(bytes: Buffer): 'image/jpeg' | 'image/png' | 'image/webp' | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 8 && bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') return 'image/png';
+  if (
+    bytes.length >= 12 &&
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) return 'image/webp';
+  return null;
+}
+
+async function sanitiseProductImage(bytes: Buffer, claimedType: string): Promise<Buffer> {
+  if (!PRODUCT_IMAGE_TYPES.has(claimedType)) {
+    throw ApiError.badRequest('Upload a JPEG, PNG or WebP image.');
+  }
+  if (bytes.length === 0 || bytes.length > PRODUCT_IMAGE_MAX_BYTES) {
+    throw ApiError.badRequest('Product images must be between 1 byte and 8 MB.');
+  }
+
+  const detected = sniffProductImage(bytes);
+  if (!detected || detected !== claimedType) {
+    throw ApiError.badRequest('The uploaded file does not match its image type.');
+  }
+
+  try {
+    const image = sharp(bytes, {
+      failOn: 'warning',
+      limitInputPixels: PRODUCT_IMAGE_MAX_PIXELS,
+      sequentialRead: true,
+    });
+    const metadata = await image.metadata();
+    if (!metadata.width || !metadata.height) throw new Error('missing dimensions');
+    if (metadata.width > PRODUCT_IMAGE_MAX_EDGE || metadata.height > PRODUCT_IMAGE_MAX_EDGE) {
+      throw ApiError.badRequest('Product images may not exceed 8000 × 8000 pixels.');
+    }
+
+    // Decode and create entirely new bytes. No EXIF, embedded profiles, SVG,
+    // filenames or trailing payload from the upload survives this boundary.
+    return await image
+      .rotate()
+      .resize({
+        width: 1600,
+        height: 1600,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .webp({ quality: 84, effort: 4 })
+      .toBuffer();
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw ApiError.badRequest('That file could not be safely decoded as an image.');
+  }
+}
+
 export async function registerVendorRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma, queue } = app.services;
+  const { prisma, queue, config } = app.services;
 
   /** Load an order and prove it belongs to the acting vendor. */
   async function loadScopedOrder(request: Parameters<typeof actorOf>[0], orderId: string) {
@@ -42,6 +104,582 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
     requireScope(actor, { vendorId: order.vendorId, branchId: order.branchId });
     return { actor, order };
   }
+
+  /**
+   * Resolve the vendor behind this session once, from the server-built actor.
+   *
+   * No vendor id is accepted from a query string or request body. That keeps
+   * the dashboard useful to owners who can see every branch and safe for staff
+   * accounts that are limited to one branch.
+   */
+  function vendorActor(request: Parameters<typeof actorOf>[0]) {
+    const actor = actorOf(request);
+    if (!actor.vendorId) throw ApiError.forbidden('This account is not linked to a vendor.');
+    return actor as typeof actor & { vendorId: string };
+  }
+
+  // -------------------------------------------------------------------------
+  // GET /v1/vendor/dashboard — identity, branches, catalogue and reviews
+  // -------------------------------------------------------------------------
+  app.get(
+    '/v1/vendor/dashboard',
+    { preHandler: requirePermission('vendor:catalog:read') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const vendor = await prisma.vendor.findUnique({
+        where: { id: actor.vendorId },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          description: true,
+          category: true,
+          status: true,
+          logoKey: true,
+          coverKey: true,
+          ratingAverage: true,
+          ratingCount: true,
+          autoAcceptSeconds: true,
+          branches: {
+            where: {
+              isActive: true,
+              ...(actor.branchId ? { id: actor.branchId } : {}),
+            },
+            orderBy: { createdAt: 'asc' },
+            select: {
+              id: true,
+              name: true,
+              address: true,
+              phone: true,
+              state: true,
+              busyExtraMinutes: true,
+              minimumOrder: true,
+              defaultPrepMinutes: true,
+              supportsDelivery: true,
+              supportsPickup: true,
+              supportsVendorDelivery: true,
+            },
+          },
+          categories: {
+            where: { isActive: true },
+            orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+            select: {
+              id: true,
+              name: true,
+              description: true,
+              sortOrder: true,
+              items: {
+                where: { archivedAt: null },
+                orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+                select: {
+                  id: true,
+                  name: true,
+                  description: true,
+                  imageKey: true,
+                  price: true,
+                  prepMinutes: true,
+                  isAvailable: true,
+                  requiresAgeCheck: true,
+                  updatedAt: true,
+                  modifierGroups: {
+                    orderBy: { sortOrder: 'asc' },
+                    select: {
+                      id: true,
+                      name: true,
+                      minSelect: true,
+                      maxSelect: true,
+                      sortOrder: true,
+                      options: {
+                        orderBy: { sortOrder: 'asc' },
+                        select: {
+                          id: true,
+                          name: true,
+                          priceDelta: true,
+                          isAvailable: true,
+                          sortOrder: true,
+                        },
+                      },
+                    },
+                  },
+                  stock: {
+                    where: actor.branchId
+                      ? { branchId: actor.branchId }
+                      : { branch: { isActive: true } },
+                    select: {
+                      branchId: true,
+                      quantity: true,
+                      isAvailable: true,
+                      updatedAt: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          reviews: {
+            where: { status: 'published' },
+            orderBy: { createdAt: 'desc' },
+            take: 20,
+            select: {
+              id: true,
+              rating: true,
+              comment: true,
+              vendorResponse: true,
+              respondedAt: true,
+              createdAt: true,
+              order: { select: { code: true } },
+              customer: { select: { identity: { select: { displayName: true } } } },
+            },
+          },
+        },
+      });
+
+      if (!vendor) throw ApiError.notFound();
+
+      const categories = await Promise.all(
+        vendor.categories.map(async (category) => ({
+          ...category,
+          items: await Promise.all(
+            category.items.map(async (item) => ({
+              ...item,
+              imageKey: item.imageKey
+                ? await app.services.storage.signedUrl(item.imageKey, 3_600)
+                : null,
+            })),
+          ),
+        })),
+      );
+
+      return {
+        vendor: {
+          ...vendor,
+          categories,
+          reviews: vendor.reviews.map((review) => ({
+            id: review.id,
+            rating: review.rating,
+            comment: review.comment,
+            vendorResponse: review.vendorResponse,
+            respondedAt: review.respondedAt,
+            createdAt: review.createdAt,
+            orderCode: review.order.code,
+            customerName:
+              review.customer.identity.displayName?.split(' ')[0] ?? 'DASH customer',
+          })),
+        },
+      };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/vendor/categories — create a catalogue section
+  // -------------------------------------------------------------------------
+  app.post(
+    '/v1/vendor/categories',
+    { preHandler: requirePermission('vendor:catalog:write') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const body = z
+        .object({
+          name: z.string().trim().min(2).max(80),
+          description: z.string().trim().max(240).nullable().optional(),
+        })
+        .parse(request.body);
+
+      const last = await prisma.menuCategory.findFirst({
+        where: { vendorId: actor.vendorId },
+        orderBy: { sortOrder: 'desc' },
+        select: { sortOrder: true },
+      });
+      const category = await prisma.menuCategory.create({
+        data: {
+          vendorId: actor.vendorId,
+          name: body.name,
+          description: body.description ?? null,
+          sortOrder: (last?.sortOrder ?? -1) + 1,
+        },
+        select: { id: true, name: true, description: true, sortOrder: true },
+      });
+
+      return { category };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/vendor/items — add a product to the vendor's own catalogue
+  // -------------------------------------------------------------------------
+  app.post(
+    '/v1/vendor/items',
+    { preHandler: requirePermission('vendor:catalog:write') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const body = z
+        .object({
+          categoryId: z.string().trim().min(1),
+          name: z.string().trim().min(2).max(120),
+          description: z.string().trim().max(1_000).nullable().optional(),
+          price: z.number().int().min(0).max(100_000_000),
+          prepMinutes: z.number().int().min(0).max(360).default(15),
+          quantity: z.number().int().min(0).max(100_000).nullable().optional(),
+          requiresAgeCheck: z.boolean().default(false),
+        })
+        .parse(request.body);
+
+      const category = await prisma.menuCategory.findUnique({
+        where: { id: body.categoryId },
+        select: { id: true, vendorId: true },
+      });
+      if (!category) throw ApiError.notFound();
+      requireScope(actor, { vendorId: category.vendorId });
+
+      const branches = await prisma.branch.findMany({
+        where: {
+          vendorId: actor.vendorId,
+          isActive: true,
+          ...(actor.branchId ? { id: actor.branchId } : {}),
+        },
+        select: { id: true },
+      });
+
+      const item = await prisma.menuItem.create({
+        data: {
+          vendorId: actor.vendorId,
+          categoryId: category.id,
+          name: body.name,
+          description: body.description ?? null,
+          price: body.price,
+          prepMinutes: body.prepMinutes,
+          requiresAgeCheck: body.requiresAgeCheck,
+          isAvailable: body.quantity !== 0,
+          stock:
+            branches.length > 0
+              ? {
+                  create: branches.map((branch) => ({
+                    branchId: branch.id,
+                    quantity: body.quantity ?? null,
+                    isAvailable: body.quantity !== 0,
+                  })),
+                }
+              : undefined,
+        },
+        select: {
+          id: true,
+          categoryId: true,
+          name: true,
+          description: true,
+          price: true,
+          prepMinutes: true,
+          isAvailable: true,
+          requiresAgeCheck: true,
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'vendor.catalog.item_created',
+        resourceType: 'menu_item',
+        resourceId: item.id,
+        after: { categoryId: item.categoryId, name: item.name, price: item.price },
+        requestId: request.id,
+      });
+
+      return { item };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PATCH /v1/vendor/items/:id — edit a product without crossing vendors
+  // -------------------------------------------------------------------------
+  app.patch<{ Params: { id: string } }>(
+    '/v1/vendor/items/:id',
+    { preHandler: requirePermission('vendor:catalog:write') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const body = z
+        .object({
+          categoryId: z.string().trim().min(1).optional(),
+          name: z.string().trim().min(2).max(120).optional(),
+          description: z.string().trim().max(1_000).nullable().optional(),
+          price: z.number().int().min(0).max(100_000_000).optional(),
+          prepMinutes: z.number().int().min(0).max(360).optional(),
+          requiresAgeCheck: z.boolean().optional(),
+        })
+        .refine((value) => Object.keys(value).length > 0, 'At least one change is required.')
+        .parse(request.body);
+
+      const current = await prisma.menuItem.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, vendorId: true },
+      });
+      if (!current) throw ApiError.notFound();
+      requireScope(actor, { vendorId: current.vendorId });
+
+      if (body.categoryId) {
+        const category = await prisma.menuCategory.findUnique({
+          where: { id: body.categoryId },
+          select: { vendorId: true },
+        });
+        if (!category) throw ApiError.notFound();
+        requireScope(actor, { vendorId: category.vendorId });
+      }
+
+      const item = await prisma.menuItem.update({
+        where: { id: current.id },
+        data: body,
+        select: {
+          id: true,
+          categoryId: true,
+          name: true,
+          description: true,
+          price: true,
+          prepMinutes: true,
+          isAvailable: true,
+          requiresAgeCheck: true,
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'vendor.catalog.item_changed',
+        resourceType: 'menu_item',
+        resourceId: item.id,
+        after: body,
+        requestId: request.id,
+      });
+
+      return { item };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PUT /v1/vendor/items/:id/modifiers — replace this product's choice groups
+  //
+  // Full replacement keeps the dashboard contract simple while preserving the
+  // ids of groups/options the vendor is editing. Existing carts with a removed
+  // option are deliberately rejected at quote time instead of silently
+  // substituting another choice.
+  // -------------------------------------------------------------------------
+  app.put<{ Params: { id: string } }>(
+    '/v1/vendor/items/:id/modifiers',
+    { preHandler: requirePermission('vendor:catalog:write') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const optionSchema = z.object({
+        id: z.string().trim().min(1).optional(),
+        name: z.string().trim().min(1).max(80),
+        priceDelta: z.number().int().min(-100_000_000).max(100_000_000).default(0),
+        isAvailable: z.boolean().default(true),
+      });
+      const groupSchema = z
+        .object({
+          id: z.string().trim().min(1).optional(),
+          name: z.string().trim().min(1).max(80),
+          minSelect: z.number().int().min(0).max(20).default(0),
+          maxSelect: z.number().int().min(1).max(20).default(1),
+          options: z.array(optionSchema).min(1).max(30),
+        })
+        .superRefine((group, context) => {
+          if (group.minSelect > group.maxSelect) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['minSelect'],
+              message: 'Minimum selections cannot exceed maximum selections.',
+            });
+          }
+          if (group.maxSelect > group.options.length) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['maxSelect'],
+              message: 'Maximum selections cannot exceed the number of options.',
+            });
+          }
+          const available = group.options.filter((option) => option.isAvailable).length;
+          if (group.minSelect > available) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['minSelect'],
+              message: 'Required selections cannot exceed the available options.',
+            });
+          }
+        });
+      const body = z.object({ groups: z.array(groupSchema).max(12) }).parse(request.body);
+
+      const item = await prisma.menuItem.findUnique({
+        where: { id: request.params.id },
+        select: {
+          id: true,
+          vendorId: true,
+          modifierGroups: {
+            select: {
+              id: true,
+              options: { select: { id: true } },
+            },
+          },
+        },
+      });
+      if (!item) throw ApiError.notFound();
+      requireScope(actor, { vendorId: item.vendorId });
+
+      const currentGroups = new Map(item.modifierGroups.map((group) => [group.id, group]));
+      const submittedGroupIds = body.groups.flatMap((group) => (group.id ? [group.id] : []));
+
+      if (new Set(submittedGroupIds).size !== submittedGroupIds.length) {
+        throw ApiError.badRequest('The same option group was submitted more than once.');
+      }
+
+      for (const group of body.groups) {
+        if (!group.id) continue;
+        const current = currentGroups.get(group.id);
+        if (!current) throw ApiError.notFound();
+
+        const currentOptionIds = new Set(current.options.map((option) => option.id));
+        const submittedOptionIds = group.options.flatMap((option) => (option.id ? [option.id] : []));
+        if (new Set(submittedOptionIds).size !== submittedOptionIds.length) {
+          throw ApiError.badRequest('The same option was submitted more than once.');
+        }
+        if (submittedOptionIds.some((id) => !currentOptionIds.has(id))) throw ApiError.notFound();
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.modifierGroup.deleteMany({
+          where: {
+            itemId: item.id,
+            ...(submittedGroupIds.length > 0 ? { id: { notIn: submittedGroupIds } } : {}),
+          },
+        });
+
+        for (const [groupIndex, group] of body.groups.entries()) {
+          if (!group.id) {
+            await tx.modifierGroup.create({
+              data: {
+                itemId: item.id,
+                name: group.name,
+                minSelect: group.minSelect,
+                maxSelect: group.maxSelect,
+                sortOrder: groupIndex,
+                options: {
+                  create: group.options.map((option, optionIndex) => ({
+                    name: option.name,
+                    priceDelta: option.priceDelta,
+                    isAvailable: option.isAvailable,
+                    sortOrder: optionIndex,
+                  })),
+                },
+              },
+            });
+            continue;
+          }
+
+          await tx.modifierGroup.update({
+            where: { id: group.id },
+            data: {
+              name: group.name,
+              minSelect: group.minSelect,
+              maxSelect: group.maxSelect,
+              sortOrder: groupIndex,
+            },
+          });
+
+          const submittedOptionIds = group.options.flatMap((option) => (option.id ? [option.id] : []));
+          await tx.modifier.deleteMany({
+            where: {
+              groupId: group.id,
+              ...(submittedOptionIds.length > 0 ? { id: { notIn: submittedOptionIds } } : {}),
+            },
+          });
+
+          for (const [optionIndex, option] of group.options.entries()) {
+            if (option.id) {
+              await tx.modifier.update({
+                where: { id: option.id },
+                data: {
+                  name: option.name,
+                  priceDelta: option.priceDelta,
+                  isAvailable: option.isAvailable,
+                  sortOrder: optionIndex,
+                },
+              });
+            } else {
+              await tx.modifier.create({
+                data: {
+                  groupId: group.id,
+                  name: option.name,
+                  priceDelta: option.priceDelta,
+                  isAvailable: option.isAvailable,
+                  sortOrder: optionIndex,
+                },
+              });
+            }
+          }
+        }
+      });
+
+      const groups = await prisma.modifierGroup.findMany({
+        where: { itemId: item.id },
+        orderBy: { sortOrder: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          minSelect: true,
+          maxSelect: true,
+          sortOrder: true,
+          options: {
+            orderBy: { sortOrder: 'asc' },
+            select: {
+              id: true,
+              name: true,
+              priceDelta: true,
+              isAvailable: true,
+              sortOrder: true,
+            },
+          },
+        },
+      });
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'vendor.catalog.modifiers_changed',
+        resourceType: 'menu_item',
+        resourceId: item.id,
+        after: {
+          groups: groups.map((group) => ({
+            id: group.id,
+            name: group.name,
+            minSelect: group.minSelect,
+            maxSelect: group.maxSelect,
+            optionCount: group.options.length,
+          })),
+        },
+        requestId: request.id,
+      });
+
+      return { groups };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/vendor/reviews/:id/respond
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/vendor/reviews/:id/respond',
+    { preHandler: requirePermission('vendor:review:respond') },
+    async (request) => {
+      const actor = vendorActor(request);
+      const body = z.object({ response: z.string().trim().min(2).max(500) }).parse(request.body);
+      const review = await prisma.review.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, vendorId: true },
+      });
+      if (!review || !review.vendorId) throw ApiError.notFound();
+      requireScope(actor, { vendorId: review.vendorId });
+
+      const updated = await prisma.review.update({
+        where: { id: review.id },
+        data: { vendorResponse: body.response, respondedAt: new Date() },
+        select: { id: true, vendorResponse: true, respondedAt: true },
+      });
+      return { review: updated };
+    },
+  );
 
   // -------------------------------------------------------------------------
   // GET /v1/vendor/orders — the live queue
@@ -84,9 +722,19 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
           createdAt: true,
           placedAt: true,
           estimatedReadyAt: true,
+          // Whether the kitchen has said the food is ready — the only signal
+          // once a rider has taken the order and the status is theirs.
+          readyAt: true,
           instructions: true,
           items: {
-            select: { nameSnapshot: true, quantity: true, modifiers: true, instructions: true },
+            select: {
+              nameSnapshot: true,
+              priceSnapshot: true,
+              quantity: true,
+              lineTotal: true,
+              modifiers: true,
+              instructions: true,
+            },
           },
           // The vendor sees the customer's first name only. They do not need the
           // phone number or the full address to cook the food; the rider does.
@@ -97,7 +745,16 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
         take: query.limit,
       });
 
+      // The console's own section, read once rather than repeated on every
+      // order: this board belongs to one vendor, so the vocabulary it should
+      // speak is a property of the console, not of each row.
+      const vendor = await prisma.vendor.findUnique({
+        where: { id: actor.vendorId },
+        select: { category: true },
+      });
+
       return {
+        vendor: { category: vendor?.category ?? null },
         orders: orders.map((order) => ({
           ...order,
           customer: { name: order.customer.identity.displayName?.split(' ')[0] ?? 'Customer' },
@@ -128,31 +785,78 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
 
       const readyAt = new Date(Date.now() + body.prepMinutes * 60_000);
 
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: 'accepted',
-          acceptedAt: new Date(),
-          estimatedReadyAt: readyAt,
-          statusEvents: {
-            create: {
-              fromStatus: order.status,
-              toStatus: 'accepted',
-              actorType: actingAs,
-              actorId: actor.identityId,
-            },
+      // The accept and the intent to dispatch commit together or not at all.
+      // This used to be a dual write — the update committed, then `enqueue` was
+      // a separate network call — so a Redis outage in the gap left an accepted
+      // order that no rider was ever sent to, with nothing recording that one
+      // was supposed to be. See events/outbox.ts.
+      await prisma.$transaction(async (tx) => {
+        // Claim the acceptance, rather than assume it.
+        //
+        // This is the button most likely to be pressed twice — a counter
+        // tablet on a slow connection, two staff working the same queue, a
+        // retried request — and `assertTransition` judged a status read from
+        // before this transaction opened. Both attempts could therefore find
+        // the order `placed`, both judge `accepted` legal, and both write it.
+        // The status converged, so nothing looked wrong; the record did not.
+        // Two status events, two revision bumps, two realtime notifications,
+        // and `acceptedAt` overwritten — the field a rider's billable waiting
+        // time is measured from.
+        //
+        // Naming the expected prior status makes this a compare-and-set: the
+        // first request to commit accepts the order, the second matches no row
+        // and rolls back everything it was about to write. The same pattern
+        // guards the `preparing` transition below and the rider's own
+        // transitions in routes/rider.ts.
+        const claimed = await tx.order.updateMany({
+          where: { id: order.id, status: order.status },
+          data: {
+            status: 'accepted',
+            acceptedAt: new Date(),
+            estimatedReadyAt: readyAt,
           },
-        },
+        });
+        if (claimed.count === 0) {
+          throw ApiError.conflict('That order has already been accepted.');
+        }
+
+        await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: 'accepted',
+            actorType: actingAs,
+            actorId: actor.identityId,
+          },
+        });
+
+        // Accepting deliberately does NOT dispatch a rider.
+        //
+        // Accept and "start preparing" are two decisions, and only the second
+        // one commits the kitchen. A vendor may accept a queue of orders and
+        // begin them in whatever sequence suits the kitchen; dispatching on
+        // accept would send riders for food nobody has started cooking, and
+        // they would wait at the counter for an order that is fourth in line.
+        //
+        // The prep-time delay this replaces was worse in the other direction:
+        // `(prepMinutes - 8)` minutes meant a 25-minute prep pushed the search
+        // 17 minutes into the future, and it looked exactly like dispatch being
+        // broken. Neither timer is the right answer — the vendor telling us
+        // they have started is.
+        //
+        // See the `preparing` branch in the progress route below.
+
+        // The customer's tracking screen is waiting on exactly this. Recorded
+        // in the same transaction for the same reason the dispatch intent is:
+        // a notification sent before the commit can describe a state the order
+        // never reached, and one sent after can be lost in the gap with nothing
+        // remembering it was owed.
+        await recordOrderChange(tx, order.id);
       });
 
-      // Dispatch aims to have a rider arrive as the food is ready, so it is
-      // scheduled from the vendor's own prep estimate rather than immediately.
-      await queue.enqueue({
-        name: 'dispatch.find_rider',
-        payload: { orderId: order.id },
-        delayMs: Math.max(0, (body.prepMinutes - 8) * 60_000),
-        idempotencyKey: `dispatch_${order.id}`,
-      });
+      // Publish now if the queue is reachable; the scheduled relay covers it
+      // if not. Never raises — the row is already durable.
+      await flushOutbox(prisma, queue);
 
       await writeAudit(prisma, {
         identityId: actor.identityId,
@@ -193,33 +897,45 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       const actingAs = transitionActorFor(actor);
       assertTransition(order.status as OrderStatus, 'rejected', actingAs);
 
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: 'rejected',
-          cancelledAt: new Date(),
-          cancelledBy: actor.identityId,
-          cancellationReason: body.note ?? body.reasonCode,
-          statusEvents: {
-            create: {
-              fromStatus: order.status,
-              toStatus: 'rejected',
-              actorType: actingAs,
-              actorId: actor.identityId,
-              reasonCode: body.reasonCode,
-              reason: body.note ?? null,
+      // The rejection and the refund it obliges commit together. A refund that
+      // was owed and never queued is the worst of the dual-write failures here:
+      // the customer is charged, the order is dead, and nothing in the system
+      // remembers that money has to go back.
+      await prisma.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: 'rejected',
+            cancelledAt: new Date(),
+            cancelledBy: actor.identityId,
+            cancellationReason: body.note ?? body.reasonCode,
+            statusEvents: {
+              create: {
+                fromStatus: order.status,
+                toStatus: 'rejected',
+                actorType: actingAs,
+                actorId: actor.identityId,
+                reasonCode: body.reasonCode,
+                reason: body.note ?? null,
+              },
             },
           },
-        },
+        });
+
+        // A rejected customer is never at fault, so the refund is queued
+        // automatically rather than waiting for them to ask for it.
+        await enqueueViaOutbox(tx, {
+          name: 'refund.full',
+          payload: { orderId: order.id, reason: 'vendor_rejected' },
+          idempotencyKey: `refund_${order.id}`,
+        });
+
+        await recordOrderChange(tx, order.id);
       });
 
-      // A rejected customer is never at fault, so the refund is queued
-      // automatically rather than waiting for them to ask for it.
-      await queue.enqueue({
-        name: 'refund.full',
-        payload: { orderId: order.id, reason: 'vendor_rejected' },
-        idempotencyKey: `refund_${order.id}`,
-      });
+      // Publish now if the queue is reachable; the scheduled relay covers it
+      // if not. Never raises — the row is already durable.
+      await flushOutbox(prisma, queue);
 
       await writeAudit(prisma, {
         identityId: actor.identityId,
@@ -244,24 +960,103 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       const body = z.object({ to: z.enum(['preparing', 'ready']) }).parse(request.body);
       const { actor, order } = await loadScopedOrder(request, request.params.id);
 
+      // Food ready after a rider has already accepted.
+      //
+      // Dispatch starts at `preparing`, so a rider usually accepts while the
+      // kitchen is still cooking and the order moves on to `rider_assigned`.
+      // The kitchen finishing is then a fact about the food, not a move in
+      // the delivery: the status is the rider's, and `rider_assigned → ready`
+      // is reserved for ops reassignment, which re-enters dispatch. Refusing
+      // it — as this route did — made the vendor's Ready button fail for
+      // most orders and lost the signal entirely. It is recorded as `readyAt`
+      // (once) and announced, and the status is left where the rider put it.
+      if (body.to === 'ready' && (order.status === 'rider_assigned' || order.status === 'rider_arrived')) {
+        await prisma.$transaction(async (tx) => {
+          await tx.order.updateMany({ where: { id: order.id, readyAt: null }, data: { readyAt: new Date() } });
+          await recordOrderChange(tx, order.id);
+        });
+        await flushOutbox(prisma, queue);
+        return { status: order.status, foodReady: true };
+      }
+
       const actingAs = transitionActorFor(actor);
       assertTransition(order.status as OrderStatus, body.to, actingAs);
 
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: body.to,
-          ...(body.to === 'ready' ? { readyAt: new Date() } : {}),
-          statusEvents: {
-            create: {
-              fromStatus: order.status,
-              toStatus: body.to,
-              actorType: actingAs,
-              actorId: actor.identityId,
-            },
+      // Wrapped in a transaction so the notification commits with the
+      // transition. It was a bare update before there was anything to announce.
+      await prisma.$transaction(async (tx) => {
+        // Claim the transition, rather than assume it.
+        //
+        // `assertTransition` above judged a status read before this
+        // transaction opened, so two near-simultaneous requests can both see
+        // `accepted`, both judge `preparing` legal, and both arrive here. The
+        // outbox does not stop them: `OutboxEvent.idempotencyKey` is
+        // deliberately not unique, because the same key may legitimately be
+        // enqueued again once an earlier job's dedupe window has passed. The
+        // result was two `dispatch.find_rider` intents for one order — two
+        // rounds of offers, and a rider sent for food another rider may
+        // already be riding to collect.
+        //
+        // Naming the expected prior status in the `where` makes the update a
+        // compare-and-set: whichever request commits first moves the order,
+        // and the other matches no row, throws, and takes its outbox write
+        // down with it. The winner is arbitrary, which is correct — they are
+        // the same request — but exactly one of them happens.
+        const claimed = await tx.order.updateMany({
+          where: { id: order.id, status: order.status },
+          data: {
+            status: body.to,
+            ...(body.to === 'ready' ? { readyAt: new Date() } : {}),
           },
-        },
+        });
+        if (claimed.count === 0) {
+          throw ApiError.conflict(`A vendor cannot change an order that is ${body.to}.`);
+        }
+
+        await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: body.to,
+            actorType: actingAs,
+            actorId: actor.identityId,
+          },
+        });
+
+        // `preparing` is the ONE trigger for normal rider dispatch.
+        //
+        // Not checkout, not accept, and not `ready`. Checkout is before the
+        // vendor has agreed to make the order; accept is agreement without
+        // commitment, and a vendor may accept several orders and start them in
+        // whatever order suits the kitchen; `ready` is too late, because the
+        // food is then sitting on the counter while a rider is still being
+        // found. Starting to prepare is the moment the kitchen commits, which
+        // makes it the moment a rider is worth spending — and dispatching here
+        // lets the rider travel to the vendor while the food is being made.
+        //
+        // The only other paths that enqueue this job are exceptions, not normal
+        // dispatch: an ops reassignment (routes/admin.ts, keyed on the audit
+        // event) and the worker's own re-rounding when a round expires
+        // (workers/dispatch.ts, keyed on the round number).
+        //
+        // The key is scoped to this transition. An order enters `preparing`
+        // once — `assertTransition` refuses `preparing → preparing`, so a
+        // double-tapped button is rejected by the state machine before it gets
+        // here — and the key stops the queue running a redelivered publication
+        // of this same event twice. Neither a retry nor a duplicate publish can
+        // produce a second round of offers.
+        if (body.to === 'preparing') {
+          await enqueueViaOutbox(tx, {
+            name: 'dispatch.find_rider',
+            payload: { orderId: order.id },
+            idempotencyKey: `dispatch_${order.id}_preparing`,
+          });
+        }
+
+        await recordOrderChange(tx, order.id);
       });
+
+      await flushOutbox(prisma, queue);
 
       return { status: body.to };
     },
@@ -283,10 +1078,10 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       const body = z.object({ code: z.string().trim().regex(/^\d{4}$/) }).parse(request.body);
       const { order } = await loadScopedOrder(request, request.params.id);
 
-      if (!order.pickupCodeHash) throw ApiError.conflict('This order has no pickup code.');
-
-      const matches = await verifyOtp(body.code, order.pickupCodeHash);
-      if (!matches) throw ApiError.badRequest('That pickup code is not correct.');
+      // The code the assigned rider is shown (see orders/pickup-code.ts).
+      if (!pickupCodeMatches(order.id, body.code, config.JWT_ACCESS_SECRET)) {
+        throw ApiError.badRequest('That pickup code is not correct.');
+      }
 
       return { verified: true };
     },
@@ -371,6 +1166,80 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       }
 
       return { id: item.id, isAvailable: body.isAvailable };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PUT /v1/vendor/items/:id/image — sanitise and attach one product photo
+  //
+  // The browser sends raw JPEG/PNG/WebP bytes. Nothing is persisted until
+  // Sharp has decoded the upload and re-encoded a fresh WebP. The object key is
+  // generated by the storage adapter, never from the vendor's filename.
+  // -------------------------------------------------------------------------
+  app.put<{ Params: { id: string } }>(
+    '/v1/vendor/items/:id/image',
+    {
+      preHandler: requirePermission('vendor:catalog:write'),
+      bodyLimit: PRODUCT_IMAGE_MAX_BYTES,
+      config: { rateLimit: { max: 30, timeWindow: '60 minutes' } },
+    },
+    async (request) => {
+      const actor = vendorActor(request);
+      const item = await prisma.menuItem.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, vendorId: true, imageKey: true },
+      });
+      if (!item) throw ApiError.notFound();
+      requireScope(actor, { vendorId: item.vendorId });
+
+      if (!Buffer.isBuffer(request.body)) {
+        throw ApiError.badRequest('Upload a JPEG, PNG or WebP image.');
+      }
+
+      const contentType = String(request.headers['content-type'] ?? '')
+        .split(';', 1)[0]
+        ?.trim()
+        .toLowerCase();
+      if (!contentType) throw ApiError.badRequest('The image content type is required.');
+
+      const sanitised = await sanitiseProductImage(request.body, contentType);
+      const stored = await app.services.storage.put({
+        body: sanitised,
+        contentType: 'image/webp',
+        prefix: 'vendor-products',
+      });
+
+      try {
+        await prisma.menuItem.update({
+          where: { id: item.id },
+          data: { imageKey: stored.key },
+        });
+      } catch (error) {
+        await app.services.storage.delete(stored.key).catch(() => undefined);
+        throw error;
+      }
+
+      if (item.imageKey && item.imageKey !== stored.key) {
+        await app.services.storage.delete(item.imageKey).catch((error: unknown) => {
+          request.log.warn({ err: error, itemId: item.id }, 'could not delete replaced product image');
+        });
+      }
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'vendor.catalog.product_image_changed',
+        resourceType: 'menu_item',
+        resourceId: item.id,
+        after: { imageKey: stored.key, contentType: stored.contentType, sizeBytes: stored.sizeBytes },
+        requestId: request.id,
+      });
+
+      return {
+        image: {
+          key: stored.key,
+          url: await app.services.storage.signedUrl(stored.key, 3_600),
+        },
+      };
     },
   );
 
