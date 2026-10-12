@@ -14,9 +14,17 @@
  *   DASH_UPLOAD_KEY_PASSWORD     key password
  *
  * Nothing secret is ever written into a file: build.gradle holds only the
- * variable names. If any variable is missing, the release build keeps the
- * template's debug signing — which Play refuses — so an unsigned-for-Play
- * bundle can never be mistaken for an uploadable one.
+ * variable names.
+ *
+ * What happens when a variable is missing depends on the variant:
+ *
+ * - **development and staging** keep the template's debug signing, which Play
+ *   refuses, so the staging APK stays installable on a test phone without the
+ *   upload key and can never be mistaken for an uploadable build.
+ * - **production** has no fallback. The release build type is pointed at the
+ *   upload key unconditionally, and Gradle stops with an error naming the
+ *   missing variables — or a keystore path that does not exist — before any
+ *   task runs. A production AAB is upload-signed or it is not built at all.
  *
  * The keystore itself lives outside the repository (see
  * docs/release/SIGNING.md). It must never be committed.
@@ -44,7 +52,29 @@ const RELEASE_SELECTION = `
                 signingConfig signingConfigs.dashUpload
             }`;
 
-function addSigning(gradle) {
+/**
+ * Production: the upload key or nothing. Evaluated when Gradle configures the
+ * project, so a missing variable fails the build before a single task runs,
+ * and the debug signing line above it can never take effect.
+ */
+const PRODUCTION_RELEASE_SELECTION = `
+            ${MARKER} (production: upload key required)
+            def dashUploadMissing = ['DASH_UPLOAD_STORE_FILE', 'DASH_UPLOAD_STORE_PASSWORD', 'DASH_UPLOAD_KEY_ALIAS', 'DASH_UPLOAD_KEY_PASSWORD'].findAll { !System.getenv(it) }
+            if (!dashUploadMissing.isEmpty()) {
+                throw new GradleException("DASH production builds must be signed with the Play upload key. Missing: " + dashUploadMissing.join(', ') + ". Debug signing is never used for production.")
+            }
+            if (!file(System.getenv('DASH_UPLOAD_STORE_FILE')).isFile()) {
+                throw new GradleException("DASH_UPLOAD_STORE_FILE does not point at a keystore file.")
+            }
+            signingConfig signingConfigs.dashUpload`;
+
+/**
+ * Add the upload signing config to app/build.gradle.
+ *
+ * `production` selects the fail-closed release selection; otherwise the
+ * release build keeps debug signing whenever the key is not supplied.
+ */
+function addSigning(gradle, { production = false } = {}) {
   if (gradle.includes(MARKER)) return gradle;
 
   const withConfig = gradle.replace(/(signingConfigs\s*\{)/, `$1${SIGNING_CONFIG}`);
@@ -52,7 +82,8 @@ function addSigning(gradle) {
 
   // The release build type's own `signingConfig signingConfigs.debug` line is
   // left in place; this one, placed after it, overrides it when the key is set.
-  const withRelease = withConfig.replace(/(buildTypes\s*\{[\s\S]*?release\s*\{[^}]*?signingConfig\s+signingConfigs\.debug)/, `$1${RELEASE_SELECTION}`);
+  const selection = production ? PRODUCTION_RELEASE_SELECTION : RELEASE_SELECTION;
+  const withRelease = withConfig.replace(/(buildTypes\s*\{[\s\S]*?release\s*\{[^}]*?signingConfig\s+signingConfigs\.debug)/, `$1${selection}`);
   if (withRelease === withConfig) throw new Error('withReleaseSigning: release build type not found in app/build.gradle');
   return withRelease;
 }
@@ -60,7 +91,10 @@ function addSigning(gradle) {
 module.exports = function withReleaseSigning(config) {
   return withAppBuildGradle(config, (mod) => {
     if (mod.modResults.language !== 'groovy') throw new Error('withReleaseSigning: expected a Groovy build.gradle');
-    mod.modResults.contents = addSigning(mod.modResults.contents);
+    // The variant app.config.ts resolved, not a fresh read of the environment,
+    // so the plugin and the config can never disagree about which build this is.
+    const production = config.extra?.variant === 'production';
+    mod.modResults.contents = addSigning(mod.modResults.contents, { production });
     return mod;
   });
 };
