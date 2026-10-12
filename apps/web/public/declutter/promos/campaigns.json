@@ -1,0 +1,43 @@
+[
+  {
+    "id": "dash-app",
+    "title": "DASH App",
+    "status": "Launching in December",
+    "image": "/declutter/promos/dash-app.png",
+    "alt": "DASH App preview: food, shops, pharmacy, local market, declutter and logistics. Launching in December."
+  },
+  {
+    "id": "dash-ai",
+    "title": "DASH AI",
+    "status": "Launching in December",
+    "image": "/declutter/promos/dash-ai.jpg",
+    "alt": "DASH AI — One AI workspace. Chat, create, research and automate. DASH AI is coming December."
+  },
+  {
+    "id": "dash-rider",
+    "title": "DASH Rider / Dasher",
+    "image": "/declutter/promos/dash-rider.png",
+    "alt": "DASH Rider / Dasher app preview: earnings, availability, trips, current zone, orders and messages. Deliver more possibilities."
+  },
+  {
+    "id": "dash-declutters",
+    "title": "DASH Declutters",
+    "status": "Launching November 1",
+    "image": "/declutter/promos/dash-declutters.jpg",
+    "alt": "DASH Declutters — Good Things Find New Homes. Buy, sell and declutter. A trusted marketplace for pre-loved items. Simple. Safe. Local. Launching November 1st."
+  },
+  {
+    "id": "dash-club",
+    "title": "DASH Club",
+    "status": "Coming Soon",
+    "image": "/declutter/promos/dash-club.jpg",
+    "alt": "DASH Club — Join the circle. A Dash World social and community product for access, updates and connection. Coming Soon."
+  },
+  {
+    "id": "dash-ai-studio",
+    "title": "DASH AI Studio",
+    "status": "Coming Soon",
+    "image": "/declutter/promos/dash-ai-studio.jpg",
+    "alt": "DASH AI Studio — Create faster. Publish smarter. Design tools and creative workflows from Dash World. Coming Soon."
+  }
+]

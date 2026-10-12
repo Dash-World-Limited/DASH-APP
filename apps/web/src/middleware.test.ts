@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isDeclutterPath } from './middleware';
+import campaigns from '../public/declutter/promos/campaigns.json';
 
 /**
  * The deployment boundary on the web side.
@@ -87,6 +88,12 @@ describe('which paths a Declutters deployment serves', () => {
   it('serves the asset pipeline, because blocking it serves unstyled HTML', () => {
     expect(isDeclutterPath('/_next/static/chunks/main.js')).toBe(true);
     expect(isDeclutterPath('/_next/image')).toBe(true);
+  });
+
+  it('serves the campaign manifest and every configured graphic without widening the deployment boundary', () => {
+    expect(isDeclutterPath('/declutter/promos/campaigns.json')).toBe(true);
+    for (const campaign of campaigns) expect(isDeclutterPath(campaign.image)).toBe(true);
+    expect(isDeclutterPath('/declutter-promos/campaigns.json')).toBe(false);
   });
 
   it('serves the fixed root files a crawler asks for by name', () => {
