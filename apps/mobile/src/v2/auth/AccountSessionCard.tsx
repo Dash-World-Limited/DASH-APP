@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, TextInput, View } from 'react-native';
 
+import { buildVariant } from '../../api';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space } from '../../theme/tokens';
 import { Icon } from '../../ui/Icon';
@@ -69,7 +70,10 @@ export function AccountSessionCard() {
             onPress={() => void auth.requestOtp(destination).then((result) => {
               if (result) {
                 setSent(true);
-                setDevCode(result.devCode ?? null);
+                // A development server may echo the code so a tester need not open
+                // an inbox. A production build never shows one, whatever the
+                // server sends: a code on screen is a code anyone nearby can read.
+                setDevCode(buildVariant === 'production' ? null : result.devCode ?? null);
               }
             })}
           />
