@@ -1,19 +1,55 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
+/**
+ * The rider's screens.
+ *
+ * The heart of it is one live workspace: the map fills the screen, and the
+ * panel beneath it changes with the rider's real state — offline, finding a
+ * GPS fix, searching, an offer arriving, the delivery journey, and the handover.
+ * Accepting an offer does not open another page; the same screen becomes the
+ * journey, and each step's one action moves the order on. Every value shown
+ * comes from the server or the phone's own GPS: there are no sample orders,
+ * no invented demand, and no drawn routes, because DASH has no routing
+ * provider — the map shows a straight bearing and hands directions to the
+ * rider's own navigation app.
+ *
+ * Orders and history are ordinary list screens below the workspace.
+ */
+
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  AccessibilityInfo,
+  ActivityIndicator,
+  Animated,
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  TextInput,
+  View,
+} from 'react-native';
 
 import { api, ApiError } from '../../api';
+import { secondsLeft } from '../../features/offer';
+import { CountdownRing } from '../../rider/CountdownRing';
 import { MapShell } from '../../rider/MapShell';
 import { RouteStops } from '../../rider/RouteStops';
 import { useTheme } from '../../theme/ThemeProvider';
-import { radius, space, touchTarget } from '../../theme/tokens';
+import { elevation, radius, space, touchTarget } from '../../theme/tokens';
 import { Icon, type IconName } from '../../ui/Icon';
 import { Text } from '../../ui/Text';
-import { type DeliveryStatus, type RiderDelivery, useRiderFlow } from './RiderFlowProvider';
-
-interface ScreenProps {
-  onBack: () => void;
-  onPush: (name: 'offer' | 'delivery' | 'route' | 'complete') => void;
-}
+import {
+  JOURNEY_STEPS,
+  externalNavigationUrl,
+  formatAgo,
+  formatDistance,
+  formatEta,
+  gpsFreshness,
+  journeyStage,
+  offerWindowSeconds,
+  pickupCodeVisible,
+  straightLineMetres,
+  type JourneyStage,
+} from './journey';
+import { type Coordinate, type DeliveryStatus, type RiderDelivery, type RiderOffer, useRiderFlow } from './RiderFlowProvider';
 
 interface RiderHistoryItem {
   id: string;
@@ -32,52 +68,445 @@ interface ApiHistoryDelivery {
   items: readonly { nameSnapshot: string; quantity: number }[];
 }
 
+// ---------------------------------------------------------------- workspace
 
-export function RiderOnlineScreen({ onBack, onPush }: ScreenProps) {
+/**
+ * The live rider workspace. Every rider route that used to be its own page —
+ * online, offer, delivery, navigation, completion — renders this, and the
+ * panel follows the state rather than the route.
+ */
+export function RiderWorkspace({ onBack, onChat }: { onBack: () => void; onChat: (orderId: string) => void }) {
   const { palette } = useTheme();
   const flow = useRiderFlow();
+  const delivery = flow.delivery;
+  const activeDelivery = delivery && delivery.status !== 'delivered' ? delivery : null;
+  const offer = activeDelivery ? null : flow.offer;
+  const stage = activeDelivery ? journeyStage(activeDelivery.status) : null;
+
+  // Where the map points: the shop before collection, the customer after, or
+  // the offered shop while an offer is open. Nothing while searching.
+  const target: { point: Coordinate; kind: 'pickup' | 'dropoff' } | null = activeDelivery && stage?.target
+    ? stage.target === 'pickup'
+      ? { point: { latitude: activeDelivery.branch.latitude, longitude: activeDelivery.branch.longitude }, kind: 'pickup' }
+      : { point: { latitude: activeDelivery.address.latitude, longitude: activeDelivery.address.longitude }, kind: 'dropoff' }
+    : offer
+      ? { point: { latitude: offer.order.pickup.latitude, longitude: offer.order.pickup.longitude }, kind: 'pickup' }
+      : null;
+  // The map frames its bounds once per destination; a new destination is a new frame.
+  const mapKey = target ? `${target.kind}:${target.point.latitude},${target.point.longitude}` : 'searching';
+
+  let panel: ReactNode;
+  if (delivery?.status === 'delivered') panel = <CompletedPanel delivery={delivery} />;
+  else if (activeDelivery && stage) panel = <JourneyPanel delivery={activeDelivery} stage={stage} onChat={onChat} />;
+  else if (!flow.online) panel = <OfflinePanel />;
+  else if (!flow.riderPosition) panel = <LocatingPanel />;
+  else if (offer) panel = <OfferPanel key={offer.id} offer={offer} />;
+  else panel = <SearchingPanel />;
 
   return (
-    <RiderPage>
-      <RiderHeader title="You’re online" onBack={onBack} />
-      {flow.riderPosition ? (
-        <View style={{ borderRadius: radius.lg, overflow: 'hidden', borderWidth: 1, borderColor: palette.line }}>
+    <View testID="rider-workspace-v2" style={{ flex: 1, backgroundColor: palette.background }}>
+      <View style={{ flex: 1 }}>
+        {flow.riderPosition ? (
           <MapShell
-            route={[]}
+            key={mapKey}
+            height="fill"
             rider={flow.riderPosition}
-            followRider
-            routeColor={palette.accent}
-            height={300}
-            accessibilityLabel="Your live rider location"
+            destination={target?.point}
+            destinationKind={target?.kind}
+            destinationIcon={target?.kind === 'dropoff' ? 'home' : 'storefront-outline'}
+            directLine={Boolean(target)}
+            followRider={!target}
+            routeColor={target?.kind === 'dropoff' ? palette.map.routeToCustomer : palette.map.routeToPickup}
+            accessibilityLabel={target ? `Your live position and the ${target.kind === 'pickup' ? 'shop' : 'drop-off'}` : 'Your live position'}
           />
-        </View>
-      ) : (
-        <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.md }}>
-          <ActivityIndicator />
-          <Text variant="heading">Finding your live location…</Text>
-          <Text variant="caption" tone="muted" align="center">Keep location enabled while you are online. DASH will not offer work until your position is fresh.</Text>
-        </View>
-      )}
-      <View style={{ gap: space.xs }}>
-        <Text variant="heading">Looking for nearby orders…</Text>
-        <Text variant="caption" tone="muted">Your phone’s live GPS position is sent while you are online so dispatch can offer orders you can actually reach.</Text>
+        ) : (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.surfaceMuted }}>
+            <Icon name={flow.online ? 'crosshairs-question' : 'map-marker-off-outline'} size={44} color={palette.textSubtle} />
+          </View>
+        )}
+        <WorkspaceTopBar onBack={onBack} onDelivery={Boolean(activeDelivery)} />
       </View>
-
-      {flow.delivery && flow.delivery.status !== 'delivered' ? (
-        <ActionCard icon="bike-fast" title={`Active delivery · ${flow.delivery.code}`} body={statusLabel(flow.delivery.status)} action="Open delivery" onPress={() => onPush('delivery')} />
-      ) : null}
-
-      {flow.offer ? (
-        <ActionCard icon="bell-ring-outline" title="New delivery offer" body={`${flow.offer.order.pickup.name} · ${metres(flow.offer.pickupDistanceMetres)} away`} action="Review offer" onPress={() => onPush('offer')} />
-      ) : (
-        <SecondaryButton label="Check for orders now" onPress={() => void flow.findOffers()} />
-      )}
-
-      {flow.error ? <ErrorNotice message={flow.error} /> : null}
-      <SecondaryButton label={flow.busy ? 'Updating…' : 'Go offline'} onPress={() => void flow.goOffline().then((ok) => ok && onBack())} disabled={flow.busy} />
-    </RiderPage>
+      {panel}
+    </View>
   );
 }
+
+function WorkspaceTopBar({ onBack, onDelivery }: { onBack: () => void; onDelivery: boolean }) {
+  const { palette } = useTheme();
+  const flow = useRiderFlow();
+  const state = onDelivery ? 'delivery' : flow.online ? 'online' : 'offline';
+  const pill = {
+    online: { label: 'ONLINE', background: palette.successSoft, color: palette.success },
+    delivery: { label: 'ON DELIVERY', background: palette.accentSoft, color: palette.accent },
+    offline: { label: 'OFFLINE', background: palette.surface, color: palette.textMuted },
+  }[state];
+  return (
+    <View pointerEvents="box-none" style={{ position: 'absolute', top: space.md, left: space.md, right: space.md, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+      <Pressable
+        onPress={onBack}
+        accessibilityRole="button"
+        accessibilityLabel="Back to rider home"
+        style={{ width: touchTarget, height: touchTarget, borderRadius: touchTarget / 2, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.surface, ...elevation.floating }}
+      >
+        <Icon name="arrow-left" color={palette.text} />
+      </Pressable>
+      <View
+        accessible
+        accessibilityLabel={`Status: ${pill.label.toLowerCase()}`}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: space.md, height: 36, borderRadius: radius.pill, backgroundColor: pill.background, ...elevation.floating }}
+      >
+        <PulseDot color={pill.color} active={state !== 'offline'} />
+        <Text variant="micro" weight="bold" style={{ color: pill.color }}>{pill.label}</Text>
+      </View>
+      <View style={{ flex: 1 }} />
+      {flow.online || onDelivery ? <GpsChip /> : null}
+    </View>
+  );
+}
+
+/** How fresh the phone's own GPS fix is, ticking each second. Dispatch only offers to fresh positions. */
+function GpsChip() {
+  const { palette } = useTheme();
+  const flow = useRiderFlow();
+  const now = useNow(1_000);
+  const freshness = gpsFreshness(flow.positionUpdatedAt, now);
+  const accuracy = flow.positionAccuracyMetres !== null ? ` ±${Math.round(flow.positionAccuracyMetres)} m` : '';
+  const label = freshness === 'none' ? 'Locating…' : freshness === 'live' ? `GPS live${accuracy}` : `GPS ${formatAgo(flow.positionUpdatedAt, now) ?? ''}`;
+  const color = freshness === 'live' ? palette.success : freshness === 'stale' ? palette.rating : palette.textMuted;
+  return (
+    <View
+      accessible
+      accessibilityLabel={freshness === 'live' ? 'GPS position is live' : freshness === 'stale' ? 'GPS position is out of date' : 'Finding GPS position'}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: space.md, height: 36, borderRadius: radius.pill, backgroundColor: palette.surface, ...elevation.floating }}
+    >
+      <Icon name={freshness === 'none' ? 'crosshairs-question' : 'crosshairs-gps'} size={16} color={color} />
+      <Text variant="micro" weight="bold" style={{ color }}>{label}</Text>
+    </View>
+  );
+}
+
+/**
+ * An open offer, wherever the rider is outside the workspace. Offers are
+ * polled the whole time a rider is online, and one lasts about thirty
+ * seconds, so a rider checking Earnings or Orders must still see it arrive.
+ */
+export function RiderOfferBanner({ onOpen }: { onOpen: () => void }) {
+  const { palette } = useTheme();
+  const flow = useRiderFlow();
+  const now = useNow(500);
+  const offer = flow.delivery && flow.delivery.status !== 'delivered' ? null : flow.offer;
+  if (!offer) return null;
+  const seconds = secondsLeft(offer.expiresAt, now);
+  if (seconds <= 0) return null;
+  return (
+    <Pressable
+      onPress={onOpen}
+      accessibilityRole="button"
+      accessibilityLabel={`New delivery offer from ${offer.order.pickup.name}, ${seconds} seconds left. Open to review.`}
+      style={({ pressed }) => ({ marginHorizontal: space.gutter, marginTop: space.sm, padding: space.md, borderRadius: radius.lg, flexDirection: 'row', alignItems: 'center', gap: space.md, backgroundColor: pressed ? palette.accentPressed : palette.accent, ...elevation.floating })}
+    >
+      <Icon name="bell-ring-outline" color={palette.onAccent} />
+      <View style={{ flex: 1 }}>
+        <Text variant="micro" tone="onAccent" weight="bold">NEW DELIVERY OFFER</Text>
+        <Text variant="label" tone="onAccent" weight="bold" numberOfLines={1}>{offer.order.pickup.name} · {formatDistance(offer.pickupDistanceMetres)} away</Text>
+      </View>
+      <Text variant="heading" tone="onAccent">{seconds}s</Text>
+      <Icon name="chevron-right" color={palette.onAccent} />
+    </Pressable>
+  );
+}
+
+// ---------------------------------------------------------------- panels
+
+/** The sheet under the map: scrolling content, and a footer that never scrolls away. */
+function Sheet({ children, footer, tone = 'surface' }: { children: ReactNode; footer?: ReactNode; tone?: 'surface' | 'accent' }) {
+  const { palette } = useTheme();
+  const accent = tone === 'accent';
+  return (
+    <View
+      style={{
+        maxHeight: '62%',
+        borderTopLeftRadius: radius.xl,
+        borderTopRightRadius: radius.xl,
+        backgroundColor: palette.surface,
+        borderTopWidth: accent ? 3 : 1,
+        borderColor: accent ? palette.accent : palette.line,
+        ...elevation.floating,
+      }}
+    >
+      <View style={{ alignSelf: 'center', width: 40, height: 4, borderRadius: 2, marginTop: space.sm, backgroundColor: palette.line }} />
+      <ScrollView contentContainerStyle={{ padding: space.lg, gap: space.md }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        {children}
+      </ScrollView>
+      {footer ? <View style={{ paddingHorizontal: space.lg, paddingBottom: space.lg, gap: space.sm }}>{footer}</View> : null}
+    </View>
+  );
+}
+
+function OfflinePanel() {
+  const flow = useRiderFlow();
+  return (
+    <Sheet footer={<PrimaryButton label={flow.busy ? 'Going online…' : 'Go online'} icon="power" busy={flow.busy} disabled={flow.busy} onPress={() => void flow.goOnline()} />}>
+      <PanelHeading icon="power-sleep" title="You’re offline" body="Go online to share your live position with DASH and receive delivery offers near you." />
+      {flow.error ? <ErrorNotice message={flow.error} /> : null}
+    </Sheet>
+  );
+}
+
+function LocatingPanel() {
+  const { palette } = useTheme();
+  const flow = useRiderFlow();
+  return (
+    <Sheet footer={<GoOfflineButton />}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+        <ActivityIndicator color={palette.accent} />
+        <View style={{ flex: 1 }}>
+          <Text variant="heading">Getting your GPS fix…</Text>
+          <Text variant="caption" tone="muted">DASH only offers you work once it knows where you are. Keep Location on; open sky helps.</Text>
+        </View>
+      </View>
+      {flow.error ? <ErrorNotice message={flow.error} /> : null}
+    </Sheet>
+  );
+}
+
+/**
+ * Waiting for work. Dispatch is asked automatically every few seconds, so the
+ * rider has nothing to press; "Refresh" is there for impatience, not need.
+ * Nothing here suggests demand that does not exist.
+ */
+function SearchingPanel() {
+  const { palette } = useTheme();
+  const flow = useRiderFlow();
+  const now = useNow(1_000);
+  const checked = formatAgo(flow.offersCheckedAt, now);
+  const stale = gpsFreshness(flow.positionUpdatedAt, now) === 'stale';
+  return (
+    <Sheet footer={<GoOfflineButton />}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.lg }}>
+        <Radar />
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text variant="heading">Searching for nearby orders</Text>
+          <Text variant="caption" tone="muted">Offers appear here on their own — there is nothing to press. Keep DASH open with the screen on while you wait.</Text>
+        </View>
+      </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text variant="micro" tone="muted">{checked ? `Dispatch checked ${checked}` : 'Contacting dispatch…'}</Text>
+        <Pressable onPress={() => void flow.findOffers()} accessibilityRole="button" accessibilityLabel="Check for offers now" hitSlop={12} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <Icon name="refresh" size={16} color={palette.accent} />
+          <Text variant="micro" tone="accent" weight="bold">Refresh</Text>
+        </Pressable>
+      </View>
+      {stale ? <WarningNotice message="Your GPS position is out of date, so dispatch may not offer you work. Check that Location is on and DASH is open." /> : null}
+      {flow.error ? <ErrorNotice message={flow.error} /> : null}
+    </Sheet>
+  );
+}
+
+/**
+ * A real offer from dispatch. Everything the rider needs to decide, and
+ * nothing the server has not sent: the drop-off is an approximate area until
+ * acceptance, and the customer is not named.
+ */
+function OfferPanel({ offer }: { offer: RiderOffer }) {
+  const { palette } = useTheme();
+  const flow = useRiderFlow();
+  const now = useNow(500);
+  const open = secondsLeft(offer.expiresAt, now) > 0;
+  const windowSeconds = offerWindowSeconds(offer.expiresAt, flow.offerSeenAt ?? now);
+  const eta = formatEta(offer.pickupEtaSeconds);
+  const readyAt = offer.order.estimatedReadyAt ? new Date(offer.order.estimatedReadyAt) : null;
+
+  useEffect(() => {
+    AccessibilityInfo.announceForAccessibility(`New delivery offer from ${offer.order.pickup.name}`);
+  }, [offer.order.pickup.name]);
+
+  return (
+    <Sheet
+      tone="accent"
+      footer={
+        <View style={{ flexDirection: 'row', gap: space.sm }}>
+          <View style={{ flex: 1 }}>
+            <SecondaryButton label="Decline" disabled={flow.busy} onPress={() => void flow.respondToOffer(false)} />
+          </View>
+          <View style={{ flex: 2 }}>
+            <PrimaryButton
+              label={flow.busy ? 'Accepting…' : open ? 'Accept delivery' : 'Offer expired'}
+              icon="check-circle-outline"
+              busy={flow.busy}
+              disabled={flow.busy || !open}
+              onPress={() => void flow.respondToOffer(true)}
+            />
+          </View>
+        </View>
+      }
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Icon name="bell-ring-outline" size={16} color={palette.accent} />
+            <Text variant="micro" tone="accent" weight="bold">NEW DELIVERY OFFER · {offer.order.code}</Text>
+          </View>
+          <Text variant="title" numberOfLines={2}>{offer.order.pickup.name}</Text>
+          <Text variant="caption" tone="muted" numberOfLines={2}>{offer.order.pickup.address}</Text>
+        </View>
+        <CountdownRing expiresAt={offer.expiresAt} windowSeconds={windowSeconds} size={72} onExpire={() => flow.expireOffer(offer.id)} />
+      </View>
+      <View style={{ flexDirection: 'row', gap: space.sm }}>
+        <Metric icon="map-marker-radius-outline" value={formatDistance(offer.pickupDistanceMetres)} label={eta ? `to pickup · ${eta}` : 'to pickup'} />
+        <Metric icon="map-marker-distance" value={formatDistance(offer.order.tripDistanceMetres)} label="trip" />
+        <Metric icon="package-variant" value={String(offer.order.itemCount)} label={offer.order.itemCount === 1 ? 'item' : 'items'} />
+      </View>
+      {readyAt && !Number.isNaN(readyAt.getTime()) ? (
+        <Text variant="caption" tone="muted">The shop expects it ready around {readyAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.</Text>
+      ) : null}
+      <InfoNotice
+        icon="shield-lock-outline"
+        message={offer.order.dropoffArea
+          ? 'Drop-off: approximate area only. The customer’s name, phone and exact address are shown after you accept.'
+          : 'This order has no delivery address to show yet.'}
+      />
+      <Text variant="micro" tone="muted">Distances are straight-line estimates; the road trip will be longer.</Text>
+      {flow.error ? <ErrorNotice message={flow.error} /> : null}
+    </Sheet>
+  );
+}
+
+/**
+ * The accepted delivery, start to finish, on one screen. The step bar says
+ * where the rider is in it, the destination card says where to go, and the
+ * footer holds the one action that moves the order on — the delivery PIN at
+ * the end.
+ */
+function JourneyPanel({ delivery, stage, onChat }: { delivery: RiderDelivery; stage: JourneyStage; onChat: (orderId: string) => void }) {
+  const { palette } = useTheme();
+  const flow = useRiderFlow();
+  const [pin, setPin] = useState('');
+  const toPickup = stage.target === 'pickup';
+  const destination = toPickup
+    ? { latitude: delivery.branch.latitude, longitude: delivery.branch.longitude }
+    : { latitude: delivery.address.latitude, longitude: delivery.address.longitude };
+  const destinationName = toPickup ? delivery.branch.name : delivery.address.line1;
+  const away = flow.riderPosition ? formatDistance(straightLineMetres(flow.riderPosition, destination)) : null;
+  const itemCount = delivery.items.reduce((total, item) => total + item.quantity, 0);
+  const action = stage.action;
+
+  const footer = action?.kind === 'pin' ? (
+    <>
+      <TextInput
+        value={pin}
+        onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 4))}
+        keyboardType="number-pad"
+        maxLength={4}
+        placeholder="Customer’s 4-digit PIN"
+        placeholderTextColor={palette.textSubtle}
+        accessibilityLabel="Delivery PIN"
+        style={{ minHeight: 60, borderRadius: radius.md, borderWidth: 2, borderColor: palette.textSubtle, color: palette.text, textAlign: 'center', fontSize: 26, letterSpacing: 10, fontFamily: 'Manrope_700Bold' }}
+      />
+      <PrimaryButton
+        label={flow.busy ? 'Completing…' : action.label}
+        icon="check-decagram-outline"
+        busy={flow.busy}
+        disabled={flow.busy || pin.length !== 4}
+        onPress={() => void flow.complete(pin)}
+      />
+    </>
+  ) : action?.kind === 'progress' ? (
+    <PrimaryButton label={flow.busy ? 'Updating…' : action.label} icon="arrow-right-circle-outline" busy={flow.busy} disabled={flow.busy} onPress={() => void flow.progress(action.to)} />
+  ) : null;
+
+  return (
+    <Sheet footer={footer}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text variant="label" weight="bold">Order {delivery.code}</Text>
+        <View style={{ paddingHorizontal: space.md, paddingVertical: space.xs, borderRadius: radius.pill, backgroundColor: palette.accentSoft }}>
+          <Text variant="micro" tone="accent" weight="bold">{stage.label}</Text>
+        </View>
+      </View>
+      <StepBar step={stage.step} />
+
+      <View style={{ padding: space.md, gap: space.sm, borderRadius: radius.lg, backgroundColor: palette.surfaceMuted }}>
+        <Text variant="micro" tone="muted" weight="bold">{toPickup ? 'PICK UP FROM' : 'DELIVER TO'}</Text>
+        <Text variant="heading" numberOfLines={2}>{destinationName}</Text>
+        <Text variant="caption" tone="muted" numberOfLines={2}>{toPickup ? delivery.branch.address : delivery.address.landmark ?? ' '}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+          {away ? <Text variant="caption" weight="bold" style={{ flex: 1 }}>{away} away · straight line</Text> : <View style={{ flex: 1 }} />}
+          <Pressable
+            onPress={() => void Linking.openURL(externalNavigationUrl(destination, destinationName, Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'web')).catch(() => undefined)}
+            accessibilityRole="button"
+            accessibilityLabel={`Navigate to ${destinationName} in your maps app`}
+            style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: touchTarget, paddingHorizontal: space.md, borderRadius: radius.md, backgroundColor: pressed ? palette.accentPressed : palette.accent })}
+          >
+            <Icon name="navigation-variant-outline" size={18} color={palette.onAccent} />
+            <Text variant="caption" tone="onAccent" weight="bold">Navigate</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <Text variant="body">{stage.instruction}</Text>
+
+      {pickupCodeVisible(delivery.status) && delivery.pickupCode ? (
+        <View style={{ padding: space.md, borderRadius: radius.lg, borderWidth: 2, borderColor: palette.accent, flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+          <Icon name="storefront-check-outline" size={28} color={palette.accent} />
+          <View style={{ flex: 1 }}>
+            <Text variant="micro" tone="muted" weight="bold">PICKUP CODE — TELL THE SHOP</Text>
+            <Text variant="display" style={{ letterSpacing: 6 }} accessibilityLabel={`Pickup code ${delivery.pickupCode.split('').join(' ')}`}>{delivery.pickupCode}</Text>
+          </View>
+        </View>
+      ) : null}
+
+      {toPickup ? (
+        <Text variant="caption" tone="muted">Then deliver to {delivery.address.line1}{delivery.address.landmark ? `, ${delivery.address.landmark}` : ''}.</Text>
+      ) : null}
+      {!toPickup && delivery.address.instructions ? <InfoNotice icon="message-text-outline" message={delivery.address.instructions} /> : null}
+
+      <View style={{ flexDirection: 'row', gap: space.sm }}>
+        {delivery.address.contactPhone ? (
+          <View style={{ flex: 1 }}>
+            <SecondaryButton label="Call customer" icon="phone-outline" onPress={() => void Linking.openURL(`tel:${delivery.address.contactPhone?.replace(/\s/g, '') ?? ''}`)} />
+          </View>
+        ) : null}
+        <View style={{ flex: 1 }}>
+          <SecondaryButton label="Chat in DASH" icon="message-text-outline" onPress={() => onChat(delivery.id)} />
+        </View>
+      </View>
+
+      <View style={{ gap: space.xs }}>
+        <Text variant="label" weight="bold">{itemCount} {itemCount === 1 ? 'item' : 'items'}</Text>
+        {delivery.items.map((item, index) => (
+          <View key={`${item.name}-${index}`} style={{ flexDirection: 'row', gap: space.sm }}>
+            <Text variant="caption" tone="accent" weight="bold">{item.quantity}×</Text>
+            <Text variant="caption" style={{ flex: 1 }}>{item.name}</Text>
+          </View>
+        ))}
+      </View>
+      {flow.error ? <ErrorNotice message={flow.error} /> : null}
+    </Sheet>
+  );
+}
+
+function CompletedPanel({ delivery }: { delivery: RiderDelivery }) {
+  const { palette } = useTheme();
+  const flow = useRiderFlow();
+  return (
+    <Sheet footer={<PrimaryButton label={flow.online ? 'Find the next order' : 'Done'} icon="radar" onPress={flow.clearCompletedDelivery} />}>
+      <View style={{ alignItems: 'center', gap: space.sm, paddingVertical: space.md }}>
+        <View style={{ width: 64, height: 64, borderRadius: 32, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.successSoft }}>
+          <Icon name="check-decagram" size={34} color={palette.success} />
+        </View>
+        <Text variant="title" align="center">Delivery complete</Text>
+        <Text variant="caption" tone="muted" align="center">Order {delivery.code} was handed over. It is in your history, and its earnings appear in Earnings once DASH records them.</Text>
+      </View>
+    </Sheet>
+  );
+}
+
+function GoOfflineButton() {
+  const flow = useRiderFlow();
+  return <SecondaryButton label={flow.busy ? 'Updating…' : 'Go offline'} icon="power" disabled={flow.busy} onPress={() => void flow.goOffline()} />;
+}
+
+// ---------------------------------------------------------------- lists
 
 export function RiderOrdersScreen({ onOpen, onOpenHistory }: { onOpen: () => void; onOpenHistory: (orderId: string) => void }) {
   const flow = useRiderFlow();
@@ -117,7 +546,7 @@ export function RiderOrdersScreen({ onOpen, onOpenHistory }: { onOpen: () => voi
       <View style={{ height: 54, justifyContent: 'center' }}><Text variant="title">Orders</Text></View>
       <Text variant="heading">Active delivery</Text>
       {flow.delivery && flow.delivery.status !== 'delivered' ? (
-        <ActionCard icon="bike-fast" title={flow.delivery.code} body={`${flow.delivery.branch.name} · ${statusLabel(flow.delivery.status)}`} action="Open delivery" onPress={onOpen} />
+        <ActionCard icon="bike-fast" title={flow.delivery.code} body={`${flow.delivery.branch.name} · ${journeyStage(flow.delivery.status).label}`} action="Open delivery" onPress={onOpen} />
       ) : <Empty icon="bike-fast" title="No active delivery" body="An accepted delivery appears here until handover is complete." compact />}
       <Text variant="heading">History</Text>
       {historyBusy ? <ActivityIndicator /> : null}
@@ -132,87 +561,6 @@ export function RiderOrdersScreen({ onOpen, onOpenHistory }: { onOpen: () => voi
       ))}
       {historyError ? <ErrorNotice message={historyError} /> : null}
       {!historyBusy && history.length === 0 && !historyError ? <Empty icon="clipboard-text-clock-outline" title="No completed deliveries yet" body="Completed deliveries will appear here after handover." compact /> : null}
-    </RiderPage>
-  );
-}
-
-export function RiderOfferScreen({ onBack, onPush }: ScreenProps) {
-  const flow = useRiderFlow();
-  const offer = flow.offer;
-  const [remaining, setRemaining] = useState(() => secondsRemaining(offer?.expiresAt));
-
-  useEffect(() => {
-    const timer = setInterval(() => setRemaining(secondsRemaining(offer?.expiresAt)), 1_000);
-    return () => clearInterval(timer);
-  }, [offer?.expiresAt]);
-
-  if (!offer) {
-    return <RiderPage><RiderHeader title="Delivery offer" onBack={onBack} /><Empty icon="timer-off-outline" title="This offer is no longer available" body="Return online to wait for another delivery." /><PrimaryButton label="Back online" icon="arrow-left" onPress={onBack} /></RiderPage>;
-  }
-
-  return (
-    <RiderPage>
-      <RiderHeader title="Incoming order" onBack={onBack} />
-      <View style={{ alignItems: 'center', gap: space.xs }}><Text variant="display">{remaining}s</Text><Text variant="caption" tone="muted">to respond</Text></View>
-      <Card>
-        <RouteStops
-          pickup={{ title: offer.order.pickup.name, detail: offer.order.pickup.address }}
-          dropoff={{ title: 'Approximate drop-off area', detail: offer.order.dropoffArea ? 'Exact address appears only after acceptance' : 'Pickup order' }}
-        />
-      </Card>
-      <View style={{ flexDirection: 'row', gap: space.sm }}>
-        <Metric icon="map-marker-distance" value={metres(offer.order.tripDistanceMetres)} label="Trip" />
-        <Metric icon="package-variant" value={String(offer.order.itemCount)} label="Items" />
-        <Metric icon="map-marker-radius-outline" value={metres(offer.pickupDistanceMetres)} label="To pickup" />
-      </View>
-      <InfoNotice icon="shield-lock-outline" message="Customer identity and exact address remain private until you accept." />
-      {flow.error ? <ErrorNotice message={flow.error} /> : null}
-      <PrimaryButton
-        label={flow.busy ? 'Accepting…' : 'Accept delivery'}
-        icon="check-circle-outline"
-        disabled={flow.busy || remaining <= 0}
-        onPress={() => void flow.respondToOffer(true).then((id) => id && onPush('delivery'))}
-      />
-      <SecondaryButton label="Decline" disabled={flow.busy} onPress={() => void flow.respondToOffer(false).then(() => onBack())} />
-    </RiderPage>
-  );
-}
-
-export function RiderDeliveryScreen({ onBack, onPush, onChat }: ScreenProps & { onChat: (orderId: string) => void }) {
-  const flow = useRiderFlow();
-  const delivery = flow.delivery;
-
-  if (!delivery) return <RiderPage><RiderHeader title="Order details" onBack={onBack} /><Empty icon="bike-fast" title="No active delivery" body="Accepted work will appear here." /></RiderPage>;
-
-  const next = nextAction(delivery.status);
-  return (
-    <RiderPage>
-      <RiderHeader title="Order details" onBack={onBack} />
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <View><Text variant="micro" tone="muted">Order</Text><Text variant="heading">{delivery.code}</Text></View>
-        <StatusPill status={delivery.status} />
-      </View>
-      <Card>
-        <RouteStops pickup={{ title: delivery.branch.name, detail: delivery.branch.address }} dropoff={{ title: delivery.address.line1, detail: delivery.address.landmark }} />
-      </Card>
-      {delivery.pickupCode && (delivery.status === 'rider_assigned' || delivery.status === 'rider_arrived') ? (
-        <Card>
-          <Text variant="micro" tone="muted">Pickup code</Text>
-          <Text variant="display" accessibilityLabel={`Pickup code ${delivery.pickupCode.split('').join(' ')}`}>{delivery.pickupCode}</Text>
-          <Text variant="caption" tone="muted">Read this to the shop. They enter it to confirm the order is going to you.</Text>
-        </Card>
-      ) : null}
-      <ContactRow phone={delivery.address.contactPhone} onMessage={() => onChat(delivery.id)} />
-      <Card>
-        <Text variant="label" weight="bold">Order items ({delivery.items.reduce((total, item) => total + item.quantity, 0)})</Text>
-        {delivery.items.map((item) => <View key={item.name} style={{ flexDirection: 'row', gap: space.sm }}><Text variant="caption" tone="accent">{item.quantity}×</Text><Text variant="caption" style={{ flex: 1 }}>{item.name}</Text></View>)}
-      </Card>
-      {delivery.address.instructions ? <InfoNotice icon="message-text-outline" message={delivery.address.instructions} /> : null}
-      {flow.error ? <ErrorNotice message={flow.error} /> : null}
-      {delivery.status === 'delivered' ? <Empty icon="check-decagram-outline" title="Delivery completed" body="The job has moved to your history and earnings." /> : null}
-      {next?.kind === 'route' ? <PrimaryButton label={next.label} icon="navigation-variant-outline" onPress={() => onPush('route')} /> : null}
-      {next?.kind === 'progress' ? <PrimaryButton label={next.label} icon="arrow-right-circle-outline" disabled={flow.busy} onPress={() => void flow.progress(next.to).then((ok) => ok && (next.to === 'arrived' ? onPush('complete') : undefined))} /> : null}
-      {next?.kind === 'complete' ? <PrimaryButton label={next.label} icon="shield-check-outline" onPress={() => onPush('complete')} /> : null}
     </RiderPage>
   );
 }
@@ -284,75 +632,125 @@ export function RiderHistoryDetailScreen({ orderId, onBack }: { orderId: string;
   );
 }
 
-export function RiderRouteScreen({ onBack }: Pick<ScreenProps, 'onBack'>) {
-  const { palette } = useTheme();
-  const flow = useRiderFlow();
-  const delivery = flow.delivery;
-  if (!delivery) return <RiderPage><RiderHeader title="Navigation" onBack={onBack} /><Empty icon="map-marker-off-outline" title="No route to show" body="Accept a delivery first." /></RiderPage>;
+// ---------------------------------------------------------------- pieces
 
-  const headingToDropoff = delivery.status === 'picked_up' || delivery.status === 'en_route' || delivery.status === 'arrived';
-  const destination = headingToDropoff
-    ? { latitude: delivery.address.latitude, longitude: delivery.address.longitude }
-    : { latitude: delivery.branch.latitude, longitude: delivery.branch.longitude };
+/** Re-render on an interval, for countdowns and "4s ago". Kept inside the small components that need it. */
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
 
-  if (!flow.riderPosition) {
-    return (
-      <RiderPage>
-        <RiderHeader title={headingToDropoff ? 'Navigate to customer' : 'Navigate to pickup'} onBack={onBack} />
-        <View style={{ minHeight: 240, alignItems: 'center', justifyContent: 'center', gap: space.md }}>
-          <ActivityIndicator />
-          <Text variant="heading" align="center">Getting your current location…</Text>
-          <Text variant="caption" tone="muted" align="center">Navigation starts from the rider phone’s real GPS position.</Text>
-        </View>
-      </RiderPage>
-    );
-  }
+function useReduceMotion(): boolean {
+  const [reduce, setReduce] = useState(false);
+  useEffect(() => {
+    void AccessibilityInfo.isReduceMotionEnabled().then(setReduce).catch(() => undefined);
+    const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduce);
+    return () => subscription.remove();
+  }, []);
+  return reduce;
+}
 
-  const route = interpolateRoute(flow.riderPosition, destination);
-  const externalUrl =
-    Platform.OS === 'ios'
-      ? `http://maps.apple.com/?daddr=${destination.latitude},${destination.longitude}`
-      : `geo:${destination.latitude},${destination.longitude}?q=${destination.latitude},${destination.longitude}`;
+/** A looping 0→1 value for pulses. Still when the rider has asked for reduced motion. */
+function usePulse(active: boolean, durationMs: number): Animated.Value {
+  const value = useRef(new Animated.Value(0)).current;
+  const reduceMotion = useReduceMotion();
+  useEffect(() => {
+    if (!active || reduceMotion) {
+      value.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(Animated.timing(value, { toValue: 1, duration: durationMs, useNativeDriver: true }));
+    loop.start();
+    return () => loop.stop();
+  }, [active, durationMs, reduceMotion, value]);
+  return value;
+}
 
+function PulseDot({ color, active }: { color: string; active: boolean }) {
+  const pulse = usePulse(active, 1_600);
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: palette.background }} contentContainerStyle={{ paddingBottom: space.xxxl }}>
-      <View style={{ paddingHorizontal: space.gutter }}><RiderHeader title={headingToDropoff ? 'Navigate to customer' : 'Navigate to pickup'} onBack={onBack} /></View>
-      <View style={{ overflow: 'hidden' }}>
-        <MapShell route={route} rider={flow.riderPosition} destination={destination} routeColor={palette.accent} height={390} destinationIcon={headingToDropoff ? 'home' : 'storefront-outline'} accessibilityLabel={headingToDropoff ? 'Route to customer' : 'Route to pickup'} />
-      </View>
-      <View style={{ padding: space.gutter, gap: space.md }}>
-        <Card><Text variant="micro" tone="muted">Destination</Text><Text variant="heading">{headingToDropoff ? delivery.address.line1 : delivery.branch.name}</Text><Text variant="caption" tone="muted">{headingToDropoff ? delivery.address.landmark : delivery.branch.address}</Text></Card>
-        <SecondaryButton label="Open turn-by-turn navigation" onPress={() => void Linking.openURL(externalUrl)} />
-        {headingToDropoff ? (
-          <PrimaryButton label="I’ve arrived at drop-off" icon="map-marker-check-outline" disabled={flow.busy || delivery.status === 'arrived'} onPress={() => void flow.progress('arrived').then((ok) => ok && onBack())} />
-        ) : (
-          <PrimaryButton label="I’ve arrived at pickup" icon="store-check-outline" disabled={flow.busy || delivery.status === 'rider_arrived'} onPress={() => void flow.progress('rider_arrived').then((ok) => ok && onBack())} />
-        )}
-      </View>
-    </ScrollView>
+    <View style={{ width: 10, height: 10, alignItems: 'center', justifyContent: 'center' }}>
+      <Animated.View
+        style={{
+          position: 'absolute',
+          width: 10,
+          height: 10,
+          borderRadius: 5,
+          backgroundColor: color,
+          opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] }),
+          transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 2.4] }) }],
+        }}
+      />
+      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color }} />
+    </View>
   );
 }
 
-export function RiderCompleteScreen({ onBack }: Pick<ScreenProps, 'onBack'>) {
-  const flow = useRiderFlow();
-  const [pin, setPin] = useState('');
-  const delivery = flow.delivery;
-  return (
-    <RiderPage>
-      <RiderHeader title="Complete delivery" onBack={onBack} />
-      <Empty icon="shield-key-outline" title="Ask for the delivery PIN" body="The customer reads the four-digit code from their tracking screen. This proves handover." compact />
-      <TextInput
-        value={pin}
-        onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 4))}
-        keyboardType="number-pad"
-        maxLength={4}
-        placeholder="4-digit PIN"
-        accessibilityLabel="Delivery PIN"
-        style={{ minHeight: 62, borderRadius: radius.md, borderWidth: 1, borderColor: '#A9A39A', textAlign: 'center', fontSize: 28, letterSpacing: 12, fontFamily: 'Manrope_700Bold' }}
+/** The searching mark: rings widening from a rider glyph. It means "dispatch is being asked", and nothing more. */
+function Radar() {
+  const { palette } = useTheme();
+  const pulse = usePulse(true, 2_200);
+  const ring = (offset: number) => {
+    const phase = Animated.modulo(Animated.add(pulse, offset), 1);
+    return (
+      <Animated.View
+        style={{
+          position: 'absolute',
+          width: 64,
+          height: 64,
+          borderRadius: 32,
+          borderWidth: 2,
+          borderColor: palette.accent,
+          opacity: phase.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] }),
+          transform: [{ scale: phase.interpolate({ inputRange: [0, 1], outputRange: [0.45, 1] }) }],
+        }}
       />
-      {flow.error ? <ErrorNotice message={flow.error} /> : null}
-      <PrimaryButton label={flow.busy ? 'Completing…' : 'Confirm delivery'} icon="check-decagram-outline" disabled={flow.busy || pin.length !== 4 || delivery?.status === 'delivered'} onPress={() => void flow.complete(pin).then((ok) => ok && onBack())} />
-    </RiderPage>
+    );
+  };
+  return (
+    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ width: 64, height: 64, alignItems: 'center', justifyContent: 'center' }}>
+      {ring(0)}
+      {ring(0.5)}
+      <View style={{ width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.accentSoft }}>
+        <Icon name="moped" size={20} color={palette.accent} />
+      </View>
+    </View>
+  );
+}
+
+function StepBar({ step }: { step: number }) {
+  const { palette } = useTheme();
+  return (
+    <View accessible accessibilityLabel={`Step ${Math.min(step + 1, JOURNEY_STEPS.length)} of ${JOURNEY_STEPS.length}: ${JOURNEY_STEPS[Math.min(step, JOURNEY_STEPS.length - 1)]}`} style={{ gap: space.xs }}>
+      <View style={{ flexDirection: 'row', gap: 4 }}>
+        {JOURNEY_STEPS.map((name, index) => (
+          <View key={name} style={{ flex: 1, height: 5, borderRadius: 3, backgroundColor: index < step ? palette.success : index === step ? palette.accent : palette.line }} />
+        ))}
+      </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+        <Text variant="micro" tone="muted">{JOURNEY_STEPS[0]}</Text>
+        <Text variant="micro" tone="muted">{JOURNEY_STEPS[JOURNEY_STEPS.length - 1]}</Text>
+      </View>
+    </View>
+  );
+}
+
+function PanelHeading({ icon, title, body }: { icon: IconName; title: string; body: string }) {
+  const { palette } = useTheme();
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+      <View style={{ width: 52, height: 52, borderRadius: 18, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.surfaceMuted }}>
+        <Icon name={icon} size={26} color={palette.textMuted} />
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text variant="heading">{title}</Text>
+        <Text variant="caption" tone="muted">{body}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -374,6 +772,11 @@ function Card({ children }: { children: ReactNode }) {
 function InfoNotice({ icon, message }: { icon: IconName; message: string }) {
   const { palette } = useTheme();
   return <View style={{ flexDirection: 'row', gap: space.sm, padding: space.md, borderRadius: radius.md, backgroundColor: palette.accentSoft }}><Icon name={icon} color={palette.accent} /><Text variant="caption" style={{ flex: 1 }}>{message}</Text></View>;
+}
+
+function WarningNotice({ message }: { message: string }) {
+  const { palette } = useTheme();
+  return <View style={{ flexDirection: 'row', gap: space.sm, padding: space.md, borderRadius: radius.md, borderWidth: 1, borderColor: palette.rating }}><Icon name="crosshairs-question" color={palette.rating} /><Text variant="caption" style={{ flex: 1 }}>{message}</Text></View>;
 }
 
 function ErrorNotice({ message }: { message: string }) {
@@ -400,56 +803,20 @@ function HistoryCard({ code, merchant, status, onPress }: { code: string; mercha
 
 function Metric({ icon, value, label }: { icon: IconName; value: string; label: string }) {
   const { palette } = useTheme();
-  return <View style={{ flex: 1, minHeight: 78, borderRadius: radius.md, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center', gap: 2 }}><Icon name={icon} size={18} color={palette.accent} /><Text variant="label" weight="bold">{value}</Text><Text variant="micro" tone="muted">{label}</Text></View>;
+  return <View style={{ flex: 1, minHeight: 82, padding: space.sm, borderRadius: radius.md, backgroundColor: palette.surfaceMuted, alignItems: 'center', justifyContent: 'center', gap: 2 }}><Icon name={icon} size={18} color={palette.accent} /><Text variant="label" weight="bold">{value}</Text><Text variant="micro" tone="muted" align="center">{label}</Text></View>;
 }
 
-function ContactRow({ phone, onMessage }: { phone: string | null; onMessage: () => void }) {
-  return <View style={{ flexDirection: 'row', gap: space.sm }}>{phone ? <View style={{ flex: 1 }}><SecondaryButton label="Call customer" onPress={() => void Linking.openURL(`tel:${phone.replace(/\s/g, '')}`)} /></View> : null}<View style={{ flex: 1 }}><SecondaryButton label="Chat in DASH" onPress={onMessage} /></View></View>;
-}
-
-function PrimaryButton({ label, icon, onPress, disabled = false }: { label: string; icon: IconName; onPress: () => void; disabled?: boolean }) {
+function PrimaryButton({ label, icon, onPress, disabled = false, busy = false }: { label: string; icon: IconName; onPress: () => void; disabled?: boolean; busy?: boolean }) {
   const { palette } = useTheme();
-  return <Pressable disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityState={{ disabled }} style={({ pressed }) => ({ minHeight: 52, borderRadius: radius.md, opacity: disabled ? 0.5 : 1, backgroundColor: pressed ? palette.accentPressed : palette.accent, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.sm })}>{disabled && label.endsWith('…') ? <ActivityIndicator color={palette.onAccent} /> : <Icon name={icon} color={palette.onAccent} />}<Text variant="label" tone="onAccent" weight="bold">{label}</Text></Pressable>;
+  return <Pressable disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, busy }} style={({ pressed }) => ({ minHeight: 54, borderRadius: radius.md, opacity: disabled && !busy ? 0.5 : 1, backgroundColor: pressed ? palette.accentPressed : palette.accent, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.sm, paddingHorizontal: space.md })}>{busy ? <ActivityIndicator color={palette.onAccent} /> : <Icon name={icon} color={palette.onAccent} />}<Text variant="label" tone="onAccent" weight="bold">{label}</Text></Pressable>;
 }
 
-function SecondaryButton({ label, onPress, disabled = false }: { label: string; onPress: () => void; disabled?: boolean }) {
+function SecondaryButton({ label, onPress, disabled = false, icon }: { label: string; onPress: () => void; disabled?: boolean; icon?: IconName }) {
   const { palette } = useTheme();
-  return <Pressable disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityState={{ disabled }} style={({ pressed }) => ({ minHeight: 50, borderRadius: radius.md, opacity: disabled ? 0.5 : 1, backgroundColor: pressed ? palette.surfaceMuted : palette.surface, borderWidth: 1, borderColor: palette.line, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.md })}><Text variant="caption" weight="bold">{label}</Text></Pressable>;
+  return <Pressable disabled={disabled} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} style={({ pressed }) => ({ minHeight: 50, borderRadius: radius.md, opacity: disabled ? 0.5 : 1, backgroundColor: pressed ? palette.surfaceMuted : palette.surface, borderWidth: 1, borderColor: palette.line, flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.md })}>{icon ? <Icon name={icon} size={18} color={palette.text} /> : null}<Text variant="caption" weight="bold">{label}</Text></Pressable>;
 }
 
 function StatusPill({ status }: { status: DeliveryStatus }) {
   const { palette } = useTheme();
-  return <View style={{ paddingHorizontal: space.md, paddingVertical: space.xs, borderRadius: radius.pill, backgroundColor: status === 'delivered' ? palette.successSoft : palette.accentSoft }}><Text variant="micro" style={{ color: status === 'delivered' ? palette.success : palette.accent }} weight="bold">{statusLabel(status)}</Text></View>;
-}
-
-function nextAction(status: DeliveryStatus): { kind: 'route'; label: string } | { kind: 'progress'; label: string; to: Exclude<DeliveryStatus, 'rider_assigned' | 'delivered'> } | { kind: 'complete'; label: string } | null {
-  if (status === 'rider_assigned') return { kind: 'route', label: 'Navigate to pickup' };
-  if (status === 'rider_arrived') return { kind: 'progress', label: 'Confirm order picked up', to: 'picked_up' };
-  if (status === 'picked_up') return { kind: 'progress', label: 'Start delivery', to: 'en_route' };
-  if (status === 'en_route') return { kind: 'route', label: 'Navigate to customer' };
-  if (status === 'arrived') return { kind: 'complete', label: 'Enter delivery PIN' };
-  return null;
-}
-
-function statusLabel(status: DeliveryStatus): string {
-  return status === 'rider_assigned' ? 'Heading to pickup' : status === 'rider_arrived' ? 'At pickup' : status === 'picked_up' ? 'Order picked up' : status === 'en_route' ? 'On the way' : status === 'arrived' ? 'At drop-off' : 'Delivered';
-}
-
-function metres(value: number): string {
-  return value >= 1_000 ? `${(value / 1_000).toFixed(1)} km` : `${Math.round(value)} m`;
-}
-
-function secondsRemaining(expiresAt?: string): number {
-  if (!expiresAt) return 0;
-  return Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 1_000));
-}
-
-function interpolateRoute(start: { latitude: number; longitude: number }, end: { latitude: number; longitude: number }) {
-  return Array.from({ length: 6 }, (_, index) => {
-    const amount = index / 5;
-    return {
-      latitude: start.latitude + (end.latitude - start.latitude) * amount + (index === 2 ? 0.0012 : 0),
-      longitude: start.longitude + (end.longitude - start.longitude) * amount - (index === 3 ? 0.001 : 0),
-    };
-  });
+  return <View style={{ paddingHorizontal: space.md, paddingVertical: space.xs, borderRadius: radius.pill, backgroundColor: status === 'delivered' ? palette.successSoft : palette.accentSoft }}><Text variant="micro" style={{ color: status === 'delivered' ? palette.success : palette.accent }} weight="bold">{journeyStage(status).label}</Text></View>;
 }

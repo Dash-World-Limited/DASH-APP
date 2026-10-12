@@ -9,7 +9,7 @@ import {
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { ActivityIndicator, BackHandler, Pressable, ScrollView, Switch, TextInput, View } from 'react-native';
+import { ActivityIndicator, BackHandler, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 
@@ -34,6 +34,7 @@ import { DeleteAccountScreen } from './account/DeleteAccountScreen';
 import { AppSessionProvider, useAppSession } from './auth/AppSessionProvider';
 import { RegisterScreen } from './auth/RegisterScreen';
 import { viewerFirstName, viewerInitials } from './auth/viewerName';
+import { journeyStage } from './rider/journey';
 import { LegalScreen } from './legal/LegalScreen';
 import { WalletScreen } from './wallet/WalletScreen';
 import { RiderApplyScreen } from './rider/RiderApplyScreen';
@@ -56,7 +57,7 @@ import { CustomerCheckoutScreen } from './orders/CheckoutScreen';
 import { OrderChatScreen } from './chat/OrderChatScreen';
 import { CustomerOrdersScreen, CustomerTrackingScreen } from './orders/CustomerOrderScreens';
 import { RiderFlowProvider, useRiderFlow } from './rider/RiderFlowProvider';
-import { RiderCompleteScreen, RiderDeliveryScreen, RiderHistoryDetailScreen, RiderOfferScreen, RiderOnlineScreen, RiderOrdersScreen, RiderRouteScreen } from './rider/RiderScreens';
+import { RiderHistoryDetailScreen, RiderOfferBanner, RiderOrdersScreen, RiderWorkspace } from './rider/RiderScreens';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -169,6 +170,7 @@ function Navigator() {
   const showTabs = isTabRoute(route.name);
   return (
     <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right', 'bottom']}>
+      {state.face === 'rider' && !WORKSPACE_ROUTES.has(route.name) ? <RiderOfferBanner onOpen={() => push({ name: 'rider.online' })} /> : null}
       <View style={{ flex: 1 }}>
         <RouteView route={route} onPush={push} onBack={back} onSwitchFace={changeFace} />
       </View>
@@ -176,6 +178,9 @@ function Navigator() {
     </SafeAreaView>
   );
 }
+
+/** The routes that render the live rider workspace, which shows an offer itself. */
+const WORKSPACE_ROUTES: ReadonlySet<AppRoute['name']> = new Set(['rider.online', 'rider.offer', 'rider.delivery', 'rider.route', 'rider.complete']);
 
 function isTabRoute(name: AppRoute['name']): boolean {
   return [...CUSTOMER_TABS, ...RIDER_TABS].some((item) => item.name === name);
@@ -241,20 +246,20 @@ function RouteView({
       return <RiderInbox />;
     case 'rider.profile':
       return <RiderProfile onSwitch={() => onSwitchFace('customer')} />;
+    // One live workspace for the whole rider journey. These routes are kept so
+    // every way into it (Home, Orders, a restored delivery) still lands, but
+    // the screen shows whatever the rider's real state is — searching, an
+    // offer, the delivery, or the handover — rather than what the route says.
     case 'rider.online':
-      return <RiderOnlineScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} />;
     case 'rider.offer':
-      return <RiderOfferScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} />;
     case 'rider.delivery':
-      return <RiderDeliveryScreen onBack={onBack} onPush={(name) => onPush({ name: `rider.${name}` })} onChat={(id) => onPush({ name: 'rider.chat', params: { id } })} />;
+    case 'rider.route':
+    case 'rider.complete':
+      return <RiderWorkspace onBack={onBack} onChat={(id) => onPush({ name: 'rider.chat', params: { id } })} />;
     case 'rider.history-detail':
       return <RiderHistoryDetailScreen orderId={route.params?.id ?? ''} onBack={onBack} />;
     case 'rider.chat':
       return <OrderChatScreen orderId={route.params?.id ?? ''} onBack={onBack} />;
-    case 'rider.route':
-      return <RiderRouteScreen onBack={onBack} />;
-    case 'rider.complete':
-      return <RiderCompleteScreen onBack={onBack} />;
   }
 }
 
@@ -363,18 +368,26 @@ function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: stri
   );
 }
 
+/**
+ * Rider Home: whether the rider is working, the way into the live workspace,
+ * any delivery in progress, and what DASH owes them.
+ *
+ * Every figure is the server's. It used to show "Today's Earnings ₦0", "0
+ * Trips" and dashes for rating and completion whatever the rider had done, a
+ * "Current Zone" that was never detected, and a banner for incentives that do
+ * not exist. Those are gone; what is left is read from /v1/rider/earnings, or
+ * not shown.
+ */
 function RiderHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   const { palette } = useTheme();
   const flow = useRiderFlow();
   const { viewer } = useAppSession();
   const firstName = viewerFirstName(viewer);
-  const changeAvailability = (next: boolean) => {
-    if (next) {
-      void flow.goOnline().then((ok) => ok && onPush({ name: 'rider.online' }));
-    } else {
-      void flow.goOffline();
-    }
-  };
+  const earnings = useEarningsSummary(flow.delivery?.status ?? null);
+  const activeDelivery = flow.delivery && flow.delivery.status !== 'delivered' ? flow.delivery : null;
+  const openWorkspace = () => onPush({ name: 'rider.online' });
+  const goOnline = () => void flow.goOnline().then((ok) => ok && openWorkspace());
+
   return (
     <Page testID="rider-home-v2">
       <Header right={<AvatarButton label="Open rider profile" initials={viewerInitials(viewer)} onPress={() => onPush({ name: 'rider.profile' })} />} />
@@ -384,44 +397,83 @@ function RiderHome({ onPush }: { onPush: (route: AppRoute) => void }) {
         profile has no name — signed out, or a build with no API origin — the
         line is omitted rather than filled with a stand-in.
       */}
-      {firstName ? (
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-          <Text variant="title" testID="rider-first-name">{firstName}</Text>
-        </View>
-      ) : null}
-      <Pressable onPress={() => onPush({ name: 'rider.earnings' })}>
-        <Surface>
-          <Text variant="caption" tone="muted">Today’s Earnings</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <Text variant="display" style={{ flex: 1 }}>₦0</Text>
-            <Icon name="chevron-right" color={palette.accent} size={28} />
+      {firstName ? <Text variant="title" testID="rider-first-name">{firstName}</Text> : null}
+
+      <View style={{ borderRadius: radius.xl, padding: space.lg, gap: space.md, backgroundColor: flow.online ? palette.inverse : palette.surface, borderWidth: flow.online ? 0 : 1, borderColor: palette.line }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+          <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: flow.online ? palette.success : palette.textSubtle }} />
+          <View style={{ flex: 1 }}>
+            <Text variant="heading" style={{ color: flow.online ? palette.textOnInverse : palette.text }}>{flow.busy ? 'Updating…' : flow.online ? 'You’re online' : 'You’re offline'}</Text>
+            <Text variant="caption" style={{ color: flow.online ? palette.textOnInverse : palette.textMuted }}>
+              {activeDelivery ? 'You have a delivery in progress.' : flow.online ? 'DASH is sharing your position and looking for orders near you.' : 'Go online to receive delivery offers near you.'}
+            </Text>
           </View>
-        </Surface>
-      </Pressable>
-      <Surface row>
-        <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: flow.online ? palette.success : palette.textSubtle }} />
-        <Pressable disabled={!flow.online} onPress={() => onPush({ name: 'rider.online' })} style={{ flex: 1 }}><Text variant="heading">{flow.busy ? 'Updating…' : flow.online ? 'Online' : 'Offline'}</Text>{flow.online ? <Text variant="micro" tone="accent">Tap to view dispatch</Text> : null}</Pressable>
-        <Switch disabled={flow.busy} value={flow.online} onValueChange={changeAvailability} trackColor={{ false: palette.sand, true: palette.accent }} thumbColor={palette.surface} accessibilityLabel={flow.online ? 'Go offline' : 'Go online'} />
-      </Surface>
+        </View>
+        {flow.online || activeDelivery ? (
+          <PrimaryAction label={activeDelivery ? 'Continue delivery' : 'Open live workspace'} icon={activeDelivery ? 'bike-fast' : 'map-marker-radius-outline'} onPress={openWorkspace} />
+        ) : (
+          <PrimaryAction label={flow.busy ? 'Going online…' : 'Go online'} icon="power" onPress={goOnline} />
+        )}
+        {/* The server refuses to take a rider offline while they hold an order. */}
+        {flow.online && !activeDelivery ? (
+          <Pressable onPress={() => void flow.goOffline()} disabled={flow.busy} accessibilityRole="button" accessibilityLabel="Go offline" style={{ alignSelf: 'center', minHeight: touchTarget, justifyContent: 'center', paddingHorizontal: space.lg }}>
+            <Text variant="caption" weight="bold" style={{ color: palette.textOnInverse }}>Go offline</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
       {flow.error ? <Surface row><Icon name="alert-circle-outline" color={palette.danger} /><Text variant="caption" style={{ flex: 1, color: palette.danger }}>{flow.error}</Text></Surface> : null}
-      {flow.delivery && flow.delivery.status !== 'delivered' ? <Pressable onPress={() => onPush({ name: 'rider.delivery' })}><Surface row><Icon name="bike-fast" color={palette.accent} /><View style={{ flex: 1 }}><Text variant="caption" tone="muted">Active delivery</Text><Text variant="label" weight="bold">{flow.delivery.code}</Text></View><Icon name="chevron-right" color={palette.accent} /></Surface></Pressable> : null}
-      <View style={{ flexDirection: 'row', gap: space.sm }}>
-        <Metric value="0" label="Trips" />
-        <Metric value="—" label="Rating" />
-        <Metric value="—" label="Completion" />
-      </View>
-      <Surface row>
-        <Icon name="crosshairs-gps" color={palette.accent} />
-        <View style={{ flex: 1 }}><Text variant="caption" tone="muted">Current Zone</Text><Text variant="label" weight="bold">Detected when location is enabled</Text></View>
-      </Surface>
-      <View style={{ minHeight: 128, borderRadius: radius.xl, backgroundColor: palette.accent, padding: space.xl, overflow: 'hidden' }}>
-        <View style={{ position: 'absolute', right: -26, top: -22, width: 140, height: 140, borderRadius: 70, backgroundColor: 'rgba(255,255,255,0.18)' }} />
-        <Icon name="motorbike" color={palette.onAccent} size={34} />
-        <Text variant="heading" tone="onAccent" style={{ marginTop: space.sm }}>Deliver more possibilities</Text>
-        <Text variant="caption" tone="onAccent">Rider incentives and bonus campaigns will appear here.</Text>
-      </View>
+
+      {activeDelivery ? (
+        <Pressable onPress={openWorkspace} accessibilityRole="button" accessibilityLabel={`Open delivery ${activeDelivery.code}`}>
+          <Surface row>
+            <Icon name="bike-fast" color={palette.accent} />
+            <View style={{ flex: 1 }}>
+              <Text variant="caption" tone="muted">Active delivery · {activeDelivery.code}</Text>
+              <Text variant="label" weight="bold">{journeyStage(activeDelivery.status).label} · {activeDelivery.branch.name}</Text>
+            </View>
+            <Icon name="chevron-right" color={palette.accent} />
+          </Surface>
+        </Pressable>
+      ) : null}
+
+      {earnings ? (
+        <Pressable onPress={() => onPush({ name: 'rider.earnings' })} accessibilityRole="button" accessibilityLabel="Open earnings">
+          <Surface>
+            <Text variant="caption" tone="muted">Owed to you</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Text variant="display" style={{ flex: 1 }}>{formatNairaCompact(earnings.balanceOwed as Kobo)}</Text>
+              <Icon name="chevron-right" color={palette.accent} size={28} />
+            </View>
+            <Text variant="caption" tone="muted">{earnings.completedDeliveries} {earnings.completedDeliveries === 1 ? 'delivery' : 'deliveries'} completed · from DASH’s payout ledger</Text>
+          </Surface>
+        </Pressable>
+      ) : null}
     </Page>
   );
+}
+
+/**
+ * The rider's balance and delivered count, refreshed when a delivery changes
+ * state. Null until it loads, or when it cannot — Home then shows nothing
+ * rather than a zero it does not know.
+ */
+function useEarningsSummary(deliveryStatus: string | null): RiderEarnings | null {
+  const { state } = useAppSession();
+  const [earnings, setEarnings] = useState<RiderEarnings | null>(null);
+  useEffect(() => {
+    if (!api.configured || state !== 'authenticated') return;
+    let live = true;
+    api.request<RiderEarnings>('/v1/rider/earnings')
+      .then((result) => {
+        if (live) setEarnings(result);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [deliveryStatus, state]);
+  return earnings;
 }
 
 /**

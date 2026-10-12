@@ -243,7 +243,7 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
     <ScrollView style={{ flex: 1, backgroundColor: palette.background }} contentContainerStyle={{ paddingBottom: space.xxxl }}>
       <View style={{ paddingHorizontal: space.gutter }}><BackHeader title={`Order ${order.code}`} onBack={onBack} /></View>
       {showMap ? (
-        <MapShell route={interpolateRoute(rider, destination)} rider={rider} destination={destination} routeColor={palette.map.routeToCustomer} height={350} destinationIcon="home" accessibilityLabel="Live delivery route to your address" />
+        <MapShell directLine rider={rider} destination={destination} routeColor={palette.map.routeToCustomer} height={350} destinationIcon="home" destinationKind="dropoff" accessibilityLabel="Your rider's last reported position and your address" />
       ) : (
         <View style={{ marginHorizontal: space.gutter }}><Notice icon="map-clock-outline" text={order.status === 'delivered' ? 'This delivery is complete, so rider location is no longer shared.' : 'The live map appears after a rider is assigned and has reported a current location.'} /></View>
       )}
@@ -384,11 +384,4 @@ function ProgressTimeline({ current }: { current: string }) {
   const steps = ['Order confirmed', 'Preparing', 'Rider assigned', 'On the way', 'Delivered'];
   const index = current === 'delivered' ? 4 : current === 'en_route' || current === 'arrived' ? 3 : current.startsWith('rider_') || current === 'picked_up' ? 2 : current === 'preparing' || current === 'ready' ? 1 : 0;
   return <Card><Text variant="label" weight="bold">Delivery progress</Text>{steps.map((step, position) => <View key={step} style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}><View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: position <= index ? palette.success : palette.surfaceMuted, alignItems: 'center', justifyContent: 'center' }}>{position <= index ? <Icon name="check" size={14} color="#FFFFFF" /> : null}</View><Text variant="caption" tone={position <= index ? 'default' : 'muted'} weight={position === index ? 'bold' : 'medium'}>{step}</Text></View>)}</Card>;
-}
-
-function interpolateRoute(start: { latitude: number; longitude: number }, end: { latitude: number; longitude: number }) {
-  return Array.from({ length: 7 }, (_, index) => {
-    const amount = index / 6;
-    return { latitude: start.latitude + (end.latitude - start.latitude) * amount + (index === 2 ? 0.001 : 0), longitude: start.longitude + (end.longitude - start.longitude) * amount - (index === 4 ? 0.0012 : 0) };
-  });
 }

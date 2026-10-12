@@ -116,8 +116,6 @@ describe('colour lives in the tokens', () => {
       'accents on the placeholder merchant list, which is stand-in content awaiting real catalogue data',
     'src/v2/orders/CustomerOrderScreens.tsx':
       'white tick on the filled progress dot; the dot is palette.success in both schemes, so onAccent (near-black in dark) would be wrong',
-    'src/v2/rider/RiderScreens.tsx':
-      'the delivery-PIN field needs a border stronger than palette.line, and no token carries that weight yet',
   };
 
   const root = fileURLToPath(new URL('../..', import.meta.url));
