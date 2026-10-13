@@ -7,6 +7,9 @@
  *   GET    /v1/account/deletion         auth + own customer
  *   DELETE /v1/account/deletion         auth + own customer   (de-escalating; no step-up)
  *
+ *   GET    /v1/account/profile          auth (own identity)
+ *   PATCH  /v1/account/profile          auth (own identity; location needs own customer)
+ *
  *   POST   /v1/account/export           account:export:own  + step-up + idempotency
  *   GET    /v1/account/export           auth + own customer
  *   GET    /v1/account/export/:id       auth + own request
@@ -23,9 +26,12 @@ import { effectiveCapabilities } from '../deployment/profile.js';
 import { z } from 'zod';
 import { writeAudit } from '@dash/db';
 import { e164PhoneSchema } from '@dash/domain/phone';
+import { describePhone } from '@dash/domain/onboarding';
+import { NIGERIAN_STATES } from '@dash/domain/signup';
 import { ApiError } from '../http/errors.js';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import { actorOf, requireAuth, requirePermission, withIdempotency } from '../http/context.js';
+import { phoneVerificationRequired } from './onboarding.js';
 import {
   cancelAccountDeletion,
   getAccountDeletion,
@@ -83,6 +89,102 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
       }
       throw error;
     }
+    return reply.header('cache-control', 'no-store').send({ saved: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Personal details
+  // -------------------------------------------------------------------------
+  //
+  // The same columns sign-up writes — `Identity.displayName`, and the
+  // customer's `state` and `cityArea` — read and edited in place. No second
+  // copy of anyone's details exists anywhere.
+  //
+  // Email is how this person signs in, so it is shown and never edited here.
+  // The phone keeps its own route above (and its SMS guard); this one says
+  // whether that route will accept a change, so the app does not offer an
+  // edit the server would refuse.
+
+  app.get('/v1/account/profile', { preHandler: requireAuth }, async (request, reply) => {
+    const actor = actorOf(request);
+    const identity = await prisma.identity.findUnique({
+      where: { id: actor.identityId },
+      select: {
+        displayName: true,
+        email: true,
+        phone: true,
+        customer: { select: { state: true, cityArea: true } },
+      },
+    });
+    if (!identity) throw ApiError.unauthorized();
+
+    const hasCustomer = Boolean(actor.customerId && identity.customer);
+    const phone = describePhone(identity.phone, await phoneVerificationRequired(prisma));
+    return reply.header('cache-control', 'no-store').send({
+      profile: {
+        name: identity.displayName,
+        email: identity.email,
+        phone: identity.phone,
+        phoneNotice: phone.notice,
+        state: identity.customer?.state ?? null,
+        cityArea: identity.customer?.cityArea ?? null,
+      },
+      editable: {
+        name: true,
+        phone: hasCustomer && !effectiveCapabilities(config).has('sms'),
+        location: hasCustomer,
+      },
+    });
+  });
+
+  const profileUpdateSchema = z
+    .object({
+      // The rules sign-up applies, so an edit can never store what sign-up
+      // would have refused.
+      name: z.string().trim().min(2, 'Enter your full name').max(80),
+      state: z.enum(NIGERIAN_STATES, { errorMap: () => ({ message: 'Choose your state' }) }),
+      cityArea: z.string().trim().min(2, 'Enter your city, town or area').max(80),
+    })
+    .partial()
+    .strict()
+    .refine((body) => Object.keys(body).length > 0, { message: 'Nothing to update.' });
+
+  app.patch('/v1/account/profile', {
+    preHandler: requireAuth,
+    config: { rateLimit: { max: 20, timeWindow: '10 minutes' } },
+  }, async (request, reply) => {
+    const actor = actorOf(request);
+    const body = profileUpdateSchema.parse(request.body);
+    const changesLocation = body.state !== undefined || body.cityArea !== undefined;
+    if (changesLocation && !actor.customerId) {
+      throw ApiError.forbidden('Location details belong to a customer account.');
+    }
+
+    await prisma.$transaction(async (tx) => {
+      if (body.name !== undefined) {
+        await tx.identity.update({ where: { id: actor.identityId }, data: { displayName: body.name } });
+      }
+      if (changesLocation && actor.customerId) {
+        await tx.customer.update({
+          where: { id: actor.customerId },
+          data: {
+            ...(body.state !== undefined ? { state: body.state } : {}),
+            ...(body.cityArea !== undefined ? { cityArea: body.cityArea } : {}),
+          },
+        });
+      }
+      // Which fields changed, never their values: an audit trail is not a
+      // second place to keep somebody's name and address.
+      await writeAudit(tx, {
+        identityId: actor.identityId,
+        action: 'account.profile.updated',
+        resourceType: 'identity',
+        resourceId: actor.identityId,
+        after: { fields: Object.keys(body).sort() },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+    });
     return reply.header('cache-control', 'no-store').send({ saved: true });
   });
 

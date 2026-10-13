@@ -19,7 +19,11 @@ export type CustomerRoute =
   | 'customer.register'
   | 'customer.delete-account'
   | 'customer.legal'
-  | 'customer.rider-apply';
+  | 'customer.rider-apply'
+  | 'customer.personal-details'
+  | 'customer.addresses'
+  | 'customer.notification-settings'
+  | 'customer.help';
 
 export type RiderRoute =
   | 'rider.home'
@@ -33,7 +37,11 @@ export type RiderRoute =
   | 'rider.history-detail'
   | 'rider.route'
   | 'rider.complete'
-  | 'rider.chat';
+  | 'rider.chat'
+  | 'rider.personal-details'
+  | 'rider.notification-settings'
+  | 'rider.help'
+  | 'rider.legal';
 
 export type RouteName = CustomerRoute | RiderRoute;
 

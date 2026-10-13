@@ -31,6 +31,11 @@ import { CategoryPhoto } from './artwork/CategoryPhoto';
 import { AccountSessionCard } from './auth/AccountSessionCard';
 import { AuthGate } from './auth/AuthGate';
 import { DeleteAccountScreen } from './account/DeleteAccountScreen';
+import { NotificationSettingsScreen } from './account/NotificationSettingsScreen';
+import { PersonalDetailsScreen } from './account/PersonalDetailsScreen';
+import { SavedAddressesScreen } from './account/SavedAddressesScreen';
+import { SettingsItem, SettingsSection } from './account/SettingsList';
+import { SupportScreen } from './account/SupportScreen';
 import { AppSessionProvider, useAppSession } from './auth/AppSessionProvider';
 import { RegisterScreen } from './auth/RegisterScreen';
 import { viewerFirstName, viewerInitials } from './auth/viewerName';
@@ -205,11 +210,26 @@ function RouteView({
     case 'customer.wallet':
       return <WalletScreen onAccount={() => onPush({ name: 'customer.account' })} />;
     case 'customer.support':
-      return <EmptyPage title="Support" icon="message-question-outline" body="In-app support cases are not available yet. For help with an order, contact DASH with your order code." />;
+      return <SupportScreen audience="customer" />;
+    case 'customer.help':
+      return <SupportScreen audience="customer" onBack={onBack} />;
+    case 'customer.personal-details':
+      return <PersonalDetailsScreen onBack={onBack} />;
+    case 'customer.addresses':
+      return <SavedAddressesScreen onBack={onBack} />;
+    case 'customer.notification-settings':
+      return <NotificationSettingsScreen audience="customer" onBack={onBack} />;
     case 'customer.account':
       return <CustomerAccount onBack={onBack} onSwitch={() => onSwitchFace('rider')} onPush={onPush} />;
     case 'customer.notifications':
-      return <DetailPage title="Notifications" onBack={onBack}><EmptyState icon="bell-outline" title="You’re all caught up" body="Order and account updates will arrive here." /></DetailPage>;
+      return (
+        <DetailPage title="Notifications" onBack={onBack}>
+          <EmptyState icon="bell-outline" title="You’re all caught up" body="Order and account updates will arrive here." />
+          <SettingsSection>
+            <SettingsItem icon="cog-outline" label="Notification settings" onPress={() => onPush({ name: 'customer.notification-settings' })} />
+          </SettingsSection>
+        </DetailPage>
+      );
     case 'customer.search':
       return <CustomerSearchScreen onBack={onBack} onPush={onPush} />;
     case 'customer.category':
@@ -245,7 +265,15 @@ function RouteView({
     case 'rider.inbox':
       return <RiderInbox />;
     case 'rider.profile':
-      return <RiderProfile onSwitch={() => onSwitchFace('customer')} />;
+      return <RiderProfile onSwitch={() => onSwitchFace('customer')} onPush={onPush} />;
+    case 'rider.personal-details':
+      return <PersonalDetailsScreen onBack={onBack} />;
+    case 'rider.notification-settings':
+      return <NotificationSettingsScreen audience="rider" onBack={onBack} />;
+    case 'rider.help':
+      return <SupportScreen audience="rider" onBack={onBack} />;
+    case 'rider.legal':
+      return <LegalScreen slug={route.params?.slug ?? 'terms-of-service'} onBack={onBack} />;
     // One live workspace for the whole rider journey. These routes are kept so
     // every way into it (Home, Orders, a restored delivery) still lands, but
     // the screen shows whatever the rider's real state is — searching, an
@@ -556,12 +584,74 @@ function RiderInbox() {
   return <Page><Header /><Text variant="title">Inbox</Text><Surface><Text variant="label" weight="bold">Operational messages</Text><Text variant="caption" tone="muted">DASH support, safety and account notices live here. Customer chat belongs to the active delivery so riders never confuse the two.</Text></Surface><EmptyState icon="inbox-outline" title="No messages" body="New DASH support messages will appear here." /></Page>;
 }
 
-function RiderProfile({ onSwitch }: { onSwitch: () => void }) {
-  const { viewer } = useAppSession();
+/**
+ * Rider Profile & Settings. Every row goes somewhere: the payout-account row
+ * that went nowhere is gone until payouts can be set up in the app.
+ */
+function RiderProfile({ onSwitch, onPush }: { onSwitch: () => void; onPush: (route: AppRoute) => void }) {
+  const { palette } = useTheme();
+  const auth = useAppSession();
+  const flow = useRiderFlow();
+  const { viewer } = auth;
   const name = viewer?.identity.displayName?.trim();
-  return <Page><Header /><Text variant="title">Profile & Settings</Text><ProfileHero initials={viewerInitials(viewer)} title={name || 'Your rider profile'} subtitle={name ? 'Rider details arrive with onboarding and approval.' : 'Sign in to see your rider profile.'} /><AppearanceControl /><SettingsRow icon="account-outline" title="Personal profile" note="Onboarding milestone" /><SettingsRow icon="bank-outline" title="Bank account" note="Payout milestone" /><SettingsRow icon="bell-outline" title="Notifications" note="Push milestone" /><SettingsRow icon="lifebuoy" title="Help & support" /><PrimaryAction label="Switch to Customer" icon="account-switch-outline" onPress={onSwitch} /></Page>;
+  const activeDelivery = flow.delivery && flow.delivery.status !== 'delivered' ? flow.delivery : null;
+  const [signingOut, setSigningOut] = useState(false);
+
+  // A rider who signs out while online would stay available to dispatch until
+  // their lease ran out, so they go offline first. With a delivery in hand the
+  // server keeps them online anyway, and signing out would strand the order.
+  const signOut = async () => {
+    if (signingOut || activeDelivery) return;
+    setSigningOut(true);
+    try {
+      if (flow.online && !(await flow.goOffline())) return;
+      await auth.signOut();
+    } finally {
+      setSigningOut(false);
+    }
+  };
+
+  return (
+    <Page testID="rider-profile-v2">
+      <Header />
+      <Text variant="title">Profile & Settings</Text>
+      <ProfileHero initials={viewerInitials(viewer)} title={name || 'Your rider profile'} subtitle={viewer?.identity.email ?? 'Sign in to see your rider profile.'} />
+      <SettingsSection title="Account">
+        <SettingsItem icon="account-outline" label="Personal details" detail="Name, phone and location" onPress={() => onPush({ name: 'rider.personal-details' })} testID="rider-personal-details-row" />
+        <SettingsItem icon="bell-outline" label="Notifications" detail="Order and delivery updates" onPress={() => onPush({ name: 'rider.notification-settings' })} testID="rider-notifications-row" />
+      </SettingsSection>
+      <AppearanceControl />
+      <SettingsSection title="Help & legal">
+        <SettingsItem icon="lifebuoy" label="Help & support" onPress={() => onPush({ name: 'rider.help' })} testID="rider-help-row" />
+        <SettingsItem icon="file-document-outline" label="Terms of Service" onPress={() => onPush({ name: 'rider.legal', params: { slug: 'terms-of-service' } })} />
+        <SettingsItem icon="shield-account-outline" label="Privacy Policy" onPress={() => onPush({ name: 'rider.legal', params: { slug: 'privacy-policy' } })} />
+      </SettingsSection>
+      <PrimaryAction label="Switch to Customer" icon="account-switch-outline" onPress={onSwitch} />
+      {auth.state === 'authenticated' ? (
+        <View style={{ gap: space.xs }}>
+          <Pressable
+            onPress={() => void signOut()}
+            disabled={signingOut || Boolean(activeDelivery)}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
+            accessibilityState={{ disabled: signingOut || Boolean(activeDelivery) }}
+            style={({ pressed }) => ({ minHeight: 52, borderRadius: radius.md, borderWidth: 1, borderColor: palette.line, backgroundColor: pressed ? palette.sand : palette.surface, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.sm, opacity: activeDelivery ? 0.5 : 1 })}
+          >
+            {signingOut ? <ActivityIndicator color={palette.text} /> : <Icon name="logout" color={palette.text} />}
+            <Text variant="label" weight="bold">{signingOut ? 'Signing out…' : 'Sign out'}</Text>
+          </Pressable>
+          {activeDelivery ? <Text variant="caption" tone="muted" align="center">Finish your delivery before signing out.</Text> : flow.online ? <Text variant="caption" tone="muted" align="center">Signing out takes you offline first.</Text> : null}
+        </View>
+      ) : null}
+    </Page>
+  );
 }
 
+/**
+ * Customer Account. Rows that went nowhere now open real screens; the
+ * payment-methods row is gone until cards can be saved (payment is made on
+ * Paystack's page at checkout, and DASH stores no card).
+ */
 function CustomerAccount({ onBack, onSwitch, onPush }: { onBack: () => void; onSwitch: () => void; onPush: (route: AppRoute) => void }) {
   const { viewer, state } = useAppSession();
   const name = viewer?.identity.displayName?.trim();
@@ -572,25 +662,33 @@ function CustomerAccount({ onBack, onSwitch, onPush }: { onBack: () => void; onS
       <AccountSessionCard />
       {/* Creating an account is only offered to someone who has not got one. */}
       {!signedIn ? <PrimaryAction label="Create a DASH account" icon="account-plus-outline" onPress={() => onPush({ name: 'customer.register' })} /> : null}
+      {signedIn ? (
+        <SettingsSection title="Account">
+          <SettingsItem icon="account-outline" label="Personal details" detail="Name, phone and location" onPress={() => onPush({ name: 'customer.personal-details' })} testID="customer-personal-details-row" />
+          <SettingsItem icon="map-marker-outline" label="Saved addresses" detail="Delivery addresses and your default" onPress={() => onPush({ name: 'customer.addresses' })} testID="customer-addresses-row" />
+        </SettingsSection>
+      ) : null}
+      <SettingsSection title="Preferences">
+        <SettingsItem icon="bell-outline" label="Notifications" detail="Order and delivery updates" onPress={() => onPush({ name: 'customer.notification-settings' })} testID="customer-notifications-row" />
+      </SettingsSection>
       <AppearanceControl />
-      <SettingsRow icon="map-marker-outline" title="Saved addresses" note="Sign-in required" />
-      <SettingsRow icon="credit-card-outline" title="Payment methods" note="Sign-in required" />
-      <SettingsRow icon="bell-outline" title="Notifications" />
       {viewer?.riderStatus === 'approved'
         ? <PrimaryAction label="Switch to Rider" icon="motorbike" onPress={onSwitch} />
-        : <SettingsRow icon="motorbike" title="Apply to ride with DASH" onPress={() => onPush({ name: 'customer.rider-apply' })} />}
-      <SettingsRow icon="lifebuoy" title="Help & support" />
+        : (
+          <SettingsSection title="Ride with DASH">
+            <SettingsItem icon="motorbike" label="Apply to ride with DASH" detail="Earn delivering orders near you" onPress={() => onPush({ name: 'customer.rider-apply' })} />
+          </SettingsSection>
+        )}
       {/* Play requires both documents and account deletion to be reachable
           from inside the app, not only from a website. */}
-      <SettingsRow icon="file-document-outline" title="Terms of Service" onPress={() => onPush({ name: 'customer.legal', params: { slug: 'terms-of-service' } })} />
-      <SettingsRow icon="shield-account-outline" title="Privacy Policy" onPress={() => onPush({ name: 'customer.legal', params: { slug: 'privacy-policy' } })} />
-      {signedIn ? <SettingsRow icon="account-remove-outline" title="Delete my account" onPress={() => onPush({ name: 'customer.delete-account' })} /> : null}
+      <SettingsSection title="Help & legal">
+        <SettingsItem icon="lifebuoy" label="Help & support" onPress={() => onPush({ name: 'customer.help' })} testID="customer-help-row" />
+        <SettingsItem icon="file-document-outline" label="Terms of Service" onPress={() => onPush({ name: 'customer.legal', params: { slug: 'terms-of-service' } })} />
+        <SettingsItem icon="shield-account-outline" label="Privacy Policy" onPress={() => onPush({ name: 'customer.legal', params: { slug: 'privacy-policy' } })} />
+        {signedIn ? <SettingsItem icon="account-remove-outline" label="Delete my account" tone="danger" onPress={() => onPush({ name: 'customer.delete-account' })} /> : null}
+      </SettingsSection>
     </DetailPage>
   );
-}
-
-function EmptyPage({ title, icon, body }: { title: string; icon: IconName; body: string }) {
-  return <Page><Header /><Text variant="title">{title}</Text><EmptyState icon={icon} title={`No ${title.toLowerCase()} yet`} body={body} /></Page>;
 }
 
 function DetailPage({ title, onBack, children }: { title: string; onBack: () => void; children: ReactNode }) {
@@ -635,13 +733,6 @@ function EmptyState({ icon, title, body }: { icon: IconName; title: string; body
 function ProfileHero({ initials, title, subtitle }: { initials: string | null; title: string; subtitle: string }) {
   const { palette } = useTheme();
   return <View style={{ alignItems: 'center', gap: space.sm, paddingVertical: space.md }}><View style={{ width: 76, height: 76, borderRadius: 38, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}>{initials ? <Text variant="heading" tone="onInverse">{initials}</Text> : <Icon name="account-outline" size={38} color={palette.textOnInverse} />}</View><Text variant="heading">{title}</Text><Text variant="caption" tone="muted" align="center">{subtitle}</Text></View>;
-}
-
-/** A row that goes somewhere when `onPress` is given, and reads as a label when not. */
-function SettingsRow({ icon, title, note, onPress }: { icon: IconName; title: string; note?: string; onPress?: () => void }) {
-  const { palette } = useTheme();
-  const body = <Surface row><Icon name={icon} color={palette.accent} /><View style={{ flex: 1 }}><Text variant="label" weight="bold">{title}</Text>{note ? <Text variant="micro" tone="muted">{note}</Text> : null}</View><Icon name="chevron-right" color={palette.textSubtle} /></Surface>;
-  return onPress ? <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={title}>{body}</Pressable> : body;
 }
 
 function AppearanceControl() {

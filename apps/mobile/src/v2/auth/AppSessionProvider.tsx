@@ -30,6 +30,11 @@ interface SessionValue {
   busy: boolean;
   error: string | null;
   restore(): Promise<void>;
+  /**
+   * Re-read `/v1/auth/me` after the person changed their own details, so a
+   * new name shows everywhere at once. A failure leaves the viewer as it was.
+   */
+  refreshViewer(): Promise<void>;
   requestOtp(destination: OtpDestination): Promise<{ devCode?: string } | null>;
   verifyOtp(destination: OtpDestination, code: string): Promise<boolean>;
   signOut(): Promise<void>;
@@ -78,6 +83,15 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
     void restore();
     return session.subscribe(setState);
   }, [restore]);
+
+  const refreshViewer = useCallback(async () => {
+    if (!api.configured || session.state() !== 'authenticated') return;
+    try {
+      setViewer(await api.request<Viewer>('/v1/auth/me'));
+    } catch {
+      // Keep the viewer already shown; the next restore will correct it.
+    }
+  }, []);
 
   const requestOtp = useCallback(async (destination: OtpDestination) => {
     setBusy(true);
@@ -135,11 +149,12 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
     busy,
     error,
     restore,
+    refreshViewer,
     requestOtp,
     verifyOtp,
     signOut,
     clearError: () => setError(null),
-  }), [busy, error, requestOtp, restore, signOut, state, verifyOtp, viewer]);
+  }), [busy, error, refreshViewer, requestOtp, restore, signOut, state, verifyOtp, viewer]);
 
   return <AppSessionContext.Provider value={value}>{children}</AppSessionContext.Provider>;
 }

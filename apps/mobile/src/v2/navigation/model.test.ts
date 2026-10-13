@@ -95,6 +95,38 @@ describe('native-v2 navigation model', () => {
     }
   });
 
+  it('opens every customer profile and settings screen from Account, and comes back', () => {
+    const account = navigate(createNavigationState('customer'), { name: 'customer.account' });
+    for (const name of ['customer.personal-details', 'customer.addresses', 'customer.notification-settings', 'customer.help'] as const) {
+      const pushed = navigate(account, { name });
+      expect(currentRoute(pushed).name).toBe(name);
+      expect(goBack(pushed)).toEqual(account);
+    }
+    // The notification inbox links to the same settings screen.
+    const inbox = navigate(createNavigationState('customer'), { name: 'customer.notifications' });
+    expect(currentRoute(navigate(inbox, { name: 'customer.notification-settings' })).name).toBe('customer.notification-settings');
+  });
+
+  it('opens every rider profile and settings screen from Profile, and comes back', () => {
+    const profile = selectTab(createNavigationState('rider'), { name: 'rider.profile' });
+    for (const route of [
+      { name: 'rider.personal-details' } as const,
+      { name: 'rider.notification-settings' } as const,
+      { name: 'rider.help' } as const,
+      { name: 'rider.legal', params: { slug: 'terms-of-service' } } as const,
+      { name: 'rider.legal', params: { slug: 'privacy-policy' } } as const,
+    ]) {
+      const pushed = navigate(profile, route);
+      expect(currentRoute(pushed)).toEqual(route);
+      expect(goBack(pushed)).toEqual(profile);
+    }
+  });
+
+  it('keeps each face’s settings screens on that face', () => {
+    expect(() => navigate(createNavigationState('rider'), { name: 'customer.personal-details' })).toThrow();
+    expect(() => navigate(createNavigationState('customer'), { name: 'rider.help' })).toThrow();
+  });
+
   it('opens a legal document from inside registration and returns to it', () => {
     const register = navigate(navigate(createNavigationState('customer'), { name: 'customer.account' }), { name: 'customer.register' });
     const legal = navigate(register, { name: 'customer.legal', params: { slug: 'terms-of-service' } });
