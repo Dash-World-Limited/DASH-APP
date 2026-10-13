@@ -230,6 +230,28 @@ export async function createAddress(api: ApiClient, address: NewAddress): Promis
   return (await api.request<{ address: { id: string } }>('/v1/addresses', { method: 'POST', body: address })).address;
 }
 
+/**
+ * The words of a saved address, or making it the default. Its position is not
+ * editable: the delivery fee is quoted from where it was saved.
+ */
+export interface AddressEdit {
+  label?: string;
+  line1?: string;
+  landmark?: string;
+  instructions?: string;
+  contactPhone?: string;
+  isDefault?: true;
+}
+
+export async function updateAddress(api: ApiClient, id: string, edit: AddressEdit): Promise<void> {
+  await api.request(`/v1/addresses/${encodeURIComponent(id)}`, { method: 'PATCH', body: edit });
+}
+
+/** Removes it from the saved list. Past orders keep the address they went to. */
+export async function removeAddress(api: ApiClient, id: string): Promise<void> {
+  await api.request(`/v1/addresses/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export function requestQuote(api: ApiClient, input: { branchId: string; cart: CartState; addressId: string }): Promise<QuoteResult> {
   return api.request<QuoteResult>('/v1/orders/quote', {
     method: 'POST',
