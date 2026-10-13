@@ -5,6 +5,7 @@ import { AppState } from 'react-native';
 import { api, ApiError } from '../../api';
 import { useAppSession } from '../auth/AppSessionProvider';
 import { createForegroundPermission } from './locationPermission';
+import { riderTrace } from './riderTrace';
 
 export interface Coordinate {
   latitude: number;
@@ -118,6 +119,7 @@ interface RiderFlowValue {
 const NOT_CONNECTED = 'This build has no DASH API address, so rider actions are unavailable.';
 
 const LOCATION_REQUIRED = 'Location permission is required while a rider is online.';
+const NO_GPS_FIX = 'DASH could not get a GPS fix. Move to open sky, check that Location is on, and try again.';
 
 const RiderFlowContext = createContext<RiderFlowValue | null>(null);
 
@@ -132,6 +134,44 @@ const LOCATION_UPLOAD_INTERVAL_MS = 5_000;
  * one.
  */
 const LOCATION_HEARTBEAT_MS = 20_000;
+/**
+ * The longest any one-shot GPS fix is waited for. expo-location's
+ * getCurrentPositionAsync has no timeout of its own, so a fix that never comes
+ * left Go online on "Going online…" indefinitely (seen on the A55), and left
+ * the heartbeat's in-flight flag set so it never fired again.
+ */
+const FRESH_FIX_TIMEOUT_MS = 30_000;
+/**
+ * Options for every fix DASH takes on its own: the heartbeat, the watch, and
+ * the fresh fix on restore and on return to the app. With the network
+ * location provider off, expo-location otherwise opens Google's "location
+ * accuracy" dialog. That is another activity on top of DASH, and its pause and
+ * resume would retrigger the return-to-app fix, the same loop the permission
+ * request caused. GPS alone still answers. Only Go online, which the rider
+ * chose, may show the dialog.
+ */
+const AUTOMATIC_FIX: Location.LocationOptions = { accuracy: Location.Accuracy.High, mayShowUserSettingsDialog: false };
+
+class FixTimeout extends Error {}
+
+function withFixTimeout<T>(promise: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new FixTimeout('GPS fix timed out')), FRESH_FIX_TIMEOUT_MS);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (caught: unknown) => {
+        clearTimeout(timer);
+        reject(caught);
+      },
+    );
+  });
+}
+
+const errorName = (caught: unknown): string =>
+  caught instanceof Error ? `${caught.name}: ${caught.message}`.slice(0, 160) : String(caught).slice(0, 160);
 
 export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const auth = useAppSession();
@@ -204,11 +244,27 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const reportCurrentPosition = useCallback((mayAsk: boolean): Promise<boolean> => {
     if (!mayAsk && freshFix.current) return freshFix.current;
     const run = (async () => {
-      if (!(await (mayAsk ? permission.ensure() : permission.check()))) {
+      const startedAt = Date.now();
+      const granted = await (mayAsk ? permission.ensure() : permission.check());
+      riderTrace('permission', { mode: mayAsk ? 'ensure' : 'check', granted, ms: Date.now() - startedAt });
+      if (!granted) {
         setError(LOCATION_REQUIRED);
         return false;
       }
-      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      let position: Location.LocationObject;
+      try {
+        position = await withFixTimeout(
+          Location.getCurrentPositionAsync(mayAsk ? { accuracy: Location.Accuracy.High } : AUTOMATIC_FIX),
+        );
+      } catch (caught) {
+        riderTrace('fix.failed', { mode: mayAsk ? 'online' : 'silent', error: errorName(caught), ms: Date.now() - startedAt });
+        if (!(caught instanceof FixTimeout)) throw caught;
+        // Going online needs a position; say why it failed rather than spin.
+        // A silent report just leaves the GPS chip to show the age.
+        if (mayAsk) setError(NO_GPS_FIX);
+        return false;
+      }
+      riderTrace('fix', { mode: mayAsk ? 'online' : 'silent', accuracy: position.coords.accuracy ?? null, ms: Date.now() - startedAt });
       await publishPosition(position);
       return true;
     })();
@@ -250,6 +306,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     let subscription: Location.LocationSubscription | null = null;
     let cancelled = false;
     watchState.current = 'starting';
+    riderTrace('watch.start', { attempt: watchAttempt });
 
     void (async () => {
       // Read, never request: Go online has already asked, and a request here
@@ -264,7 +321,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
 
       const next = await Location.watchPositionAsync(
         {
-          accuracy: Location.Accuracy.High,
+          ...AUTOMATIC_FIX,
           timeInterval: 5_000,
           distanceInterval: 5,
         },
@@ -277,8 +334,10 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       else {
         subscription = next;
         watchState.current = 'running';
+        riderTrace('watch.running');
       }
     })().catch((caught) => {
+      riderTrace('watch.failed', { error: errorName(caught) });
       if (!cancelled) watchState.current = 'idle';
       fail(caught);
     });
@@ -286,6 +345,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
       watchState.current = 'idle';
+      riderTrace('watch.stop', { hadSubscription: subscription !== null });
       subscription?.remove();
     };
   }, [fail, online, permission, publishPosition, watchAttempt]);
@@ -296,16 +356,24 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     // for a second while the first is still searching.
     let fixPending = false;
     const timer = setInterval(() => {
-      if (fixPending || Date.now() - lastLocationUploadAt.current < LOCATION_HEARTBEAT_MS) return;
+      // Not while another one-shot fix (Go online, restore, return to the app)
+      // is still searching: that one will upload, and two would only compete.
+      if (fixPending || freshFix.current || Date.now() - lastLocationUploadAt.current < LOCATION_HEARTBEAT_MS) return;
       fixPending = true;
+      const startedAt = Date.now();
+      riderTrace('heartbeat.fix', { sinceUploadMs: startedAt - lastLocationUploadAt.current });
       // A real fix, uploaded through the same path as the watch. A phone that
       // cannot get one (indoors, location off) simply reports nothing and the
       // GPS chip shows the position going stale; a server refusal — an
-      // expired lease, say — is shown like any other.
-      void Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High })
+      // expired lease, say — is shown like any other. The timeout keeps one
+      // fix that never answers from stopping the heartbeat for good.
+      void withFixTimeout(Location.getCurrentPositionAsync(AUTOMATIC_FIX))
         .then(
-          (position) => publishPosition(position).catch(fail),
-          () => undefined,
+          (position) => {
+            riderTrace('heartbeat.fixed', { accuracy: position.coords.accuracy ?? null, ms: Date.now() - startedAt });
+            return publishPosition(position).catch(fail);
+          },
+          (caught: unknown) => riderTrace('heartbeat.failed', { error: errorName(caught), ms: Date.now() - startedAt }),
         )
         .finally(() => {
           fixPending = false;
@@ -354,6 +422,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!api.configured || !online || auth.state !== 'authenticated') return;
     const subscription = AppState.addEventListener('change', (nextState) => {
+      riderTrace('appstate', { state: nextState, watch: watchState.current });
       if (nextState === 'active') {
         // Android may suspend foreground GPS while DASH is backgrounded. As
         // soon as the rider returns, push a fresh fix immediately rather than
@@ -373,23 +442,34 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const goOnline = useCallback(async (): Promise<boolean> => {
     setBusy(true);
     setError(null);
+    const startedAt = Date.now();
+    riderTrace('online.start');
+    let markedAvailable = false;
+    const markOffline = () =>
+      api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'offline' } }).catch(() => undefined);
     try {
       if (!api.configured) {
         setError(NOT_CONNECTED);
         return false;
       }
       await api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'idle' } });
+      markedAvailable = true;
       // Going online starts a new server lease. Do not let a very recent fix
       // from the previous online session suppress the first fresh report.
       lastLocationUploadAt.current = 0;
       if (!(await reportCurrentPosition(true))) {
-        await api.request('/v1/rider/availability', { method: 'POST', body: { availability: 'offline' } }).catch(() => undefined);
+        await markOffline();
+        riderTrace('online.done', { ok: false, ms: Date.now() - startedAt });
         return false;
       }
       await restoreDelivery();
       setOnline(true);
+      riderTrace('online.done', { ok: true, ms: Date.now() - startedAt });
       return true;
     } catch (caught) {
+      riderTrace('online.failed', { error: errorName(caught), ms: Date.now() - startedAt });
+      // Dispatch must not keep a rider available that the app shows as offline.
+      if (markedAvailable) await markOffline();
       fail(caught);
       return false;
     } finally {

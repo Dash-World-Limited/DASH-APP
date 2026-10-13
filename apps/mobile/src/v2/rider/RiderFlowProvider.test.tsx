@@ -41,6 +41,7 @@ vi.mock('react-native', () => ({
 vi.mock('../../api', () => ({
   api: { configured: true, request: h.request },
   ApiError: class ApiError extends Error {},
+  buildVariant: 'development',
 }));
 vi.mock('../auth/AppSessionProvider', () => ({ useAppSession: () => h.session }));
 
@@ -49,6 +50,7 @@ import { RiderFlowProvider, useRiderFlow } from './RiderFlowProvider';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const LOCATION_REQUIRED = 'Location permission is required while a rider is online.';
+const NO_GPS_FIX = 'DASH could not get a GPS fix. Move to open sky, check that Location is on, and try again.';
 const GRANTED = { granted: true, canAskAgain: true, status: 'granted' };
 const MISSING = { granted: false, canAskAgain: true, status: 'undetermined' };
 const BLOCKED = { granted: false, canAskAgain: false, status: 'denied' };
@@ -96,6 +98,11 @@ function permissionActivityHop() {
 }
 
 const posts = (path: string) => h.request.mock.calls.filter(([url]) => url === path);
+const fixOptions = () =>
+  h.location.getCurrentPositionAsync.mock.calls.map(([options]) => options as { mayShowUserSettingsDialog?: boolean });
+/** Fake setTimeout too, for the fix timeout. Install before mounting. */
+const fakeAllTimers = () =>
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Date'] });
 const availabilityPosts = () =>
   posts('/v1/rider/availability').map(([, options]) => (options as { body: { availability: string } }).body.availability);
 
@@ -306,5 +313,105 @@ describe('rider location permission lifecycle', () => {
     expect(h.location.getCurrentPositionAsync).toHaveBeenCalledTimes(1);
     expect(posts('/v1/rider/location')).toHaveLength(1);
     expect(h.location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
+  });
+});
+
+describe('rider GPS fixes after going online', () => {
+  it('never lets an automatic fix or the watch open the location-accuracy dialog', async () => {
+    await mount('idle');
+    vi.advanceTimersByTime(6_000);
+    await appState('background');
+    await appState('active');
+
+    // Restore and return-to-app fixes, and the continuous watch.
+    expect(fixOptions()).toHaveLength(2);
+    for (const options of fixOptions()) expect(options.mayShowUserSettingsDialog).toBe(false);
+    const [watchOptions] = h.location.watchPositionAsync.mock.calls[0] as [{ mayShowUserSettingsDialog?: boolean }];
+    expect(watchOptions.mayShowUserSettingsDialog).toBe(false);
+  });
+
+  it('leaves the dialog to Go online, which the rider chose', async () => {
+    await mount('offline');
+    await act(async () => {
+      await flow.goOnline();
+    });
+    expect(fixOptions()).toHaveLength(1);
+    expect(fixOptions()[0]?.mayShowUserSettingsDialog).toBeUndefined();
+  });
+
+  it('takes a heartbeat fix after 20 s without an upload, one at a time, and recovers from one that never answers', async () => {
+    fakeAllTimers();
+    await mount('idle');
+    expect(h.location.getCurrentPositionAsync).toHaveBeenCalledTimes(1);
+
+    // The next fix never answers.
+    h.location.getCurrentPositionAsync.mockImplementation(() => new Promise(() => undefined));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await settle();
+    expect(h.location.getCurrentPositionAsync).toHaveBeenCalledTimes(2);
+    expect(fixOptions()[1]?.mayShowUserSettingsDialog).toBe(false);
+
+    // Still searching: no second heartbeat fix on top of it.
+    await act(async () => {
+      vi.advanceTimersByTime(25_000);
+    });
+    await settle();
+    expect(h.location.getCurrentPositionAsync).toHaveBeenCalledTimes(2);
+
+    // At the 30 s limit the stuck fix is abandoned, and the next tick tries again.
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    await settle();
+    expect(h.location.getCurrentPositionAsync).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    await settle();
+    expect(h.location.getCurrentPositionAsync).toHaveBeenCalledTimes(3);
+    expect(flow.online).toBe(true);
+  });
+
+  it('Go online gives up after 30 s without a GPS fix and tells dispatch the rider is offline', async () => {
+    fakeAllTimers();
+    h.location.getCurrentPositionAsync.mockImplementation(() => new Promise(() => undefined));
+    await mount('offline');
+
+    let result: boolean | undefined;
+    await act(async () => {
+      void flow.goOnline().then((ok) => {
+        result = ok;
+      });
+    });
+    await settle();
+    expect(flow.busy).toBe(true);
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    await settle();
+
+    expect(result).toBe(false);
+    expect(flow.busy).toBe(false);
+    expect(flow.online).toBe(false);
+    expect(flow.error).toBe(NO_GPS_FIX);
+    expect(availabilityPosts()).toEqual(['idle', 'offline']);
+  });
+
+  it('a GPS error during Go online does not leave dispatch thinking the rider is available', async () => {
+    h.location.getCurrentPositionAsync.mockRejectedValue(new Error('Current location is unavailable'));
+    await mount('offline');
+
+    let wentOnline = true;
+    await act(async () => {
+      wentOnline = await flow.goOnline();
+    });
+    await settle();
+
+    expect(wentOnline).toBe(false);
+    expect(flow.online).toBe(false);
+    expect(availabilityPosts()).toEqual(['idle', 'offline']);
   });
 });
