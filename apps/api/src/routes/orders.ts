@@ -250,14 +250,20 @@ async function priceBasket(
   if (input.mode === 'delivery') {
     if (!input.addressId) throw ApiError.badRequest('Choose a delivery address.');
 
-    address = await prisma.address.findUnique({
+    const found = await prisma.address.findUnique({
       where: { id: input.addressId },
-      select: { id: true, latitude: true, longitude: true, customerId: true },
+      select: { id: true, latitude: true, longitude: true, customerId: true, archivedAt: true },
     });
     // Scope: the address must belong to this customer. Without this check, any
     // signed-in user could price a delivery to a stranger's home and learn
     // roughly where they live from the fee.
-    if (!address || address.customerId !== customerId) throw ApiError.notFound();
+    if (!found || found.customerId !== customerId) throw ApiError.notFound();
+    // A removed address stays on the orders that used it, but no new order
+    // may be priced or placed to it.
+    if (found.archivedAt) {
+      throw ApiError.unprocessable('That address was removed. Choose another delivery address.');
+    }
+    address = { id: found.id, latitude: found.latitude, longitude: found.longitude, customerId: found.customerId };
 
     const route = await geo.route(
       { latitude: branch.latitude, longitude: branch.longitude },
@@ -493,6 +499,92 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
       });
 
       return { address };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PATCH /v1/addresses/:id — edit the words, or make it the default
+  // -------------------------------------------------------------------------
+  //
+  // The position is not editable. It is where the customer stood when they
+  // saved the address, and the delivery fee is quoted from it; a new street
+  // name typed over an old pin would quote one place and send a rider to
+  // another. An address that has moved is a new address.
+  app.patch(
+    '/v1/addresses/:id',
+    { preHandler: requirePermission('address:manage:own') },
+    async (request) => {
+      const actor = actorOf(request);
+      if (!actor.customerId) throw ApiError.forbidden('Only customers have saved addresses.');
+      const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
+
+      // An empty optional field clears it rather than storing "".
+      const optionalText = (max: number) =>
+        z.string().trim().max(max).transform((value) => (value.length === 0 ? null : value));
+      const body = z
+        .object({
+          label: optionalText(40),
+          line1: z.string().trim().min(3).max(200),
+          landmark: optionalText(120),
+          instructions: optionalText(280),
+          contactPhone: z.string().trim().regex(/^\+[1-9]\d{7,14}$/),
+          // Only ever `true`: a customer chooses a default, they do not
+          // un-choose one into having none.
+          isDefault: z.literal(true),
+        })
+        .partial()
+        .strict()
+        .refine((value) => Object.keys(value).length > 0, { message: 'Nothing to update.' })
+        .parse(request.body);
+
+      // Scoped by the caller's own customer id, and never a removed address.
+      const owned = await prisma.address.findFirst({
+        where: { id, customerId: actor.customerId, archivedAt: null },
+        select: { id: true },
+      });
+      if (!owned) throw ApiError.notFound();
+
+      const { isDefault, ...fields } = body;
+      const address = await prisma.$transaction(async (tx) => {
+        if (isDefault) {
+          await tx.address.updateMany({
+            where: { customerId: actor.customerId!, NOT: { id } },
+            data: { isDefault: false },
+          });
+        }
+        return tx.address.update({
+          where: { id },
+          data: { ...fields, ...(isDefault ? { isDefault: true } : {}) },
+          select: { id: true, label: true, line1: true, landmark: true, instructions: true, contactPhone: true, isDefault: true },
+        });
+      });
+
+      return { address };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // DELETE /v1/addresses/:id — remove from the saved list
+  // -------------------------------------------------------------------------
+  //
+  // Archived, not deleted: past orders point at this row and must keep saying
+  // where they went. It leaves the list, cannot be priced or ordered to again,
+  // and stops being the default.
+  app.delete(
+    '/v1/addresses/:id',
+    { preHandler: requirePermission('address:manage:own') },
+    async (request) => {
+      const actor = actorOf(request);
+      if (!actor.customerId) throw ApiError.forbidden('Only customers have saved addresses.');
+      const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
+
+      const removed = await prisma.address.updateMany({
+        where: { id, customerId: actor.customerId, archivedAt: null },
+        data: { archivedAt: new Date(), isDefault: false },
+      });
+      if (removed.count === 0) throw ApiError.notFound();
+
+      return { removed: true };
     },
   );
 
