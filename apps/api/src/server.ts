@@ -200,7 +200,7 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     queue:
       overrides.queue ??
       (config.QUEUE_PROVIDER === 'redis' && config.REDIS_URL
-        ? new RedisQueueAdapter(createQueueRedis(config.REDIS_URL))
+        ? new RedisQueueAdapter(createQueueRedis(config.REDIS_URL), undefined, config.QUEUE_PREFIX)
         : new MemoryQueueAdapter()),
     // Two Redis connections, because a subscriber cannot publish — see
     // `createBroadcastRedis`. The in-process adapter is correct on a single

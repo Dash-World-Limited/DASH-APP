@@ -226,6 +226,7 @@ const shape = z
     STORAGE_LOCAL_DIR: z.string().default('./.storage'),
 
     QUEUE_PROVIDER: z.enum(['memory', 'redis']).default('memory'),
+    QUEUE_PREFIX: z.string().trim().min(1).default('dash'),
     REDIS_URL: z.string().optional(),
 
     // --- Realtime ------------------------------------------------------------
