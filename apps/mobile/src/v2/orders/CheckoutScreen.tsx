@@ -25,7 +25,6 @@ import { ActivityIndicator, Linking, Pressable, TextInput, View } from 'react-na
 
 import { api, ApiError } from '../../api';
 import {
-  createAddress,
   listAddresses,
   newIdempotencyKey,
   placeOrder,
@@ -35,13 +34,13 @@ import {
   type QuoteResult,
 } from '../../data/orders';
 import { useCart } from '../../features/CartProvider';
-import { currentLocation } from '../../features/deviceLocation';
 import { rememberOrder } from '../../features/orderMemory';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space } from '../../theme/tokens';
 import { Icon } from '../../ui/Icon';
 import { Text } from '../../ui/Text';
 import { useAppSession } from '../auth/AppSessionProvider';
+import { NewAddressForm } from './NewAddressForm';
 import { BackHeader, Card, Empty, Notice, OrderPage, PrimaryCheckoutButton, SecondaryButton } from './parts';
 
 const describeError = (error: unknown): string =>
@@ -321,71 +320,5 @@ function SignedInCheckout({ merchantSlug, onBack, onTrack }: { merchantSlug: str
         busy={paying}
       />
     </OrderPage>
-  );
-}
-
-/**
- * A first address, or another one. The coordinates matter: the server quotes
- * a delivery fee from them, so an address with no location cannot be priced.
- */
-function NewAddressForm({ defaultPhone, onSaved, onCancel }: { defaultPhone: string; onSaved: (id: string) => Promise<void> | void; onCancel?: () => void }) {
-  const { palette } = useTheme();
-  const [line1, setLine1] = useState('');
-  const [landmark, setLandmark] = useState('');
-  const [phone, setPhone] = useState(defaultPhone);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const save = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const position = await currentLocation();
-      if (!position.ok) {
-        setError(position.message);
-        return;
-      }
-      const created = await createAddress(api, {
-        line1: line1.trim(),
-        landmark: landmark.trim() || undefined,
-        contactPhone: phone.trim(),
-        latitude: position.latitude,
-        longitude: position.longitude,
-        isDefault: true,
-      });
-      await onSaved(created.id);
-    } catch (caught) {
-      setError(describeError(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const field = (label: string, value: string, onChange: (next: string) => void, placeholder: string, keyboard: 'default' | 'phone-pad' = 'default') => (
-    <View style={{ gap: space.xs }}>
-      <Text variant="micro" tone="muted">{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={palette.textSubtle}
-        accessibilityLabel={label}
-        keyboardType={keyboard}
-        style={{ minHeight: 46, borderRadius: radius.md, borderWidth: 1, borderColor: palette.line, backgroundColor: palette.surface, paddingHorizontal: space.md, color: palette.text, fontFamily: 'Manrope_400Regular', fontSize: 14 }}
-      />
-    </View>
-  );
-
-  return (
-    <Card>
-      <Text variant="label" weight="bold">Add a delivery address</Text>
-      {field('Street address', line1, setLine1, '12 Admiralty Way')}
-      {field('Landmark (optional)', landmark, setLandmark, 'Near the second gate')}
-      {field('Contact phone', phone, setPhone, '0803 000 0000', 'phone-pad')}
-      <Notice icon="crosshairs-gps" text="Saving uses your current location as this address's position, which is what the delivery fee is quoted from. Stand at the address when you save it." />
-      {error ? <Notice icon="alert-circle-outline" text={error} danger /> : null}
-      <PrimaryCheckoutButton label={busy ? 'Saving…' : 'Save address'} onPress={() => void save()} disabled={busy || line1.trim().length === 0 || phone.trim().length === 0} busy={busy} />
-      {onCancel ? <SecondaryButton label="Cancel" onPress={onCancel} disabled={busy} /> : null}
-    </Card>
   );
 }

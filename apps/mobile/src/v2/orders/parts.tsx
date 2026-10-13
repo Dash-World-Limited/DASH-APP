@@ -18,7 +18,9 @@ import { Text } from '../../ui/Text';
 
 export function OrderPage({ children, testID }: { children: ReactNode; testID?: string }) {
   const { palette } = useTheme();
-  return <ScrollView testID={testID} style={{ flex: 1, backgroundColor: palette.background }} contentContainerStyle={{ paddingHorizontal: space.gutter, paddingBottom: space.xxxl, gap: space.lg }} showsVerticalScrollIndicator={false}>{children}</ScrollView>;
+  // `handled`: a tap on a button while the keyboard is up presses the button,
+  // rather than only closing the keyboard and needing a second tap.
+  return <ScrollView testID={testID} style={{ flex: 1, backgroundColor: palette.background }} contentContainerStyle={{ paddingHorizontal: space.gutter, paddingBottom: space.xxxl, gap: space.lg }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{children}</ScrollView>;
 }
 
 export function BackHeader({ title, onBack }: { title: string; onBack: () => void }) {
