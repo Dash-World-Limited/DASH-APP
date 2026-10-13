@@ -36,7 +36,7 @@ export default function Page() {
             <strong>On this page:</strong> sign in with your email below and confirm with a code sent to your email.
           </li>
           <li>
-            <strong>If you cannot sign in:</strong> email <a className="underline" href="mailto:admin@dashworldng.com?subject=Delete%20my%20DASH%20account">admin@dashworldng.com</a> from the address on your account and
+            <strong>If you cannot sign in:</strong> email <a className="underline" href="mailto:info@dashworldng.com?subject=Delete%20my%20DASH%20account">info@dashworldng.com</a> from the address on your account and
             we will confirm it is you before acting.
           </li>
         </ol>
