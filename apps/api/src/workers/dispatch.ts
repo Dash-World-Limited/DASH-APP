@@ -90,15 +90,15 @@ export function registerDispatchWorker(deps: {
     // The order may have been cancelled, rejected, or already assigned between
     // the job being queued and it running. All three are normal, not errors.
     if (order.riderId) {
-      log.debug({ code: order.code }, 'dispatch: already has a rider');
+      log.info({ code: order.code }, 'dispatch: already has a rider');
       return;
     }
     if (!ASSIGNABLE.has(order.status)) {
-      log.debug({ code: order.code, status: order.status }, 'dispatch: no longer assignable');
+      log.info({ code: order.code, status: order.status }, 'dispatch: no longer assignable');
       return;
     }
     if (!order.address) {
-      log.debug({ code: order.code }, 'dispatch: pickup-only order needs no rider');
+      log.info({ code: order.code }, 'dispatch: pickup-only order needs no rider');
       return;
     }
 
