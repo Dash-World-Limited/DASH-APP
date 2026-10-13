@@ -37,7 +37,7 @@ import { SesEmailAdapter } from './adapters/ses.js';
 import { BrevoEmailAdapter } from './adapters/brevo.js';
 import { PaystackPaymentAdapter } from './adapters/paystack.js';
 import { SuppressionAwareEmailAdapter } from './adapters/suppressed-email.js';
-import { RedisQueueAdapter } from './adapters/redis-queue.js';
+import { RedisQueueAdapter, type RedisQueueLogger } from './adapters/redis-queue.js';
 import {
   createBroadcastRedis,
   createQueueRedis,
@@ -126,7 +126,11 @@ export interface BuildOptions {
   };
 }
 
-export function buildServices(config: Config, overrides: Partial<Services> = {}): Services {
+export function buildServices(
+  config: Config,
+  overrides: Partial<Services> = {},
+  queueLog?: RedisQueueLogger,
+): Services {
   const prisma = overrides.prisma ?? defaultPrisma;
   // Passed to the error reporter so a secret that reached an error message by
   // some route no pattern matches is still stripped before it leaves.
@@ -199,7 +203,7 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     queue:
       overrides.queue ??
       (config.QUEUE_PROVIDER === 'redis' && config.REDIS_URL
-        ? new RedisQueueAdapter(createQueueRedis(config.REDIS_URL))
+        ? new RedisQueueAdapter(createQueueRedis(config.REDIS_URL), queueLog)
         : new MemoryQueueAdapter()),
     // Two Redis connections, because a subscriber cannot publish — see
     // `createBroadcastRedis`. The in-process adapter is correct on a single
@@ -381,7 +385,6 @@ function createEmailAdapter(config: Config, quiet: boolean): EmailPort {
 
 export async function buildServer(options: BuildOptions = {}): Promise<FastifyInstance> {
   const config = options.config ?? loadConfig();
-  const services = buildServices(config, options.services ?? {});
 
   /**
    * What this deployment runs, for the route registration at the foot of this
@@ -432,6 +435,11 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     // emitted in development or production, where the key is absent entirely.
     ...(config.NODE_ENV === 'test' ? { disableRequestLogging: true } : {}),
   });
+
+  // Give BullMQ the same redacted Pino logger used by the API so worker
+  // failures cannot disappear silently while direct buildServices() tests
+  // can continue to omit logging.
+  const services = buildServices(config, options.services ?? {}, app.log);
 
   // Product photos are uploaded as raw image bytes, not multipart form data.
   // Keeping the parser this narrow means JSON routes retain the 1 MB server
