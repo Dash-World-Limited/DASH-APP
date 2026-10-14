@@ -63,6 +63,12 @@ export interface PaymentWebhookEvent {
   readonly raw: unknown;
 }
 
+/** A bank the payment provider can pay into, by the provider's own code for it. */
+export interface PayoutBank {
+  readonly code: string;
+  readonly name: string;
+}
+
 export interface PaymentPort {
   readonly providerName: string;
   /** True only when the adapter is configured with real credentials. */
@@ -100,6 +106,20 @@ export interface PaymentPort {
    * not ask" must never read as "not found".
    */
   lookupRefund(input: { refundReference: string; providerReference: string }): Promise<RefundLookup>;
+
+  /**
+   * Nigerian banks the provider can pay into. Throws when the provider cannot
+   * be asked.
+   */
+  listBanks(): Promise<readonly PayoutBank[]>;
+
+  /**
+   * The name a bank holds for an account, as the bank reports it through the
+   * provider. Null when the bank says there is no such account. Throws when
+   * the provider cannot be asked — "could not ask" must never read as "no
+   * such account", or a rider would be told their real account is wrong.
+   */
+  resolveBankAccount(input: { bankCode: string; accountNumber: string }): Promise<{ accountName: string } | null>;
 
   /**
    * Verify a webhook's signature and parse it.

@@ -59,13 +59,19 @@ interface RiderHistoryItem {
   branch: { name: string };
 }
 
+/**
+ * GET /v1/rider/history/:id — a completed delivery as the order froze it at
+ * placement: the address it went to and the items, whatever has changed since.
+ */
 interface ApiHistoryDelivery {
   id: string;
   code: string;
   status: DeliveryStatus;
-  branch: RiderDelivery['branch'];
-  address: RiderDelivery['address'] | null;
-  items: readonly { nameSnapshot: string; quantity: number }[];
+  deliveredAt: string | null;
+  vendorName: string;
+  branch: { name: string; address: string };
+  deliveryAddress: { line1: string; landmark: string | null; instructions: string | null } | null;
+  items: readonly { name: string; quantity: number }[];
 }
 
 // ---------------------------------------------------------------- workspace
@@ -566,7 +572,7 @@ export function RiderOrdersScreen({ onOpen, onOpenHistory }: { onOpen: () => voi
 }
 
 export function RiderHistoryDetailScreen({ orderId, onBack }: { orderId: string; onBack: () => void }) {
-  const [delivery, setDelivery] = useState<RiderDelivery | null>(null);
+  const [delivery, setDelivery] = useState<ApiHistoryDelivery | null>(null);
   const [busy, setBusy] = useState(api.configured);
   const [error, setError] = useState<string | null>(null);
 
@@ -577,20 +583,10 @@ export function RiderHistoryDetailScreen({ orderId, onBack }: { orderId: string;
     }
     let cancelled = false;
     setBusy(true);
-    void api.request<{ delivery: ApiHistoryDelivery }>(`/v1/rider/deliveries/${encodeURIComponent(orderId)}`)
+    void api.request<{ delivery: ApiHistoryDelivery }>(`/v1/rider/history/${encodeURIComponent(orderId)}`)
       .then((response) => {
         if (cancelled) return;
-        if (!response.delivery.address) throw new Error('This delivery has no drop-off address.');
-        setDelivery({
-          id: response.delivery.id,
-          code: response.delivery.code,
-          status: response.delivery.status,
-          branch: response.delivery.branch,
-          address: response.delivery.address,
-          items: response.delivery.items.map((item) => ({ name: item.nameSnapshot, quantity: item.quantity })),
-          // A completed delivery has been collected; there is no code to give.
-          pickupCode: null,
-        });
+        setDelivery(response.delivery);
         setError(null);
       })
       .catch((caught) => {
@@ -620,13 +616,17 @@ export function RiderHistoryDetailScreen({ orderId, onBack }: { orderId: string;
         <StatusPill status={delivery.status} />
       </View>
       <Card>
-        <RouteStops pickup={{ title: delivery.branch.name, detail: delivery.branch.address }} dropoff={{ title: delivery.address.line1, detail: delivery.address.landmark }} />
+        <RouteStops
+          pickup={{ title: `${delivery.vendorName} · ${delivery.branch.name}`, detail: delivery.branch.address }}
+          dropoff={{ title: delivery.deliveryAddress?.line1 ?? 'Drop-off address not recorded', detail: delivery.deliveryAddress?.landmark ?? null }}
+        />
       </Card>
       <Card>
         <Text variant="label" weight="bold">Order items ({delivery.items.reduce((total, item) => total + item.quantity, 0)})</Text>
         {delivery.items.map((item, index) => <View key={`${item.name}-${index}`} style={{ flexDirection: 'row', gap: space.sm }}><Text variant="caption" tone="accent">{item.quantity}×</Text><Text variant="caption" style={{ flex: 1 }}>{item.name}</Text></View>)}
       </Card>
-      {delivery.address.instructions ? <InfoNotice icon="message-text-outline" message={delivery.address.instructions} /> : null}
+      {delivery.deliveredAt ? <Text variant="caption" tone="muted">Delivered {new Date(delivery.deliveredAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</Text> : null}
+      {delivery.deliveryAddress?.instructions ? <InfoNotice icon="message-text-outline" message={delivery.deliveryAddress.instructions} /> : null}
       <Empty icon="check-decagram-outline" title="Delivery completed" body="This completed job is kept in your delivery history." compact />
     </RiderPage>
   );

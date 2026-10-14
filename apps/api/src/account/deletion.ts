@@ -30,7 +30,7 @@ import {
   type LegalHold,
   type LegalHoldSignals,
 } from '@dash/domain/account';
-import { ACTIVE_STATUSES } from '@dash/domain/orders';
+import { ACTIVE_STATUSES, freezeDeliveryAddress } from '@dash/domain/orders';
 import { balanceOf } from '@dash/domain/ledger';
 import { kobo } from '@dash/domain/money';
 import { writeAudit, type PrismaClient } from '@dash/db';
@@ -490,7 +490,9 @@ export async function finaliseAccountDeletion(
       counts['Order'] = (
         await tx.order.updateMany({
           where: { customerId },
-          data: { instructions: null },
+          // The address each order froze at placement is personal data too:
+          // replaced exactly as the saved addresses above are.
+          data: { instructions: null, deliveryAddressSnapshot: freezeDeliveryAddress(anonymisedAddress()) },
         })
       ).count;
 

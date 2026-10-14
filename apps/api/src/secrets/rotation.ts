@@ -83,6 +83,7 @@ export const ENCRYPTED_FIELDS = [
   { model: 'Identity', column: 'mfaSecretCipher', purpose: 'mfa_totp_secret' },
   { model: 'Identity', column: 'mfaPendingCipher', purpose: 'mfa_totp_secret' },
   { model: 'Vendor', column: 'bankAccountCipher', purpose: 'vendor_bank_account' },
+  { model: 'RiderPayoutAccount', column: 'accountCipher', purpose: 'rider_bank_account' },
 ] as const;
 
 /**
@@ -229,6 +230,7 @@ export async function surveyKeyUsage(
     select: { mfaSecretCipher: true, mfaPendingCipher: true },
   });
   const vendors = await prisma.vendor.findMany({ select: { bankAccountCipher: true } });
+  const riderPayouts = await prisma.riderPayoutAccount.findMany({ select: { accountCipher: true } });
 
   const tallies: { model: string; column: string; tally: Tally }[] = [
     {
@@ -245,6 +247,11 @@ export async function surveyKeyUsage(
       model: 'Vendor',
       column: 'bankAccountCipher',
       tally: tally(vendors.map((row) => row.bankAccountCipher)),
+    },
+    {
+      model: 'RiderPayoutAccount',
+      column: 'accountCipher',
+      tally: tally(riderPayouts.map((row) => row.accountCipher)),
     },
   ];
 
@@ -589,6 +596,56 @@ export async function reEncryptVendorPayouts(
 }
 
 /**
+ * Re-encrypt rider payout accounts onto the active key.
+ *
+ * The same pass as vendor payouts: page through rows by id, rotate each in
+ * application code, and write it back under a compare-and-swap against the
+ * exact ciphertext read, so a rider who changed their account meanwhile keeps
+ * the change.
+ */
+export async function reEncryptRiderPayouts(
+  prisma: PrismaClient,
+  keyring: Keyring,
+  options: RotationPassOptions = {},
+): Promise<ReEncryptionResult> {
+  const {
+    limit = 500,
+    pageSize = DEFAULT_PAGE_SIZE,
+    scanBudget = Math.max(limit, 1) * SCAN_BUDGET_MULTIPLIER,
+    startAfterId = null,
+  } = options;
+  return walkStaleRows(
+    (lastId, take) =>
+      prisma.riderPayoutAccount.findMany({
+        where: lastId === null ? {} : { id: { gt: lastId } },
+        select: { id: true, riderId: true, accountCipher: true },
+        orderBy: { id: 'asc' },
+        take,
+      }),
+    async (account) => {
+      const original = account.accountCipher;
+      const outcome = rotateValue(original, keyring, {
+        purpose: 'rider_bank_account',
+        subjectId: account.riderId,
+      });
+
+      if (outcome.kind !== 'rotated') return outcome.kind;
+
+      const written = await prisma.riderPayoutAccount.updateMany({
+        where: { id: account.id, accountCipher: original },
+        data: { accountCipher: outcome.ciphertext },
+      });
+
+      return written.count === 0 ? 'concurrent' : 'rotated';
+    },
+    limit,
+    pageSize,
+    scanBudget,
+    startAfterId,
+  );
+}
+
+/**
  * Re-encrypt stored TOTP secrets onto the active key.
  *
  * Both the confirmed secret and any pending enrolment, because a key cannot be
@@ -702,6 +759,7 @@ export async function reEncryptAll(
   options: RotationPassOptions & { readonly maxPasses?: number } = {},
 ): Promise<{
   readonly payouts: ReEncryptionResult;
+  readonly riderPayouts: ReEncryptionResult;
   readonly mfa: ReEncryptionResult;
   readonly passes: number;
   readonly survey: RotationSurvey;
@@ -720,6 +778,7 @@ export async function reEncryptAll(
   };
 
   const payouts: Mutable = { ...EMPTY_RESULT };
+  const riderPayouts: Mutable = { ...EMPTY_RESULT };
   const mfa: Mutable = { ...EMPTY_RESULT };
 
   // The continuation cursors. Each pass resumes *after* the last row the
@@ -727,8 +786,10 @@ export async function reEncryptAll(
   // rather than a wall: rows that can never be moved are stepped over once and
   // never block the movable rows behind them again.
   let payoutCursor: string | null = passOptions.startAfterId ?? null;
+  let riderPayoutCursor: string | null = passOptions.startAfterId ?? null;
   let mfaCursor: string | null = passOptions.startAfterId ?? null;
   let payoutDone = false;
+  let riderPayoutDone = false;
   let mfaDone = false;
 
   let passes = 0;
@@ -772,13 +833,30 @@ export async function reEncryptAll(
       mfaDone = pass.exhausted;
     }
 
-    // Both walks have reached the end of their stale sets. Anything still
+    if (!riderPayoutDone) {
+      const pass = await reEncryptRiderPayouts(prisma, keyring, {
+        ...passOptions,
+        startAfterId: riderPayoutCursor,
+      });
+      riderPayouts.scanned += pass.scanned;
+      riderPayouts.reEncrypted += pass.reEncrypted;
+      riderPayouts.skippedConcurrentWrite += pass.skippedConcurrentWrite;
+      riderPayouts.alreadyActive += pass.alreadyActive;
+      riderPayouts.malformed += pass.malformed;
+      riderPayouts.unreadable += pass.unreadable;
+      riderPayouts.exhausted = pass.exhausted;
+      riderPayouts.nextCursor = pass.nextCursor;
+      riderPayoutCursor = pass.nextCursor;
+      riderPayoutDone = pass.exhausted;
+    }
+
+    // Every walk has reached the end of its stale set. Anything still
     // outstanding is unmovable, and the survey below is what reports it.
     //
-    // Deliberately *not* "both passes moved nothing": a pass that spends its
+    // Deliberately *not* "every pass moved nothing": a pass that spends its
     // whole budget stepping over corrupt rows moves nothing and has not
     // finished, and stopping there was the starvation this cursor removes.
-    if (payoutDone && mfaDone) {
+    if (payoutDone && mfaDone && riderPayoutDone) {
       passes += 1;
       break;
     }
@@ -786,6 +864,7 @@ export async function reEncryptAll(
 
   return {
     payouts,
+    riderPayouts,
     mfa,
     passes,
     survey: await surveyKeyUsage(prisma, keyringIdentity(keyring)),

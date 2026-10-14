@@ -352,3 +352,87 @@ describe('lookupRefund', () => {
     expect((await ask(new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl }))).amount).toBe(0);
   });
 });
+
+describe('banks and account names', () => {
+  /** A fake that answers by full URL, so paging and query strings can be checked. */
+  function fakeBanks(answer: (url: URL) => { status: number; json: unknown } | 'network') {
+    const urls: URL[] = [];
+    const impl = (async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      urls.push(url);
+      const result = answer(url);
+      if (result === 'network') throw new TypeError('fetch failed');
+      return new Response(JSON.stringify(result.json), { status: result.status });
+    }) as typeof fetch;
+    return { impl, urls };
+  }
+
+  it('follows every page of Paystack’s Nigerian banks, keeping active NUBAN banks once each', async () => {
+    const paystack = fakeBanks((url) => {
+      if (url.searchParams.get('next') === 'page-2') {
+        return {
+          status: 200,
+          json: { status: true, data: [{ name: 'Zenith Bank', code: '057', type: 'nuban', active: true }], meta: { next: null } },
+        };
+      }
+      return {
+        status: 200,
+        json: {
+          status: true,
+          data: [
+            { name: 'Guaranty Trust Bank', code: '058', type: 'nuban', active: true },
+            { name: 'Access Bank', code: '044', type: 'nuban', active: true },
+            { name: 'Access Bank (Duplicate)', code: '044', type: 'nuban', active: true },
+            { name: 'Old Bank', code: '999', type: 'nuban', active: false },
+            { name: 'Gone Bank', code: '998', type: 'nuban', active: true, is_deleted: true },
+            { name: 'Some Wallet', code: 'MPESA', type: 'mobile_money', active: true },
+          ],
+          meta: { next: 'page-2' },
+        },
+      };
+    });
+    const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl });
+    expect(await adapter.listBanks()).toEqual([
+      { code: '044', name: 'Access Bank' },
+      { code: '058', name: 'Guaranty Trust Bank' },
+      { code: '057', name: 'Zenith Bank' },
+    ]);
+    expect(paystack.urls).toHaveLength(2);
+    expect(paystack.urls[0]!.pathname).toBe('/bank');
+    expect(paystack.urls[0]!.searchParams.get('country')).toBe('nigeria');
+    expect(paystack.urls[0]!.searchParams.get('currency')).toBe('NGN');
+  });
+
+  it('throws when the bank list cannot be fetched', async () => {
+    const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: fakeBanks(() => ({ status: 500, json: { status: false } })).impl });
+    await expect(adapter.listBanks()).rejects.toBeInstanceOf(PaymentProviderError);
+  });
+
+  it('resolves the account name the bank holds', async () => {
+    const paystack = fakeBanks(() => ({
+      status: 200,
+      json: { status: true, data: { account_number: '0123456789', account_name: 'ADA OBI', bank_id: 9 } },
+    }));
+    const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl });
+    expect(await adapter.resolveBankAccount({ bankCode: '058', accountNumber: '0123456789' })).toEqual({ accountName: 'ADA OBI' });
+    expect(paystack.urls[0]!.pathname).toBe('/bank/resolve');
+    expect(paystack.urls[0]!.searchParams.get('account_number')).toBe('0123456789');
+    expect(paystack.urls[0]!.searchParams.get('bank_code')).toBe('058');
+  });
+
+  it('reads Paystack’s 422 as "no such account", and never asks about a malformed one', async () => {
+    const paystack = fakeBanks(() => ({ status: 422, json: { status: false, message: 'Could not resolve account name.' } }));
+    const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl });
+    expect(await adapter.resolveBankAccount({ bankCode: '058', accountNumber: '0123456789' })).toBeNull();
+    expect(await adapter.resolveBankAccount({ bankCode: '058', accountNumber: '12345' })).toBeNull();
+    expect(await adapter.resolveBankAccount({ bankCode: '05 8&x=1', accountNumber: '0123456789' })).toBeNull();
+    expect(paystack.urls).toHaveLength(1);
+  });
+
+  it('throws when Paystack cannot be asked, rather than calling the account unknown', async () => {
+    for (const answer of ['network', { status: 500, json: { status: false } }, { status: 429, json: { status: false } }] as const) {
+      const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: fakeBanks(() => answer).impl });
+      await expect(adapter.resolveBankAccount({ bankCode: '058', accountNumber: '0123456789' })).rejects.toBeInstanceOf(PaymentProviderError);
+    }
+  });
+});

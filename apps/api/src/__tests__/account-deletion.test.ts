@@ -182,6 +182,15 @@ async function seedFinancialHistory(who: Throwaway): Promise<{
       quoteBreakdown: '[]',
       pricingRuleVersion: 'test.1',
       instructions: 'leave at the door — flat 4',
+      deliveryAddressSnapshot: JSON.stringify({
+        label: 'Home',
+        line1: '12 Seeded Close, Flat 4',
+        landmark: 'Opposite the pharmacy',
+        instructions: 'Ring twice',
+        contactPhone: '+2348099990000',
+        latitude: 6.45,
+        longitude: 3.4,
+      }),
       placedAt: new Date(),
       deliveredAt: new Date(),
       items: {
@@ -1169,7 +1178,12 @@ describe('finalisation — anonymise, never delete what the ledger references', 
     const order = await prisma().order.findUniqueOrThrow({ where: { id: seeded.orderId } });
     expect(order.total).toBe(355_000);
     expect(order.customerId).toBe(who.customerId);
-    expect(order.instructions).toBeNull(); // the only field that clears
+    // The only fields that clear: the order's instructions, and the address
+    // it froze at placement, replaced exactly as the saved address is.
+    expect(order.instructions).toBeNull();
+    expect(order.deliveryAddressSnapshot).not.toContain('Seeded Close');
+    expect(order.deliveryAddressSnapshot).not.toContain('+2348099990000');
+    expect(JSON.parse(order.deliveryAddressSnapshot!)).toMatchObject({ line1: '[deleted]', contactPhone: '[deleted]', latitude: 0 });
 
     expect(await prisma().orderItem.count({ where: { orderId: seeded.orderId } })).toBe(1);
 

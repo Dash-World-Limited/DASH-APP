@@ -43,6 +43,7 @@ import type {
   PaymentPort,
   PaymentStatus,
   PaymentWebhookEvent,
+  PayoutBank,
   RefundLookup,
 } from '@dash/domain/ports';
 
@@ -75,6 +76,15 @@ interface PaystackEnvelope<T> {
   status?: boolean;
   message?: string;
   data?: T;
+  meta?: { next?: string | null };
+}
+
+interface PaystackBank {
+  name?: string;
+  code?: string;
+  type?: string;
+  active?: boolean;
+  is_deleted?: boolean;
 }
 
 interface PaystackTransaction {
@@ -275,6 +285,52 @@ export class PaystackPaymentAdapter implements PaymentPort {
     };
   }
 
+  /**
+   * Paystack's own list of Nigerian banks, followed page by page. Only
+   * active NUBAN banks: a mobile-money wallet or a deleted bank cannot be
+   * paid into.
+   */
+  async listBanks(): Promise<readonly PayoutBank[]> {
+    const banks = new Map<string, PayoutBank>();
+    let next: string | null = null;
+    for (let page = 0; page < 20; page += 1) {
+      const query = new URLSearchParams({ country: 'nigeria', currency: 'NGN', use_cursor: 'true', perPage: '100' });
+      if (next) query.set('next', next);
+      const response = await this.request<PaystackBank[]>('GET', `/bank?${query.toString()}`);
+      if (!response.ok || !Array.isArray(response.data)) {
+        throw new PaymentProviderError(`Paystack bank list failed: ${response.message}`, response.httpStatus);
+      }
+      for (const bank of response.data) {
+        const code = bank.code?.trim();
+        const name = bank.name?.trim();
+        if (!code || !name || bank.active === false || bank.is_deleted === true) continue;
+        if (bank.type && bank.type !== 'nuban') continue;
+        if (!banks.has(code)) banks.set(code, { code, name });
+      }
+      next = response.meta?.next ?? null;
+      if (!next) break;
+    }
+    return [...banks.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * The account name the bank holds, through Paystack's resolve endpoint.
+   * Paystack answers an account it cannot find with a 4xx; that is "no such
+   * account". Anything else — unreachable, rate-limited, a 5xx — is "could
+   * not ask", and throws.
+   */
+  async resolveBankAccount(input: { bankCode: string; accountNumber: string }): Promise<{ accountName: string } | null> {
+    if (!/^\d{10}$/.test(input.accountNumber) || !/^[0-9A-Za-z]{2,10}$/.test(input.bankCode)) return null;
+    const query = new URLSearchParams({ account_number: input.accountNumber, bank_code: input.bankCode });
+    const response = await this.request<{ account_name?: string }>('GET', `/bank/resolve?${query.toString()}`);
+    if (response.ok) {
+      const accountName = response.data?.account_name?.trim();
+      return accountName ? { accountName } : null;
+    }
+    if (response.httpStatus === 400 || response.httpStatus === 404 || response.httpStatus === 422) return null;
+    throw new PaymentProviderError(`Paystack account lookup failed: ${response.message}`, response.httpStatus);
+  }
+
   async lookupRefund(input: { refundReference: string; providerReference: string }): Promise<RefundLookup> {
     // The dashboard shows a bare number; our own records say
     // `paystack_refund_<n>`. Anything else is not a Paystack refund id, and
@@ -380,7 +436,7 @@ export class PaystackPaymentAdapter implements PaymentPort {
     method: 'GET' | 'POST',
     path: string,
     body?: unknown,
-  ): Promise<{ ok: boolean; httpStatus: number; message: string; data: T | undefined }> {
+  ): Promise<{ ok: boolean; httpStatus: number; message: string; data: T | undefined; meta: PaystackEnvelope<T>['meta'] }> {
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -409,6 +465,7 @@ export class PaystackPaymentAdapter implements PaymentPort {
       httpStatus: response.status,
       message: typeof envelope.message === 'string' ? envelope.message.slice(0, 200) : `HTTP ${response.status}`,
       data: envelope.data,
+      meta: envelope.meta,
     };
   }
 }

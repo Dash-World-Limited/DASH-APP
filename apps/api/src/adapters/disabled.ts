@@ -27,6 +27,7 @@ import type {
   PaymentWebhookEvent,
   PushPort,
   PushReceipt,
+  PayoutBank,
   RefundLookup,
   RouteEstimate,
   SmsPort,
@@ -52,6 +53,14 @@ export class DisabledPaymentAdapter implements PaymentPort {
   }
 
   async lookupRefund(): Promise<RefundLookup> {
+    throw new CapabilityDisabledError('payments');
+  }
+
+  async listBanks(): Promise<readonly PayoutBank[]> {
+    throw new CapabilityDisabledError('payments');
+  }
+
+  async resolveBankAccount(): Promise<{ accountName: string } | null> {
     throw new CapabilityDisabledError('payments');
   }
 

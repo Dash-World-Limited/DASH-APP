@@ -127,6 +127,14 @@ describe('native-v2 navigation model', () => {
     expect(() => navigate(createNavigationState('customer'), { name: 'rider.help' })).toThrow();
   });
 
+  it('opens the rider bank account from Profile, and keeps it on the rider face', () => {
+    const profile = selectTab(createNavigationState('rider'), { name: 'rider.profile' });
+    const bank = navigate(profile, { name: 'rider.bank-account' });
+    expect(currentRoute(bank).name).toBe('rider.bank-account');
+    expect(goBack(bank)).toEqual(profile);
+    expect(() => navigate(createNavigationState('customer'), { name: 'rider.bank-account' })).toThrow();
+  });
+
   it('opens the delivery location from the home screen and returns home', () => {
     const home = createNavigationState('customer');
     const location = navigate(home, { name: 'customer.delivery-location' });

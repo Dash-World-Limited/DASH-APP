@@ -8,6 +8,7 @@ import { Icon } from '../../ui/Icon';
 import { Text } from '../../ui/Text';
 import { useAppSession } from '../auth/AppSessionProvider';
 import { BackHeader, Empty, Notice } from '../orders/parts';
+import { CHAT_KEYBOARD_BEHAVIOR, chatKeyboardDismissMode, keyboardOffsetFrom } from './keyboardLayout';
 
 interface ChatMessage {
   id: string;
@@ -34,6 +35,13 @@ export function OrderChatScreen({ orderId, onBack }: { orderId: string; onBack: 
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scroll = useRef<ScrollView | null>(null);
+  // Where the chat starts in the window, for the keyboard offset. See
+  // keyboardLayout.ts: measured, so it is right under any inset or banner.
+  const frame = useRef<View | null>(null);
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
+  const measureFrame = useCallback(() => {
+    frame.current?.measureInWindow((_x, y) => setKeyboardOffset(keyboardOffsetFrom(y)));
+  }, []);
 
   const load = useCallback(async (quiet = false) => {
     if (!api.configured || auth.state !== 'authenticated' || !orderId) {
@@ -114,108 +122,111 @@ export function OrderChatScreen({ orderId, onBack }: { orderId: string; onBack: 
   }
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: palette.background }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <View style={{ paddingHorizontal: space.gutter }}>
-        <BackHeader title="Order chat" onBack={onBack} />
-      </View>
-
-      {busy ? (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator color={palette.accent} />
+    <View ref={frame} onLayout={measureFrame} style={{ flex: 1, backgroundColor: palette.background }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={CHAT_KEYBOARD_BEHAVIOR}
+        keyboardVerticalOffset={keyboardOffset}
+      >
+        <View style={{ paddingHorizontal: space.gutter }}>
+          <BackHeader title="Order chat" onBack={onBack} />
         </View>
-      ) : (
-        <ScrollView
-          ref={scroll}
-          style={{ flex: 1 }}
-          contentContainerStyle={{ paddingHorizontal: space.gutter, paddingVertical: space.lg, gap: space.sm }}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-        >
-          {messages.length === 0 && !error ? (
-            <Empty
-              icon="message-text-outline"
-              title="Start the conversation"
-              body="Only you and the rider or customer assigned to this order can see messages here."
-            />
-          ) : null}
-          {messages.map((message) => (
-            <View
-              key={message.id}
+
+        {busy ? (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+            <ActivityIndicator color={palette.accent} />
+          </View>
+        ) : (
+          <ScrollView
+            ref={scroll}
+            style={{ flex: 1 }}
+            contentContainerStyle={{ paddingHorizontal: space.gutter, paddingVertical: space.lg, gap: space.sm }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={chatKeyboardDismissMode(Platform.OS)}
+          >
+            {messages.length === 0 && !error ? (
+              <Empty
+                icon="message-text-outline"
+                title="Start the conversation"
+                body="Only you and the rider or customer assigned to this order can see messages here."
+              />
+            ) : null}
+            {messages.map((message) => (
+              <View
+                key={message.id}
+                style={{
+                  maxWidth: '82%',
+                  alignSelf: message.mine ? 'flex-end' : 'flex-start',
+                  paddingHorizontal: space.md,
+                  paddingVertical: space.sm,
+                  borderRadius: radius.lg,
+                  backgroundColor: message.mine ? palette.accent : palette.surface,
+                  borderWidth: message.mine ? 0 : 1,
+                  borderColor: palette.line,
+                  gap: 2,
+                }}
+              >
+                <Text variant="caption" tone={message.mine ? 'onAccent' : 'default'}>{message.body}</Text>
+                <Text
+                  variant="micro"
+                  style={{ color: message.mine ? palette.onAccent : palette.textSubtle, opacity: 0.8 }}
+                >
+                  {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              </View>
+            ))}
+            {error ? <Notice icon="alert-circle-outline" text={error} danger /> : null}
+          </ScrollView>
+        )}
+
+        <View style={{ padding: space.gutter, borderTopWidth: 1, borderTopColor: palette.line, backgroundColor: palette.surface }}>
+          {!canSend ? <Text variant="micro" tone="muted">This completed order’s conversation is read-only.</Text> : null}
+          <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: space.sm }}>
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              editable={canSend && !sending}
+              maxLength={1000}
+              multiline
+              placeholder={canSend ? 'Message about this order…' : 'Conversation closed'}
+              placeholderTextColor={palette.textSubtle}
+              accessibilityLabel="Chat message"
               style={{
-                maxWidth: '82%',
-                alignSelf: message.mine ? 'flex-end' : 'flex-start',
+                flex: 1,
+                minHeight: 48,
+                maxHeight: 120,
+                borderRadius: radius.md,
+                borderWidth: 1,
+                borderColor: palette.line,
+                backgroundColor: palette.background,
+                color: palette.text,
                 paddingHorizontal: space.md,
                 paddingVertical: space.sm,
-                borderRadius: radius.lg,
-                backgroundColor: message.mine ? palette.accent : palette.surface,
-                borderWidth: message.mine ? 0 : 1,
-                borderColor: palette.line,
-                gap: 2,
+                fontFamily: 'Manrope_500Medium',
+                fontSize: 14,
               }}
+            />
+            <Pressable
+              disabled={!canSend || sending || draft.trim().length === 0}
+              onPress={() => void send()}
+              accessibilityRole="button"
+              accessibilityLabel="Send message"
+              style={({ pressed }) => ({
+                width: 48,
+                height: 48,
+                borderRadius: 24,
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: !canSend || sending || draft.trim().length === 0 ? 0.45 : 1,
+                backgroundColor: pressed ? palette.accentPressed : palette.accent,
+              })}
             >
-              <Text variant="caption" tone={message.mine ? 'onAccent' : 'default'}>{message.body}</Text>
-              <Text
-                variant="micro"
-                style={{ color: message.mine ? palette.onAccent : palette.textSubtle, opacity: 0.8 }}
-              >
-                {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </Text>
-            </View>
-          ))}
-          {error ? <Notice icon="alert-circle-outline" text={error} danger /> : null}
-        </ScrollView>
-      )}
-
-      <View style={{ padding: space.gutter, borderTopWidth: 1, borderTopColor: palette.line, backgroundColor: palette.surface }}>
-        {!canSend ? <Text variant="micro" tone="muted">This completed order’s conversation is read-only.</Text> : null}
-        <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: space.sm }}>
-          <TextInput
-            value={draft}
-            onChangeText={setDraft}
-            editable={canSend && !sending}
-            maxLength={1000}
-            multiline
-            placeholder={canSend ? 'Message about this order…' : 'Conversation closed'}
-            placeholderTextColor={palette.textSubtle}
-            accessibilityLabel="Chat message"
-            style={{
-              flex: 1,
-              minHeight: 48,
-              maxHeight: 120,
-              borderRadius: radius.md,
-              borderWidth: 1,
-              borderColor: palette.line,
-              backgroundColor: palette.background,
-              color: palette.text,
-              paddingHorizontal: space.md,
-              paddingVertical: space.sm,
-              fontFamily: 'Manrope_500Medium',
-              fontSize: 14,
-            }}
-          />
-          <Pressable
-            disabled={!canSend || sending || draft.trim().length === 0}
-            onPress={() => void send()}
-            accessibilityRole="button"
-            accessibilityLabel="Send message"
-            style={({ pressed }) => ({
-              width: 48,
-              height: 48,
-              borderRadius: 24,
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: !canSend || sending || draft.trim().length === 0 ? 0.45 : 1,
-              backgroundColor: pressed ? palette.accentPressed : palette.accent,
-            })}
-          >
-            {sending ? <ActivityIndicator color={palette.onAccent} /> : <Icon name="send" color={palette.onAccent} />}
-          </Pressable>
+              {sending ? <ActivityIndicator color={palette.onAccent} /> : <Icon name="send" color={palette.onAccent} />}
+            </Pressable>
+          </View>
         </View>
-      </View>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }

@@ -17,9 +17,11 @@ import { add, kobo, ZERO, type Kobo } from '@dash/domain/money';
 import {
   assertTransition,
   customerLabel,
+  deliveryAddressOf,
   describeRefund,
   describeRiderRatingRefusal,
   evaluateCustomerCancellation,
+  freezeDeliveryAddress,
   isActive,
   isRiderOnOrder,
   phaseOf,
@@ -643,6 +645,15 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
         const priced = await priceBasket(prisma, geo, body, customerId);
         const { quote, branch, address, trip, resolvedLines } = priced;
 
+        // Frozen onto the order, so its receipt and history keep showing
+        // where it went after the saved address is edited or removed.
+        const deliverTo = address
+          ? await prisma.address.findUnique({
+              where: { id: address.id },
+              select: { label: true, line1: true, landmark: true, instructions: true, contactPhone: true, latitude: true, longitude: true },
+            })
+          : null;
+
         const deliveryPin = generatePin(4);
         const pickupCode = generatePin(4);
 
@@ -678,6 +689,8 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
               pickupCodeHash: await hashOtp(pickupCode),
               contactless: body.contactless,
               instructions: body.instructions ?? null,
+              deliveryAddressSnapshot: deliverTo ? freezeDeliveryAddress(deliverTo) : null,
+              vendorNameSnapshot: branch.vendor.name,
               estimatedReadyAt: new Date(Date.now() + priced.estimatedPrepMinutes * 60_000),
               items: {
                 create: resolvedLines.map((line) => ({
@@ -842,6 +855,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
         total: true,
         createdAt: true,
         deliveredAt: true,
+        vendorNameSnapshot: true,
         vendor: { select: { id: true, name: true, slug: true, category: true } },
         items: { select: { nameSnapshot: true, quantity: true } },
       },
@@ -853,8 +867,10 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
     const page = hasMore ? orders.slice(0, query.limit) : orders;
 
     return {
-      orders: page.map((order) => ({
+      orders: page.map(({ vendorNameSnapshot, ...order }) => ({
         ...order,
+        // The seller's name as it was when the order was placed.
+        vendor: { ...order.vendor, name: vendorNameSnapshot ?? order.vendor.name },
         statusLabel: customerLabel(order.status as OrderStatus, order.vendor.category),
         phase: phaseOf(order.status as OrderStatus),
       })),
@@ -902,8 +918,14 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
           estimatedDeliveryAt: true,
           cancellationReason: true,
           vendor: { select: { id: true, name: true, slug: true, category: true } },
+          vendorNameSnapshot: true,
           branch: { select: { id: true, name: true, address: true, latitude: true, longitude: true } },
-          address: { select: { line1: true, landmark: true, instructions: true, latitude: true, longitude: true } },
+          // The saved address is only the fallback for orders placed before
+          // the snapshot existed; the snapshot is what the order went to.
+          deliveryAddressSnapshot: true,
+          address: {
+            select: { label: true, line1: true, landmark: true, instructions: true, contactPhone: true, latitude: true, longitude: true },
+          },
           items: { select: { nameSnapshot: true, priceSnapshot: true, quantity: true, modifiers: true, lineTotal: true, instructions: true } },
           statusEvents: { select: { toStatus: true, createdAt: true, actorType: true }, orderBy: { createdAt: 'asc' } },
           // Refunds owed on this order, so the customer can see one arrive.
@@ -944,6 +966,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
 
       const status = order.status as OrderStatus;
       const riderReview = order.reviews[0] ?? null;
+      const deliveredTo = deliveryAddressOf(order.deliveryAddressSnapshot, order.address);
       const ratingRefusal = riderRatingRefusal(
         { status, riderId: order.riderId, deliveredAt: order.deliveredAt },
         riderReview !== null,
@@ -957,6 +980,19 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
           riderId: undefined,
           reviews: undefined,
           payments: undefined,
+          deliveryAddressSnapshot: undefined,
+          vendorNameSnapshot: undefined,
+          vendor: { ...order.vendor, name: order.vendorNameSnapshot ?? order.vendor.name },
+          // The same shape the app has always read, from the frozen address.
+          address: deliveredTo
+            ? {
+                line1: deliveredTo.line1,
+                landmark: deliveredTo.landmark,
+                instructions: deliveredTo.instructions,
+                latitude: deliveredTo.latitude,
+                longitude: deliveredTo.longitude,
+              }
+            : null,
           // "Refunded" appears only once Paystack has confirmed it; see
           // payments/refund-confirmation.ts.
           refunds: order.payments.flatMap((payment) =>

@@ -974,6 +974,7 @@ model Rider {
   orders     Order[]
   locations  RiderLocation[]
   reviews    Review[]
+  payoutAccount RiderPayoutAccount?
 
   @@index([availability, status])
 }
@@ -1034,6 +1035,38 @@ model RiderLocation {
 // ===========================================================================
 // Carts and orders
 // ===========================================================================
+
+// Where a rider is paid. One per rider, replaced when they change it.
+//
+// Follows Vendor's payout design (apps/api/src/vendor/payout.ts): the full
+// record is encrypted and bound to the rider, and only what a person needs to
+// recognise the account is kept in clear. The account name is the one the
+// rider's bank reported through the payment provider, never typed by the
+// rider; `verifiedAt`/`verifiedBy` say when and by whom.
+//
+// A table of its own rather than columns on Rider, so the dispatch reads of
+// Rider never carry banking data.
+model RiderPayoutAccount {
+  id      String @id @default(cuid())
+  riderId String @unique
+
+  bankCode           String
+  bankName           String
+  accountName        String
+  /// Last four digits only. The full number is inside `accountCipher`.
+  accountNumberLast4 String
+  /// Envelope-encrypted JSON {bankCode, bankName, accountNumber, accountName},
+  /// bound to purpose "rider_bank_account" and this rider's id.
+  accountCipher      String
+
+  verifiedAt DateTime
+  verifiedBy String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rider Rider @relation(fields: [riderId], references: [id], onDelete: Cascade)
+}
 
 model Cart {
   id         String @id @default(cuid())
@@ -1142,6 +1175,14 @@ model Order {
 
   cancellationReason String?
   cancelledBy        String?
+
+  // --- Frozen at placement -------------------------------------------------
+  // What the receipt and every history view read, so an order keeps showing
+  // where it went and who sold it after the customer edits or removes the
+  // address, or the vendor renames. Items are frozen on OrderItem.
+  // JSON: { label, line1, landmark, instructions, contactPhone, latitude, longitude }.
+  deliveryAddressSnapshot String?
+  vendorNameSnapshot      String?
 
   contactless  Boolean @default(false)
   instructions String?
