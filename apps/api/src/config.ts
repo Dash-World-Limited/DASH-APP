@@ -84,6 +84,17 @@ const shape = z
     /** Where Paystack returns the customer's browser. Defaults to PUBLIC_WEB_URL/pay/complete. */
     PAYSTACK_CALLBACK_URL: z.string().url().optional(),
 
+    /**
+     * The official DASH support WhatsApp number, E.164 (e.g. +2348012345678).
+     * The apps offer "Chat on WhatsApp" only when it is set, so no number is
+     * ever guessed or hard-coded into a build.
+     */
+    SUPPORT_WHATSAPP_E164: z
+      .string()
+      .trim()
+      .regex(/^\+[1-9]\d{7,14}$/, 'SUPPORT_WHATSAPP_E164 must be an E.164 number such as +2348012345678')
+      .optional(),
+
     MAPS_PROVIDER: z.enum(['local', 'google', 'mapbox']).default('local'),
     GOOGLE_MAPS_API_KEY: z.string().optional(),
     MAPBOX_ACCESS_TOKEN: z.string().optional(),

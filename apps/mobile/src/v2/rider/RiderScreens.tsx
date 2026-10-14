@@ -50,6 +50,7 @@ import {
   type JourneyStage,
 } from './journey';
 import { type Coordinate, type DeliveryStatus, type RiderDelivery, type RiderOffer, useRiderFlow } from './RiderFlowProvider';
+import { KeyboardSafeView } from '../chat/KeyboardSafeView';
 
 interface RiderHistoryItem {
   id: string;
@@ -109,8 +110,11 @@ export function RiderWorkspace({ onBack, onChat }: { onBack: () => void; onChat:
   else if (offer) panel = <OfferPanel key={offer.id} offer={offer} />;
   else panel = <SearchingPanel />;
 
+  // Keyboard-safe: the delivery PIN is typed into the panel's footer, and an
+  // edge-to-edge Android window is never resized for the keyboard. The map
+  // gives up the height instead; the PIN and its button stay in view.
   return (
-    <View testID="rider-workspace-v2" style={{ flex: 1, backgroundColor: palette.background }}>
+    <KeyboardSafeView testID="rider-workspace-v2" style={{ backgroundColor: palette.background }}>
       <View style={{ flex: 1 }}>
         {flow.riderPosition ? (
           <MapShell
@@ -133,7 +137,7 @@ export function RiderWorkspace({ onBack, onChat }: { onBack: () => void; onChat:
         <WorkspaceTopBar onBack={onBack} onDelivery={Boolean(activeDelivery)} />
       </View>
       {panel}
-    </View>
+    </KeyboardSafeView>
   );
 }
 

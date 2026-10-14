@@ -436,3 +436,85 @@ describe('banks and account names', () => {
     }
   });
 });
+
+describe('saving a card', () => {
+  function fakeCard(answer: (url: URL, body: unknown) => { status: number; json: unknown }) {
+    const calls: Array<{ url: URL; body: unknown }> = [];
+    const impl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const body = init?.body ? (JSON.parse(String(init.body)) as unknown) : undefined;
+      calls.push({ url, body });
+      const result = answer(url, body);
+      return new Response(JSON.stringify(result.json), { status: result.status });
+    }) as typeof fetch;
+    return { impl, calls };
+  }
+
+  const verified = (overrides: Record<string, unknown> = {}, authorization: Record<string, unknown> = {}) => ({
+    status: 200,
+    json: {
+      status: true,
+      data: {
+        reference: 'CARD-1',
+        status: 'success',
+        amount: 5_000,
+        currency: 'NGN',
+        authorization: {
+          authorization_code: 'AUTH_secret123',
+          signature: 'SIG_abc',
+          card_type: 'visa ',
+          last4: '4081',
+          exp_month: '12',
+          exp_year: '2030',
+          bank: 'TEST BANK',
+          channel: 'card',
+          reusable: true,
+          ...authorization,
+        },
+        ...overrides,
+      },
+    },
+  });
+
+  it('starts a card-only charge on Paystack’s page', async () => {
+    const paystack = fakeCard(() => ({ status: 200, json: { status: true, data: { authorization_url: 'https://checkout.paystack.com/xyz' } } }));
+    const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl, callbackUrl: 'https://dash.test/pay/complete' });
+    const result = await adapter.initializeCardSetup({ reference: 'CARD-1', amount: kobo(5_000), customerEmail: 'ada@dash.test', idempotencyKey: 'k' });
+    expect(result).toEqual({ authorizationUrl: 'https://checkout.paystack.com/xyz' });
+    expect(paystack.calls[0]!.url.pathname).toBe('/transaction/initialize');
+    expect(paystack.calls[0]!.body).toMatchObject({ amount: 5_000, currency: 'NGN', reference: 'CARD-1', channels: ['card'], email: 'ada@dash.test' });
+  });
+
+  it('returns the reusable card from a successful charge, with the token and nothing of the card number', async () => {
+    const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: fakeCard(() => verified()).impl });
+    expect(await adapter.verifyCardSetup('CARD-1')).toEqual({
+      status: 'captured',
+      amount: 5_000,
+      card: { token: 'AUTH_secret123', fingerprint: 'SIG_abc', brand: 'visa', last4: '4081', expMonth: 12, expYear: 2030, bank: 'TEST BANK' },
+    });
+  });
+
+  it('returns no card when Paystack says it cannot be charged again, or the charge did not succeed', async () => {
+    for (const answer of [
+      verified({}, { reusable: false }),
+      verified({}, { channel: 'bank' }),
+      verified({ status: 'failed' }),
+      verified({ currency: 'USD' }),
+      verified({}, { last4: '12' }),
+    ]) {
+      const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: fakeCard(() => answer).impl });
+      expect((await adapter.verifyCardSetup('CARD-1')).card).toBeNull();
+    }
+  });
+
+  it('deactivates a removed card’s authorization', async () => {
+    const paystack = fakeCard(() => ({ status: 200, json: { status: true, message: 'Authorization has been deactivated' } }));
+    const adapter = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: paystack.impl });
+    await adapter.deactivateCard('AUTH_secret123');
+    expect(paystack.calls[0]!.url.pathname).toBe('/customer/deactivate_authorization');
+    expect(paystack.calls[0]!.body).toEqual({ authorization_code: 'AUTH_secret123' });
+
+    const failing = new PaystackPaymentAdapter({ secretKey: SECRET, fetch: fakeCard(() => ({ status: 400, json: { status: false } })).impl });
+    await expect(failing.deactivateCard('AUTH_x')).rejects.toBeInstanceOf(PaymentProviderError);
+  });
+});

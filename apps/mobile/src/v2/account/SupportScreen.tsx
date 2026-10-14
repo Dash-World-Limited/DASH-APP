@@ -2,17 +2,26 @@
  * Help & Support, for customers (the Support tab, and from Account) and for
  * riders (from Profile).
  *
- * It offers only channels DASH answers on — today, email at the official
- * address — and the help that already exists inside the app. WhatsApp and
- * chat with the DASH team arrive as entries in `SUPPORT_CHANNELS` when they
- * have a real line and a staffed desk; nothing is drawn for them before then.
+ * It offers only channels DASH answers on: chat with the DASH team inside the
+ * app, WhatsApp when the server names the official number, and email at the
+ * official address, which is always there.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Linking, View } from 'react-native';
 
 import { Wordmark } from '../../brand/Wordmark';
-import { DASH_SUPPORT_EMAIL, SUPPORT_CHANNELS, supportMailto, whatsappUrl, type SupportAudience, type SupportChannel } from '../../features/support';
+import { api } from '../../api';
+import { getSupportChannels, getSupportUnread } from '../../data/support';
+import {
+  DASH_SUPPORT_EMAIL,
+  supportChannels,
+  supportMailto,
+  whatsappGreeting,
+  whatsappUrl,
+  type SupportAudience,
+  type SupportChannel,
+} from '../../features/support';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space } from '../../theme/tokens';
 import { Icon, type IconName } from '../../ui/Icon';
@@ -36,8 +45,31 @@ const TIPS: Record<SupportAudience, ReadonlyArray<{ icon: IconName; title: strin
 
 export function SupportScreen({ audience, onBack, onOpenChat }: { audience: SupportAudience; onBack?: () => void; onOpenChat?: () => void }) {
   const { palette } = useTheme();
-  const { viewer } = useAppSession();
+  const { viewer, state: sessionState } = useAppSession();
   const [fallback, setFallback] = useState<string | null>(null);
+  const [whatsapp, setWhatsapp] = useState<string | null>(null);
+  const [unread, setUnread] = useState(0);
+  const signedIn = api.configured && sessionState === 'authenticated';
+
+  useEffect(() => {
+    if (!api.configured) return;
+    let cancelled = false;
+    // Public: the number shows even before sign-in. A failure just leaves
+    // WhatsApp out; email is always there.
+    void getSupportChannels(api)
+      .then((channels) => !cancelled && setWhatsapp(channels.whatsapp))
+      .catch(() => undefined);
+    if (signedIn) {
+      void getSupportUnread(api, audience)
+        .then((count) => !cancelled && setUnread(count))
+        .catch(() => undefined);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [audience, signedIn]);
+
+  const channels = supportChannels({ whatsapp, chat: Boolean(onOpenChat) && signedIn });
 
   const open = (url: string, unavailable: string) => {
     setFallback(null);
@@ -64,11 +96,21 @@ export function SupportScreen({ audience, onBack, onOpenChat }: { audience: Supp
             icon="whatsapp"
             label="Chat on WhatsApp"
             detail={channel.number}
-            onPress={() => open(whatsappUrl(channel.number), `WhatsApp did not open. Message ${channel.number} on WhatsApp.`)}
+            onPress={() => open(whatsappUrl(channel.number, whatsappGreeting(audience)), `WhatsApp did not open. Message ${channel.number} on WhatsApp.`)}
+            testID="support-whatsapp"
           />
         );
       case 'chat':
-        return onOpenChat ? <SettingsItem key="chat" icon="message-text-outline" label="Chat with DASH" onPress={onOpenChat} /> : null;
+        return onOpenChat ? (
+          <SettingsItem
+            key="chat"
+            icon="message-text-outline"
+            label="Chat with DASH"
+            detail={unread > 0 ? `${unread} new ${unread === 1 ? 'reply' : 'replies'}` : 'Message the DASH team here in the app'}
+            onPress={onOpenChat}
+            testID="support-chat"
+          />
+        ) : null;
     }
   };
 
@@ -99,7 +141,7 @@ export function SupportScreen({ audience, onBack, onOpenChat }: { audience: Supp
         </View>
       </Card>
 
-      <SettingsSection title="Contact DASH">{SUPPORT_CHANNELS.map(row)}</SettingsSection>
+      <SettingsSection title="Contact DASH">{channels.map(row)}</SettingsSection>
       {fallback ? <Notice icon="information-outline" text={fallback} /> : null}
       <Text variant="caption" tone="muted">
         Put your order code in your message — it looks like DASH-AB12CD — so we can find the order straight away.

@@ -476,6 +476,9 @@ export async function finaliseAccountDeletion(
     if (customerId) {
       // Carts cascade to items on delete.
       counts['Cart'] = (await tx.cart.deleteMany({ where: { customerId } })).count;
+      // Saved cards are payment credentials: the encrypted provider token goes,
+      // so nothing at DASH can charge the card again.
+      counts['PaymentMethod'] = (await tx.paymentMethod.deleteMany({ where: { customerId } })).count;
 
       // --- Anonymise: rows the ledger / an order references ------------
       const addresses = await tx.address.findMany({
