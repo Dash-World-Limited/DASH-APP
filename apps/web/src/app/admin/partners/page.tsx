@@ -26,6 +26,18 @@ interface RiderApplication {
     phone: PhoneStatus;
   };
 }
+interface RiderPayoutView {
+  rider: { id: string; name: string | null; status: string };
+  payoutAccount: {
+    configured: boolean;
+    bankName: string | null;
+    accountName: string | null;
+    accountNumberMasked: string | null;
+    verifiedAt: string | null;
+    verifiedBy: string | null;
+    updatedAt: string | null;
+  };
+}
 interface VendorApplication {
   vendorId: string;
   businessName: string;
@@ -44,6 +56,8 @@ function PartnerQueue() {
   const { permissions, loaded } = usePermissions();
   const canRiders = permissions.has('admin:rider:approve');
   const canVendors = permissions.has('admin:vendor:approve');
+  const canPayouts = permissions.has('admin:rider:payout:read');
+  const [riderStatus, setRiderStatus] = useState<'pending' | 'approved'>('pending');
   const [riders, setRiders] = useState<RiderApplication[] | null>(null);
   const [vendors, setVendors] = useState<VendorApplication[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -57,7 +71,7 @@ function PartnerQueue() {
     try {
       if (canRiders) {
         const result = await runStepUp(() =>
-          authedFetch<{ applications: RiderApplication[] }>('/v1/admin/rider-applications?status=pending&limit=100'),
+          authedFetch<{ applications: RiderApplication[] }>(`/v1/admin/rider-applications?status=${riderStatus}&limit=100`),
         );
         if (result) setRiders(result.applications);
       } else setRiders([]);
@@ -70,7 +84,7 @@ function PartnerQueue() {
     } catch (caught) {
       setError(caught instanceof ApiRequestError ? caught.message : 'Could not load partner applications.');
     }
-  }, [canRiders, canVendors, loaded, runStepUp, signedIn]);
+  }, [canRiders, canVendors, loaded, riderStatus, runStepUp, signedIn]);
 
   useEffect(() => {
     void load();
@@ -148,6 +162,27 @@ function PartnerQueue() {
           })}
         </div>
 
+        {tab === 'riders' && canRiders ? (
+          <div className="ml-3 mt-6 inline-flex rounded-xl bg-[var(--surface-sunken)] p-1">
+            {(['pending', 'approved'] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => {
+                  setRiders(null);
+                  setRiderStatus(value);
+                }}
+                className={
+                  'min-w-24 rounded-lg px-3 py-2 text-xs font-bold capitalize transition ' +
+                  (riderStatus === value ? 'bg-[var(--ink)] text-[var(--ink-inverted)]' : 'text-[var(--ink-muted)]')
+                }
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
         {notice ? <div className="mt-5 rounded-2xl bg-[var(--success-soft)] px-5 py-4 text-sm font-semibold text-[var(--success)]">{notice}</div> : null}
         {error ? <div className="mt-5 rounded-2xl bg-[var(--danger-soft)] px-5 py-4 text-sm font-semibold text-[var(--danger)]">{error}</div> : null}
 
@@ -158,7 +193,7 @@ function PartnerQueue() {
             <div className="admin-card rounded-3xl p-10 text-center">
               <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--primary-soft)] text-xl text-[var(--primary)]">✓</div>
               <h2 className="mt-4 text-xl font-extrabold">Queue clear</h2>
-              <p className="mt-2 text-sm text-[var(--ink-muted)]">There are no pending {tab} applications right now.</p>
+              <p className="mt-2 text-sm text-[var(--ink-muted)]">There are no {tab === 'riders' ? riderStatus : 'pending'} {tab} right now.</p>
             </div>
           ) : tab === 'riders' ? (
             <div className="grid gap-4 lg:grid-cols-2">
@@ -171,7 +206,7 @@ function PartnerQueue() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h2 className="truncate text-lg font-extrabold">{rider.applicant.name ?? 'Unnamed applicant'}</h2>
-                        <span className="rounded-full bg-[var(--primary-soft)] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-[var(--primary)]">Pending</span>
+                        <span className="rounded-full bg-[var(--primary-soft)] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide text-[var(--primary)]">{rider.status.label}</span>
                       </div>
                       <p className="mt-1 truncate text-sm text-[var(--ink-muted)]">{rider.applicant.email ?? 'No email'}</p>
                     </div>
@@ -184,14 +219,18 @@ function PartnerQueue() {
                     <div><dt className="text-xs text-[var(--ink-muted)]">Applied</dt><dd className="mt-1 font-bold">{new Date(rider.submittedAt).toLocaleDateString()}</dd></div>
                   </dl>
 
-                  <button
-                    type="button"
-                    disabled={busyId === rider.riderId}
-                    onClick={() => void approve('rider', rider.riderId, rider.applicant.name ?? 'Rider')}
-                    className="mt-5 min-h-12 w-full rounded-xl bg-[var(--primary)] px-4 text-sm font-extrabold text-[var(--on-primary)] transition hover:bg-[var(--primary-hover)] disabled:opacity-50"
-                  >
-                    {busyId === rider.riderId ? 'Approving…' : 'Approve rider'}
-                  </button>
+                  {canPayouts ? <RiderPayoutPanel riderId={rider.riderId} runStepUp={runStepUp} /> : null}
+
+                  {rider.status.code === 'pending' ? (
+                    <button
+                      type="button"
+                      disabled={busyId === rider.riderId}
+                      onClick={() => void approve('rider', rider.riderId, rider.applicant.name ?? 'Rider')}
+                      className="mt-5 min-h-12 w-full rounded-xl bg-[var(--primary)] px-4 text-sm font-extrabold text-[var(--on-primary)] transition hover:bg-[var(--primary-hover)] disabled:opacity-50"
+                    >
+                      {busyId === rider.riderId ? 'Approving…' : 'Approve rider'}
+                    </button>
+                  ) : null}
                 </article>
               ))}
             </div>
@@ -226,6 +265,70 @@ function PartnerQueue() {
         </div>
       </div>
       {stepUpPrompt}
+    </div>
+  );
+}
+
+/**
+ * A rider's payout account, for a super admin: bank, the account name the
+ * bank confirmed, and the last four digits. Fetched only when asked for, behind
+ * a step-up, and every view is audited on the server.
+ */
+function RiderPayoutPanel({
+  riderId,
+  runStepUp,
+}: {
+  riderId: string;
+  runStepUp: <T>(action: () => Promise<T>) => Promise<T | undefined>;
+}) {
+  const [view, setView] = useState<RiderPayoutView | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const show = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await runStepUp(() => authedFetch<RiderPayoutView>(`/v1/admin/riders/${riderId}/payout-account`));
+      if (result) setView(result);
+    } catch (caught) {
+      setError(caught instanceof ApiRequestError ? caught.message : 'Could not load the payout account.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!view) {
+    return (
+      <div className="mt-3">
+        <button
+          type="button"
+          onClick={() => void show()}
+          disabled={busy}
+          className="min-h-10 w-full rounded-xl border border-[var(--line)] bg-[var(--surface-raised)] px-4 text-xs font-bold text-[var(--ink-muted)] hover:text-[var(--ink)] disabled:opacity-50"
+        >
+          {busy ? 'Loading payout account…' : 'Show payout account'}
+        </button>
+        {error ? <p className="mt-2 text-xs font-semibold text-[var(--danger)]">{error}</p> : null}
+      </div>
+    );
+  }
+
+  const account = view.payoutAccount;
+  return (
+    <div className="mt-3 rounded-2xl border border-[var(--line)] p-4 text-sm">
+      <p className="text-xs font-extrabold uppercase tracking-wide text-[var(--ink-muted)]">Payout account</p>
+      {account.configured ? (
+        <dl className="mt-3 grid grid-cols-2 gap-3">
+          <div><dt className="text-xs text-[var(--ink-muted)]">Bank</dt><dd className="mt-1 font-bold">{account.bankName}</dd></div>
+          <div><dt className="text-xs text-[var(--ink-muted)]">Account</dt><dd className="mt-1 font-bold">{account.accountNumberMasked}</dd></div>
+          <div className="col-span-2"><dt className="text-xs text-[var(--ink-muted)]">Name on the account (confirmed by the bank)</dt><dd className="mt-1 font-bold">{account.accountName}</dd></div>
+          <div><dt className="text-xs text-[var(--ink-muted)]">Verified</dt><dd className="mt-1 font-bold">{account.verifiedAt ? new Date(account.verifiedAt).toLocaleString() : '—'}{account.verifiedBy ? ` · ${account.verifiedBy}` : ''}</dd></div>
+          <div><dt className="text-xs text-[var(--ink-muted)]">Last changed</dt><dd className="mt-1 font-bold">{account.updatedAt ? new Date(account.updatedAt).toLocaleString() : '—'}</dd></div>
+        </dl>
+      ) : (
+        <p className="mt-2 text-[var(--ink-muted)]">This rider has not added a payout account yet.</p>
+      )}
     </div>
   );
 }

@@ -35,6 +35,8 @@ export const PERMISSIONS = [
   'rider:location:report',
   'rider:earnings:read:own',
   'rider:incident:report',
+  // Setting the bank account the rider's own earnings are paid into.
+  'rider:payout:write:own',
 
   // --- Vendor --------------------------------------------------------------
   'vendor:order:read',
@@ -97,6 +99,9 @@ export const PERMISSIONS = [
   'admin:vendor:approve',
   'admin:rider:approve',
   'admin:kyc:review',
+  // Seeing a rider's payout account: bank, verified account name and the last
+  // four digits, never the full number. Held by super_admin alone.
+  'admin:rider:payout:read',
 
   // --- Governance ----------------------------------------------------------
   'admin:user:read',
@@ -208,6 +213,9 @@ export const STEP_UP_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>(
   // "who can do what", and suspending one is the same decision in reverse.
   'admin:vendor:approve',
   'admin:rider:approve',
+  // A rider's bank details, like a Declutters seller's under
+  // declutter:kyc:review: personal financial data, read deliberately.
+  'admin:rider:payout:read',
 ]);
 
 /** A step-up is valid for 15 minutes. After that, re-authenticate. */
@@ -267,6 +275,7 @@ const RIDER_PERMISSIONS: readonly Permission[] = [
   'rider:location:report',
   'rider:earnings:read:own',
   'rider:incident:report',
+  'rider:payout:write:own',
 ];
 
 const VENDOR_STAFF_PERMISSIONS: readonly Permission[] = [

@@ -5,9 +5,11 @@ import {
   canTransition,
   customerLabel,
   decideRefundConfirmation,
+  deliveryAddressOf,
   describeRefund,
   describeRiderRatingRefusal,
   evaluateCustomerCancellation,
+  freezeDeliveryAddress,
   isActive,
   isPaid,
   isRiderOnOrder,
@@ -397,5 +399,37 @@ describe('rating the rider', () => {
     }
     expect(RIDER_RATING_MIN).toBe(1);
     expect(RIDER_RATING_MAX).toBe(5);
+  });
+});
+
+describe('the delivery address frozen on an order', () => {
+  const home = {
+    label: 'Home',
+    line1: '4 Nnebisi Road',
+    landmark: null,
+    instructions: 'Blue gate',
+    contactPhone: '+2348031234567',
+    latitude: 6.2,
+    longitude: 6.7,
+  };
+
+  it('reads back exactly what was frozen, ignoring the address as it is now', () => {
+    const frozen = freezeDeliveryAddress(home);
+    const edited = { ...home, line1: 'Somewhere else entirely', contactPhone: '+2348000000000' };
+    expect(deliveryAddressOf(frozen, edited)).toEqual(home);
+  });
+
+  it('keeps only the address fields', () => {
+    const frozen = freezeDeliveryAddress({ ...home, customerId: 'c1', id: 'a1' } as typeof home);
+    expect(Object.keys(JSON.parse(frozen) as object).sort()).toEqual(
+      ['contactPhone', 'instructions', 'label', 'landmark', 'latitude', 'line1', 'longitude'],
+    );
+  });
+
+  it('falls back to the saved address for orders from before snapshots, or an unreadable one', () => {
+    expect(deliveryAddressOf(null, home)).toEqual(home);
+    expect(deliveryAddressOf('not json', home)).toEqual(home);
+    expect(deliveryAddressOf('{"line1": 4}', home)).toEqual(home);
+    expect(deliveryAddressOf(null, null)).toBeNull();
   });
 });

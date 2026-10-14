@@ -42,7 +42,8 @@ export type RiderRoute =
   | 'rider.personal-details'
   | 'rider.notification-settings'
   | 'rider.help'
-  | 'rider.legal';
+  | 'rider.legal'
+  | 'rider.bank-account';
 
 export type RouteName = CustomerRoute | RiderRoute;
 

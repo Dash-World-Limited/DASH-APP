@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, Linking, Pressable, ScrollView, View } from 'react-native';
-import { formatNairaCompact, type Kobo } from '@dash/domain/money';
+import { formatNaira, formatNairaCompact, type Kobo } from '@dash/domain/money';
 
 import { api, ApiError } from '../../api';
 import {
   cancelOrder,
   describeOutcome,
   isActiveOrder,
+  quoteRows,
   refundTone,
   retryPayment,
   verifyPayment,
@@ -38,6 +39,17 @@ interface OrderSummary {
 }
 
 interface OrderDetail extends OrderSummary {
+  /** Frozen at checkout: the receipt never reads today's menu or prices. */
+  items: Array<{ nameSnapshot: string; quantity: number; priceSnapshot: Kobo; lineTotal: Kobo }>;
+  itemsSubtotal: Kobo;
+  discountTotal: Kobo;
+  deliveryFee: Kobo;
+  serviceFee: Kobo;
+  smallOrderFee: Kobo;
+  surgeAmount: Kobo;
+  tax: Kobo;
+  tip: Kobo;
+  total: Kobo;
   branch: { name: string; address: string; latitude: number; longitude: number };
   address: { line1: string; landmark: string | null; instructions: string | null; latitude: number; longitude: number } | null;
   statusEvents: Array<{ toStatus: string; createdAt: string }>;
@@ -93,8 +105,8 @@ export function CustomerOrdersScreen({ onTrack, onAccount }: { onTrack: (id: str
       {busy ? <View style={{ minHeight: 180, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={palette.accent} /></View> : null}
       {error ? <Notice icon="alert-circle-outline" text={error} danger /> : null}
       {!busy && api.configured && auth.state === 'authenticated' && orders.length === 0 ? <Empty icon="receipt-text-outline" title={segment === 'active' ? 'No active delivery' : 'No past orders'} body={segment === 'active' ? 'Once an order is placed, its progress appears here.' : 'Completed and cancelled orders stay here.'} /> : null}
-      {/* Delivered orders open too: that is where the rider is rated. */}
-      {!busy && orders.map((order) => <OrderCard key={order.id} order={order} onPress={segment === 'active' || order.status === 'delivered' ? () => onTrack(order.id) : undefined} />)}
+      {/* Past orders open too: their receipt, and for a delivered one, rating the rider. */}
+      {!busy && orders.map((order) => <OrderCard key={order.id} order={order} past={segment === 'past'} onPress={() => onTrack(order.id)} />)}
     </OrderPage>
   );
 }
@@ -282,6 +294,7 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
           onPayAgain={() => void payAgain()}
         />
         <ProgressTimeline current={order.status} />
+        <Receipt order={order} />
         {/* Shown once, from the placement response, to read to the rider at
             the door. It is never fetched again. */}
         {memory.deliveryPin && isActiveOrder(order.status) ? (
@@ -368,6 +381,36 @@ function PaymentSection({
  * the money went back, which is why a pending refund stays bronze rather
  * than green.
  */
+/** What was bought, at the prices paid, as the order froze it at checkout. */
+function Receipt({ order }: { order: OrderDetail }) {
+  const { palette } = useTheme();
+  const rows = quoteRows(order);
+  return (
+    <Card>
+      <Text variant="label" weight="bold">Your order</Text>
+      {order.items.map((item, index) => (
+        <View key={`${item.nameSnapshot}-${index}`} style={{ flexDirection: 'row', gap: space.sm }}>
+          <Text variant="caption" tone="accent">{item.quantity}×</Text>
+          <Text variant="caption" style={{ flex: 1 }}>{item.nameSnapshot}</Text>
+          <Text variant="caption">{formatNaira(item.lineTotal)}</Text>
+        </View>
+      ))}
+      <View style={{ height: 1, backgroundColor: palette.line }} />
+      {rows.map((row) => (
+        <View key={row.label} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+          <Text variant="caption" tone="muted">{row.label}</Text>
+          <Text variant="caption" tone="muted">{row.negative ? '−' : ''}{formatNaira(row.amount)}</Text>
+        </View>
+      ))}
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+        <Text variant="label" weight="bold">Total</Text>
+        <Text variant="label" weight="bold">{formatNaira(order.total)}</Text>
+      </View>
+      <Text variant="micro" tone="muted">Order {order.code} · placed {new Date(order.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</Text>
+    </Card>
+  );
+}
+
 function RefundSection({ refunds }: { refunds: OrderDetail['refunds'] }) {
   const { palette } = useTheme();
   if (!refunds || refunds.length === 0) return null;
@@ -393,11 +436,11 @@ function RefundSection({ refunds }: { refunds: OrderDetail['refunds'] }) {
   );
 }
 
-function OrderCard({ order, onPress }: { order: OrderSummary; onPress?: () => void }) {
+function OrderCard({ order, onPress, past = false }: { order: OrderSummary; onPress?: () => void; past?: boolean }) {
   const { palette } = useTheme();
-  const content = <><View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: space.md }}><View style={{ flex: 1 }}><Text variant="label" weight="bold">{order.vendor.name}</Text><Text variant="micro" tone="muted">{order.code} · {new Date(order.createdAt).toLocaleDateString()}</Text></View><Text variant="caption" tone={order.status === 'delivered' ? 'success' : 'accent'} weight="bold">{order.statusLabel}</Text></View><Text variant="caption" tone="muted">{order.items.map((item) => `${item.quantity}× ${item.nameSnapshot}`).join(' · ')}</Text><View style={{ flexDirection: 'row', alignItems: 'center' }}><Text variant="label" weight="bold" style={{ flex: 1 }}>{formatNairaCompact(order.total as Kobo)}</Text>{onPress ? <><Text variant="caption" tone="accent" weight="bold">Track order</Text><Icon name="chevron-right" color={palette.accent} /></> : null}</View></>;
+  const content = <><View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: space.md }}><View style={{ flex: 1 }}><Text variant="label" weight="bold">{order.vendor.name}</Text><Text variant="micro" tone="muted">{order.code} · {new Date(order.createdAt).toLocaleDateString()}</Text></View><Text variant="caption" tone={order.status === 'delivered' ? 'success' : 'accent'} weight="bold">{order.statusLabel}</Text></View><Text variant="caption" tone="muted">{order.items.map((item) => `${item.quantity}× ${item.nameSnapshot}`).join(' · ')}</Text><View style={{ flexDirection: 'row', alignItems: 'center' }}><Text variant="label" weight="bold" style={{ flex: 1 }}>{formatNairaCompact(order.total as Kobo)}</Text>{onPress ? <><Text variant="caption" tone="accent" weight="bold">{past ? 'View order' : 'Track order'}</Text><Icon name="chevron-right" color={palette.accent} /></> : null}</View></>;
   const style = { padding: space.lg, gap: space.md, borderRadius: radius.lg, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line } as const;
-  return onPress ? <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`Track ${order.code}`} style={style}>{content}</Pressable> : <View style={style}>{content}</View>;
+  return onPress ? <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`${past ? 'View' : 'Track'} ${order.code}`} style={style}>{content}</Pressable> : <View style={style}>{content}</View>;
 }
 
 function ProgressTimeline({ current }: { current: string }) {

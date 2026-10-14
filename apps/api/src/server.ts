@@ -77,6 +77,8 @@ import { registerCatalogRoutes } from './routes/catalog.js';
 import { registerOrderRoutes } from './routes/orders.js';
 import { registerVendorRoutes } from './routes/vendor.js';
 import { registerRiderRoutes } from './routes/rider.js';
+import { registerRiderPayoutRoutes } from './routes/rider-payout.js';
+import { registerOrderHistoryRoutes } from './routes/order-history.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerOnboardingRoutes } from './routes/onboarding.js';
 import { registerAdminRoutes } from './routes/admin.js';
@@ -652,6 +654,10 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     await registerOrderRoutes(app);
     await registerVendorRoutes(app);
     await registerRiderRoutes(app);
+    // The rider's payout account. Separate from the dispatch routes above.
+    await registerRiderPayoutRoutes(app);
+    // Read-only order history from what each order froze at placement.
+    await registerOrderHistoryRoutes(app);
     await registerChatRoutes(app);
     // Applying to sell or ride, and the founder's approval of it. Part of the
     // delivery product: a Declutters-only deployment has no storefronts or

@@ -34,6 +34,7 @@ import { AuthGate } from './auth/AuthGate';
 import { DeleteAccountScreen } from './account/DeleteAccountScreen';
 import { NotificationSettingsScreen } from './account/NotificationSettingsScreen';
 import { PersonalDetailsScreen } from './account/PersonalDetailsScreen';
+import { BankAccountScreen } from './account/BankAccountScreen';
 import { SavedAddressesScreen } from './account/SavedAddressesScreen';
 import { SettingsItem, SettingsSection } from './account/SettingsList';
 import { SupportScreen } from './account/SupportScreen';
@@ -279,6 +280,8 @@ function RouteView({
       return <SupportScreen audience="rider" onBack={onBack} />;
     case 'rider.legal':
       return <LegalScreen slug={route.params?.slug ?? 'terms-of-service'} onBack={onBack} />;
+    case 'rider.bank-account':
+      return <BankAccountScreen onBack={onBack} />;
     // One live workspace for the whole rider journey. These routes are kept so
     // every way into it (Home, Orders, a restored delivery) still lands, but
     // the screen shows whatever the rider's real state is — searching, an
@@ -633,6 +636,7 @@ function RiderProfile({ onSwitch, onPush }: { onSwitch: () => void; onPush: (rou
       <SettingsSection title="Account">
         <SettingsItem icon="account-outline" label="Personal details" detail="Name, phone and location" onPress={() => onPush({ name: 'rider.personal-details' })} testID="rider-personal-details-row" />
         <SettingsItem icon="bell-outline" label="Notifications" detail="Order and delivery updates" onPress={() => onPush({ name: 'rider.notification-settings' })} testID="rider-notifications-row" />
+        <SettingsItem icon="bank-outline" label="Bank account" detail="Where your earnings are paid" onPress={() => onPush({ name: 'rider.bank-account' })} testID="rider-bank-account-row" />
       </SettingsSection>
       <AppearanceControl />
       <SettingsSection title="Help & legal">

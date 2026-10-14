@@ -271,6 +271,37 @@ describe('rotating a key without downtime or a migration', () => {
     expect(result.mfa.reEncrypted).toBe(1);
     expect(result.survey.safeToRetireOtherKeys).toBe(true);
   });
+
+  it('surveys and moves rider payout accounts, still bound to their rider', async () => {
+    const k1Only = keyringWith(K1, 'k1');
+    const rider = await context.prisma.rider.create({ data: { identityId: context.identityId }, select: { id: true } });
+    const context_ = { purpose: 'rider_bank_account', subjectId: rider.id };
+    await context.prisma.riderPayoutAccount.create({
+      data: {
+        riderId: rider.id,
+        bankCode: '058',
+        bankName: 'Guaranty Trust Bank',
+        accountName: 'ROTATION RIDER',
+        accountNumberLast4: '6789',
+        accountCipher: encrypt('{"accountNumber":"0123456789"}', k1Only, context_),
+        verifiedAt: new Date(),
+        verifiedBy: 'mock',
+      },
+    });
+
+    const rotated = keyringWith(K2, 'k2', `k1:${K1}`);
+    const before = await surveyKeyUsage(context.prisma, keyringIdentity(rotated));
+    expect(before.usage.find((entry) => entry.model === 'RiderPayoutAccount')?.byKeyId).toEqual({ k1: 1 });
+    expect(before.safeToRetireOtherKeys).toBe(false);
+
+    const result = await reEncryptAll(context.prisma, rotated);
+    expect(result.riderPayouts.reEncrypted).toBe(1);
+    expect(result.survey.safeToRetireOtherKeys).toBe(true);
+
+    const row = await context.prisma.riderPayoutAccount.findUniqueOrThrow({ where: { riderId: rider.id } });
+    expect(envelopeKeyId(row.accountCipher)).toBe('k2');
+    expect(decrypt(row.accountCipher, keyringWith(K2, 'k2'), context_).plaintext).toContain('0123456789');
+  });
 });
 
 // ---------------------------------------------------------------------------

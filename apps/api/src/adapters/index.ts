@@ -31,6 +31,7 @@ import type {
   PaymentIntent,
   PaymentPort,
   PaymentWebhookEvent,
+  PayoutBank,
   PushPort,
   QueueJob,
   QueuePort,
@@ -52,6 +53,17 @@ interface MockPaymentRecord {
   status: PaymentIntent['status'];
   capturedAmount: Kobo;
 }
+
+const MOCK_BANKS: readonly PayoutBank[] = [
+  { code: '044', name: 'Access Bank' },
+  { code: '011', name: 'First Bank of Nigeria' },
+  { code: '058', name: 'Guaranty Trust Bank' },
+  { code: '50211', name: 'Kuda Bank' },
+  { code: '50515', name: 'Moniepoint MFB' },
+  { code: '999992', name: 'OPay Digital Services Limited (OPay)' },
+  { code: '033', name: 'United Bank For Africa' },
+  { code: '057', name: 'Zenith Bank' },
+];
 
 /**
  * A deterministic in-memory payment provider.
@@ -149,6 +161,27 @@ export class MockPaymentAdapter implements PaymentPort {
       currency: 'NGN',
       providerStatus: refund ? 'processed' : 'not_found',
     };
+  }
+
+  /**
+   * A few real Nigerian banks and their codes, for development and tests
+   * only. A deployment with `PAYMENTS_PROVIDER=paystack` lists Paystack's own
+   * banks; nothing outside this mock reads this list.
+   */
+  async listBanks(): Promise<readonly PayoutBank[]> {
+    return MOCK_BANKS;
+  }
+
+  /**
+   * Deterministic: every 10-digit number at a listed bank resolves to a test
+   * name, except 0000000000, which the bank "does not know". A number ending
+   * 9999 makes the bank unreachable, for the "could not ask" path.
+   */
+  async resolveBankAccount(input: { bankCode: string; accountNumber: string }): Promise<{ accountName: string } | null> {
+    if (input.accountNumber.endsWith('9999')) throw new Error('Mock bank lookup is unavailable');
+    if (!/^\d{10}$/.test(input.accountNumber) || input.accountNumber === '0000000000') return null;
+    if (!MOCK_BANKS.some((bank) => bank.code === input.bankCode)) return null;
+    return { accountName: `DASH TEST ACCOUNT ${input.accountNumber.slice(-4)}` };
   }
 
   /**

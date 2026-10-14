@@ -649,3 +649,73 @@ export {
   type VendorCategory,
 } from './vocabulary.js';
 
+
+// ---------------------------------------------------------------------------
+// What an order froze at placement
+// ---------------------------------------------------------------------------
+
+/**
+ * The delivery address as it was when the order was placed. Stored on the
+ * order as JSON so the receipt and every history view keep showing where the
+ * order went after the customer edits or removes the saved address.
+ */
+export interface DeliveryAddressSnapshot {
+  readonly label: string | null;
+  readonly line1: string;
+  readonly landmark: string | null;
+  readonly instructions: string | null;
+  readonly contactPhone: string;
+  readonly latitude: number;
+  readonly longitude: number;
+}
+
+export function freezeDeliveryAddress(address: DeliveryAddressSnapshot): string {
+  const frozen: DeliveryAddressSnapshot = {
+    label: address.label,
+    line1: address.line1,
+    landmark: address.landmark,
+    instructions: address.instructions,
+    contactPhone: address.contactPhone,
+    latitude: address.latitude,
+    longitude: address.longitude,
+  };
+  return JSON.stringify(frozen);
+}
+
+const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+
+/**
+ * The address an order was delivered to: its frozen snapshot, or for an order
+ * placed before snapshots existed, the saved address it still points at.
+ * A snapshot that cannot be read falls back the same way rather than failing
+ * the whole receipt.
+ */
+export function deliveryAddressOf(
+  snapshot: string | null | undefined,
+  live?: DeliveryAddressSnapshot | null,
+): DeliveryAddressSnapshot | null {
+  if (snapshot) {
+    try {
+      const parsed = JSON.parse(snapshot) as Record<string, unknown>;
+      if (
+        typeof parsed['line1'] === 'string' &&
+        typeof parsed['contactPhone'] === 'string' &&
+        typeof parsed['latitude'] === 'number' &&
+        typeof parsed['longitude'] === 'number'
+      ) {
+        return {
+          label: textOrNull(parsed['label']),
+          line1: parsed['line1'],
+          landmark: textOrNull(parsed['landmark']),
+          instructions: textOrNull(parsed['instructions']),
+          contactPhone: parsed['contactPhone'],
+          latitude: parsed['latitude'],
+          longitude: parsed['longitude'],
+        };
+      }
+    } catch {
+      // Fall through to the live address.
+    }
+  }
+  return live ?? null;
+}
