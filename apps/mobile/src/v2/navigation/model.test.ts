@@ -127,6 +127,14 @@ describe('native-v2 navigation model', () => {
     expect(() => navigate(createNavigationState('customer'), { name: 'rider.help' })).toThrow();
   });
 
+  it('opens the delivery location from the home screen and returns home', () => {
+    const home = createNavigationState('customer');
+    const location = navigate(home, { name: 'customer.delivery-location' });
+    expect(currentRoute(location).name).toBe('customer.delivery-location');
+    expect(goBack(location)).toEqual(home);
+    expect(() => navigate(createNavigationState('rider'), { name: 'customer.delivery-location' })).toThrow();
+  });
+
   it('opens a legal document from inside registration and returns to it', () => {
     const register = navigate(navigate(createNavigationState('customer'), { name: 'customer.account' }), { name: 'customer.register' });
     const legal = navigate(register, { name: 'customer.legal', params: { slug: 'terms-of-service' } });

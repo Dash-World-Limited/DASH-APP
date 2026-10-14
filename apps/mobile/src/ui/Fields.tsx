@@ -15,7 +15,18 @@ import { Text } from './Text';
 
 type Passthrough = Pick<
   TextInputProps,
-  'keyboardType' | 'autoComplete' | 'textContentType' | 'autoCapitalize' | 'autoCorrect' | 'returnKeyType' | 'onSubmitEditing' | 'autoFocus' | 'editable' | 'maxLength'
+  | 'keyboardType'
+  | 'autoComplete'
+  | 'textContentType'
+  | 'autoCapitalize'
+  | 'autoCorrect'
+  | 'returnKeyType'
+  | 'onSubmitEditing'
+  | 'autoFocus'
+  | 'editable'
+  | 'maxLength'
+  | 'multiline'
+  | 'numberOfLines'
 >;
 
 export function TextField({
@@ -65,7 +76,13 @@ export function TextField({
           accessibilityHint={error ?? hint}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          style={{ fontFamily: fontFamily.medium, fontSize: typeScale.body.fontSize, color: palette.text, paddingVertical: space.sm }}
+          style={{
+            fontFamily: fontFamily.medium,
+            fontSize: typeScale.body.fontSize,
+            color: palette.text,
+            paddingVertical: space.sm,
+            ...(input.multiline ? { minHeight: 88, textAlignVertical: 'top' as const } : null),
+          }}
         />
       </View>
       {error ? (

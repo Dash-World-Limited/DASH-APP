@@ -85,6 +85,19 @@ export const RIDER_HOLDING_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderSta
   'arrived',
 ]);
 
+/**
+ * States where an assigned rider is working the order: on the way to the
+ * vendor, waiting at the counter, or bringing it to the customer. Accepting an
+ * offer sets the rider and `rider_assigned` in one write, so in these states
+ * the order's rider is the one the customer can reach. Before them nobody is
+ * assigned; after them the job is over.
+ */
+export const RIDER_ON_ORDER_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+  'rider_assigned',
+  'rider_arrived',
+  ...RIDER_HOLDING_STATUSES,
+]);
+
 interface TransitionRule {
   readonly to: OrderStatus;
   /** Actors permitted to make this transition unaided. */
@@ -263,6 +276,46 @@ export function isActive(status: OrderStatus): boolean {
 
 export function isPaid(status: OrderStatus): boolean {
   return PAID_STATUSES.has(status);
+}
+
+export function isRiderOnOrder(status: OrderStatus): boolean {
+  return RIDER_ON_ORDER_STATUSES.has(status);
+}
+
+// ---------------------------------------------------------------------------
+// Rating the rider
+// ---------------------------------------------------------------------------
+
+export const RIDER_RATING_MIN = 1;
+export const RIDER_RATING_MAX = 5;
+export const RIDER_RATING_COMMENT_MAX = 500;
+
+export type RiderRatingRefusal = 'not_delivered' | 'no_rider' | 'already_rated';
+
+/**
+ * Whether the customer may rate this order's rider now: only once the order
+ * has really been delivered, only if a rider delivered it, and only once.
+ * Returns why not, or null when a rating is allowed.
+ */
+export function riderRatingRefusal(
+  order: { status: OrderStatus; riderId: string | null; deliveredAt: Date | string | null },
+  alreadyRated: boolean,
+): RiderRatingRefusal | null {
+  if (order.status !== 'delivered' || !order.deliveredAt) return 'not_delivered';
+  if (!order.riderId) return 'no_rider';
+  if (alreadyRated) return 'already_rated';
+  return null;
+}
+
+export function describeRiderRatingRefusal(refusal: RiderRatingRefusal): string {
+  switch (refusal) {
+    case 'not_delivered':
+      return 'You can rate your rider once this order has been delivered.';
+    case 'no_rider':
+      return 'No DASH rider delivered this order, so there is no rider to rate.';
+    case 'already_rated':
+      return 'You have already rated the rider for this order.';
+  }
 }
 
 // ---------------------------------------------------------------------------

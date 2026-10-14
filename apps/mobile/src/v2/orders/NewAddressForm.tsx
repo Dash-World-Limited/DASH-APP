@@ -1,10 +1,13 @@
 /**
- * Adding a delivery address, shared by checkout and Saved Addresses.
+ * Adding a delivery address, shared by checkout, Saved Addresses and the home
+ * screen's delivery location.
  *
  * The coordinates matter: the server quotes a delivery fee from them, so an
- * address with no location cannot be priced. They are the phone's position at
- * the moment of saving, exactly as checkout has always taken them — this is
- * not a map or a "use my location" picker, which a later batch brings.
+ * address with no location cannot be priced. Checkout and Saved Addresses take
+ * the phone's position at the moment of saving. The delivery-location screen
+ * passes the position it already found, with the address it read there as the
+ * starting text: the customer can correct the words, and the position stays
+ * the one the phone reported.
  */
 
 import { useState } from 'react';
@@ -27,15 +30,25 @@ export function NewAddressForm({
   onSaved,
   onCancel,
   makeDefault = true,
+  initialLine1 = '',
+  position,
+  title = 'Add a delivery address',
+  saveLabel = 'Save address',
 }: {
   defaultPhone: string;
   onSaved: (id: string) => Promise<void> | void;
   onCancel?: () => void;
   /** Whether the new address becomes the default. Checkout's always does. */
   makeDefault?: boolean;
+  /** Starting text for the street address, e.g. a reverse-geocoded place. */
+  initialLine1?: string;
+  /** A position already found. Without one, saving takes a fresh fix. */
+  position?: { latitude: number; longitude: number };
+  title?: string;
+  saveLabel?: string;
 }) {
   const { palette } = useTheme();
-  const [line1, setLine1] = useState('');
+  const [line1, setLine1] = useState(initialLine1);
   const [landmark, setLandmark] = useState('');
   const [phone, setPhone] = useState(defaultPhone);
   const [busy, setBusy] = useState(false);
@@ -51,17 +64,17 @@ export function NewAddressForm({
     setBusy(true);
     setError(null);
     try {
-      const position = await currentLocation();
-      if (!position.ok) {
-        setError(position.message);
+      const found = position ? { ok: true as const, ...position } : await currentLocation();
+      if (!found.ok) {
+        setError(found.message);
         return;
       }
       const created = await createAddress(api, {
         line1: line1.trim(),
         landmark: landmark.trim() || undefined,
         contactPhone,
-        latitude: position.latitude,
-        longitude: position.longitude,
+        latitude: found.latitude,
+        longitude: found.longitude,
         isDefault: makeDefault,
       });
       await onSaved(created.id);
@@ -90,13 +103,20 @@ export function NewAddressForm({
 
   return (
     <Card>
-      <Text variant="label" weight="bold">Add a delivery address</Text>
+      <Text variant="label" weight="bold">{title}</Text>
       {field('Street address', line1, setLine1, '12 Admiralty Way')}
       {field('Landmark (optional)', landmark, setLandmark, 'Near the second gate')}
       {field('Contact phone', phone, setPhone, '+234 803 000 0000', 'phone-pad')}
-      <Notice icon="crosshairs-gps" text="Saving uses your current location as this address's position, which is what the delivery fee is quoted from. Stand at the address when you save it." />
+      <Notice
+        icon="crosshairs-gps"
+        text={
+          position
+            ? 'The map position is where your phone found you, and the delivery fee is quoted from it. Correct the address words if they are not quite right.'
+            : "Saving uses your current location as this address's position, which is what the delivery fee is quoted from. Stand at the address when you save it."
+        }
+      />
       {error ? <Notice icon="alert-circle-outline" text={error} danger /> : null}
-      <PrimaryCheckoutButton label={busy ? 'Saving…' : 'Save address'} onPress={() => void save()} disabled={busy || line1.trim().length < 3 || phone.trim().length === 0} busy={busy} />
+      <PrimaryCheckoutButton label={busy ? 'Saving…' : saveLabel} onPress={() => void save()} disabled={busy || line1.trim().length < 3 || phone.trim().length === 0} busy={busy} />
       {onCancel ? <SecondaryButton label="Cancel" onPress={onCancel} disabled={busy} /> : null}
     </Card>
   );

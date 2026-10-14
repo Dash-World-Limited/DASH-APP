@@ -18,9 +18,15 @@ import {
   assertTransition,
   customerLabel,
   describeRefund,
+  describeRiderRatingRefusal,
   evaluateCustomerCancellation,
   isActive,
+  isRiderOnOrder,
   phaseOf,
+  RIDER_RATING_COMMENT_MAX,
+  RIDER_RATING_MAX,
+  RIDER_RATING_MIN,
+  riderRatingRefusal,
   type OrderStatus,
 } from '@dash/domain/orders';
 import {
@@ -910,8 +916,10 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
               },
             },
           },
-          // The rider's live position, but only their name and coarse location —
-          // never their phone number or identity id.
+          // The rider's live position, name and vehicle — never their identity
+          // id. Their phone number is read here but only sent while they are
+          // working this order (below).
+          riderId: true,
           rider: {
             select: {
               id: true,
@@ -919,8 +927,14 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
               lastLongitude: true,
               locationReportedAt: true,
               vehicleType: true,
-              identity: { select: { displayName: true } },
+              identity: { select: { displayName: true, phone: true } },
             },
+          },
+          // This customer's rating of the rider who delivered it, if any.
+          reviews: {
+            where: { subject: 'rider' },
+            select: { rating: true, comment: true, createdAt: true },
+            take: 1,
           },
         },
       });
@@ -929,12 +943,19 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
       requireScope(actor, { customerId: order.customerId });
 
       const status = order.status as OrderStatus;
+      const riderReview = order.reviews[0] ?? null;
+      const ratingRefusal = riderRatingRefusal(
+        { status, riderId: order.riderId, deliveredAt: order.deliveredAt },
+        riderReview !== null,
+      );
 
       return {
         order: {
           ...order,
           // Never leak the customer id back out in the payload shape.
           customerId: undefined,
+          riderId: undefined,
+          reviews: undefined,
           payments: undefined,
           // "Refunded" appears only once Paystack has confirmed it; see
           // payments/refund-confirmation.ts.
@@ -965,11 +986,111 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
                   isStale:
                     !order.rider.locationReportedAt ||
                     Date.now() - order.rider.locationReportedAt.getTime() > 90_000,
+                  // For the customer's "Call rider": the number of the rider
+                  // assigned to this order, only while they are working it.
+                  phone: isRiderOnOrder(status) ? order.rider.identity.phone : null,
+                }
+              : null,
+          // Rating the rider who delivered this order. Present only once the
+          // order is delivered by a rider; `rating` is what the customer gave.
+          riderRating:
+            order.rider && ratingRefusal !== 'not_delivered' && ratingRefusal !== 'no_rider'
+              ? {
+                  riderName: order.rider.identity.displayName,
+                  canRate: ratingRefusal === null,
+                  rating: riderReview,
                 }
               : null,
         },
         cancellation: evaluateCustomerCancellation(status),
       };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/orders/:id/rider-rating — the customer rates the rider who
+  // delivered this order
+  // -------------------------------------------------------------------------
+  //
+  // The rider is never named by the client: it is the order's own rider, read
+  // here. One rating per order, enforced twice — a check that gives a clear
+  // answer, and a unique index that settles a double tap.
+  app.post<{ Params: { id: string } }>(
+    '/v1/orders/:id/rider-rating',
+    {
+      preHandler: requirePermission('order:read:own'),
+      config: { rateLimit: { max: 10, timeWindow: '10 minutes' } },
+    },
+    async (request) => {
+      const actor = actorOf(request);
+      if (!actor.customerId) throw ApiError.forbidden('Only customers can rate a delivery.');
+
+      const body = z
+        .object({
+          rating: z.number().int().min(RIDER_RATING_MIN).max(RIDER_RATING_MAX),
+          comment: z
+            .string()
+            .trim()
+            .max(RIDER_RATING_COMMENT_MAX)
+            .optional()
+            .transform((value) => (value ? value : undefined)),
+        })
+        .strict()
+        .parse(request.body);
+
+      const order = await prisma.order.findUnique({
+        where: { id: request.params.id },
+        select: {
+          id: true,
+          customerId: true,
+          riderId: true,
+          status: true,
+          deliveredAt: true,
+          reviews: { where: { subject: 'rider' }, select: { id: true }, take: 1 },
+        },
+      });
+      if (!order) throw ApiError.notFound();
+      requireScope(actor, { customerId: order.customerId });
+
+      const refusal = riderRatingRefusal(
+        { status: order.status as OrderStatus, riderId: order.riderId, deliveredAt: order.deliveredAt },
+        order.reviews.length > 0,
+      );
+      if (refusal) throw ApiError.conflict(describeRiderRatingRefusal(refusal));
+
+      let review;
+      try {
+        review = await prisma.review.create({
+          data: {
+            orderId: order.id,
+            customerId: order.customerId,
+            riderId: order.riderId,
+            subject: 'rider',
+            rating: body.rating,
+            comment: body.comment ?? null,
+          },
+          select: { rating: true, comment: true, createdAt: true },
+        });
+      } catch (error) {
+        if ((error as { code?: string }).code === 'P2002') {
+          throw ApiError.conflict(describeRiderRatingRefusal('already_rated'));
+        }
+        throw error;
+      }
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'order.rider_rated',
+        resourceType: 'order',
+        resourceId: order.id,
+        // The score only. The comment is the customer's words, kept on the
+        // review itself, where account deletion can remove it.
+        after: { rating: body.rating, hasComment: Boolean(body.comment) },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return { rating: review };
     },
   );
 

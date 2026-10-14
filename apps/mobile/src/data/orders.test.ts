@@ -15,9 +15,12 @@ import {
   basketFromCart,
   describeOutcome,
   newIdempotencyKey,
+  createAddress,
   placeOrder,
   quoteRows,
+  rateRider,
   refundTone,
+  updateAddress,
   verifyPayment,
   type PaymentOutcome,
   type Quote,
@@ -137,5 +140,37 @@ describe('the receipt', () => {
   it('shows a discount as a deduction', () => {
     const rows = quoteRows({ ...quote, discountTotal: 10_000 as never });
     expect(rows.find((row) => row.label === 'Discount')).toMatchObject({ amount: 10_000, negative: true });
+  });
+});
+
+describe('rating the rider', () => {
+  it('sends only the stars and a trimmed comment, never a rider', async () => {
+    const { api, calls } = fakeClient({ rating: { rating: 5, comment: 'Lovely', createdAt: '2026-10-14T10:00:00Z' } });
+    const rating = await rateRider(api, 'order 1', { rating: 5, comment: '  Lovely  ' });
+    expect(rating.rating).toBe(5);
+    expect(calls).toEqual([{ path: '/v1/orders/order%201/rider-rating', options: { method: 'POST', body: { rating: 5, comment: 'Lovely' } } }]);
+  });
+
+  it('leaves out a blank comment', async () => {
+    const { api, calls } = fakeClient({ rating: { rating: 2, comment: null, createdAt: '2026-10-14T10:00:00Z' } });
+    await rateRider(api, 'o1', { rating: 2, comment: '   ' });
+    expect(calls[0]?.options.body).toEqual({ rating: 2 });
+  });
+});
+
+describe('confirming the home screen delivery location', () => {
+  it('saves the found position with the corrected words, as the default', async () => {
+    const { api, calls } = fakeClient({ address: { id: 'a9' } });
+    await createAddress(api, { line1: '4 Nnebisi Road, Asaba', contactPhone: '+2348031234567', latitude: 6.2, longitude: 6.7, isDefault: true });
+    expect(calls[0]).toEqual({
+      path: '/v1/addresses',
+      options: { method: 'POST', body: { line1: '4 Nnebisi Road, Asaba', contactPhone: '+2348031234567', latitude: 6.2, longitude: 6.7, isDefault: true } },
+    });
+  });
+
+  it('chooses a saved address by making it the default', async () => {
+    const { api, calls } = fakeClient({});
+    await updateAddress(api, 'a2', { isDefault: true });
+    expect(calls[0]).toEqual({ path: '/v1/addresses/a2', options: { method: 'PATCH', body: { isDefault: true } } });
   });
 });

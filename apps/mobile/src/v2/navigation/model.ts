@@ -23,7 +23,8 @@ export type CustomerRoute =
   | 'customer.personal-details'
   | 'customer.addresses'
   | 'customer.notification-settings'
-  | 'customer.help';
+  | 'customer.help'
+  | 'customer.delivery-location';
 
 export type RiderRoute =
   | 'rider.home'

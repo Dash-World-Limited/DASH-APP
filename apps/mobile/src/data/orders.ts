@@ -118,12 +118,43 @@ export interface OrderDetail {
   address: { line1: string; landmark: string | null } | null;
   items: { nameSnapshot: string; quantity: number; lineTotal: Kobo }[];
   statusEvents: { toStatus: string; createdAt: string }[];
-  rider: { name: string | null; vehicleType: string; latitude: number | null; longitude: number | null; reportedAt: string | null; isStale: boolean } | null;
+  rider: OrderRider | null;
   /**
    * Refunds owed on this order, worded by the server. "Refunded" appears only
    * once Paystack has confirmed the refund. Optional: older servers omit it.
    */
   refunds?: { amount: Kobo; status: string; label: string; body: string; refundedAt: string | null; createdAt: string }[];
+  /** Rating the rider who delivered it. Optional: older servers omit it. */
+  riderRating?: RiderRatingState | null;
+}
+
+/** The rider on an order, as the customer sees them. */
+export interface OrderRider {
+  name: string | null;
+  vehicleType: string;
+  latitude: number | null;
+  longitude: number | null;
+  reportedAt: string | null;
+  isStale: boolean;
+  /**
+   * The assigned rider's number, sent only while they are working this order.
+   * Optional: older servers never send it.
+   */
+  phone?: string | null;
+}
+
+export interface RiderRating {
+  rating: number;
+  comment: string | null;
+  createdAt: string;
+}
+
+/** Present once a rider has delivered the order. */
+export interface RiderRatingState {
+  riderName: string | null;
+  canRate: boolean;
+  /** What the customer gave, once they have. */
+  rating: RiderRating | null;
 }
 
 /** How a refund's state reads at a glance. Only a confirmed refund is green. */
@@ -245,6 +276,19 @@ export interface AddressEdit {
 
 export async function updateAddress(api: ApiClient, id: string, edit: AddressEdit): Promise<void> {
   await api.request(`/v1/addresses/${encodeURIComponent(id)}`, { method: 'PATCH', body: edit });
+}
+
+/**
+ * Rates the rider who delivered this order. The server decides which rider
+ * that is; the app only sends the stars and an optional comment.
+ */
+export async function rateRider(api: ApiClient, orderId: string, input: { rating: number; comment?: string }): Promise<RiderRating> {
+  const body: { rating: number; comment?: string } = { rating: input.rating };
+  const comment = input.comment?.trim();
+  if (comment) body.comment = comment;
+  return (
+    await api.request<{ rating: RiderRating }>(`/v1/orders/${encodeURIComponent(orderId)}/rider-rating`, { method: 'POST', body })
+  ).rating;
 }
 
 /** Removes it from the saved list. Past orders keep the address they went to. */
