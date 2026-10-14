@@ -253,6 +253,7 @@ describe('the data-class policy', () => {
       'LegalAcceptance',
       'AuditLog',
       'OrderItem',
+      'PaymentMethodSetup',
     ]) {
       expect(dataClassRule(model).action, `${model} must be retained`).toBe('retain');
     }
@@ -269,7 +270,8 @@ describe('the data-class policy', () => {
   it('only ever deletes credentials and drafts', () => {
     const deletes = DATA_CLASS_RULES.filter((r) => r.action === 'delete').map((r) => r.model);
     expect(deletes.sort()).toEqual(
-      ['Cart', 'Device', 'MfaChallenge', 'MfaRecoveryCode', 'OtpChallenge', 'Session'].sort(),
+      // PaymentMethod is a payment credential: a saved card's provider token.
+      ['Cart', 'Device', 'MfaChallenge', 'MfaRecoveryCode', 'OtpChallenge', 'PaymentMethod', 'Session'].sort(),
     );
   });
 

@@ -143,6 +143,24 @@ describe('native-v2 navigation model', () => {
     expect(() => navigate(createNavigationState('rider'), { name: 'customer.delivery-location' })).toThrow();
   });
 
+  it('opens the chat with DASH from Support and Help, on each face, and comes back', () => {
+    const support = selectTab(createNavigationState('customer'), { name: 'customer.support' });
+    const fromSupport = navigate(support, { name: 'customer.support-chat' });
+    expect(currentRoute(fromSupport).name).toBe('customer.support-chat');
+    expect(goBack(fromSupport)).toEqual(support);
+
+    const help = navigate(navigate(createNavigationState('customer'), { name: 'customer.account' }), { name: 'customer.help' });
+    expect(goBack(navigate(help, { name: 'customer.support-chat' }))).toEqual(help);
+
+    const riderHelp = navigate(selectTab(createNavigationState('rider'), { name: 'rider.profile' }), { name: 'rider.help' });
+    const riderChat = navigate(riderHelp, { name: 'rider.support-chat' });
+    expect(currentRoute(riderChat).name).toBe('rider.support-chat');
+    expect(goBack(riderChat)).toEqual(riderHelp);
+
+    expect(() => navigate(createNavigationState('customer'), { name: 'rider.support-chat' })).toThrow();
+    expect(() => navigate(createNavigationState('rider'), { name: 'customer.support-chat' })).toThrow();
+  });
+
   it('opens a legal document from inside registration and returns to it', () => {
     const register = navigate(navigate(createNavigationState('customer'), { name: 'customer.account' }), { name: 'customer.register' });
     const legal = navigate(register, { name: 'customer.legal', params: { slug: 'terms-of-service' } });

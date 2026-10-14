@@ -30,6 +30,7 @@ import type {
   GeoPort,
   PaymentIntent,
   PaymentPort,
+  CardSetupResult,
   PaymentWebhookEvent,
   PayoutBank,
   PushPort,
@@ -182,6 +183,67 @@ export class MockPaymentAdapter implements PaymentPort {
     if (!/^\d{10}$/.test(input.accountNumber) || input.accountNumber === '0000000000') return null;
     if (!MOCK_BANKS.some((bank) => bank.code === input.bankCode)) return null;
     return { accountName: `DASH TEST ACCOUNT ${input.accountNumber.slice(-4)}` };
+  }
+
+  /** Card setups this mock started, by reference, with the email they were for. */
+  private readonly cardSetups = new Map<string, { email: string }>();
+  /** Tokens deactivated through `deactivateCard`, for tests to inspect. */
+  readonly deactivatedCards = new Set<string>();
+
+  /**
+   * Starts a card setup. Behaviour follows the reference, like `initialize`:
+   * `fail` declines, `pending` stays unresolved, `nonreusable` captures but
+   * yields no reusable card. Everything else captures a Visa ending 4081.
+   */
+  async initializeCardSetup(input: {
+    reference: string;
+    amount: Kobo;
+    customerEmail: string;
+    idempotencyKey: string;
+  }): Promise<{ authorizationUrl: string }> {
+    const status: PaymentIntent['status'] = input.reference.includes('fail')
+      ? 'failed'
+      : input.reference.includes('pending')
+        ? 'pending'
+        : 'captured';
+    this.records.set(input.reference, {
+      reference: input.reference,
+      amount: input.amount,
+      status,
+      capturedAmount: status === 'captured' ? input.amount : kobo(0),
+    });
+    this.cardSetups.set(input.reference, { email: input.customerEmail });
+    return { authorizationUrl: `https://checkout.mock.dashapp.invalid/card/${encodeURIComponent(input.reference)}` };
+  }
+
+  async verifyCardSetup(reference: string): Promise<CardSetupResult> {
+    const record = this.records.get(reference);
+    const setup = this.cardSetups.get(reference);
+    if (!record || !setup) return { status: 'failed', amount: kobo(0), card: null };
+    const captured = record.status === 'captured' || record.status === 'refunded' || record.status === 'partially_refunded';
+    // The same email always yields the same card, so adding it twice is
+    // recognisable — as Paystack's signature makes it.
+    const fingerprint = `mock_sig_${createHash('sha256').update(setup.email).digest('hex').slice(0, 16)}`;
+    return {
+      status: captured ? 'captured' : record.status,
+      amount: record.amount,
+      card:
+        captured && !reference.includes('nonreusable')
+          ? {
+              token: `mock_auth_${createHash('sha256').update(reference).digest('hex').slice(0, 20)}`,
+              fingerprint,
+              brand: 'visa',
+              last4: '4081',
+              expMonth: 12,
+              expYear: 2030,
+              bank: 'TEST BANK',
+            }
+          : null,
+    };
+  }
+
+  async deactivateCard(token: string): Promise<void> {
+    this.deactivatedCards.add(token);
   }
 
   /**

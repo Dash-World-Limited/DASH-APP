@@ -13,9 +13,10 @@ const NAV = [
   { href: '/admin/partners', label: 'Partners', icon: 'people' },
   { href: '/admin/live', label: 'Live map', icon: 'pulse' },
   { href: '/admin/orders', label: 'Orders', icon: 'box' },
+  { href: '/admin/support', label: 'Support', icon: 'chat' },
 ] as const;
 
-function NavIcon({ name }: { name: 'grid' | 'people' | 'pulse' | 'wallet' | 'box' }) {
+function NavIcon({ name }: { name: 'grid' | 'people' | 'pulse' | 'wallet' | 'box' | 'chat' }) {
   const common = {
     viewBox: '0 0 24 24',
     fill: 'none',
@@ -29,6 +30,7 @@ function NavIcon({ name }: { name: 'grid' | 'people' | 'pulse' | 'wallet' | 'box
   if (name === 'grid') return <svg {...common}><rect x="4" y="4" width="6" height="6" rx="1.4"/><rect x="14" y="4" width="6" height="6" rx="1.4"/><rect x="4" y="14" width="6" height="6" rx="1.4"/><rect x="14" y="14" width="6" height="6" rx="1.4"/></svg>;
   if (name === 'people') return <svg {...common}><path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"/><circle cx="9.5" cy="7.5" r="3.5"/><path d="M16 4.6a3.4 3.4 0 0 1 0 6.5M21 20v-1.5a4 4 0 0 0-3-3.7"/></svg>;
   if (name === 'pulse') return <svg {...common}><path d="M3 12h4l2-5 4 10 2-5h6"/></svg>;
+  if (name === 'chat') return <svg {...common}><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l.9-4.4A8 8 0 1 1 20 12Z"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01"/></svg>;
   if (name === 'wallet') return <svg {...common}><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H19v16H6.5A2.5 2.5 0 0 1 4 17.5z"/><path d="M4 7h15M15 11h6v5h-6a2.5 2.5 0 0 1 0-5Z"/></svg>;
   return <svg {...common}><path d="m4 8 8-4 8 4-8 4z"/><path d="m4 8v8l8 4 8-4V8M12 12v8"/></svg>;
 }

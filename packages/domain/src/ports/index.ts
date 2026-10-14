@@ -69,6 +69,28 @@ export interface PayoutBank {
   readonly name: string;
 }
 
+/**
+ * A card the provider tokenised. `token` charges the card again and is
+ * secret; nothing here is the card number, expiry date in full, or CVV.
+ */
+export interface SavedCard {
+  readonly token: string;
+  /** The provider's fingerprint for the card, the same each time it is added. */
+  readonly fingerprint: string;
+  readonly brand: string;
+  readonly last4: string;
+  readonly expMonth: number;
+  readonly expYear: number;
+  readonly bank: string | null;
+}
+
+export interface CardSetupResult {
+  readonly status: PaymentStatus;
+  readonly amount: Kobo;
+  /** Present only for a captured charge on a card the provider can charge again. */
+  readonly card: SavedCard | null;
+}
+
 export interface PaymentPort {
   readonly providerName: string;
   /** True only when the adapter is configured with real credentials. */
@@ -120,6 +142,24 @@ export interface PaymentPort {
    * such account", or a rider would be told their real account is wrong.
    */
   resolveBankAccount(input: { bankCode: string; accountNumber: string }): Promise<{ accountName: string } | null>;
+
+  /**
+   * Start saving a card: a small charge taken on the provider's own card page,
+   * which is the only way the provider tokenises a card. The customer types
+   * the card there; it never passes through DASH.
+   */
+  initializeCardSetup(input: {
+    reference: string;
+    amount: Kobo;
+    customerEmail: string;
+    idempotencyKey: string;
+  }): Promise<{ authorizationUrl: string }>;
+
+  /** What the provider says about a card-setup charge, and the card it saved. */
+  verifyCardSetup(reference: string): Promise<CardSetupResult>;
+
+  /** Stop a saved card's token working at the provider. */
+  deactivateCard(token: string): Promise<void>;
 
   /**
    * Verify a webhook's signature and parse it.

@@ -35,6 +35,7 @@ import { DeleteAccountScreen } from './account/DeleteAccountScreen';
 import { NotificationSettingsScreen } from './account/NotificationSettingsScreen';
 import { PersonalDetailsScreen } from './account/PersonalDetailsScreen';
 import { BankAccountScreen } from './account/BankAccountScreen';
+import { SupportChatScreen } from './account/SupportChatScreen';
 import { SavedAddressesScreen } from './account/SavedAddressesScreen';
 import { SettingsItem, SettingsSection } from './account/SettingsList';
 import { SupportScreen } from './account/SupportScreen';
@@ -214,9 +215,11 @@ function RouteView({
     case 'customer.wallet':
       return <WalletScreen onAccount={() => onPush({ name: 'customer.account' })} />;
     case 'customer.support':
-      return <SupportScreen audience="customer" />;
+      return <SupportScreen audience="customer" onOpenChat={() => onPush({ name: 'customer.support-chat' })} />;
     case 'customer.help':
-      return <SupportScreen audience="customer" onBack={onBack} />;
+      return <SupportScreen audience="customer" onBack={onBack} onOpenChat={() => onPush({ name: 'customer.support-chat' })} />;
+    case 'customer.support-chat':
+      return <SupportChatScreen audience="customer" onBack={onBack} />;
     case 'customer.personal-details':
       return <PersonalDetailsScreen onBack={onBack} />;
     case 'customer.addresses':
@@ -277,11 +280,13 @@ function RouteView({
     case 'rider.notification-settings':
       return <NotificationSettingsScreen audience="rider" onBack={onBack} />;
     case 'rider.help':
-      return <SupportScreen audience="rider" onBack={onBack} />;
+      return <SupportScreen audience="rider" onBack={onBack} onOpenChat={() => onPush({ name: 'rider.support-chat' })} />;
     case 'rider.legal':
       return <LegalScreen slug={route.params?.slug ?? 'terms-of-service'} onBack={onBack} />;
     case 'rider.bank-account':
       return <BankAccountScreen onBack={onBack} />;
+    case 'rider.support-chat':
+      return <SupportChatScreen audience="rider" onBack={onBack} />;
     // One live workspace for the whole rider journey. These routes are kept so
     // every way into it (Home, Orders, a restored delivery) still lands, but
     // the screen shows whatever the rider's real state is — searching, an

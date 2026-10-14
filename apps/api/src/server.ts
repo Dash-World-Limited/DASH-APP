@@ -96,6 +96,7 @@ import { DeterministicValuationAdapter } from '@dash/domain/valuecheck';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAccountRoutes } from './routes/account.js';
 import { registerWalletRoutes } from './routes/wallet.js';
+import { registerSupportChatRoutes } from './routes/support-chat.js';
 import { registerDeviceRoutes } from './routes/devices.js';
 import { registerDispatchWorker } from './workers/dispatch.js';
 import { registerAccountExportWorker } from './workers/account-export.js';
@@ -636,6 +637,8 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerEmailEventRoutes(app);
   await registerAccountRoutes(app);
   await registerWalletRoutes(app);
+  // Customers and riders talking to the DASH team, and the team's inbox.
+  await registerSupportChatRoutes(app);
 
   /**
    * Registered only where the capability exists.
