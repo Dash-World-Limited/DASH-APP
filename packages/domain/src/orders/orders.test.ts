@@ -6,9 +6,11 @@ import {
   customerLabel,
   decideRefundConfirmation,
   describeRefund,
+  describeRiderRatingRefusal,
   evaluateCustomerCancellation,
   isActive,
   isPaid,
+  isRiderOnOrder,
   isTerminal,
   ORDER_STATUSES,
   OrderTransitionError,
@@ -16,6 +18,9 @@ import {
   REFUND_OVERDUE_MS,
   REFUND_STATES,
   refundAwaitingPerson,
+  RIDER_RATING_MAX,
+  RIDER_RATING_MIN,
+  riderRatingRefusal,
   vendorRejectionOutcome,
   type OrderStatus,
   type TransitionActor,
@@ -351,5 +356,46 @@ describe('a refund waiting on a person', () => {
 
   it('never flags a refund that is done', () => {
     expect(refundAwaitingPerson(refund('refunded', ago(10 * REFUND_OVERDUE_MS), 'processed'), now)).toBeNull();
+  });
+});
+
+describe('rider on the order', () => {
+  it('covers exactly the states between assignment and handover', () => {
+    const on = ORDER_STATUSES.filter((status) => isRiderOnOrder(status));
+    expect(on).toEqual(['rider_assigned', 'rider_arrived', 'picked_up', 'en_route', 'arrived']);
+  });
+
+  it('is never true before a rider is assigned or after the job ends', () => {
+    for (const status of ['placed', 'accepted', 'preparing', 'ready', 'delivered', 'cancelled', 'refunded'] as const) {
+      expect(isRiderOnOrder(status)).toBe(false);
+    }
+  });
+});
+
+describe('rating the rider', () => {
+  const delivered = { status: 'delivered' as const, riderId: 'rider-1', deliveredAt: new Date('2026-10-14T10:00:00Z') };
+
+  it('allows one rating of a delivered order with a rider', () => {
+    expect(riderRatingRefusal(delivered, false)).toBeNull();
+    expect(riderRatingRefusal(delivered, true)).toBe('already_rated');
+  });
+
+  it('refuses every order that was not delivered', () => {
+    for (const status of ORDER_STATUSES.filter((value) => value !== 'delivered')) {
+      expect(riderRatingRefusal({ ...delivered, status }, false)).toBe('not_delivered');
+    }
+    expect(riderRatingRefusal({ ...delivered, deliveredAt: null }, false)).toBe('not_delivered');
+  });
+
+  it('refuses a delivered order no rider carried', () => {
+    expect(riderRatingRefusal({ ...delivered, riderId: null }, false)).toBe('no_rider');
+  });
+
+  it('explains each refusal', () => {
+    for (const refusal of ['not_delivered', 'no_rider', 'already_rated'] as const) {
+      expect(describeRiderRatingRefusal(refusal)).toMatch(/\w/);
+    }
+    expect(RIDER_RATING_MIN).toBe(1);
+    expect(RIDER_RATING_MAX).toBe(5);
   });
 });

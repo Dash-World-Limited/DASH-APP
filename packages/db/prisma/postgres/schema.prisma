@@ -973,6 +973,7 @@ model Rider {
   offers     DispatchOffer[]
   orders     Order[]
   locations  RiderLocation[]
+  reviews    Review[]
 
   @@index([availability, status])
 }
@@ -1532,11 +1533,17 @@ model Subscription {
 // Reviews and support
 // ===========================================================================
 
+// A rating left on one order. `subject` is the party being rated; the order's
+// other party wrote it. A rider review (subject "rider") is written by the
+// order's customer about the rider who delivered it, and `riderId` is copied
+// from the order on the server, never taken from the client. A rating of the
+// customer by the rider would be subject "customer" with the same two ids.
 model Review {
   id         String @id @default(cuid())
   orderId    String
   customerId String
   vendorId   String?
+  riderId    String?
 
   subject String // vendor | rider | item
   rating  Int
@@ -1553,9 +1560,14 @@ model Review {
   order    Order    @relation(fields: [orderId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
   vendor   Vendor?  @relation(fields: [vendorId], references: [id])
+  rider    Rider?   @relation(fields: [riderId], references: [id], onDelete: SetNull)
 
   @@index([vendorId, status])
   @@index([orderId])
+  @@index([riderId])
+  // One rating of a given rider per order and direction. Vendor and item
+  // reviews leave riderId empty, and an empty value never collides.
+  @@unique([orderId, subject, riderId])
 }
 
 model SupportCase {

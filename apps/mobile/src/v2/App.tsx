@@ -21,6 +21,7 @@ import naira800 from '../../assets/fonts/DashNairaSign-800.ttf';
 import { api, ApiError } from '../api';
 import { Wordmark } from '../brand/Wordmark';
 import { CartProvider } from '../features/CartProvider';
+import { homeLocationLines } from '../features/delivery';
 import { ModeProvider, useAppMode } from '../features/ModeProvider';
 import { ThemeProvider, useTheme } from '../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../theme/tokens';
@@ -61,6 +62,8 @@ import {
 import { CustomerCheckoutScreen } from './orders/CheckoutScreen';
 import { OrderChatScreen } from './chat/OrderChatScreen';
 import { CustomerOrdersScreen, CustomerTrackingScreen } from './orders/CustomerOrderScreens';
+import { DeliveryLocationScreen } from './orders/DeliveryLocationScreen';
+import { useDeliveryLocation } from './orders/useDeliveryLocation';
 import { RiderFlowProvider, useRiderFlow } from './rider/RiderFlowProvider';
 import { RiderHistoryDetailScreen, RiderOfferBanner, RiderOrdersScreen, RiderWorkspace } from './rider/RiderScreens';
 
@@ -217,6 +220,8 @@ function RouteView({
       return <PersonalDetailsScreen onBack={onBack} />;
     case 'customer.addresses':
       return <SavedAddressesScreen onBack={onBack} />;
+    case 'customer.delivery-location':
+      return <DeliveryLocationScreen onBack={onBack} onAccount={() => onPush({ name: 'customer.account' })} />;
     case 'customer.notification-settings':
       return <NotificationSettingsScreen audience="customer" onBack={onBack} />;
     case 'customer.account':
@@ -295,6 +300,8 @@ function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
   const { palette } = useTheme();
   const { viewer } = useAppSession();
   const [campaign, setCampaign] = useState(0);
+  const { location } = useDeliveryLocation();
+  const locationLines = homeLocationLines(location);
 
   useEffect(() => {
     const timer = setInterval(() => setCampaign((current) => (current + 1) % CAMPAIGNS.length), 3000);
@@ -308,20 +315,27 @@ function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
         right={<AvatarButton label="Open your profile" initials={viewerInitials(viewer)} onPress={() => onPush({ name: 'customer.account' })} />}
       />
 
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Change delivery address"
-        style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}
-      >
-        <Icon name="map-marker-outline" color={palette.text} />
-        <View style={{ flex: 1 }}>
-          <Text variant="micro" tone="muted">Delivering to</Text>
-          <Text variant="label" weight="bold">Choose your delivery address</Text>
-        </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+        <Pressable
+          onPress={() => onPush({ name: 'customer.delivery-location' })}
+          accessibilityRole="button"
+          accessibilityLabel={locationLines.accessibilityLabel}
+          testID="customer-home-location"
+          style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: space.sm }}
+        >
+          <Icon name={location.kind === 'denied' || location.kind === 'unavailable' ? 'map-marker-off-outline' : 'map-marker-outline'} color={palette.text} />
+          <View style={{ flex: 1 }}>
+            <Text variant="micro" tone="muted">{locationLines.caption}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+              <Text variant="label" weight="bold" numberOfLines={1} style={{ flexShrink: 1 }}>{locationLines.title}</Text>
+              <Icon name="chevron-down" size={18} color={palette.text} />
+            </View>
+          </View>
+        </Pressable>
         <Pressable onPress={() => onPush({ name: 'customer.notifications' })} accessibilityRole="button" accessibilityLabel="Notifications" hitSlop={10}>
           <Icon name="bell-outline" color={palette.text} />
         </Pressable>
-      </Pressable>
+      </View>
 
       <Pressable onPress={() => onPush({ name: 'customer.search' })} accessibilityRole="button" accessibilityLabel="Search DASH" style={{ minHeight: 50, borderRadius: radius.md, backgroundColor: palette.surface, borderWidth: 1, borderColor: palette.line, flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.md, gap: space.sm }}>
         <Icon name="magnify" color={palette.textMuted} />

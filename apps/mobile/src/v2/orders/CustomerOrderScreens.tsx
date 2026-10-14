@@ -10,8 +10,11 @@ import {
   refundTone,
   retryPayment,
   verifyPayment,
+  type OrderRider,
   type PaymentOutcome,
+  type RiderRatingState,
 } from '../../data/orders';
+import { riderCallUrl } from '../../features/delivery';
 import { recallOrder, rememberOrder, type RememberedOrder } from '../../features/orderMemory';
 import { MapShell } from '../../rider/MapShell';
 import { useTheme } from '../../theme/ThemeProvider';
@@ -20,6 +23,7 @@ import { Icon } from '../../ui/Icon';
 import { Text } from '../../ui/Text';
 import { useAppSession } from '../auth/AppSessionProvider';
 import { BackHeader, Card, Empty, Notice, OrderPage, PrimaryCheckoutButton, SecondaryButton } from './parts';
+import { RateRiderCard } from './RateRiderCard';
 
 interface OrderSummary {
   id: string;
@@ -37,13 +41,15 @@ interface OrderDetail extends OrderSummary {
   branch: { name: string; address: string; latitude: number; longitude: number };
   address: { line1: string; landmark: string | null; instructions: string | null; latitude: number; longitude: number } | null;
   statusEvents: Array<{ toStatus: string; createdAt: string }>;
-  rider: { name: string | null; vehicleType: string; latitude: number | null; longitude: number | null; reportedAt: string | null; isStale: boolean } | null;
+  rider: OrderRider | null;
   /**
    * Refunds owed on this order, worded by the server. Optional because an
    * older server omits the field entirely — which reads as "no refunds", not
    * as an error.
    */
   refunds?: Array<{ amount: Kobo; status: string; label: string; body: string; refundedAt: string | null; createdAt: string }>;
+  /** Rating the rider who delivered it. Optional: older servers omit it. */
+  riderRating?: RiderRatingState | null;
 }
 
 export function CustomerOrdersScreen({ onTrack, onAccount }: { onTrack: (id: string) => void; onAccount: () => void }) {
@@ -87,7 +93,8 @@ export function CustomerOrdersScreen({ onTrack, onAccount }: { onTrack: (id: str
       {busy ? <View style={{ minHeight: 180, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={palette.accent} /></View> : null}
       {error ? <Notice icon="alert-circle-outline" text={error} danger /> : null}
       {!busy && api.configured && auth.state === 'authenticated' && orders.length === 0 ? <Empty icon="receipt-text-outline" title={segment === 'active' ? 'No active delivery' : 'No past orders'} body={segment === 'active' ? 'Once an order is placed, its progress appears here.' : 'Completed and cancelled orders stay here.'} /> : null}
-      {!busy && orders.map((order) => <OrderCard key={order.id} order={order} onPress={segment === 'active' ? () => onTrack(order.id) : undefined} />)}
+      {/* Delivered orders open too: that is where the rider is rated. */}
+      {!busy && orders.map((order) => <OrderCard key={order.id} order={order} onPress={segment === 'active' || order.status === 'delivered' ? () => onTrack(order.id) : undefined} />)}
     </OrderPage>
   );
 }
@@ -104,6 +111,7 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
   const [payProblem, setPayProblem] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
   const [cancelNotice, setCancelNotice] = useState<string | null>(null);
+  const [callProblem, setCallProblem] = useState<string | null>(null);
   const [memory, setMemory] = useState<RememberedOrder>({});
   // The poll and the AppState listener need the current status without
   // re-subscribing every time it changes.
@@ -238,6 +246,8 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
   const destination = order.address ? { latitude: order.address.latitude, longitude: order.address.longitude } : null;
   const rider = order.rider?.latitude != null && order.rider.longitude != null ? { latitude: order.rider.latitude, longitude: order.rider.longitude } : null;
   const showMap = destination && rider && !['delivered', 'cancelled', 'rejected', 'refunded'].includes(order.status);
+  // Only the rider assigned to this order, only while they are working it.
+  const callUrl = riderCallUrl(order);
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: palette.background }} contentContainerStyle={{ paddingBottom: space.xxxl }}>
@@ -250,7 +260,18 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
       <View style={{ padding: space.gutter, gap: space.lg }}>
         <View><Text variant="title">{order.statusLabel}</Text><Text variant="caption" tone="muted">{order.vendor.name} · {order.items.reduce((total, item) => total + item.quantity, 0)} items</Text></View>
         {order.rider ? <Card><View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}><View style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: palette.inverse, alignItems: 'center', justifyContent: 'center' }}><Icon name="moped" color={palette.textOnInverse} /></View><View style={{ flex: 1 }}><Text variant="label" weight="bold">{order.rider.name ?? 'Your DASH rider'}</Text><Text variant="caption" tone={order.rider.isStale ? 'muted' : 'success'}>{order.rider.isStale ? 'Location temporarily delayed' : 'Location updated recently'}</Text></View></View></Card> : null}
+        {callUrl ? (
+          <PrimaryCheckoutButton
+            label={`Call ${order.rider?.name ?? 'your rider'}`}
+            onPress={() => {
+              setCallProblem(null);
+              void Linking.openURL(callUrl).catch(() => setCallProblem(`Your phone could not start the call. Dial ${callUrl.slice(4)} instead.`));
+            }}
+          />
+        ) : null}
+        {callProblem ? <Notice icon="phone-alert-outline" text={callProblem} danger /> : null}
         {order.rider ? <SecondaryButton label="Message your rider" onPress={() => onChat(order.id)} /> : null}
+        {order.riderRating ? <RateRiderCard orderId={order.id} state={order.riderRating} /> : null}
         <PaymentSection
           status={order.status}
           outcome={outcome}
