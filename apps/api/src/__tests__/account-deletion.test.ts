@@ -260,6 +260,20 @@ async function seedFinancialHistory(who: Throwaway): Promise<{
     },
   });
 
+  // A saved card: a payment credential that finalisation must remove.
+  await prisma().paymentMethod.create({
+    data: {
+      customerId: who.customerId,
+      provider: 'mock',
+      tokenCipher: 'v1:test-only-not-an-envelope',
+      fingerprint: `sig-${randomUUID()}`,
+      brand: 'visa',
+      last4: '4081',
+      expMonth: 12,
+      expYear: 2030,
+    },
+  });
+
   return {
     orderId: order.id,
     paymentId: payment.id,
@@ -1173,6 +1187,7 @@ describe('finalisation — anonymise, never delete what the ledger references', 
     expect(await prisma().session.count({ where: { identityId: who.identityId } })).toBe(0);
     expect(await prisma().device.count({ where: { identityId: who.identityId } })).toBe(0);
     expect(await prisma().cart.count({ where: { customerId: who.customerId } })).toBe(0);
+    expect(await prisma().paymentMethod.count({ where: { customerId: who.customerId } })).toBe(0);
 
     // --- Ledger / orders / payments: same rows, same numbers ------------
     const order = await prisma().order.findUniqueOrThrow({ where: { id: seeded.orderId } });

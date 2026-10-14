@@ -25,6 +25,7 @@ import { MfaError } from '../auth/mfa.js';
 import { EnvelopeError } from '@dash/domain/envelope';
 import { PayoutDetailsError } from '../vendor/payout.js';
 import { RiderPayoutError } from '../rider/payout.js';
+import { PaymentMethodError } from '../wallet/payment-methods.js';
 import { AccountDeletionError, DataExportError } from '../account/errors.js';
 import { AccountPolicyError } from '@dash/domain/account';
 
@@ -221,6 +222,24 @@ function translate(error: unknown): {
       message: error.message,
       internal: `mfa ${error.reason}`,
     };
+  }
+
+  if (error instanceof PaymentMethodError) {
+    switch (error.reason) {
+      case 'no_email':
+        return { statusCode: 422, code: error.reason, message: error.message };
+      case 'not_found':
+        return { statusCode: 404, code: 'not_found', message: 'Not found.' };
+      case 'provider_unavailable':
+        return { statusCode: 503, code: error.reason, message: error.message, internal: 'card provider unavailable' };
+      case 'not_configured':
+        return {
+          statusCode: 500,
+          code: 'internal_error',
+          message: 'Something went wrong on our side. Please try again.',
+          internal: 'payment method encryption not configured',
+        };
+    }
   }
 
   if (error instanceof RiderPayoutError) {

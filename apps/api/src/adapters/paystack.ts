@@ -43,6 +43,7 @@ import type {
   PaymentPort,
   PaymentStatus,
   PaymentWebhookEvent,
+  CardSetupResult,
   PayoutBank,
   RefundLookup,
 } from '@dash/domain/ports';
@@ -94,6 +95,19 @@ interface PaystackTransaction {
   amount?: number;
   currency?: string;
   gateway_response?: string;
+  /** The card a successful charge used, as Paystack tokenised it. */
+  authorization?: {
+    authorization_code?: string;
+    signature?: string;
+    card_type?: string;
+    brand?: string;
+    last4?: string;
+    exp_month?: string;
+    exp_year?: string;
+    bank?: string;
+    channel?: string;
+    reusable?: boolean;
+  };
 }
 
 /**
@@ -215,6 +229,14 @@ export class PaystackPaymentAdapter implements PaymentPort {
   }
 
   async verify(reference: string): Promise<PaymentIntent> {
+    return (await this.readTransaction(reference)).intent;
+  }
+
+  /**
+   * The one place a Paystack transaction is read and judged. `verify` uses
+   * the intent; saving a card also reads the authorization Paystack attached.
+   */
+  private async readTransaction(reference: string): Promise<{ intent: PaymentIntent; data: PaystackTransaction }> {
     const response = await this.request<PaystackTransaction>(
       'GET',
       `/transaction/verify/${encodeURIComponent(reference)}`,
@@ -226,11 +248,14 @@ export class PaystackPaymentAdapter implements PaymentPort {
       // "could not ask" for "was not paid".
       if (response.httpStatus === 404 || /not found/i.test(response.message)) {
         return {
-          providerReference: reference,
-          status: 'failed',
-          amount: kobo(0),
-          currency: 'NGN',
-          providerMessage: 'Unknown reference',
+          intent: {
+            providerReference: reference,
+            status: 'failed',
+            amount: kobo(0),
+            currency: 'NGN',
+            providerMessage: 'Unknown reference',
+          },
+          data: {},
         };
       }
       throw new PaymentProviderError(`Paystack verification failed: ${response.message}`, response.httpStatus);
@@ -253,12 +278,84 @@ export class PaystackPaymentAdapter implements PaymentPort {
     }
 
     return {
-      providerReference: reference,
-      status,
-      amount: kobo(amount),
-      currency: 'NGN',
-      ...(providerMessage ? { providerMessage } : {}),
+      intent: {
+        providerReference: reference,
+        status,
+        amount: kobo(amount),
+        currency: 'NGN',
+        ...(providerMessage ? { providerMessage } : {}),
+      },
+      data,
     };
+  }
+
+  /**
+   * Start saving a card: a small card-only charge on Paystack's own page.
+   * The card number and CVV are typed there and never reach DASH.
+   */
+  async initializeCardSetup(input: {
+    reference: string;
+    amount: Kobo;
+    customerEmail: string;
+    idempotencyKey: string;
+  }): Promise<{ authorizationUrl: string }> {
+    if (!Number.isInteger(input.amount) || input.amount <= 0) {
+      throw new PaymentProviderError('Refusing to initialise a non-positive or fractional amount', 0);
+    }
+    const response = await this.request<{ authorization_url?: string }>('POST', '/transaction/initialize', {
+      email: input.customerEmail,
+      amount: input.amount,
+      currency: 'NGN',
+      reference: input.reference,
+      channels: ['card'],
+      ...(this.options.callbackUrl ? { callback_url: this.options.callbackUrl } : {}),
+      metadata: { purpose: 'card_setup', idempotency_key: input.idempotencyKey },
+    });
+    const url = response.data?.authorization_url;
+    if (!response.ok || !url || !url.startsWith('https://')) {
+      throw new PaymentProviderError(`Paystack refused card setup: ${response.message}`, response.httpStatus);
+    }
+    return { authorizationUrl: url };
+  }
+
+  /**
+   * The card-setup charge as Paystack judges it, through the same reading as
+   * `verify`, and the reusable card it produced. A card comes back only for a
+   * captured card charge Paystack marks reusable.
+   */
+  async verifyCardSetup(reference: string): Promise<CardSetupResult> {
+    const { intent, data } = await this.readTransaction(reference);
+    const auth = data.authorization;
+    const reusable =
+      intent.status === 'captured' &&
+      auth?.reusable === true &&
+      (auth.channel === undefined || auth.channel === 'card') &&
+      typeof auth.authorization_code === 'string' &&
+      typeof auth.signature === 'string' &&
+      /^\d{4}$/.test(auth.last4 ?? '');
+    return {
+      status: intent.status,
+      amount: intent.amount,
+      card: reusable
+        ? {
+            token: auth.authorization_code!,
+            fingerprint: auth.signature!,
+            brand: (auth.card_type ?? auth.brand ?? 'card').trim().toLowerCase(),
+            last4: auth.last4!,
+            expMonth: Number.parseInt(auth.exp_month ?? '0', 10) || 0,
+            expYear: Number.parseInt(auth.exp_year ?? '0', 10) || 0,
+            bank: auth.bank?.trim() || null,
+          }
+        : null,
+    };
+  }
+
+  /** Stop a saved card's authorization working at Paystack. */
+  async deactivateCard(token: string): Promise<void> {
+    const response = await this.request('POST', '/customer/deactivate_authorization', { authorization_code: token });
+    if (!response.ok) {
+      throw new PaymentProviderError(`Paystack could not deactivate the card: ${response.message}`, response.httpStatus);
+    }
   }
 
   async refund(input: {

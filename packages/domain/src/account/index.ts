@@ -380,6 +380,12 @@ export const DATA_CLASS_RULES: readonly DataClassRule[] = [
     action: 'delete',
     reason: 'Backup credentials. Removed with the rest of the authentication material.',
   },
+  {
+    model: 'PaymentMethod',
+    action: 'delete',
+    reason:
+      'A payment credential: the encrypted provider token that could charge a saved card, with its brand and last four. Removed so nothing at DASH can charge the card again.',
+  },
 
   // --- Anonymised -----------------------------------------------------
   {
@@ -467,6 +473,12 @@ export const DATA_CLASS_RULES: readonly DataClassRule[] = [
     model: 'OrderItem',
     action: 'retain',
     reason: 'Line items of a retained order. No personal data; part of the financial record.',
+  },
+  {
+    model: 'PaymentMethodSetup',
+    action: 'retain',
+    reason:
+      'The record of a card-verification charge and its refund: provider reference, amount and outcome. An accounting record with no card details or personal data.',
   },
   {
     model: 'DeliveryProof',

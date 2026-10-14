@@ -620,6 +620,8 @@ model Customer {
 
   identity      Identity       @relation(fields: [identityId], references: [id], onDelete: Cascade)
   addresses     Address[]
+  paymentMethods PaymentMethod[]
+  paymentMethodSetups PaymentMethodSetup[]
   carts         Cart[]
   orders        Order[]
   reviews       Review[]
@@ -657,6 +659,65 @@ model Address {
   orders   Order[]
 
   @@index([customerId])
+}
+
+// A card the customer saved through the payment provider.
+//
+// The card itself — number, expiry, CVV — never reaches DASH: the customer
+// types it into the provider's own page. What comes back is the provider's
+// reusable token for it, which is encrypted here (purpose
+// "customer_payment_method", bound to the customer) because it can charge the
+// card, plus what a person needs to recognise it: brand, last four, expiry.
+model PaymentMethod {
+  id         String @id @default(cuid())
+  customerId String
+
+  provider    String // paystack | mock
+  tokenCipher String
+  /// The provider's fingerprint for the card, so adding it twice updates the
+  /// one row instead of making a second.
+  fingerprint String
+
+  brand    String
+  last4    String
+  expMonth Int
+  expYear  Int
+  bank     String?
+
+  isDefault Boolean   @default(false)
+  removedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, fingerprint])
+  @@index([customerId])
+}
+
+// One attempt to save a card: the small verification charge the provider
+// needs to tokenise it, and its refund. Kept as the record of that money.
+model PaymentMethodSetup {
+  id         String @id @default(cuid())
+  customerId String
+
+  provider  String
+  reference String @unique
+  amount    Int
+
+  status String @default("pending") // pending | saved | failed
+
+  paymentMethodId String?
+  refundReference String?
+  failureReason   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
 }
 
 // ===========================================================================
@@ -1641,6 +1702,8 @@ model SupportCase {
 
   @@index([status, priority])
   @@index([assignedTo, status])
+  // The in-app support inbox: chat cases, most recently active first.
+  @@index([category, updatedAt])
 }
 
 model SupportAction {
@@ -1656,6 +1719,11 @@ model SupportAction {
   amount              Int?
 
   isInternal Boolean @default(false)
+
+  // In-app support chat: when the other side read this message. Set on a
+  // customer's or rider's message when staff open the conversation, and on a
+  // staff reply when the customer or rider does.
+  readAt DateTime?
 
   createdAt DateTime @default(now())
 

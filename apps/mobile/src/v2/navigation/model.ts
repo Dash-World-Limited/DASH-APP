@@ -24,7 +24,8 @@ export type CustomerRoute =
   | 'customer.addresses'
   | 'customer.notification-settings'
   | 'customer.help'
-  | 'customer.delivery-location';
+  | 'customer.delivery-location'
+  | 'customer.support-chat';
 
 export type RiderRoute =
   | 'rider.home'
@@ -43,7 +44,8 @@ export type RiderRoute =
   | 'rider.notification-settings'
   | 'rider.help'
   | 'rider.legal'
-  | 'rider.bank-account';
+  | 'rider.bank-account'
+  | 'rider.support-chat';
 
 export type RouteName = CustomerRoute | RiderRoute;
 

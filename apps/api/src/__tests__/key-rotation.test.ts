@@ -272,6 +272,36 @@ describe('rotating a key without downtime or a migration', () => {
     expect(result.survey.safeToRetireOtherKeys).toBe(true);
   });
 
+  it('surveys and moves saved-card tokens, still bound to their customer', async () => {
+    const k1Only = keyringWith(K1, 'k1');
+    const identity = await context.prisma.identity.create({ data: { email: `rotation-card-${Date.now()}@dashapp.test` } });
+    const customer = await context.prisma.customer.create({ data: { identityId: identity.id, referralCode: `ROT${Date.now()}` }, select: { id: true } });
+    const purpose = { purpose: 'customer_payment_method', subjectId: customer.id };
+    await context.prisma.paymentMethod.create({
+      data: {
+        customerId: customer.id,
+        provider: 'mock',
+        tokenCipher: encrypt('AUTH_rotation_token', k1Only, purpose),
+        fingerprint: 'SIG_rotation',
+        brand: 'visa',
+        last4: '4081',
+        expMonth: 12,
+        expYear: 2030,
+      },
+    });
+
+    const rotated = keyringWith(K2, 'k2', `k1:${K1}`);
+    const before = await surveyKeyUsage(context.prisma, keyringIdentity(rotated));
+    expect(before.usage.find((entry) => entry.model === 'PaymentMethod')?.byKeyId).toEqual({ k1: 1 });
+
+    const result = await reEncryptAll(context.prisma, rotated);
+    expect(result.paymentMethods.reEncrypted).toBe(1);
+    expect(result.survey.safeToRetireOtherKeys).toBe(true);
+    const row = await context.prisma.paymentMethod.findFirstOrThrow({ where: { customerId: customer.id } });
+    expect(envelopeKeyId(row.tokenCipher)).toBe('k2');
+    expect(decrypt(row.tokenCipher, keyringWith(K2, 'k2'), purpose).plaintext).toBe('AUTH_rotation_token');
+  });
+
   it('surveys and moves rider payout accounts, still bound to their rider', async () => {
     const k1Only = keyringWith(K1, 'k1');
     const rider = await context.prisma.rider.create({ data: { identityId: context.identityId }, select: { id: true } });
