@@ -94,7 +94,14 @@ jobs:
       - name: Typecheck the native app
         run: npm run typecheck --prefix apps/mobile
 
+      # Tests run as tests. React 19 exports act() only from its development
+      # build, and the job-wide NODE_ENV=production above selects the
+      # production one, so every act()-based test failed with "act is not a
+      # function". Only this step is overridden: prebuild and the Gradle
+      # bundle below still run with NODE_ENV=production.
       - name: Run the native unit tests
+        env:
+          NODE_ENV: test
         run: npx vitest run apps/mobile/src
 
       - name: Check the Expo dependency contract
