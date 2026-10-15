@@ -1,8 +1,7 @@
 import { registerRootComponent } from 'expo';
 
-import DashApp from './src/v2/App';
+import HomePreviewApp from './src/v2/home/HomePreviewApp';
 
-// A single React root owns the whole Customer/Rider experience. We deliberately
-// do not boot Expo Router or react-native-screens here: role changes are plain
-// state transitions and can never re-parent a native Fragment view.
-registerRootComponent(DashApp);
+// UI review branch only: boot the isolated Customer Home preview so it can be
+// inspected locally in VS Code/Expo without changing the production app tree.
+registerRootComponent(HomePreviewApp);
