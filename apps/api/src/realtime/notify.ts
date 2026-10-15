@@ -32,6 +32,8 @@
  */
 
 import { enqueueViaOutbox } from '../events/outbox.js';
+import { enqueuePush } from '../push/notify.js';
+import { PUSH_ORDER_STATUSES } from '@dash/domain/push';
 import { orderTopics } from '@dash/domain/realtime';
 import type { DbClient } from '@dash/db';
 
@@ -112,9 +114,29 @@ export async function recordOrderChange(
       revision: true,
       vendorId: true,
       riderId: true,
+      status: true,
+      pushNotifiedStatus: true,
       vendor: { select: { cityId: true } },
     },
   });
+
+  // The push half of the same fact, owed only when the status actually
+  // changed. Dispatch announces an order on every offer round without
+  // changing its status, and those announcements must not reach a customer's
+  // lock screen — so the status a push was last considered for is kept on the
+  // order, and nothing is written at all when it has not moved.
+  if (order.status !== order.pushNotifiedStatus) {
+    await db.order.update({ where: { id: order.id }, data: { pushNotifiedStatus: order.status } });
+    if (PUSH_ORDER_STATUSES.has(order.status)) {
+      await enqueuePush(db, {
+        kind: 'order_update',
+        orderId: order.id,
+        status: order.status,
+        revision: order.revision,
+        riderId: order.riderId,
+      });
+    }
+  }
 
   const subject = `order:${order.id}`;
   // Deduplicated: an extra topic that the order's own relationships already

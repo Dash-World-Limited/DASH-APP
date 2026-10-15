@@ -37,6 +37,12 @@ export interface RegisterDeviceInput {
   readonly platform: DevicePlatform;
   readonly model?: string | undefined;
   readonly appVersion?: string | undefined;
+  /**
+   * The phone's Notifications switch for this account, when the app says.
+   * Left out, an existing choice is kept — never silently reset — and a new
+   * device, or one changing hands, starts at the default: on.
+   */
+  readonly pushEnabled?: boolean | undefined;
   /** Injected so the result is testable without touching the clock. */
   readonly now?: Date | undefined;
 }
@@ -95,6 +101,8 @@ export async function registerDevice(
         // signed-in identity had marked trusted is not trusted for its new
         // owner, and re-earning that is the point.
         ...(rebound ? { trustedAt: null } : {}),
+        // Nor does the previous owner's notification choice.
+        ...(input.pushEnabled !== undefined ? { pushEnabled: input.pushEnabled } : rebound ? { pushEnabled: true } : {}),
       },
     });
 
@@ -109,11 +117,32 @@ export async function registerDevice(
       model: input.model ?? null,
       appVersion: input.appVersion ?? null,
       lastSeenAt: now,
+      pushEnabled: input.pushEnabled ?? true,
     },
     select: { id: true },
   });
 
   return { deviceId: created.id, rebound: false };
+}
+
+/**
+ * The provider rotated this installation's token, so its old one is retired.
+ *
+ * Only if the old token is the caller's own: a client cannot use "this
+ * replaces that" to silence somebody else's phone. Without this, a rotation
+ * leaves the old row holding a token that is dead at the provider, and it is
+ * only cleared after a send fails against it.
+ */
+export async function retireReplacedToken(
+  db: DbClient,
+  input: { identityId: string; replacedToken: string; currentToken: string },
+): Promise<number> {
+  if (input.replacedToken === input.currentToken) return 0;
+  const result = await db.device.updateMany({
+    where: { pushToken: input.replacedToken, identityId: input.identityId },
+    data: { pushToken: null },
+  });
+  return result.count;
 }
 
 /**

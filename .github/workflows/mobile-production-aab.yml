@@ -100,9 +100,11 @@ jobs:
           HAS_STORE_PASSWORD: ${{ secrets.DASH_UPLOAD_STORE_PASSWORD != '' }}
           HAS_KEY_ALIAS: ${{ secrets.DASH_UPLOAD_KEY_ALIAS != '' }}
           HAS_KEY_PASSWORD: ${{ secrets.DASH_UPLOAD_KEY_PASSWORD != '' }}
+          HAS_GOOGLE_SERVICES: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 != '' }}
         run: |
           set -euo pipefail
           problems=()
+          [ "$HAS_GOOGLE_SERVICES" = true ] || problems+=("secret GOOGLE_SERVICES_JSON_BASE64 is not set (Firebase client configuration; without it the app cannot receive push notifications)")
           [ "$HAS_KEYSTORE" = true ] || problems+=("secret DASH_UPLOAD_KEYSTORE_BASE64 is not set")
           [ "$HAS_STORE_PASSWORD" = true ] || problems+=("secret DASH_UPLOAD_STORE_PASSWORD is not set")
           [ "$HAS_KEY_ALIAS" = true ] || problems+=("secret DASH_UPLOAD_KEY_ALIAS is not set")
@@ -129,6 +131,26 @@ jobs:
             console.log(`Map style: ${release.mapStyleUrl}`);
           '
           echo "Commit: $(git rev-parse HEAD) on ${GITHUB_REF_NAME}"
+
+      # Firebase's Android client configuration, for push notifications
+      # (FCM). The public client file from the Firebase console, base64 in a
+      # secret, written to the runner's temporary directory for this job only
+      # and never committed. It must register the production package; the
+      # check names package ids only, never the file's contents.
+      - name: Place the Firebase client configuration
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          file="$RUNNER_TEMP/google-services.json"
+          printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > "$file"
+          GOOGLE_SERVICES_JSON="$file" node -e '
+            const { resolveGoogleServicesFile } = require("./apps/mobile/plugins/releaseConfig.js");
+            resolveGoogleServicesFile("production", process.env, process.env.PRODUCTION_PACKAGE);
+            console.log(`google-services.json registers ${process.env.PRODUCTION_PACKAGE}.`);
+          '
+          echo "GOOGLE_SERVICES_JSON=$file" >> "$GITHUB_ENV"
 
       - name: Use JDK 21
         uses: actions/setup-java@v4

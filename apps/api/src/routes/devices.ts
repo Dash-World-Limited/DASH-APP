@@ -17,7 +17,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { actorOf, requireAuth } from '../http/context.js';
-import { registerDevice, revokeDeviceToken } from '../push/registration.js';
+import { registerDevice, retireReplacedToken, revokeDeviceToken } from '../push/registration.js';
 
 const registerSchema = z.object({
   /**
@@ -31,6 +31,13 @@ const registerSchema = z.object({
   /** Diagnostic only, and shown to nobody. Bounded so it cannot become a note. */
   model: z.string().max(120).optional(),
   appVersion: z.string().max(40).optional(),
+  /**
+   * The phone's Notifications switch for this account. Optional so a client
+   * that predates it never resets anyone's choice by omission.
+   */
+  notifications: z.enum(['on', 'off']).optional(),
+  /** The token this installation held before the provider rotated it. */
+  replacesPushToken: z.string().min(16).max(4096).optional(),
 });
 
 export async function registerDeviceRoutes(app: FastifyInstance): Promise<void> {
@@ -56,16 +63,28 @@ export async function registerDeviceRoutes(app: FastifyInstance): Promise<void> 
       const body = registerSchema.parse(request.body);
       const actor = actorOf(request);
 
-      const result = await prisma.$transaction((tx) =>
-        registerDevice(tx, {
+      const result = await prisma.$transaction(async (tx) => {
+        const registered = await registerDevice(tx, {
           // From the session. The request body has no say in this.
           identityId: actor.identityId,
           pushToken: body.pushToken,
           platform: body.platform,
           model: body.model,
           appVersion: body.appVersion,
-        }),
-      );
+          pushEnabled: body.notifications === undefined ? undefined : body.notifications === 'on',
+        });
+        if (body.replacesPushToken) {
+          await retireReplacedToken(tx, {
+            identityId: actor.identityId,
+            replacedToken: body.replacesPushToken,
+            currentToken: body.pushToken,
+          });
+        }
+        // This session is signed in on this installation, so signing out of it
+        // silences the installation (POST /v1/auth/logout reads this link).
+        await tx.session.updateMany({ where: { id: actor.sessionId }, data: { deviceId: registered.deviceId } });
+        return registered;
+      });
 
       // `rebound` is deliberately not returned. It is an operational fact about
       // the previous holder of the token, and telling the new one that somebody

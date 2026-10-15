@@ -2,9 +2,9 @@
 
 Every answer below is traced to what the DASH Android app (`apps/mobile`) and
 its API (`apps/api`) do on `claude/dash-app-production-release` as of
-12 October 2026 (re-checked after order chat and the DASH Wallet were added;
-the 29 September version of this page said there was no in-app messaging,
-which is no longer true). If the code changes, these answers must be
+15 October 2026 (re-checked after push notifications were added; on
+12 October after order chat and the DASH Wallet; the 29 September version of
+this page said there was no in-app messaging, which is no longer true). If the code changes, these answers must be
 re-checked before the next upload. Items marked **David to confirm** are
 judgement calls about Google's definitions, not facts about the code.
 
@@ -34,7 +34,7 @@ judgement calls about Google's definitions, not facts about the code.
 | Photos and videos | **No** (Android app) | — | — | — | Declutters photo upload exists on the website, not in this app |
 | Messages → Other in-app messages | **Yes** | No (see note 5) | Optional | App functionality | Order chat between a customer and the rider assigned to their order (`/v1/orders/:orderId/chat`). Stored on DASH's servers; only those two participants can read or send. "Call customer" uses the phone's own dialler and DASH records nothing about the call |
 | App info and performance (crash logs, diagnostics) | **No** | — | — | — | No crash-reporting or analytics SDK is in the app |
-| Device or other IDs | **No** | — | — | — | The app registers no push token and reads no advertising ID |
+| Device or other IDs | **Yes** | No (see note 6) | Optional | App functionality | The Firebase Cloud Messaging push token, registered with DASH (`POST /v1/devices`) only after the person allows Android notifications, so DASH can send order, delivery, message and support notifications. No advertising ID is read (`AD_ID` is not in the manifest) |
 
 Marketing email is sent only to people who opt in at signup; if you declare
 "Marketing" as a purpose for Email address, it is optional.
@@ -62,6 +62,15 @@ Marketing email is sent only to people who opt in at signup; if you declare
    "sharing" — **David to confirm**, and if in doubt declare it shared for
    App functionality. Whether DASH staff can read chats, and how long they
    are kept, must match what the Privacy Policy says before launch.
+6. **Push notifications** go through Firebase Cloud Messaging, which Google
+   operates as a service provider to deliver them — not "sharing" in Google's
+   definition. A push carries a short fixed sentence ("Order picked up", "New
+   message from your rider") and identifiers (an order, offer or support
+   conversation id). It never carries a name, address, phone number, amount,
+   bank detail or the words of a message
+   (`packages/domain/src/push`, enforced by an allowlist). The token is
+   cleared when the person signs out, deletes their account, or the token
+   stops working. See `docs/release/PUSH_NOTIFICATIONS.md`.
 
 ## Security practices section
 

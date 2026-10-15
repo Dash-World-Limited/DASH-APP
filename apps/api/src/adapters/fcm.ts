@@ -34,7 +34,7 @@
 
 import { getApps, initializeApp, applicationDefault, type App } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import type { PushPort, PushReceipt } from '@dash/domain/ports';
+import type { PushDelivery, PushPort, PushReceipt } from '@dash/domain/ports';
 
 /**
  * Errors that unambiguously mean the token is dead.
@@ -154,16 +154,20 @@ export class FcmPushAdapter implements PushPort {
     title: string;
     body: string;
     data?: Readonly<Record<string, string>> | undefined;
+    delivery?: PushDelivery | undefined;
   }): Promise<PushReceipt> {
     if (input.deviceTokens.length === 0) {
       return { accepted: true, providerMessageId: undefined };
     }
 
-    // The collapse identity of this notification. An offer id when there is
-    // one — which is every push DASH currently sends — so retries of the same
-    // offer replace each other rather than stacking, and different offers stay
-    // separate.
-    const collapseId = input.data?.['offerId'] ?? input.data?.['type'] ?? 'dash';
+    // The collapse identity of this notification: one per offer, order, order
+    // chat or support conversation, so retries and quick successive updates
+    // replace each other rather than stacking, and different subjects stay
+    // separate. Without a key from the caller, the offer id as before.
+    const collapseId = input.delivery?.collapseKey ?? input.data?.['offerId'] ?? input.data?.['type'] ?? 'dash';
+    // Thirty seconds unless the caller says otherwise: the rider offer's life,
+    // and what every push used before messages and order updates existed.
+    const ttlMs = Math.round((input.delivery?.ttlSeconds ?? 30) * 1000);
 
     const response = await this.messaging.sendEachForMulticast({
       tokens: [...input.deviceTokens],
@@ -173,15 +177,18 @@ export class FcmPushAdapter implements PushPort {
       data: input.data ? { ...input.data } : undefined,
       android: {
         priority: 'high',
-        // Thirty seconds is the offer's whole life. A push that could not be
-        // delivered inside it is describing work that has already gone, and
-        // waking a rider for it is worse than not waking them at all.
-        ttl: 30_000,
+        // For an offer, its whole life: a push that could not be delivered
+        // inside it describes work that has already gone, and waking a rider
+        // for it is worse than not waking them at all.
+        ttl: ttlMs,
         collapseKey: collapseId,
         notification: {
           tag: collapseId,
           // Replaces rather than re-alerts, so a retry does not buzz twice.
           notificationCount: 1,
+          // Created by the app on the handset. Android falls back to its
+          // default channel for an id the app has not created yet.
+          ...(input.delivery?.channelId ? { channelId: input.delivery.channelId } : {}),
         },
       },
       apns: {

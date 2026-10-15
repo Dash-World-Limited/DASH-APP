@@ -69,6 +69,17 @@ SES is optional and not needed for the release.
 |---|---|
 | `SMS_ENABLED` | `false` — no SMS is sent, phones stay unverified, no SMS provider is needed |
 
+## Push notifications (FCM)
+
+| Variable | Where | Value |
+|---|---|---|
+| `PUSH_PROVIDER` | API host | `fcm` |
+| `GOOGLE_APPLICATION_CREDENTIALS` | API host | Path to the Firebase service-account JSON, stored outside the repository (mode `600`) |
+| `GOOGLE_SERVICES_JSON_BASE64` | GitHub Actions secret | Base64 of `google-services.json` from the Firebase console, for app builds |
+
+Step-by-step setup, and the device checklist, are in
+[`PUSH_NOTIFICATIONS.md`](PUSH_NOTIFICATIONS.md).
+
 ## Checking a configuration without starting anything
 
 `npm run dev:api` refuses to start on a misconfiguration and names the
