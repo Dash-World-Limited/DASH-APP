@@ -257,6 +257,20 @@ export interface PushReceipt extends DeliveryReceipt {
   readonly invalidTokens?: readonly string[];
 }
 
+/**
+ * How a push is delivered, beyond what it says. Every field is optional and
+ * the provider's defaults are the rider-offer behaviour: collapse per offer,
+ * held thirty seconds.
+ */
+export interface PushDelivery {
+  /** The Android notification channel the handset shows it on. */
+  readonly channelId?: string | undefined;
+  /** Pushes with the same key replace each other instead of stacking. */
+  readonly collapseKey?: string | undefined;
+  /** How long the provider may hold it for a phone that is offline. */
+  readonly ttlSeconds?: number | undefined;
+}
+
 export interface PushPort {
   readonly providerName: string;
   readonly isLive: boolean;
@@ -265,6 +279,7 @@ export interface PushPort {
     title: string;
     body: string;
     data?: Readonly<Record<string, string>> | undefined;
+    delivery?: PushDelivery | undefined;
   }): Promise<PushReceipt>;
 }
 

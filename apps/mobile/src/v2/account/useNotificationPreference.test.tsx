@@ -26,6 +26,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
+import { onPushPreferenceChanged } from '../push/preferenceSignal';
 import { useNotificationPreference, type NotificationPreferenceState } from './useNotificationPreference';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -103,6 +104,20 @@ describe('notification preference', () => {
     });
     await settle();
     expect(storage.writes).toBe(1);
+  });
+
+  it('tells the push registration about a saved change, and not about one that failed', async () => {
+    const heard: boolean[] = [];
+    const stop = onPushPreferenceChanged((enabled) => heard.push(enabled));
+    try {
+      await open();
+      await act(async () => state.setEnabled(false));
+      storage.failWrites = true;
+      await act(async () => state.setEnabled(true));
+      expect(heard).toEqual([false]);
+    } finally {
+      stop();
+    }
   });
 
   it('keeps each account’s choice to itself', async () => {
