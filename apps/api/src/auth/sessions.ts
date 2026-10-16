@@ -86,6 +86,7 @@ export async function rotateSession(
     select: {
       id: true,
       identityId: true,
+      deviceId: true,
       expiresAt: true,
       revokedAt: true,
       rotatedAt: true,
@@ -139,7 +140,9 @@ export async function rotateSession(
         previousSessionId: existing.id,
         ipAddress: context.ipAddress ?? null,
         userAgent: context.userAgent ?? null,
-        deviceId: context.deviceId ?? null,
+        // Still the same installation: a rotation must not lose the link that
+        // lets signing out silence its push token.
+        deviceId: context.deviceId ?? existing.deviceId ?? null,
         expiresAt,
       },
       select: { id: true },

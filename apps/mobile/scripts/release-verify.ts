@@ -95,6 +95,9 @@ export function allowedPermissions(packageName: string): Readonly<Record<string,
     'android.permission.ACCESS_NETWORK_STATE': 'expo-image and MapLibre check connectivity before fetching',
     'android.permission.ACCESS_COARSE_LOCATION': 'delivery addresses and a rider’s position while online (foreground only)',
     'android.permission.ACCESS_FINE_LOCATION': 'delivery addresses and a rider’s position while online (foreground only)',
+    'android.permission.POST_NOTIFICATIONS': 'push notifications — offers, order updates, messages — on Android 13+ (asked at runtime)',
+    'android.permission.WAKE_LOCK': 'Firebase Cloud Messaging holds the CPU briefly to receive a push while the phone sleeps',
+    'com.google.android.c2dm.permission.RECEIVE': 'Firebase Cloud Messaging: lets Google Play services deliver pushes to the app',
     [`${packageName}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`]:
       'AndroidX’s own signature permission protecting the app’s non-exported receivers; grants nothing to other apps',
   };

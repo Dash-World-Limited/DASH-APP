@@ -5,10 +5,14 @@
  */
 
 import { createRequire } from 'node:module';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
-const { resolveReleaseConfig, isPrivateHost, productionApiOrigin, DEFAULT_MAP_STYLE_URL } = require('./releaseConfig.js') as {
+const { resolveReleaseConfig, resolveGoogleServicesFile, isPrivateHost, productionApiOrigin, DEFAULT_MAP_STYLE_URL } = require('./releaseConfig.js') as {
+  resolveGoogleServicesFile: (variant: string, env: Record<string, string | undefined>, packageName: string) => string | null;
   resolveReleaseConfig: (
     variant: string,
     env: Record<string, string | undefined>,
@@ -115,5 +119,61 @@ describe('private hosts', () => {
 
   it.each(['api.dashworldng.com', 'fcbank.com', 'fdic.gov', '172.32.0.1', '8.8.8.8'])('treats %s as public', (host) => {
     expect(isPrivateHost(host)).toBe(false);
+  });
+});
+
+describe('Firebase client configuration for push', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dash-gservices-'));
+  const file = (name: string, packages: string[]) => {
+    const path = join(dir, name);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        project_info: { project_id: 'dash-test' },
+        client: packages.map((package_name) => ({ client_info: { android_client_info: { package_name } }, api_key: [{ current_key: 'AIza-not-a-real-key' }] })),
+      }),
+    );
+    return path;
+  };
+
+  it('is required for production, and optional for development and staging', () => {
+    expect(() => resolveGoogleServicesFile('production', {}, 'com.dashworldng.dash')).toThrow(/GOOGLE_SERVICES_JSON is required/);
+    expect(resolveGoogleServicesFile('staging', {}, 'com.dashworldng.dash.staging')).toBeNull();
+    expect(resolveGoogleServicesFile('development', { GOOGLE_SERVICES_JSON: '  ' }, 'com.dashworldng.dash.dev')).toBeNull();
+  });
+
+  it('must register the package being built', () => {
+    const all = file('all.json', ['com.dashworldng.dash', 'com.dashworldng.dash.staging']);
+    expect(resolveGoogleServicesFile('production', { GOOGLE_SERVICES_JSON: all }, 'com.dashworldng.dash')).toBe(all);
+    expect(resolveGoogleServicesFile('staging', { GOOGLE_SERVICES_JSON: all }, 'com.dashworldng.dash.staging')).toBe(all);
+
+    const stagingOnly = file('staging.json', ['com.dashworldng.dash.staging']);
+    expect(() => resolveGoogleServicesFile('production', { GOOGLE_SERVICES_JSON: stagingOnly }, 'com.dashworldng.dash')).toThrow(
+      /no Android app for com\.dashworldng\.dash \(it has: com\.dashworldng\.dash\.staging\)/,
+    );
+  });
+
+  it('must belong to the expected Firebase project when one is named', () => {
+    const staging = file('project.json', ['com.dashworldng.dash.staging']);
+    // The fixture's project is dash-test.
+    expect(() =>
+      resolveGoogleServicesFile('staging', { GOOGLE_SERVICES_JSON: staging, FIREBASE_PROJECT_ID: 'dash-app-a49c2' }, 'com.dashworldng.dash.staging'),
+    ).toThrow(/Firebase project "dash-test", but this build expects "dash-app-a49c2"/);
+    expect(resolveGoogleServicesFile('staging', { GOOGLE_SERVICES_JSON: staging, FIREBASE_PROJECT_ID: 'dash-test' }, 'com.dashworldng.dash.staging')).toBe(staging);
+  });
+
+  it('refuses a missing or unreadable file, and never repeats the file’s keys', () => {
+    expect(() => resolveGoogleServicesFile('staging', { GOOGLE_SERVICES_JSON: join(dir, 'absent.json') }, 'x')).toThrow(/not a readable JSON file/);
+    const broken = join(dir, 'broken.json');
+    writeFileSync(broken, '{ not json');
+    expect(() => resolveGoogleServicesFile('staging', { GOOGLE_SERVICES_JSON: broken }, 'x')).toThrow(/not a readable JSON file/);
+
+    let message = '';
+    try {
+      resolveGoogleServicesFile('production', { GOOGLE_SERVICES_JSON: file('other.json', ['com.example.other']) }, 'com.dashworldng.dash');
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).not.toContain('AIza');
   });
 });

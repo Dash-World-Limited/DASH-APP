@@ -8,8 +8,10 @@
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { flushOutbox } from '../events/outbox.js';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requireAuth } from '../http/context.js';
+import { enqueuePush } from '../push/notify.js';
 
 const messageSchema = z.object({
   body: z.string().trim().min(1, 'Write a message first.').max(1000, 'Keep messages under 1000 characters.'),
@@ -46,7 +48,7 @@ async function participantFor(
 }
 
 export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma } = app.services;
+  const { prisma, queue } = app.services;
 
   app.get<{ Params: { orderId: string } }>(
     '/v1/orders/:orderId/chat',
@@ -118,28 +120,38 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
 
       const body = messageSchema.parse(request.body);
 
-      const conversation = await prisma.orderConversation.upsert({
-        where: { orderId },
-        update: {},
-        create: { orderId },
-        select: { id: true },
+      // The message and the push owed for it commit together. The push names
+      // the message, never its words; the other participant reads it here.
+      const message = await prisma.$transaction(async (tx) => {
+        const conversation = await tx.orderConversation.upsert({
+          where: { orderId },
+          update: {},
+          create: { orderId },
+          select: { id: true },
+        });
+
+        const created = await tx.chatMessage.create({
+          data: {
+            conversationId: conversation.id,
+            senderIdentityId: actor.identityId,
+            senderRole: role,
+            body: body.body,
+          },
+          select: {
+            id: true,
+            senderRole: true,
+            body: true,
+            readAt: true,
+            createdAt: true,
+          },
+        });
+        await enqueuePush(tx, { kind: 'order_chat', messageId: created.id });
+        return created;
       });
 
-      const message = await prisma.chatMessage.create({
-        data: {
-          conversationId: conversation.id,
-          senderIdentityId: actor.identityId,
-          senderRole: role,
-          body: body.body,
-        },
-        select: {
-          id: true,
-          senderRole: true,
-          body: true,
-          readAt: true,
-          createdAt: true,
-        },
-      });
+      // Never raises: the push is a side effect, and the scheduled relay
+      // delivers it if the queue cannot be reached now.
+      await flushOutbox(prisma, queue);
 
       return reply.status(201).send({ ...message, mine: true });
     },

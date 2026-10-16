@@ -32,6 +32,7 @@ release — nothing more.
 | `PRODUCTION-AAB.md` | **current** production AAB workflow and the GitHub variables/secrets |
 | `A55-PRODUCTION-ACCEPTANCE.md` | **current** production device sign-off |
 | `RIDER-EXPERIENCE.md` | **current** rider workspace, data sources, map/routing limits, `a55-rider-polish` triage |
+| `PUSH_NOTIFICATIONS.md` | **current** push notifications (FCM): Firebase and server setup David performs, events sent, device acceptance checklist |
 
 ## Proven (with the evidence)
 

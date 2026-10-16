@@ -92,4 +92,16 @@ describe('brand images', () => {
     expect(splash![1].dark).toBeUndefined();
     expect(config.android?.adaptiveIcon?.backgroundColor).toBe(GROUND);
   });
+
+  it('give push notifications their own status-bar icon, and ask for the notification permission', () => {
+    const config = appConfig({ config: {} } as Parameters<typeof appConfig>[0]);
+    const notifications = config.plugins?.find((p) => Array.isArray(p) && p[0] === 'expo-notifications') as
+      | [string, { icon: string; defaultChannel: string }]
+      | undefined;
+    expect(notifications).toBeDefined();
+    expect(existsSync(join(MOBILE, notifications![1].icon))).toBe(true);
+    expect(notifications![1].defaultChannel).toBe('orders');
+    expect(config.android?.permissions).toContain('POST_NOTIFICATIONS');
+    expect(config.android?.blockedPermissions).toContain('android.permission.RECEIVE_BOOT_COMPLETED');
+  });
 });

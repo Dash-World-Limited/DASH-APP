@@ -24,6 +24,8 @@
  *   circle, so the mark's corners stay well inside it (560 px wide ≈ 59 dp).
  * - `adaptive-icon-monochrome.png`: the same silhouette in one ink, for
  *   Android 13 themed icons, which recolour it.
+ * - `notification-icon.png` 96² white on transparent: Android's status-bar
+ *   and notification icon (expo-notifications), which Android tints itself.
  * - `splash-icon.png`: the mark alone, trimmed, for expo-splash-screen. The
  *   plugin centres it `imageWidth` dp wide in a 288 dp canvas that Android 12+
  *   crops to a 192 dp circle, so app.config.ts keeps `imageWidth` under 188.
@@ -267,6 +269,13 @@ export const ASSETS: readonly Asset[] = [
   },
   // Trimmed to the mark with a hair of margin, so `imageWidth` is the mark's width.
   { path: 'apps/mobile/assets/brand/splash-icon.png', render: () => drawMark(1216, 244, 1200, { ground: null }) },
+  // The Android status-bar and notification icon. Android draws only its
+  // alpha, so it is the silhouette in white on transparent, as wide as the
+  // canvas allows: at 24 dp a mark with launcher-icon margins is unreadable.
+  {
+    path: 'apps/mobile/assets/brand/notification-icon.png',
+    render: () => drawMark(96, 96, 92, { ground: null, inks: { lead: '#FFFFFF', bronze: '#FFFFFF' } }),
+  },
   // Play asks for a 32-bit PNG: RGBA, fully opaque.
   { path: 'docs/release/store-assets/play-icon-512.png', render: () => drawMark(512, 512, 369, { opaqueAlpha: true }) },
   { path: 'docs/release/store-assets/feature-graphic-1024x500.png', render: () => drawMark(1024, 500, 532) },

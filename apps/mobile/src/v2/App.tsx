@@ -68,6 +68,8 @@ import { DeliveryLocationScreen } from './orders/DeliveryLocationScreen';
 import { useDeliveryLocation } from './orders/useDeliveryLocation';
 import { RiderFlowProvider, useRiderFlow } from './rider/RiderFlowProvider';
 import { RiderHistoryDetailScreen, RiderOfferBanner, RiderOrdersScreen, RiderWorkspace } from './rider/RiderScreens';
+import { openPushTarget } from '../features/pushNotifications';
+import { usePushNotifications } from './push/usePushNotifications';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -167,6 +169,21 @@ function Navigator() {
       setState(createNavigationState('customer'));
     }
   }, [mode, sessionState, setMode, viewer]);
+
+  // Push notifications: registered for whoever is signed in, and a tapped
+  // one opens its screen. The rider flow is read for the same rule the
+  // Profile switch follows: a delivery in progress keeps the rider face.
+  const riderFlow = useRiderFlow();
+  const deliveryInProgress = Boolean(riderFlow.delivery && riderFlow.delivery.status !== 'delivered');
+  usePushNotifications({
+    current: { face: state.face, route },
+    onOpen: (target) => {
+      const next = openPushTarget(state, target, { riderApproved: viewer?.riderStatus === 'approved', deliveryInProgress });
+      if (!next) return;
+      if (next.face !== state.face) setMode(next.face);
+      setState(next);
+    },
+  });
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
