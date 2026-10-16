@@ -74,8 +74,12 @@ SES is optional and not needed for the release.
 | Variable | Where | Value |
 |---|---|---|
 | `PUSH_PROVIDER` | API host | `fcm` |
-| `GOOGLE_APPLICATION_CREDENTIALS` | API host | Path to the Firebase service-account JSON, stored outside the repository (mode `600`) |
-| `GOOGLE_SERVICES_JSON_BASE64` | GitHub Actions secret | Base64 of `google-services.json` from the Firebase console, for app builds |
+| `GOOGLE_APPLICATION_CREDENTIALS` | API host | Path to the Firebase service-account JSON, stored outside the repository (mode `600`), e.g. `/etc/dash/firebase-service-account.json` |
+| `FCM_PROJECT_ID` | API host | The Firebase project: `dash-app-a49c2` on staging. The API refuses a key from any other project |
+| `PUSH_APP_IDS` | API host | The app builds this API may notify: `com.dashworldng.dash.staging` on staging, `com.dashworldng.dash` on production |
+| `GOOGLE_SERVICES_JSON_BASE64` | GitHub Actions secret | Base64 of `google-services.json` from the Firebase console, for app builds (repository secret for staging; `production` environment secret for production) |
+| `FIREBASE_STAGING_PROJECT_ID` | GitHub Actions variable (optional) | Overrides the staging build's expected Firebase project (default `dash-app-a49c2`) |
+| `DASH_PRODUCTION_FIREBASE_PROJECT_ID` | GitHub Actions variable (later) | Pins the production build to the production Firebase project |
 
 Step-by-step setup, and the device checklist, are in
 [`PUSH_NOTIFICATIONS.md`](PUSH_NOTIFICATIONS.md).

@@ -14,9 +14,10 @@
  * identifiers only, so eligibility is decided on current state rather than
  * whatever was true when the event was recorded.
  *
- * Logged at debug, with counts and reasons only: a push token is a capability
- * to interrupt someone's phone and has no business in a log file, and nor does
- * who was told what.
+ * Each outcome is logged at info, and each refusal at warn with Firebase's
+ * error codes — counts, kinds, reasons and codes only: a push token is a
+ * capability to interrupt someone's phone and has no business in a log file,
+ * and nor does who was told what.
  */
 
 import type { QueuePort, PushPort } from '@dash/domain/ports';
@@ -25,7 +26,7 @@ import type { PrismaClient } from '@dash/db';
 import type { FastifyBaseLogger } from 'fastify';
 
 import { deliverPushIntent, PUSH_NOTIFY, type PushIntent } from './notify.js';
-import { sendToRider } from './send.js';
+import { PushNotDeliveredError, sendToRider, type PushScope } from './send.js';
 
 /** The queue job name. Shared with the dispatch worker that publishes it. */
 export const PUSH_RIDER_OFFER = 'push.rider_offer';
@@ -41,8 +42,21 @@ export function registerPushWorker(deps: {
   prisma: PrismaClient;
   push: PushPort;
   logger: FastifyBaseLogger;
+  /** `PUSH_APP_IDS`: the app builds this deployment may notify. */
+  appIds?: readonly string[] | undefined;
 }): void {
   const { queue, prisma, push, logger } = deps;
+  const scope: PushScope = { appIds: deps.appIds ?? [] };
+
+  /** A send the provider refused: logged with its codes, then retried by the queue. */
+  const refused = (kind: string, error: unknown): never => {
+    if (error instanceof PushNotDeliveredError) {
+      logger.warn({ kind, provider: push.providerName, reason: error.reason }, 'push not delivered; the queue will retry');
+    } else {
+      logger.error({ kind, provider: push.providerName, err: error }, 'push failed; the queue will retry');
+    }
+    throw error;
+  };
 
   queue.process<RiderOfferJob>(PUSH_RIDER_OFFER, async (job) => {
     const { offerId, riderId, expiresAt } = job.payload;
@@ -65,9 +79,10 @@ export function registerPushWorker(deps: {
       message: riderOfferNotification({ offerId, expiresAt: new Date(expiresAt) }),
       // One push per offer, however many times the job is delivered.
       dedupeKey: `rider_offer:${offerId}`,
-    });
+      scope,
+    }).catch((error: unknown) => refused('rider_offer', error));
 
-    logger.debug(
+    logger.info(
       {
         offerId,
         sent: result.sent,
@@ -84,8 +99,8 @@ export function registerPushWorker(deps: {
     // A thrown error (the provider unreachable) is retried by the queue; the
     // dedupe claim was released for that retry. Nothing the push describes
     // depends on it.
-    const report = await deliverPushIntent(prisma, push, intent);
-    logger.debug(
+    const report = await deliverPushIntent(prisma, push, intent, scope).catch((error: unknown) => refused(intent.kind, error));
+    logger.info(
       {
         kind: intent.kind,
         recipients: report.recipients,

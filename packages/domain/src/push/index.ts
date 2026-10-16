@@ -20,7 +20,7 @@
  */
 
 /** Every kind of push DASH sends. */
-export type PushKind = 'rider_offer' | 'order_update' | 'order_chat' | 'support_reply' | 'payment_update';
+export type PushKind = 'rider_offer' | 'order_update' | 'order_chat' | 'support_reply' | 'payment_update' | 'test';
 
 /** Which side of the app a push is for — the face a tap opens. */
 export type PushAudience = 'customer' | 'rider';
@@ -201,6 +201,24 @@ export function paymentUpdateNotification(input: { orderId: string; outcome: Pay
     essential: false,
     collapseKey: `payment_${input.orderId}`,
     ttlSeconds: 24 * 60 * 60,
+  };
+}
+
+/**
+ * A notification someone asked for, to check that push works on their own
+ * phones. Sent even with their switch off — they just asked for it — and
+ * only ever to the asker's own devices.
+ */
+export function testNotification(): PushMessage {
+  return {
+    kind: 'test',
+    title: 'DASH test notification',
+    body: 'Notifications are working on this phone.',
+    data: { type: 'test' },
+    channel: 'account',
+    essential: true,
+    collapseKey: 'dash_test',
+    ttlSeconds: 10 * 60,
   };
 }
 

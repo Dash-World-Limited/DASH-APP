@@ -153,9 +153,15 @@ jobs:
       # (FCM): base64 of google-services.json from the Firebase console, in a
       # repository secret, never committed. Optional for a staging APK —
       # without it the APK installs and runs, and simply receives no push.
+      # Pinned to the staging Firebase project (DASH APP LAUNCH,
+      # dash-app-a49c2), so a file from any other project — the separate Dash
+      # AI project included — fails the build instead of shipping. A project id
+      # is not a secret; override it with the FIREBASE_STAGING_PROJECT_ID
+      # repository variable if the staging project ever changes.
       - name: Provide the Firebase client configuration
         env:
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_STAGING_PROJECT_ID || 'dash-app-a49c2' }}
         run: |
           set -euo pipefail
           if [ -z "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
@@ -168,7 +174,7 @@ jobs:
           GOOGLE_SERVICES_JSON="$file" node -e '
             const { resolveGoogleServicesFile } = require("./apps/mobile/plugins/releaseConfig.js");
             resolveGoogleServicesFile("staging", process.env, "com.dashworldng.dash.staging");
-            console.log("Push-enabled staging build: google-services.json registers com.dashworldng.dash.staging.");
+            console.log(`Push-enabled staging build: google-services.json is Firebase project ${process.env.FIREBASE_PROJECT_ID} and registers com.dashworldng.dash.staging.`);
           '
           echo "GOOGLE_SERVICES_JSON=$file" >> "$GITHUB_ENV"
 

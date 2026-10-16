@@ -119,10 +119,20 @@ async function complete(db: DbClient, dedupeKey: string, result: SendResult, kin
  * open, which is the whole reason push complements the socket instead of
  * replacing it.
  */
+/**
+ * Which phones a deployment may send to. `appIds` is `PUSH_APP_IDS`: when it
+ * is set, only devices registered by one of those app builds are sent to — a
+ * staging API never reaches a phone running the production app. Empty means
+ * any build (local development).
+ */
+export interface PushScope {
+  readonly appIds?: readonly string[] | undefined;
+}
+
 export async function deliverToIdentity(
   db: PrismaClient,
   push: PushPort,
-  input: { identityId: string; message: PushMessage; dedupeKey?: string | undefined; now?: Date | undefined },
+  input: { identityId: string; message: PushMessage; dedupeKey?: string | undefined; now?: Date | undefined; scope?: PushScope | undefined },
 ): Promise<SendResult> {
   const now = input.now ?? new Date();
   const { message } = input;
@@ -140,10 +150,13 @@ export async function deliverToIdentity(
     const identity = await db.identity.findUnique({ where: { id: input.identityId }, select: { status: true } });
     if (!identity || identity.status !== 'active') return await finish({ sent: false, skipped: 'inactive_account' });
 
+    const appIds = input.scope?.appIds ?? [];
+    const thisDeployment = appIds.length > 0 ? { appId: { in: [...appIds] } } : {};
     const devices = await db.device.findMany({
       where: {
         identityId: input.identityId,
         pushToken: { not: null },
+        ...thisDeployment,
         ...(message.essential ? {} : { pushEnabled: true }),
       },
       select: { pushToken: true },
@@ -153,7 +166,7 @@ export async function deliverToIdentity(
     if (tokens.length === 0) {
       const anyDevice = message.essential
         ? 0
-        : await db.device.count({ where: { identityId: input.identityId, pushToken: { not: null } } });
+        : await db.device.count({ where: { identityId: input.identityId, pushToken: { not: null }, ...thisDeployment } });
       return await finish({ sent: false, skipped: anyDevice > 0 ? 'notifications_off' : 'no_devices' });
     }
 
@@ -200,7 +213,7 @@ export async function deliverToIdentity(
 export async function sendToRider(
   db: PrismaClient,
   push: PushPort,
-  input: { riderId: string; message: PushMessage; dedupeKey?: string | undefined },
+  input: { riderId: string; message: PushMessage; dedupeKey?: string | undefined; scope?: PushScope | undefined },
 ): Promise<SendResult> {
   const rider = await db.rider.findUnique({
     where: { id: input.riderId },
@@ -209,5 +222,5 @@ export async function sendToRider(
   if (!rider || rider.status !== 'approved') {
     return { sent: false, skipped: 'not_approved' };
   }
-  return deliverToIdentity(db, push, { identityId: rider.identityId, message: input.message, dedupeKey: input.dedupeKey });
+  return deliverToIdentity(db, push, { identityId: rider.identityId, message: input.message, dedupeKey: input.dedupeKey, scope: input.scope });
 }

@@ -50,7 +50,7 @@ import {
 } from './realtime/broadcast.js';
 import { RealtimeHub } from './realtime/hub.js';
 import { registerRealtimeWorker } from './realtime/worker.js';
-import { createFcmAdapter } from './adapters/fcm.js';
+import { createFcmAdapter, FcmPushAdapter } from './adapters/fcm.js';
 import { registerPushWorker } from './push/worker.js';
 import { registerRealtimeRoutes } from './routes/realtime.js';
 import { parseNotification } from '@dash/domain/realtime';
@@ -193,7 +193,7 @@ export function buildServices(
       (!capabilities.has('push')
         ? new DisabledPushAdapter()
         : config.PUSH_PROVIDER === 'fcm'
-          ? createFcmAdapter()
+          ? createFcmAdapter({ projectId: config.FCM_PROJECT_ID, credentialsPath: config.GOOGLE_APPLICATION_CREDENTIALS })
           : new ConsolePushAdapter(quiet)),
     storage: overrides.storage ?? createStorageAdapter(config),
     // ValueCheck. One value today; a live provider is a new branch and a new
@@ -773,7 +773,22 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     prisma: services.prisma,
     push: services.push,
     logger: app.log,
+    appIds: config.PUSH_APP_IDS,
   });
+
+  // Which Firebase project and which app builds this API notifies, and
+  // whether Google accepts its key — logged once at startup, without the key,
+  // so a wrong or missing credential is seen before anyone misses a push.
+  if (services.push instanceof FcmPushAdapter) {
+    const fcm = services.push;
+    app.log.info({ provider: 'fcm', project: config.FCM_PROJECT_ID, apps: config.PUSH_APP_IDS }, 'push: Firebase Cloud Messaging configured');
+    void fcm.verifyCredential().then((result) => {
+      if (result.ok) app.log.info({ project: config.FCM_PROJECT_ID }, 'push: Firebase credential verified');
+      else app.log.error({ project: config.FCM_PROJECT_ID, reason: result.reason }, 'push: Firebase credential could not be verified; no push will be delivered');
+    });
+  } else {
+    app.log.info({ provider: services.push.providerName }, 'push: no live provider; notifications are not delivered to phones');
+  }
 
   return app;
 }

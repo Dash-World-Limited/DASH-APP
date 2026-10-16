@@ -32,6 +32,7 @@
  * collapse into one and pushes about different offers never do.
  */
 
+import { readFileSync } from 'node:fs';
 import { getApps, initializeApp, applicationDefault, type App } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 import type { PushDelivery, PushPort, PushReceipt } from '@dash/domain/ports';
@@ -202,13 +203,16 @@ export class FcmPushAdapter implements PushPort {
     // Map per-token outcomes back to the port's contract. `sendEachForMulticast`
     // returns results positionally, so a response index is its token's index.
     const invalidTokens: string[] = [];
+    const codes = new Map<string, number>();
     response.responses.forEach((result, index) => {
       if (result.success) return;
       const error = result.error as { code?: string; message?: string } | undefined;
+      const code = error?.code ?? 'unknown';
+      codes.set(code, (codes.get(code) ?? 0) + 1);
       const token = input.deviceTokens[index];
-      // `payloadValidated` is true because `sendToRider` runs the domain's
-      // payload rules immediately before calling this adapter, and this adapter
-      // adds nothing to what it was given.
+      // `payloadValidated` is true because `deliverToIdentity` runs the
+      // domain's payload rules immediately before calling this adapter, and
+      // this adapter adds nothing to what it was given.
       if (token && isDeadTokenError(error?.code, error?.message, true)) {
         invalidTokens.push(token);
       }
@@ -219,10 +223,72 @@ export class FcmPushAdapter implements PushPort {
       // and one dead token has still been reached.
       accepted: response.successCount > 0,
       providerMessageId: undefined,
-      failureReason:
-        response.successCount === 0 ? `all ${response.failureCount} sends failed` : undefined,
+      // Firebase's error codes and counts — what an operator needs to tell a
+      // dead phone from a wrong key — and never a token.
+      failureReason: response.failureCount > 0 ? describeFailures(response.successCount, response.failureCount, codes) : undefined,
       invalidTokens,
     };
+  }
+
+  /**
+   * Prove the credential works by asking Google for an access token, without
+   * sending anything. Run once after boot so a missing, revoked or wrong key
+   * is in the log at startup rather than discovered when a rider misses an
+   * offer. Never throws; reports the error code only.
+   */
+  async verifyCredential(): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (!this.credentialProbe) return { ok: false, reason: 'no credential to check' };
+    try {
+      await this.credentialProbe();
+      return { ok: true };
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      return { ok: false, reason: code ?? 'could not obtain an access token' };
+    }
+  }
+
+  private credentialProbe: (() => Promise<unknown>) | null = null;
+
+  /** @internal Set by `createFcmAdapter` from the Firebase app's credential. */
+  withCredentialProbe(probe: () => Promise<unknown>): this {
+    this.credentialProbe = probe;
+    return this;
+  }
+}
+
+/** "0 of 2 delivered — messaging/registration-token-not-registered ×2". */
+export function describeFailures(successCount: number, failureCount: number, codes: ReadonlyMap<string, number>): string {
+  const detail = [...codes.entries()].map(([code, count]) => `${code} ×${count}`).join(', ');
+  return `${successCount} of ${successCount + failureCount} delivered — ${detail}`;
+}
+
+/**
+ * What the service-account file says about itself: its kind and its Firebase
+ * project. Read once at boot and compared with `FCM_PROJECT_ID`, so a staging
+ * API started with the production key — or a key from an unrelated project,
+ * such as the separate Dash AI project — refuses to start instead of sending.
+ *
+ * Only `type` and `project_id` are taken from the file. The private key is
+ * never read here, held, or included in any error.
+ */
+export function checkServiceAccountFile(path: string, expectedProjectId: string): void {
+  let parsed: { type?: unknown; project_id?: unknown };
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8')) as { type?: unknown; project_id?: unknown };
+  } catch {
+    throw new Error(
+      'GOOGLE_APPLICATION_CREDENTIALS does not point at a readable JSON file. ' +
+        'It must be the path to the Firebase service-account key on this host.',
+    );
+  }
+  if (parsed.type !== 'service_account') {
+    throw new Error('GOOGLE_APPLICATION_CREDENTIALS is not a service-account key (its "type" is not "service_account").');
+  }
+  if (parsed.project_id !== expectedProjectId) {
+    throw new Error(
+      `The Firebase service-account key belongs to project "${String(parsed.project_id)}", but FCM_PROJECT_ID is ` +
+        `"${expectedProjectId}". Use the key generated in the "${expectedProjectId}" project.`,
+    );
   }
 }
 
@@ -237,19 +303,41 @@ export class FcmPushAdapter implements PushPort {
  * the failure surfaces on the first actual send. Verified, not assumed — the
  * server boots reporting `push provider: fcm` with the variable unset.
  *
- * So this cannot fail fast on a missing credential, and does not pretend to.
- * Two things cover the gap instead: `config.ts` refuses to start production
- * with `PUSH_PROVIDER=fcm` and no `GOOGLE_APPLICATION_CREDENTIALS`, and a send
- * that fails returns a receipt rather than throwing, so a misconfiguration
- * costs a notification rather than an order.
+ * So the gap is covered in layers:
  *
- * The wrapper below still catches genuine construction failures — a malformed
- * app config, an unreadable credential file — and names the variable
- * responsible, because Firebase's own error does not.
+ * - `config.ts` refuses to start with `PUSH_PROVIDER=fcm` and no
+ *   `GOOGLE_APPLICATION_CREDENTIALS`, `FCM_PROJECT_ID` or `PUSH_APP_IDS`, in
+ *   every environment;
+ * - this function refuses to build the adapter when the key file is not a
+ *   service account of `FCM_PROJECT_ID` — a staging API given the production
+ *   key, or a key from an unrelated project, does not start;
+ * - after boot, `verifyCredential` asks Google for an access token once and
+ *   the result is logged (server.ts), so a revoked key is visible at startup;
+ * - and a send that fails releases its claim and is retried by the queue, so
+ *   a misconfiguration costs a notification rather than an order.
+ *
+ * The wrapper below still catches genuine construction failures and names the
+ * variable responsible, because Firebase's own error does not.
  */
-export function createFcmAdapter(): FcmPushAdapter {
+export function createFcmAdapter(options: { projectId?: string | undefined; credentialsPath?: string | undefined } = {}): FcmPushAdapter {
+  // Checked before Firebase is touched, and fatal: a key from the wrong
+  // project is a deployment pointed at somebody else's phones.
+  if (options.credentialsPath && options.projectId) {
+    checkServiceAccountFile(options.credentialsPath, options.projectId);
+  }
   try {
-    return new FcmPushAdapter();
+    const existing = getApps();
+    const firebase =
+      existing[0] ??
+      initializeApp({
+        credential: applicationDefault(),
+        // Pinned, so the SDK never infers a different project from its
+        // surroundings.
+        ...(options.projectId ? { projectId: options.projectId } : {}),
+      });
+    const adapter = new FcmPushAdapter(firebase);
+    const credential = firebase.options.credential;
+    return credential ? adapter.withCredentialProbe(() => credential.getAccessToken()) : adapter;
   } catch (error) {
     throw new Error(
       'PUSH_PROVIDER=fcm but Firebase credentials could not be resolved. ' +

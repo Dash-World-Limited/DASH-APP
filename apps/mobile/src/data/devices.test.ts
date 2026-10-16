@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ApiClient, RequestOptions } from '../api/client';
-import { registerDevice, unregisterDevice } from './devices';
+import { describeTestNotification, registerDevice, sendTestNotification, unregisterDevice } from './devices';
 
 function fakeClient(answer: unknown) {
   const calls: { path: string; options: RequestOptions }[] = [];
@@ -37,5 +37,29 @@ describe('device registration calls', () => {
     const { api, calls } = fakeClient({ revoked: true });
     expect(await unregisterDevice(api, 'fcm-token-new')).toEqual({ revoked: true });
     expect(calls).toEqual([{ path: '/v1/devices', options: { method: 'DELETE', body: { pushToken: 'fcm-token-new' } } }]);
+  });
+});
+
+describe('test notifications', () => {
+  it('asks for one to this account’s own phones, with a delay, naming nobody', async () => {
+    const { api, calls } = fakeClient({ queued: true, devices: 1, delaySeconds: 10, provider: 'fcm', live: true });
+    await sendTestNotification(api, 10);
+    expect(calls).toEqual([{ path: '/v1/devices/test', options: { method: 'POST', body: { delaySeconds: 10 } } }]);
+  });
+
+  it('tells the tester honestly what to expect', () => {
+    expect(describeTestNotification({ queued: true, devices: 1, delaySeconds: 10, provider: 'fcm', live: true })).toEqual({
+      text: 'A test notification will arrive in about 10 seconds. Lock the phone or close DASH now to see it arrive in the background.',
+      problem: false,
+    });
+    // A service that only logs pushes must not claim one is coming.
+    expect(describeTestNotification({ queued: true, devices: 1, delaySeconds: 10, provider: 'console', live: false })).toMatchObject({
+      problem: true,
+      text: expect.stringContaining('not connected to Firebase'),
+    });
+    expect(describeTestNotification({ queued: false, devices: 1, provider: 'fcm', live: true, sent: true }).problem).toBe(false);
+    expect(
+      describeTestNotification({ queued: false, devices: 1, provider: 'fcm', live: true, sent: false, reason: '0 of 1 delivered — messaging/third-party-auth-error ×1' }),
+    ).toEqual({ text: 'Firebase did not deliver the test notification (0 of 1 delivered — messaging/third-party-auth-error ×1).', problem: true });
   });
 });
