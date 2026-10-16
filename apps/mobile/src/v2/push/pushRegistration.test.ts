@@ -23,7 +23,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 vi.mock('react-native', () => ({ Platform: { OS: 'android' } }));
-vi.mock('expo-constants', () => ({ default: { expoConfig: { version: '0.1.0' } } }));
+vi.mock('expo-constants', () => ({ default: { expoConfig: { version: '0.1.0', android: { package: 'com.dashworldng.dash.staging' } } } }));
 vi.mock('expo-notifications', () => ({
   AndroidImportance: { MAX: 7, HIGH: 6, DEFAULT: 5 },
   setNotificationChannelAsync: async (id: string) => void h.channels.push(id),
@@ -63,7 +63,11 @@ describe('registering after sign-in', () => {
     expect(await syncPushRegistration(api, { identityId: ME })).toBe('registered');
     expect(h.channels).toEqual(['offers', 'orders', 'messages', 'account']);
     expect(h.asked).toBe(1);
-    expect(registrations()).toEqual([{ pushToken: 'fcm-token-aaaaaaaaaaaaaaaa', platform: 'android', notifications: 'on', appVersion: '0.1.0' }]);
+    // The build's own application id goes with it: the staging service
+    // accepts only the staging build.
+    expect(registrations()).toEqual([
+      { pushToken: 'fcm-token-aaaaaaaaaaaaaaaa', platform: 'android', notifications: 'on', appId: 'com.dashworldng.dash.staging', appVersion: '0.1.0' },
+    ]);
     expect(h.store.get(PUSH_ASKED_KEY)).toBe('yes');
   });
 

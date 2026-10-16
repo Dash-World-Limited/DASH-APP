@@ -200,13 +200,43 @@ const shape = z
      *
      * Declared here rather than reached for from `process.env` at the point of
      * use, so it is validated with everything else and a test can supply it.
-     * The value is a path and never the credential; nothing in this project
-     * opens the file.
+     * The value is a path and never the credential. DASH opens the file once,
+     * at boot, only to read its `type` and `project_id` and check them against
+     * `FCM_PROJECT_ID` (adapters/fcm.ts); the key itself is read only by the
+     * Firebase SDK, and nothing from the file is ever logged.
      *
      * Optional because a Google-hosted runtime supplies its own service
      * identity with no file at all.
      */
     GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),
+    /**
+     * The Firebase project this deployment sends pushes through, e.g. the
+     * staging project. Not a secret. With `PUSH_PROVIDER=fcm` the API refuses
+     * to start when the service-account key belongs to a different project, so
+     * a staging API cannot be run on a production key, or the reverse.
+     */
+    FCM_PROJECT_ID: z
+      .string()
+      .trim()
+      .regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/, 'FCM_PROJECT_ID must be a Firebase project id, e.g. dash-app-a49c2')
+      .optional(),
+    /**
+     * The app builds this deployment serves push to, by Android application
+     * id, comma-separated — `com.dashworldng.dash.staging` on staging,
+     * `com.dashworldng.dash` on production. A phone running any other build
+     * cannot register for push here, and no push is sent to one, so a staging
+     * API can never notify someone using the production app. Unset (local
+     * development) means any build.
+     */
+    PUSH_APP_IDS: z
+      .string()
+      .trim()
+      .optional()
+      .transform((value) => (value ? value.split(',').map((id) => id.trim()).filter(Boolean) : []))
+      .refine(
+        (ids) => ids.every((id) => /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(id)),
+        'PUSH_APP_IDS must be application ids such as com.dashworldng.dash.staging, separated by commas',
+      ),
 
     /**
      * Which parts of DASH this deployment runs.
@@ -556,6 +586,28 @@ const schema = shape
       );
     }
 
+    // Real pushes, in any environment, are tied to this deployment's own
+    // Firebase project and its own app build. That is what keeps a staging API
+    // from ever reaching a production user — so it applies to staging however
+    // its NODE_ENV is set (connected staging runs as development), not only to
+    // production.
+    //
+    // Firebase resolves its credential from the environment, so a missing one
+    // surfaces as an opaque SDK error on the first send rather than at boot —
+    // by which time a rider has already missed an offer. Named here instead.
+    if (env.PUSH_PROVIDER === 'fcm' && !env.GOOGLE_APPLICATION_CREDENTIALS) {
+      fail(
+        'GOOGLE_APPLICATION_CREDENTIALS',
+        'Required when PUSH_PROVIDER is fcm: the path to the Firebase service-account key on this host',
+      );
+    }
+    if (env.PUSH_PROVIDER === 'fcm' && !env.FCM_PROJECT_ID) {
+      fail('FCM_PROJECT_ID', 'Required when PUSH_PROVIDER is fcm: the Firebase project this deployment sends through');
+    }
+    if (env.PUSH_PROVIDER === 'fcm' && env.PUSH_APP_IDS.length === 0) {
+      fail('PUSH_APP_IDS', 'Required when PUSH_PROVIDER is fcm: the app build ids this deployment may notify');
+    }
+
     if (env.NODE_ENV !== 'production') return;
 
     // --- Production-only guards ---------------------------------------------
@@ -710,15 +762,7 @@ const schema = shape
       fail('MAPBOX_ACCESS_TOKEN', 'Required when MAPS_PROVIDER is mapbox');
     }
 
-    // Firebase resolves its credential from the environment, so a missing one
-    // surfaces as an opaque SDK error on the first send rather than at boot —
-    // by which time a rider has already missed an offer. Named here instead.
-    if (env.PUSH_PROVIDER === 'fcm' && !env.GOOGLE_APPLICATION_CREDENTIALS) {
-      fail(
-        'GOOGLE_APPLICATION_CREDENTIALS',
-        'Required when PUSH_PROVIDER is fcm, unless the host supplies its own service identity',
-      );
-    }
+
 
     // --- Transport -----------------------------------------------------------
     // The refresh cookie is issued with `Secure`, so a browser will refuse to

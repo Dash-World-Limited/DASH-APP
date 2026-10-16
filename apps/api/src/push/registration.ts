@@ -43,6 +43,8 @@ export interface RegisterDeviceInput {
    * device, or one changing hands, starts at the default: on.
    */
   readonly pushEnabled?: boolean | undefined;
+  /** The app build's id (Android application id), when the client says. */
+  readonly appId?: string | undefined;
   /** Injected so the result is testable without touching the clock. */
   readonly now?: Date | undefined;
 }
@@ -103,6 +105,7 @@ export async function registerDevice(
         ...(rebound ? { trustedAt: null } : {}),
         // Nor does the previous owner's notification choice.
         ...(input.pushEnabled !== undefined ? { pushEnabled: input.pushEnabled } : rebound ? { pushEnabled: true } : {}),
+        ...(input.appId !== undefined ? { appId: input.appId } : {}),
       },
     });
 
@@ -118,6 +121,7 @@ export async function registerDevice(
       appVersion: input.appVersion ?? null,
       lastSeenAt: now,
       pushEnabled: input.pushEnabled ?? true,
+      appId: input.appId ?? null,
     },
     select: { id: true },
   });

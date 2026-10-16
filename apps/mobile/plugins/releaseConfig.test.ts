@@ -153,6 +153,15 @@ describe('Firebase client configuration for push', () => {
     );
   });
 
+  it('must belong to the expected Firebase project when one is named', () => {
+    const staging = file('project.json', ['com.dashworldng.dash.staging']);
+    // The fixture's project is dash-test.
+    expect(() =>
+      resolveGoogleServicesFile('staging', { GOOGLE_SERVICES_JSON: staging, FIREBASE_PROJECT_ID: 'dash-app-a49c2' }, 'com.dashworldng.dash.staging'),
+    ).toThrow(/Firebase project "dash-test", but this build expects "dash-app-a49c2"/);
+    expect(resolveGoogleServicesFile('staging', { GOOGLE_SERVICES_JSON: staging, FIREBASE_PROJECT_ID: 'dash-test' }, 'com.dashworldng.dash.staging')).toBe(staging);
+  });
+
   it('refuses a missing or unreadable file, and never repeats the file’s keys', () => {
     expect(() => resolveGoogleServicesFile('staging', { GOOGLE_SERVICES_JSON: join(dir, 'absent.json') }, 'x')).toThrow(/not a readable JSON file/);
     const broken = join(dir, 'broken.json');

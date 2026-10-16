@@ -23,6 +23,7 @@ import {
   paymentUpdateNotification,
   PUSH_ORDER_STATUSES,
   supportReplyNotification,
+  testNotification,
   type PaymentPushOutcome,
   type PushAudience,
 } from '@dash/domain/push';
@@ -30,7 +31,7 @@ import type { PushPort } from '@dash/domain/ports';
 import type { DbClient, PrismaClient } from '@dash/db';
 
 import { enqueueViaOutbox } from '../events/outbox.js';
-import { deliverToIdentity, type SendResult } from './send.js';
+import { deliverToIdentity, type PushScope, type SendResult } from './send.js';
 
 /** The queue job name for every push except the rider offer, which has its own. */
 export const PUSH_NOTIFY = 'push.notify';
@@ -39,7 +40,9 @@ export type PushIntent =
   | { kind: 'order_update'; orderId: string; status: string; revision: number; riderId: string | null }
   | { kind: 'order_chat'; messageId: string }
   | { kind: 'support_reply'; actionId: string }
-  | { kind: 'payment_update'; orderId: string; outcome: PaymentPushOutcome; refundId?: string | undefined };
+  | { kind: 'payment_update'; orderId: string; outcome: PaymentPushOutcome; refundId?: string | undefined }
+  /** A person asked to be sent a test notification, on their own phones only. */
+  | { kind: 'test'; identityId: string; requestId: string };
 
 /** The outbox and queue dedupe key: one per event, whatever retries it. */
 export function pushJobKey(intent: PushIntent): string {
@@ -52,6 +55,8 @@ export function pushJobKey(intent: PushIntent): string {
       return `push_support_${intent.actionId}`;
     case 'payment_update':
       return `push_payment_${intent.outcome}_${intent.refundId ?? intent.orderId}`;
+    case 'test':
+      return `push_test_${intent.requestId}`;
   }
 }
 
@@ -60,11 +65,12 @@ export function pushJobKey(intent: PushIntent): string {
  * the caller flushes the outbox after committing, and the scheduled relay is
  * the guarantee if it cannot.
  */
-export async function enqueuePush(db: DbClient, intent: PushIntent): Promise<void> {
+export async function enqueuePush(db: DbClient, intent: PushIntent, options: { delayMs?: number } = {}): Promise<void> {
   await enqueueViaOutbox(db, {
     name: PUSH_NOTIFY,
     payload: { ...intent },
     idempotencyKey: pushJobKey(intent),
+    ...(options.delayMs ? { delayMs: options.delayMs } : {}),
     // A push delivered hours late is noise. Five publish attempts covers a
     // queue outage of a few minutes; the relay's backoff does the rest.
     maxAttempts: 5,
@@ -81,16 +87,18 @@ export interface DeliveryReport {
 const nothing = (dropped: DeliveryReport['dropped']): DeliveryReport => ({ recipients: 0, results: [], dropped });
 
 /** Deliver one queued intent. Every lookup reads current state. */
-export async function deliverPushIntent(prisma: PrismaClient, push: PushPort, intent: PushIntent): Promise<DeliveryReport> {
+export async function deliverPushIntent(prisma: PrismaClient, push: PushPort, intent: PushIntent, scope: PushScope = {}): Promise<DeliveryReport> {
   switch (intent.kind) {
     case 'order_update':
-      return deliverOrderUpdate(prisma, push, intent);
+      return deliverOrderUpdate(prisma, push, intent, scope);
     case 'order_chat':
-      return deliverOrderChat(prisma, push, intent);
+      return deliverOrderChat(prisma, push, intent, scope);
     case 'support_reply':
-      return deliverSupportReply(prisma, push, intent);
+      return deliverSupportReply(prisma, push, intent, scope);
     case 'payment_update':
-      return deliverPaymentUpdate(prisma, push, intent);
+      return deliverPaymentUpdate(prisma, push, intent, scope);
+    case 'test':
+      return deliverTest(prisma, push, intent, scope);
   }
 }
 
@@ -98,6 +106,7 @@ async function deliverOrderUpdate(
   prisma: PrismaClient,
   push: PushPort,
   intent: Extract<PushIntent, { kind: 'order_update' }>,
+  scope: PushScope,
 ): Promise<DeliveryReport> {
   const order = await prisma.order.findUnique({
     where: { id: intent.orderId },
@@ -115,6 +124,7 @@ async function deliverOrderUpdate(
   if (customerMessage) {
     results.push(
       await deliverToIdentity(prisma, push, {
+        scope,
         identityId: order.customer.identityId,
         message: customerMessage,
         dedupeKey: `order_update:${intent.orderId}:${intent.revision}:customer`,
@@ -130,6 +140,7 @@ async function deliverOrderUpdate(
     if (rider) {
       results.push(
         await deliverToIdentity(prisma, push, {
+          scope,
           identityId: rider.identityId,
           message: riderMessage,
           dedupeKey: `order_update:${intent.orderId}:${intent.revision}:rider`,
@@ -144,6 +155,7 @@ async function deliverOrderChat(
   prisma: PrismaClient,
   push: PushPort,
   intent: Extract<PushIntent, { kind: 'order_chat' }>,
+  scope: PushScope,
 ): Promise<DeliveryReport> {
   const message = await prisma.chatMessage.findUnique({
     where: { id: intent.messageId },
@@ -168,6 +180,7 @@ async function deliverOrderChat(
   if (!identityId || identityId === message.senderIdentityId) return nothing('not_applicable');
 
   const result = await deliverToIdentity(prisma, push, {
+    scope,
     identityId,
     message: orderChatNotification({ orderId, audience }),
     dedupeKey: `order_chat:${intent.messageId}`,
@@ -179,6 +192,7 @@ async function deliverSupportReply(
   prisma: PrismaClient,
   push: PushPort,
   intent: Extract<PushIntent, { kind: 'support_reply' }>,
+  scope: PushScope,
 ): Promise<DeliveryReport> {
   const action = await prisma.supportAction.findUnique({
     where: { id: intent.actionId },
@@ -204,6 +218,7 @@ async function deliverSupportReply(
   if (!identityId) return nothing('not_applicable');
 
   const result = await deliverToIdentity(prisma, push, {
+    scope,
     identityId,
     message: supportReplyNotification({ conversationId: supportCase.id, audience }),
     dedupeKey: `support_reply:${intent.actionId}`,
@@ -215,6 +230,7 @@ async function deliverPaymentUpdate(
   prisma: PrismaClient,
   push: PushPort,
   intent: Extract<PushIntent, { kind: 'payment_update' }>,
+  scope: PushScope,
 ): Promise<DeliveryReport> {
   const order = await prisma.order.findUnique({
     where: { id: intent.orderId },
@@ -223,9 +239,25 @@ async function deliverPaymentUpdate(
   if (!order) return nothing('not_found');
 
   const result = await deliverToIdentity(prisma, push, {
+    scope,
     identityId: order.customer.identityId,
     message: paymentUpdateNotification({ orderId: intent.orderId, outcome: intent.outcome }),
     dedupeKey: `payment_update:${intent.outcome}:${intent.refundId ?? intent.orderId}`,
+  });
+  return { recipients: 1, results: [result] };
+}
+
+async function deliverTest(
+  prisma: PrismaClient,
+  push: PushPort,
+  intent: Extract<PushIntent, { kind: 'test' }>,
+  scope: PushScope,
+): Promise<DeliveryReport> {
+  const result = await deliverToIdentity(prisma, push, {
+    scope,
+    identityId: intent.identityId,
+    message: testNotification(),
+    dedupeKey: `test:${intent.requestId}`,
   });
   return { recipients: 1, results: [result] };
 }

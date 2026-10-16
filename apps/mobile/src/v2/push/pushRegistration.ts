@@ -114,15 +114,29 @@ export async function syncPushRegistration(
   if (!token) return 'unavailable';
 
   const previous = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
+  const appId = buildAppId();
   await registerDevice(api, {
     pushToken: token,
     platform: Platform.OS === 'ios' ? 'ios' : 'android',
     notifications: enabled ? 'on' : 'off',
+    ...(appId ? { appId } : {}),
     ...(Constants.expoConfig?.version ? { appVersion: Constants.expoConfig.version } : {}),
     ...(previous && previous !== token ? { replacesPushToken: previous } : {}),
   });
   await AsyncStorage.setItem(PUSH_TOKEN_KEY, token);
   return 'registered';
+}
+
+/**
+ * This build's application id — `com.dashworldng.dash.staging` for a staging
+ * APK — from the app configuration compiled into it. The server accepts only
+ * its own builds, so a staging build can never be registered with the
+ * production service, or the reverse.
+ */
+export function buildAppId(): string | null {
+  const config = Constants.expoConfig;
+  const id = Platform.OS === 'ios' ? config?.ios?.bundleIdentifier : config?.android?.package;
+  return typeof id === 'string' && id.length > 0 ? id : null;
 }
 
 /**

@@ -52,6 +52,7 @@ exist, and both are supplied outside the repo:
 | DASH Support reply | The conversation's owner, in the role they wrote as | DASH Support replied | Messages | No | Support chat (customer or rider) |
 | Refund completed (confirmed with Paystack) | Customer | Refund completed | Payments and account | No | Order tracking |
 | Unpaid order closed by reconciliation | Customer | Order cancelled | Payments and account | No | Order tracking |
+| Test notification (button in staging and development builds) | Only the person who asked, on their own phones | DASH test notification | Payments and account | **Yes**: they asked for it | Opens DASH |
 
 "Rider arrived at the shop" and "en route" are deliberately not pushed:
 they arrive seconds after "picked up" and would buzz the customer twice for
@@ -69,94 +70,204 @@ front of the person already shows it (the same order chat, the same order's
 tracking, the support chat, or any rider screen for an offer, since the rider
 face already shows a live offer banner).
 
+## Staging configuration (confirmed 16 October 2026)
+
+| Item | Value |
+|---|---|
+| Firebase project | DASH APP LAUNCH |
+| Project ID | `dash-app-a49c2` |
+| Project number | 312353427916 |
+| Android app | DASH APP Staging |
+| Package (application id) | `com.dashworldng.dash.staging`, which **matches** the staging build: `apps/mobile/app.config.ts` builds `APP_VARIANT=staging` as `com.dashworldng.dash.staging` |
+| Firebase Android app ID | `1:312353427916:android:d583f23c4db20bee5e4d69` |
+| FCM API (V1) | Enabled |
+| Legacy FCM API | Disabled (DASH does not use it) |
+| `google-services.json` | Downloaded and verified (David) |
+| Service-account key | **Not yet generated** |
+
+None of these values is a secret. Only the service-account key is.
+
+Only the staging Android app is registered. Production
+(`com.dashworldng.dash`) and development (`com.dashworldng.dash.dev`) apps
+are **not** registered and need David's approval first. That includes the
+choice between a separate production Firebase project (recommended: it keeps
+production's key and phones wholly apart from staging) and a second app in
+this project. The separate Dash AI Firebase project is not used for any of
+this.
+
+## How staging is kept off production phones
+
+Four independent locks. Any one of them on its own stops a staging push from
+reaching someone using the production app:
+
+1. **Separate databases.** A phone registers with the API its build points
+   at. The staging API only knows phones running the staging build.
+2. **App-id lock (`PUSH_APP_IDS`).** The staging API accepts registrations
+   only from `com.dashworldng.dash.staging`, and sends only to devices
+   recorded with that id. A production build, the legacy Android shell, or a
+   client that does not say which build it is, is refused (403).
+3. **Project lock (`FCM_PROJECT_ID`).** At startup the API checks that its
+   service-account key belongs to `dash-app-a49c2` and refuses to start
+   otherwise. A staging API cannot be run on a production key, a Dash AI key,
+   or any other project's key.
+4. **Build lock.** The staging APK workflow refuses a `google-services.json`
+   that is not for project `dash-app-a49c2` or does not register
+   `com.dashworldng.dash.staging`.
+
+Firebase itself adds a fifth: a token can only be sent to with a key from the
+project that issued it.
+
 ## What David must do (in this order)
 
-### 1. Firebase project and Android apps
+### 1. Put `google-services.json` where the build reads it
 
-1. Go to <https://console.firebase.google.com> and create (or open) the DASH
-   Firebase project. Google Analytics is **not** needed; leave it off.
-2. **Add app → Android** three times, with these package names exactly:
-   - `com.dashworldng.dash` (production)
-   - `com.dashworldng.dash.staging` (staging APKs)
-   - `com.dashworldng.dash.dev` (development builds, optional)
+It is not in the repository and must never be committed (it is git-ignored).
 
-   No SHA-1 certificate is needed for push.
-3. After all apps are added, open **Project settings → General → Your apps**
-   and **download `google-services.json`**. One file covers every app in the
-   project. The build checks that it contains the package being built.
-4. In <https://console.cloud.google.com> for the same project, confirm
-   **Firebase Cloud Messaging API (V1)** is **Enabled** (APIs & Services).
-   The legacy FCM API is not used and does not need enabling.
+**For staging APKs built by GitHub Actions** (the usual path):
 
-### 2. GitHub secret for the app builds
+1. Base64-encode it without line wraps:
 
-Base64-encode the file without line wraps and store it as a GitHub Actions
-secret named **`GOOGLE_SERVICES_JSON_BASE64`** (repository secret, or in the
-`production` environment for the production workflow):
+   ```sh
+   base64 -w0 google-services.json                 # Linux
+   base64 -i google-services.json | tr -d '\n'     # macOS
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes("google-services.json"))   # Windows PowerShell
+   ```
+2. GitHub → `Dash-World-Limited/DASH-APP` → **Settings → Secrets and
+   variables → Actions → New repository secret**:
+   - Name: **`GOOGLE_SERVICES_JSON_BASE64`**
+   - Value: the base64 text.
+3. Run **Mobile arm64 release APK** on `claude/dash-app-production-release`
+   (after this PR is merged), or on this PR's branch for a test build. The log
+   step "Provide the Firebase client configuration" must say:
+   `Push-enabled staging build: google-services.json is Firebase project dash-app-a49c2 and registers com.dashworldng.dash.staging.`
+
+**For a local build on your PC** (optional):
+`apps/mobile/google-services.json`, plus `GOOGLE_SERVICES_JSON` set to its
+full path, before `expo prebuild` / `expo run:android`.
+
+**Production, later:** add the production file as a secret with the **same
+name in the `production` environment** (Settings → Environments →
+production). An environment secret overrides the repository secret for the
+production workflow only. Set the repository variable
+`DASH_PRODUCTION_FIREBASE_PROJECT_ID` to the production project so that
+build is pinned too.
+
+EAS is not used, so no EAS credential is needed. The app uses its native FCM
+token, not an Expo push token.
+
+### 2. Generate the server key, on your laptop
+
+1. <https://console.firebase.google.com> → project **DASH APP LAUNCH**
+   (`dash-app-a49c2`). Check the project name at the top before you continue;
+   **not** the Dash AI project.
+2. ⚙ **Project settings → Service accounts → Firebase Admin SDK →
+   Generate new private key → Generate key**. A file named like
+   `dash-app-a49c2-firebase-adminsdk-….json` downloads.
+3. Treat it as a password. Do not email it, paste it into chat, put it in
+   GitHub or a ticket, or copy it into the app.
+
+### 3. Install it on the staging API host
+
+Run on the staging server (adjust `dash` to the user the API runs as):
 
 ```sh
-base64 -w0 google-services.json        # Linux
-base64 -i google-services.json | tr -d '\n'   # macOS
+# copy it up from the laptop (any secure method; scp shown)
+scp dash-app-a49c2-firebase-adminsdk-*.json <you>@<staging-host>:/tmp/fcm-key.json
+
+# on the server: outside the repository, readable only by the API's user
+sudo install -d -m 750 -o root -g dash /etc/dash
+sudo install -m 600 -o dash -g dash /tmp/fcm-key.json /etc/dash/firebase-service-account.json
+shred -u /tmp/fcm-key.json        # or rm, if shred is not available
 ```
 
-- **Staging APK** (`mobile-release-apk.yml`): optional. Without the secret
-  the APK builds and runs, but cannot receive push. With it, the job checks
-  the file registers `com.dashworldng.dash.staging`.
-- **Production AAB** (`mobile-production-aab.yml`): **required**. The job
-  refuses to start without it and checks the file registers
-  `com.dashworldng.dash`.
+Then delete the downloaded copy from the laptop, or move it into your
+password manager.
 
-EAS is not used to build DASH (GitHub Actions runs `expo prebuild` and
-Gradle), so no EAS credentials are needed for push. If an EAS build is ever
-used instead, upload `google-services.json` as an EAS **file** environment
-variable named `GOOGLE_SERVICES_JSON`; `app.config.ts` reads the same name.
+### 4. Set the staging API environment
 
-For a local development build, put the file at
-`apps/mobile/google-services.json` (git-ignored) and set
-`GOOGLE_SERVICES_JSON=$PWD/apps/mobile/google-services.json` before
-`expo prebuild` / `expo run:android`.
+In the staging API's environment (where its other secrets, such as
+`DATABASE_URL`, are set):
 
-### 3. Server credential for the API (staging and production hosts)
+```
+PUSH_PROVIDER=fcm
+GOOGLE_APPLICATION_CREDENTIALS=/etc/dash/firebase-service-account.json
+FCM_PROJECT_ID=dash-app-a49c2
+PUSH_APP_IDS=com.dashworldng.dash.staging
+```
 
-1. Firebase console → **Project settings → Service accounts → Firebase Admin
-   SDK → Generate new private key**. This downloads a JSON key for the
-   `firebase-adminsdk-…` service account, which can send FCM messages. (A
-   custom service account with the **Firebase Cloud Messaging API Admin**
-   role also works.)
-2. Copy it to the API host **outside the repository**, readable only by the
-   API's service user, for example:
-   `/etc/dash/firebase-service-account.json` with mode `600`.
-3. Set in the API environment, then restart the API:
+With `PUSH_PROVIDER=fcm`, the API refuses to start, naming the variable,
+when any of the other three is missing or malformed, **in every environment**
+(connected staging runs with `NODE_ENV=development`). It also refuses to
+start if the key is not a service account of `dash-app-a49c2`.
 
-   ```
-   PUSH_PROVIDER=fcm
-   GOOGLE_APPLICATION_CREDENTIALS=/etc/dash/firebase-service-account.json
-   ```
+### 5. Apply the migrations, then restart the API
 
-   In production the API refuses to start with `PUSH_PROVIDER=console`, or
-   with `fcm` and no `GOOGLE_APPLICATION_CREDENTIALS`.
-4. The key must come from the **same Firebase project** as
-   `google-services.json`. A key from another project gets every token
-   rejected.
-5. Treat the key like a password: never paste it into chat, email, a ticket
-   or the repository. If it leaks, delete it under **Service accounts** and
-   generate a new one.
+Apply `20261017000000_push_notifications` and `20261018000000_push_app_ids`
+(both additive), deploy the API build containing this PR, and restart it.
+Then check its startup log for:
 
-There are no new API environment variables beyond these two existing ones.
+```
+push: Firebase Cloud Messaging configured   {"project":"dash-app-a49c2","apps":["com.dashworldng.dash.staging"]}
+push: Firebase credential verified          {"project":"dash-app-a49c2"}
+```
 
-### 4. Database migration
+`push: Firebase credential could not be verified` means Google refused the
+key; its `reason` is the error code (see Troubleshooting). Nothing from the
+key file is ever logged.
 
-Apply `20261017000000_push_notifications` (SQLite and PostgreSQL versions) on
-staging, then production, **before** deploying the API build that needs it.
-It is additive: `Device.pushEnabled` (default on) and
-`Order.pushNotifiedStatus`, backfilled from each order's current status so no
-existing order sends a late push.
-
-### 5. Play Console
+### 6. Play Console (before a store upload)
 
 `DATA-SAFETY.md` now declares the push token under **Device or other IDs**
 (collected, optional, app functionality). Update the Data Safety form to
 match before the next upload.
+
+## Testing on the Samsung Galaxy A55
+
+Use a staging APK built **after** step 1, against the staging API after steps
+2–5.
+
+1. **Install** the new APK. If an older staging APK is installed, install
+   over it; DASH keeps your sign-in.
+2. **Sign in.** Android shows "Allow DASH (staging) to send you
+   notifications?" once. Tap **Allow**.
+3. **Samsung battery settings, for reliable testing:** Settings → Apps →
+   DASH (staging) → Battery → **Unrestricted**. Also check Settings → Battery
+   → Background usage limits: DASH must not be under "Sleeping apps" or "Deep
+   sleeping apps", or Samsung may hold notifications while the phone sleeps.
+4. **Check the categories:** Settings → Apps → DASH (staging) → Notifications
+   shows Delivery offers, Order updates, Messages, Payments and account. All
+   should be on.
+5. **Test notification, app in the background:** in DASH, open
+   Account (customer) or Profile (rider) → **Notifications → Send a test
+   notification**. The app says it will arrive in about 10 seconds. Press
+   Home or lock the phone. "DASH test notification" should arrive.
+   - If the app instead says the service **is not connected to Firebase**,
+     the staging API is still on `PUSH_PROVIDER=console`. Recheck step 4.
+   - If it says **No phone is registered**, notifications were not allowed or
+     the APK was built without the Firebase file. Recheck step 1 and the
+     notification permission.
+6. **Test notification, app closed:** tap Send again, then swipe DASH away
+   from Recents. It should still arrive. Tap it: DASH opens.
+7. **Real events:** run the full checklist below: order updates, offers,
+   chat, support replies, the Notifications switch, and sign-out.
+
+Do not count a step as passed until the notification is seen on the phone.
+A "queued" or "sent" answer from the server is not proof of delivery.
+
+## Troubleshooting
+
+| What you see | Meaning | Fix |
+|---|---|---|
+| API will not start: `FCM_PROJECT_ID`, `PUSH_APP_IDS` or `GOOGLE_APPLICATION_CREDENTIALS` named | A required push variable is missing or malformed | Set it as in step 4 |
+| API will not start: "key belongs to project …" | The key is from another Firebase project | Generate the key in DASH APP LAUNCH (step 2) |
+| Log: credential could not be verified, `reason` `app/invalid-credential` | Key revoked, deleted, or the file is not the full key | Generate a new key; replace the file |
+| Test: "not connected to Firebase" | API is on `PUSH_PROVIDER=console` | Step 4 |
+| Test: "No phone is registered" | The app never registered: permission denied, or no Firebase file in the build | Allow notifications; rebuild the APK with the secret |
+| App: "cannot receive notifications from this DASH service" (403 on registration) | The build's package is not in the API's `PUSH_APP_IDS` | Install the staging build; check `PUSH_APP_IDS` |
+| Test reason: `messaging/mismatched-credential` | Firebase's "sender ID mismatch": the APK's `google-services.json` and the server key are from different projects | Use the same project (`dash-app-a49c2`) for both |
+| Test reason: `messaging/third-party-auth-error` or `messaging/authentication-error` | Google rejected the key for sending | Check FCM API (V1) is enabled; regenerate the key |
+| Test reason: `messaging/registration-token-not-registered` | That phone's token is dead (app reinstalled or data cleared) | DASH clears it automatically; open the app so it registers again |
+| Server says sent, phone shows nothing | Usually Samsung battery limits, or the channel is turned off | Testing step 3; check the four categories are on |
 
 ## Physical-device acceptance checklist
 
@@ -235,9 +346,16 @@ Home; "closed" means swiped away from Recents.
 
 ## Still needed before production
 
-- Steps 1–5 above are owner actions. Without the service-account key on the
-  API and `PUSH_PROVIDER=fcm`, a production API will not start; without
-  `GOOGLE_SERVICES_JSON_BASE64`, the production AAB workflow will not start.
+- **Staging:** steps 1–5 above are owner actions. The only staging item not
+  yet done is the service-account key (steps 2–4). Until it is configured,
+  the staging API sends no real push (`PUSH_PROVIDER=console`), and the
+  in-app test says so.
+- **Production** needs its own approved Firebase app (or project), its own
+  key on the production API with `FCM_PROJECT_ID` and
+  `PUSH_APP_IDS=com.dashworldng.dash`, and the production
+  `GOOGLE_SERVICES_JSON_BASE64` environment secret. Without them a production
+  API will not start with FCM, and the production AAB workflow will not
+  start.
 - The permissions FCM adds (`POST_NOTIFICATIONS`, `WAKE_LOCK`,
   `com.google.android.c2dm.permission.RECEIVE`) are allowlisted for the
   production manifest check. The first push-enabled staging APK should be

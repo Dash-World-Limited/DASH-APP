@@ -355,6 +355,12 @@ model Device {
   // the device row because the choice is made per phone, per account.
   pushEnabled Boolean @default(true)
 
+  // Which app build registered the token: its Android application id, e.g.
+  // `com.dashworldng.dash.staging`. A deployment sends only to the builds in
+  // its PUSH_APP_IDS, so a staging API never reaches a production phone even
+  // if one somehow registered with it. Null for rows from before it was kept.
+  appId String?
+
   identity Identity  @relation(fields: [identityId], references: [id], onDelete: Cascade)
   sessions Session[]
 

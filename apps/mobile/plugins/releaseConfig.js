@@ -150,8 +150,9 @@ function resolveReleaseConfig(variant, env) {
  *
  * Optional for development and staging: a build without it runs, and simply
  * has no push. Required for production, where a store build that cannot be
- * notified is a broken release. Errors name package ids only, never the
- * file's keys.
+ * notified is a broken release. When `FIREBASE_PROJECT_ID` is set, the file
+ * must belong to that project. Errors name package and project ids only,
+ * never the file's keys.
  */
 function resolveGoogleServicesFile(variant, env, packageName) {
   const raw = typeof env.GOOGLE_SERVICES_JSON === 'string' ? env.GOOGLE_SERVICES_JSON.trim() : '';
@@ -169,6 +170,13 @@ function resolveGoogleServicesFile(variant, env, packageName) {
     parsed = JSON.parse(require('node:fs').readFileSync(file, 'utf8'));
   } catch {
     throw new Error(`GOOGLE_SERVICES_JSON (${raw}) is not a readable JSON file.`);
+  }
+  // Optionally pinned to one Firebase project, so a build cannot be made with
+  // another project's file — the separate Dash AI project, say.
+  const expectedProject = typeof env.FIREBASE_PROJECT_ID === 'string' ? env.FIREBASE_PROJECT_ID.trim() : '';
+  const project = parsed && parsed.project_info && parsed.project_info.project_id;
+  if (expectedProject && project !== expectedProject) {
+    throw new Error(`google-services.json is for Firebase project "${String(project)}", but this build expects "${expectedProject}" (FIREBASE_PROJECT_ID).`);
   }
   const clients = Array.isArray(parsed && parsed.client) ? parsed.client : [];
   const packages = clients

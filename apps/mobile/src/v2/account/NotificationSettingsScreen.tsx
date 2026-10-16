@@ -6,7 +6,11 @@
  * Android itself is blocking DASH's notifications, the screen says so.
  */
 
+import { useState } from 'react';
 import { ActivityIndicator, Linking, View } from 'react-native';
+
+import { api, ApiError, buildVariant } from '../../api';
+import { describeTestNotification, sendTestNotification } from '../../data/devices';
 
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space } from '../../theme/tokens';
@@ -64,10 +68,45 @@ export function NotificationSettingsScreen({ audience, onBack }: { audience: 'cu
         </>
       ) : null}
 
+      {buildVariant !== 'production' ? <TestNotificationCard /> : null}
+
       {audience === 'rider' ? (
         <Notice icon="information-outline" text="Delivery offers — and word that a delivery you are carrying was cancelled — still reach you while you are online, whatever you choose here." />
       ) : null}
       <Text variant="caption" tone="muted">This choice is saved on this phone for your account, and DASH follows it when sending notifications here.</Text>
     </OrderPage>
+  );
+}
+
+/**
+ * Staging and development builds only: ask DASH to send this account a test
+ * notification in ten seconds, so delivery can be checked with the app in the
+ * background or closed. The answer says honestly when the service is not
+ * connected to Firebase.
+ */
+function TestNotificationCard() {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ text: string; problem: boolean } | null>(null);
+
+  const send = async () => {
+    if (busy) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      setNote(describeTestNotification(await sendTestNotification(api, 10)));
+    } catch (caught) {
+      setNote({ text: caught instanceof ApiError ? caught.message : 'The test notification could not be requested.', problem: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card>
+      <Text variant="bodyStrong">Test notifications</Text>
+      <Text variant="caption" tone="muted">Sends a test notification to your phones in about 10 seconds. Only in test builds of DASH.</Text>
+      <SecondaryButton label={busy ? 'Sending…' : 'Send a test notification'} onPress={() => void send()} disabled={busy} />
+      {note ? <Notice icon={note.problem ? 'alert-circle-outline' : 'bell-ring-outline'} text={note.text} danger={note.problem} /> : null}
+    </Card>
   );
 }

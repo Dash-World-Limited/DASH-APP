@@ -140,6 +140,9 @@ jobs:
       - name: Place the Firebase client configuration
         env:
           GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          # The production Firebase project, once one is approved. When set,
+          # the file must belong to it.
+          FIREBASE_PROJECT_ID: ${{ vars.DASH_PRODUCTION_FIREBASE_PROJECT_ID }}
         run: |
           set -euo pipefail
           umask 077
