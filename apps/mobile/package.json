@@ -8,6 +8,9 @@
     "start": "expo start --dev-client",
     "android": "expo run:android",
     "ios": "expo run:ios",
+    "ios:generate": "expo prebuild --platform ios --clean --no-install",
+    "ios:bundle": "expo export --platform ios",
+    "ios:verify-config": "node scripts/verify-ios-config.mjs",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "doctor": "expo-doctor"
@@ -19,7 +22,7 @@
     "@expo/vector-icons": "^15.0.2",
     "@maplibre/maplibre-react-native": "11.4.1",
     "@react-native-async-storage/async-storage": "2.2.0",
-    "expo": "~57.0.29",
+    "expo": "~57.0.30",
     "expo-constants": "~57.0.22",
     "expo-font": "~57.0.4",
     "expo-image": "~57.0.5",
@@ -39,6 +42,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.4",
+    "expo-doctor": "1.21.5",
     "typescript": "~6.0.3"
   },
   "overrides": {

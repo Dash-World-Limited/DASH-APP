@@ -179,7 +179,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-status-bar',
     'expo-font',
     'expo-image',
-    'expo-secure-store',
+    ['expo-secure-store', { faceIDPermission: false }],
     // Push notifications through FCM. The status-bar icon is the wordmark's
     // silhouette (npm run brand:assets); Android tints it with `color`.
     // RECEIVE_BOOT_COMPLETED, which the module requests to re-schedule local
@@ -207,6 +207,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       {
         locationWhenInUsePermission:
           'DASH uses your location to show sellers near you and, for riders, to offer deliveries you can reach.',
+        // The iOS client uses foreground fixes only, like Android. Do not
+        // advertise Always access inherited from the location plugin defaults.
+        locationAlwaysAndWhenInUsePermission: false,
+        locationAlwaysPermission: false,
+        motionUsagePermission: false,
+        isIosBackgroundLocationEnabled: false,
         isAndroidBackgroundLocationEnabled: false,
       },
     ],

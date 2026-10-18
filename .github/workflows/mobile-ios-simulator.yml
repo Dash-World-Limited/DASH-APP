@@ -86,11 +86,17 @@ jobs:
 
       - name: Check Expo dependency contract
         working-directory: apps/mobile
-        run: npx expo-doctor
+        run: npm run doctor
 
       - name: Generate the iOS project
         working-directory: apps/mobile
-        run: npx expo prebuild --platform ios --clean --no-install
+        run: npm run ios:generate
+
+      - name: Verify the iOS configuration contract
+        working-directory: apps/mobile
+        run: |
+          npm run ios:verify-config
+          git diff --exit-code -- package.json package-lock.json
 
       - name: Boot an available iPhone simulator
         shell: bash
