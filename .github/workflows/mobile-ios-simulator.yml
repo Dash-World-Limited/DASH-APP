@@ -42,6 +42,8 @@ jobs:
     steps:
       - name: Check out the requested commit
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Use Node 22
         uses: actions/setup-node@v4
@@ -66,6 +68,22 @@ jobs:
 
       - name: Check private-file and environment hygiene
         run: node scripts/check-secrets.mjs
+
+      - name: Scan public repository history before building
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Include retained PR heads/merges as well as all branches and tags.
+          git fetch origin '+refs/pull/*:refs/remotes/origin/pull/*'
+          scanner_dir="$RUNNER_TEMP/dash-gitleaks"
+          mkdir -p "$scanner_dir"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_darwin_arm64.tar.gz \
+            --output "$scanner_dir/gitleaks.tar.gz"
+          echo "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5  $scanner_dir/gitleaks.tar.gz" | shasum -a 256 --check
+          tar -xzf "$scanner_dir/gitleaks.tar.gz" -C "$scanner_dir" gitleaks
+          "$scanner_dir/gitleaks" git . --config .gitleaks.toml \
+            --log-opts='--all --full-history' --ignore-gitleaks-allow --redact=100
 
       - name: Install locked dependencies
         run: |
