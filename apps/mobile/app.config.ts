@@ -110,6 +110,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   backgroundColor: BRAND_GROUND,
   ios: {
     bundleIdentifier: identity[variant].id,
+    buildNumber: String(release.versionCode),
     supportsTablet: false,
     infoPlist: {
       NSLocationWhenInUseUsageDescription:

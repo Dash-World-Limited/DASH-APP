@@ -20,6 +20,8 @@ const suffix = { development: '.dev', staging: '.staging', production: '' }[conf
 assert.notEqual(suffix, undefined, 'Unknown build variant');
 assert.equal(config.ios.bundleIdentifier, `com.dashworldng.dash${suffix}`);
 assert.equal(config.ios.supportsTablet, false);
+assert.equal(config.ios.buildNumber, String(config.android.versionCode));
+assert.equal(plist.CFBundleVersion, config.ios.buildNumber);
 assert.ok(plist.CFBundleURLTypes.some(type => type.CFBundleURLSchemes.includes('dash')));
 assert.ok(plist.NSLocationWhenInUseUsageDescription.includes('DASH uses your location'));
 for (const key of ['NSLocationAlwaysUsageDescription', 'NSLocationAlwaysAndWhenInUseUsageDescription', 'NSMotionUsageDescription', 'NSFaceIDUsageDescription']) {
