@@ -28,9 +28,17 @@ async function mount() {
   await act(async () => root!.render(<Probe />));
 }
 beforeEach(() => { h.os = 'ios'; h.initial.mockReset().mockResolvedValue(null); h.listeners.clear(); opened.mockClear(); });
-afterEach(async () => { if (root) await act(async () => root!.unmount()); root = null; });
+afterEach(async () => { if (root) await act(async () => root!.unmount()); root = null; vi.unstubAllGlobals(); });
 
 describe('existing payment return link', () => {
+  it('works when the native URL polyfill cannot parse custom-scheme authorities', () => {
+    vi.stubGlobal('URL', class {
+      protocol = 'dash:';
+      hostname = ''; // Installed RN Libraries/Blob/URL.js recognizes HTTP(S) only.
+    });
+    const next = orderReturnNavigation('dash://orders', createNavigationState('customer'));
+    expect(next && currentRoute(next)).toEqual({ name: 'customer.orders' });
+  });
   it.each(['dash://orders', 'dash://orders/', 'dash://orders?status=success&orderId=someone-else', 'dash://orders?status=cancelled', 'dash://orders?status=failed'])(
     'opens only server-backed Customer Orders for %s', (url) => {
       const next = orderReturnNavigation(url, navigate(createNavigationState('customer'), { name: 'customer.checkout' }));

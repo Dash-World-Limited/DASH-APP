@@ -5,13 +5,9 @@ import { selectTab, type NavigationState } from './model';
 
 /** Existing /pay/complete contract. A URL never proves payment or names an order. */
 export function orderReturnNavigation(url: string, current: NavigationState): NavigationState | null {
-  try {
-    const link = new URL(url);
-    if (link.protocol !== 'dash:' || link.hostname !== 'orders' || link.username || link.password || link.port ||
-      (link.pathname !== '' && link.pathname !== '/') || link.hash) return null;
-  } catch {
-    return null;
-  }
+  // RN's installed URL.hostname polyfill parses HTTP(S) authorities only.
+  // Match this single existing custom-scheme contract without that polyfill.
+  if (url.trim() !== url || !/^dash:\/\/orders\/?(?:\?[^\s#]*)?$/.test(url)) return null;
   // A Rider's delivery may still be restoring on cold start. Never switch
   // their face based on a Customer payment callback.
   if (current.face === 'rider') return null;
