@@ -36,7 +36,8 @@ jobs:
     env:
       APP_VARIANT: staging
       NODE_ENV: production
-      EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
+      # Owner-confirmed staging origin; never inherit a production API variable.
+      EXPO_PUBLIC_API_URL: https://staging.dashworldng.com
       EXPO_PUBLIC_MAP_STYLE_URL: ${{ vars.EXPO_PUBLIC_MAP_STYLE_URL }}
 
     steps:

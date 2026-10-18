@@ -11,6 +11,13 @@ name: iOS startup and signed-out navigation
     visible: "Everything around you, one DASH away."
     timeout: 60000
 - takeScreenshot: welcome
+- openLink: "dash://orders"
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- assertVisible: "Everything around you, one DASH away."
 - tapOn: "Sign in"
 - assertVisible: "Welcome back"
 - takeScreenshot: signin
@@ -23,3 +30,14 @@ name: iOS startup and signed-out navigation
 - takeScreenshot: register
 - tapOn: "Go back"
 - assertVisible: "Everything around you, one DASH away."
+- stopApp: com.dashworldng.dash.staging
+- openLink: "dash://orders"
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible: "Everything around you, one DASH away."
+    timeout: 60000
+- takeScreenshot: signed-out-cold-return
