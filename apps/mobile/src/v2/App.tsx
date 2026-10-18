@@ -70,6 +70,7 @@ import { RiderFlowProvider, useRiderFlow } from './rider/RiderFlowProvider';
 import { RiderHistoryDetailScreen, RiderOfferBanner, RiderOrdersScreen, RiderWorkspace } from './rider/RiderScreens';
 import { openPushTarget } from '../features/pushNotifications';
 import { usePushNotifications } from './push/usePushNotifications';
+import { orderReturnNavigation, useOrderReturnLink } from './navigation/useOrderReturnLink';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -175,6 +176,12 @@ function Navigator() {
   // Profile switch follows: a delivery in progress keeps the rider face.
   const riderFlow = useRiderFlow();
   const deliveryInProgress = Boolean(riderFlow.delivery && riderFlow.delivery.status !== 'delivered');
+  useOrderReturnLink((url) => {
+    const next = orderReturnNavigation(url, state, deliveryInProgress);
+    if (!next) return;
+    if (next.face !== state.face) setMode(next.face);
+    setState(next);
+  });
   usePushNotifications({
     current: { face: state.face, route },
     onOpen: (target) => {
