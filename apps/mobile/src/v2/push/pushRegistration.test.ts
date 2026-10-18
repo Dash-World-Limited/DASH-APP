@@ -14,6 +14,8 @@ const h = vi.hoisted(() => ({
   channels: [] as string[],
   asked: 0,
   request: vi.fn(),
+  platform: { OS: 'android' },
+  tokenReads: 0,
 }));
 
 vi.mock('@react-native-async-storage/async-storage', () => ({
@@ -22,7 +24,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
     setItem: async (key: string, value: string) => void h.store.set(key, value),
   },
 }));
-vi.mock('react-native', () => ({ Platform: { OS: 'android' } }));
+vi.mock('react-native', () => ({ Platform: h.platform }));
 vi.mock('expo-constants', () => ({ default: { expoConfig: { version: '0.1.0', android: { package: 'com.dashworldng.dash.staging' } } } }));
 vi.mock('expo-notifications', () => ({
   AndroidImportance: { MAX: 7, HIGH: 6, DEFAULT: 5 },
@@ -34,19 +36,22 @@ vi.mock('expo-notifications', () => ({
     return h.requested;
   },
   getDevicePushTokenAsync: async () => {
+    h.tokenReads += 1;
     if (!h.token) throw new Error('Default FirebaseApp is not initialized');
     return { type: 'android', data: h.token };
   },
 }));
 
 import type { ApiClient } from '../../api/client';
-import { PUSH_ASKED_KEY, PUSH_TOKEN_KEY, forgetPushRegistration, pushDataOf, syncPushRegistration } from './pushRegistration';
+import { PUSH_ASKED_KEY, PUSH_TOKEN_KEY, deviceToken, forgetPushRegistration, pushDataOf, syncPushRegistration } from './pushRegistration';
 
 const api = { configured: true, request: h.request } as unknown as ApiClient;
 const ME = 'identity_1';
 
 beforeEach(() => {
   h.store.clear();
+  h.platform.OS = 'android';
+  h.tokenReads = 0;
   h.permission = { granted: false, canAskAgain: true };
   h.requested = { granted: true, canAskAgain: true };
   h.token = 'fcm-token-aaaaaaaaaaaaaaaa';
@@ -59,6 +64,18 @@ beforeEach(() => {
 const registrations = () => h.request.mock.calls.filter(([path, options]) => path === '/v1/devices' && options?.method === 'POST').map(([, options]) => options.body);
 
 describe('registering after sign-in', () => {
+  it('does not prompt iOS or send an APNs token to the FCM backend', async () => {
+    h.platform.OS = 'ios';
+    h.token = 'a'.repeat(64);
+    expect(await syncPushRegistration(api, { identityId: ME, userAsked: true })).toBe('unavailable');
+    expect(await deviceToken()).toBeNull();
+    expect(h.tokenReads).toBe(0);
+    expect(h.asked).toBe(0);
+    expect(h.channels).toEqual([]);
+    expect(h.store.has(PUSH_ASKED_KEY)).toBe(false);
+    expect(h.request).not.toHaveBeenCalled();
+  });
+
   it('creates the channels, asks once, and registers with the switch on', async () => {
     expect(await syncPushRegistration(api, { identityId: ME })).toBe('registered');
     expect(h.channels).toEqual(['offers', 'orders', 'messages', 'account']);

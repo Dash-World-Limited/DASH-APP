@@ -71,6 +71,10 @@ export async function ensureChannels(): Promise<void> {
 
 /** The FCM token, or null when this build cannot have one (no Firebase config). */
 export async function deviceToken(): Promise<string | null> {
+  // Expo returns an APNs token on iOS. DASH currently sends through FCM,
+  // which requires an FCM registration token, even for Apple devices.
+  // Do not register an undeliverable APNs token or wait for APNs in a simulator.
+  if (Platform.OS !== 'android') return null;
   try {
     const token = await Notifications.getDevicePushTokenAsync();
     return typeof token.data === 'string' && token.data.length >= 16 ? token.data : null;
@@ -90,7 +94,9 @@ export async function syncPushRegistration(
   api: ApiClient,
   input: { identityId: string; userAsked?: boolean },
 ): Promise<SyncOutcome> {
-  if (!supported() || !api.configured) return 'unavailable';
+  // iOS needs an FCM client integration (or a separate APNs backend) first.
+  // Until then, do not ask for permission for a service this build cannot use.
+  if (Platform.OS !== 'android' || !api.configured) return 'unavailable';
   await ensureChannels();
 
   const enabled = await readNotificationPreference(AsyncStorage, input.identityId);
@@ -117,7 +123,7 @@ export async function syncPushRegistration(
   const appId = buildAppId();
   await registerDevice(api, {
     pushToken: token,
-    platform: Platform.OS === 'ios' ? 'ios' : 'android',
+    platform: 'android',
     notifications: enabled ? 'on' : 'off',
     ...(appId ? { appId } : {}),
     ...(Constants.expoConfig?.version ? { appVersion: Constants.expoConfig.version } : {}),

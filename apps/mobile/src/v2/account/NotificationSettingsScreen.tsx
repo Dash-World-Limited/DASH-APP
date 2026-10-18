@@ -7,7 +7,7 @@
  */
 
 import { useState } from 'react';
-import { ActivityIndicator, Linking, View } from 'react-native';
+import { ActivityIndicator, Linking, Platform, View } from 'react-native';
 
 import { api, ApiError, buildVariant } from '../../api';
 import { describeTestNotification, sendTestNotification } from '../../data/devices';
@@ -61,14 +61,18 @@ export function NotificationSettingsScreen({ audience, onBack }: { audience: 'cu
 
       {preference.error ? <Notice icon="alert-circle-outline" text={preference.error} danger /> : null}
 
-      {preference.enabled && permission && !permission.granted ? (
+      {Platform.OS === 'ios' ? (
+        <Notice icon="information-outline" text="Push notifications are not available in this iOS build yet. Open DASH to check your orders, deliveries and messages." />
+      ) : null}
+
+      {Platform.OS !== 'ios' && preference.enabled && permission && !permission.granted ? (
         <>
           <Notice icon="bell-alert-outline" text="Android is not letting DASH show notifications on this phone. Allow them in your phone’s settings to get updates while DASH is closed." danger />
           <SecondaryButton label="Open phone settings" onPress={() => void Linking.openSettings()} />
         </>
       ) : null}
 
-      {buildVariant !== 'production' ? <TestNotificationCard /> : null}
+      {Platform.OS !== 'ios' && buildVariant !== 'production' ? <TestNotificationCard /> : null}
 
       {audience === 'rider' ? (
         <Notice icon="information-outline" text="Delivery offers — and word that a delivery you are carrying was cancelled — still reach you while you are online, whatever you choose here." />
