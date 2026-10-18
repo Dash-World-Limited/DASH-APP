@@ -17,6 +17,7 @@ out/
 
 # environment — NEVER commit real secrets
 .env
+.env.*
 .env.local
 .env.*.local
 .env.production
@@ -35,6 +36,9 @@ out/
 *.p8
 *.p12
 *.pfx
+*.mobileprovision
+*.provisionprofile
+*.cer
 *.jks
 *.keystore
 id_rsa
@@ -44,6 +48,12 @@ id_ed25519
 service-account*.json
 serviceaccount*.json
 credentials.json
+credentials*.json
+GoogleService-Info*.plist
+AuthKey_*
+/secrets/
+**/secrets/*.json
+**/secrets/*.env
 gcp-*.json
 *.gpg
 *.asc
@@ -60,6 +70,10 @@ backups/
 *.db-journal
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite3-journal
 packages/db/prisma/dev.db*
 
 # local object storage (MinIO stand-in)
@@ -119,6 +133,10 @@ apps/mobile/**/google-services.json
 apps/android-shell/capacitor.config.json
 apps/android-shell/www/target.json
 *.apk
+*.aab
+*.ipa
+*.xcarchive/
+*.xcresult/
 .tooling/
 
 # Python bytecode from the design scripts (docs/design/…/wordmark).

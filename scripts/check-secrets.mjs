@@ -255,14 +255,17 @@ const PROTECTED_CLASSES = [
   { label: 'environment files', ignore: '.env', match: /(^|\/)\.env$/, sample: '.env' },
   {
     label: 'per-environment env files',
-    ignore: '.env.production',
-    match: /(^|\/)\.env\.(local|production|development|staging)$/,
+    ignore: '.env.*',
+    match: /(^|\/)\.env\.(?!example$)[^/]+$/,
     sample: 'apps/api/.env.production',
   },
   { label: 'PEM private keys', ignore: '*.pem', match: /\.pem$/, sample: 'certs/server.pem' },
   { label: 'bare key files', ignore: '*.key', match: /\.key$/, sample: 'certs/tls.key' },
   { label: 'Apple .p8 keys', ignore: '*.p8', match: /\.p8$/, sample: 'apns/AuthKey_ABC.p8' },
   { label: 'PKCS#12 bundles', ignore: '*.p12', match: /\.(p12|pfx)$/, sample: 'certs/bundle.p12' },
+  { label: 'Apple provisioning profiles', ignore: '*.mobileprovision', match: /\.(mobileprovision|provisionprofile)$/, sample: 'ios/DASH.mobileprovision' },
+  { label: 'Apple certificates', ignore: '*.cer', match: /\.cer$/, sample: 'ios/distribution.cer' },
+  { label: 'Firebase Apple client configuration', ignore: 'GoogleService-Info*.plist', match: /(^|\/)GoogleService-Info[^/]*\.plist$/, sample: 'ios/GoogleService-Info.plist' },
   { label: 'Java keystores', ignore: '*.jks', match: /\.jks$/, sample: 'android/release.jks' },
   {
     label: 'generic keystores',
@@ -296,8 +299,8 @@ const PROTECTED_CLASSES = [
   },
   {
     label: 'generic credentials files',
-    ignore: 'credentials.json',
-    match: /(^|\/)credentials\.json$/,
+    ignore: 'credentials*.json',
+    match: /(^|\/)credentials[^/]*\.json$/,
     sample: 'infra/credentials.json',
   },
   { label: 'GPG keyrings', ignore: '*.gpg', match: /\.gpg$/, sample: 'keys/backup.gpg' },
@@ -310,6 +313,9 @@ const PROTECTED_CLASSES = [
   { label: 'build output', ignore: 'dist/', match: /(^|\/)(dist|\.next)\//, sample: 'apps/web/.next/build.js' },
   { label: 'local object storage', ignore: '.storage/', match: /(^|\/)\.storage\//, sample: '.storage/blob' },
   { label: 'log files', ignore: '*.log', match: /\.log$/, sample: 'api.log' },
+  { label: 'local private secret directory', ignore: '/secrets/', match: /^secrets\//, sample: 'secrets/local-config.json' },
+  { label: 'iOS distribution archives', ignore: '*.ipa', match: /\.ipa$/, sample: 'build/DASH.ipa' },
+  { label: 'native build results', ignore: '*.xcresult/', match: /(^|\/)[^/]+\.(xcresult|xcarchive)\//, sample: 'build/DASH.xcresult/Info.plist' },
 ];
 
 console.log('\n.gitignore');
@@ -360,6 +366,22 @@ check(
   falsePositives.length === 0,
   falsePositives.length ? `wrongly caught: ${falsePositives.join(', ')}` : undefined,
 );
+
+// Check Git's actual pattern resolution too: the presence of a line in
+// .gitignore alone does not prove a later negation has not undone it.
+const ignoreSamples = [...PROTECTED_CLASSES.map((entry) => entry.sample),
+  'apps/api/.env.preview', 'infra/credentials-staging.json',
+  'ios/DASH.provisionprofile', 'ios/GoogleService-Info-staging.plist',
+  'packages/db/local.sqlite3', 'build/DASH.xcarchive/Info.plist',
+];
+const ignored = new Set(execFileSync('git', ['check-ignore', '--no-index', '--stdin'], {
+  cwd: root, encoding: 'utf8', input: [...ignoreSamples, ...BENIGN].join('\n') + '\n',
+}).trim().split(/\r?\n/));
+const unprotected = ignoreSamples.filter((path) => !ignored.has(path));
+const hiddenSource = BENIGN.filter((path) => ignored.has(path));
+check('Git actually ignores private samples while retaining build/source templates',
+  unprotected.length === 0 && hiddenSource.length === 0,
+  [...unprotected.map((path) => `not ignored: ${path}`), ...hiddenSource.map((path) => `unexpectedly ignored: ${path}`)].join(', '));
 
 console.log('\nTracked files');
 
