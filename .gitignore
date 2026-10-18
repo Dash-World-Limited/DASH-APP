@@ -45,10 +45,15 @@ id_rsa
 id_dsa
 id_ecdsa
 id_ed25519
+id_ecdsa_sk
+id_ed25519_sk
 service-account*.json
 serviceaccount*.json
 credentials.json
 credentials*.json
+credentials*.csv
+client_secret*.json
+*firebase-adminsdk*.json
 GoogleService-Info*.plist
 AuthKey_*
 /secrets/

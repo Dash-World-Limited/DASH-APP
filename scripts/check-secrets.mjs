@@ -279,6 +279,7 @@ const PROTECTED_CLASSES = [
     match: /(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/,
     sample: 'deploy/id_ed25519',
   },
+  { label: 'SSH hardware-key private files', ignore: 'id_ed25519_sk', match: /(^|\/)id_(ecdsa|ed25519)_sk$/, sample: 'deploy/id_ed25519_sk' },
   {
     label: 'service-account files (hyphenated)',
     ignore: 'service-account*.json',
@@ -303,6 +304,9 @@ const PROTECTED_CLASSES = [
     match: /(^|\/)credentials[^/]*\.json$/,
     sample: 'infra/credentials.json',
   },
+  { label: 'downloaded credential CSV files', ignore: 'credentials*.csv', match: /(^|\/)credentials[^/]*\.csv$/, sample: 'infra/credentials-user.csv' },
+  { label: 'Google OAuth client secrets', ignore: 'client_secret*.json', match: /(^|\/)client_secret[^/]*\.json$/, sample: 'infra/client_secret_client-id.json' },
+  { label: 'Firebase Admin SDK downloads', ignore: '*firebase-adminsdk*.json', match: /(^|\/)[^/]*firebase-adminsdk[^/]*\.json$/, sample: 'infra/project-firebase-adminsdk-service.json' },
   { label: 'GPG keyrings', ignore: '*.gpg', match: /\.gpg$/, sample: 'keys/backup.gpg' },
   { label: 'ASCII-armoured keys', ignore: '*.asc', match: /\.asc$/, sample: 'keys/public.asc' },
   { label: 'database dumps', ignore: '*.dump', match: /\.dump$/, sample: 'backups/nightly.dump' },
@@ -373,6 +377,7 @@ const ignoreSamples = [...PROTECTED_CLASSES.map((entry) => entry.sample),
   'apps/api/.env.preview', 'infra/credentials-staging.json',
   'ios/DASH.provisionprofile', 'ios/GoogleService-Info-staging.plist',
   'packages/db/local.sqlite3', 'build/DASH.xcarchive/Info.plist',
+  'deploy/id_ecdsa_sk',
 ];
 const ignored = new Set(execFileSync('git', ['check-ignore', '--no-index', '--stdin'], {
   cwd: root, encoding: 'utf8', input: [...ignoreSamples, ...BENIGN].join('\n') + '\n',
