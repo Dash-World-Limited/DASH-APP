@@ -6,11 +6,14 @@ Do not copy an Android native project or merge a release branch to restart iOS.
 
 ## Reproduce on macOS
 
-The workflow uses macOS 26, Xcode 26.6 and Node 22. Select that Xcode before
-installing pods. Record `pod --version` when comparing failures: CocoaPods and
-its transitive resolution are not yet locked by this repository. A successful
-first macOS run must establish and review a Podfile.lock before claiming fully
-locked native dependencies.
+The workflow uses macOS 26, Xcode 26.6, Node 22.23.3 and CocoaPods 1.17.0. Select
+that Xcode and install that CocoaPods version before generating/installing pods.
+The staging lock in `apps/mobile/ios-dependencies/staging/Podfile.lock` was
+captured from a passing Mac build. Clean generation removes `ios/`; restore the
+reviewed lock afterwards and use `pod install --deployment` to refuse dependency
+drift. The CI toolchain check also refuses an unreviewed CocoaPods upgrade.
+This locks the staging build; development/production targets have not been
+independently locked or distribution-tested.
 
 From the repository root, in a clean checkout:
 
@@ -30,7 +33,9 @@ npm run ios:bundle
 npm run ios:generate
 git diff --exit-code -- package.json package-lock.json
 cd ios
-pod install
+test "$(pod --version)" = '1.17.0'
+cp ../ios-dependencies/staging/Podfile.lock Podfile.lock
+pod install --deployment
 xcodebuild -workspace DASHstaging.xcworkspace -scheme DASHstaging \
   -configuration Release -sdk iphonesimulator \
   -destination 'generic/platform=iOS Simulator' \
@@ -66,10 +71,34 @@ Artifacts include the simulator app zip and SHA-256, build log, xcresult and
 startup screenshot/log. The screenshot must be inspected: process survival alone
 does not establish that startup left the splash or that navigation works.
 
-On 18 October 2026, run 39104621726 was rejected before a runner started:
-"The job was not started because recent account payments have failed or your
-spending limit needs to be increased." Fix organization Actions billing/spending
-or use a provisioned Mac before attempting to debug a nonexistent compiler log.
+On 18 October 2026, private-repository runs were rejected before a runner started
+because of account billing/spending restrictions. After the user made the
+repository public and the source/history exposure audit passed, retry attempt 2
+of run **39104953248**, at `2bf99560f604c26f90aa331b7142e9a123224251`, succeeded:
+native generation, pods, unsigned Release compilation, simulator installation,
+launch and the 15-second process check all passed. The startup screenshot was
+inspected and shows the DASH welcome screen with Sign in/Create account, beyond
+the splash. There were dependency compiler warnings, but no compiler errors.
+
+The successful toolchain was Xcode 26.6 (17F113), iOS Simulator SDK 26.5,
+CocoaPods 1.17.0, Node 22.23.3 and npm 10.9.9. Later private-repository attempts
+can encounter the same billing block; a zero-step job is an infrastructure
+failure, not evidence of a compiler regression.
+
+The workflow also runs the pinned, SHA-256-verified Maestro 2.11.0 CLI against
+`apps/mobile/e2e/ios-startup.yaml`. This uses a disposable, signed-out simulator,
+clears its app state and exercises welcome, sign-in, back, registration and back using existing
+accessible controls. It does not enter credentials, submit forms, accept terms
+or create an account. JUnit output, screenshots and failure diagnostics are
+retained separately. Inspect the particular run's UI-test result before claiming
+native navigation passed.
+
+The iOS workflow fetches complete branch/tag/PR history and runs the pinned,
+SHA-256-verified Gitleaks 8.30.1 CLI with redacted output before installing app
+dependencies. The existing exact synthetic-fixture allowlist is used; inline
+allow comments are ignored. Private-file hygiene remains a separate gate.
+Simulator zip checksums use the zip basename so `shasum -a 256 --check` works
+after downloading both files into one folder.
 
 ## Remaining parity and device checks
 

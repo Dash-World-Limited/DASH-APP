@@ -45,10 +45,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Use Node 22
+      - name: Use Node 22.23.3
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.3
           cache: npm
           cache-dependency-path: |
             package-lock.json
@@ -65,6 +65,10 @@ jobs:
             node --version
             npm --version
           } | tee "$RUNNER_TEMP/dash-ios-toolchain.txt"
+          if [ "$(pod --version)" != '1.17.0' ]; then
+            echo 'This build requires the reviewed CocoaPods 1.17.0 toolchain.' >&2
+            exit 1
+          fi
 
       - name: Check private-file and environment hygiene
         run: node scripts/check-secrets.mjs
@@ -139,7 +143,8 @@ jobs:
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
         run: |
-          pod install
+          cp ../ios-dependencies/staging/Podfile.lock Podfile.lock
+          pod install --deployment
           cp Podfile.lock "$RUNNER_TEMP/dash-ios-Podfile.lock"
 
       - name: Build unsigned iOS simulator app
@@ -179,7 +184,7 @@ jobs:
           short_sha=$(git rev-parse --short=7 HEAD)
           output="$RUNNER_TEMP/DASH-iOS-${short_sha}-simulator.zip"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$output"
-          shasum -a 256 "$output" > "$output.sha256"
+          (cd "$RUNNER_TEMP" && shasum -a 256 "$(basename "$output")" > "$(basename "$output").sha256")
           echo "IOS_SIMULATOR_ZIP=$output" >> "$GITHUB_ENV"
           echo "IOS_SIMULATOR_SHA=$output.sha256" >> "$GITHUB_ENV"
           echo "IOS_SIMULATOR_APP=$app" >> "$GITHUB_ENV"
@@ -230,7 +235,7 @@ jobs:
           "$RUNNER_TEMP/maestro-dist/maestro/bin/maestro" --device "$IOS_SIMULATOR_ID" test \
             --format JUNIT --output "$RUNNER_TEMP/dash-ios-ui/results.xml" \
             --debug-output "$RUNNER_TEMP/dash-ios-ui/debug" \
-            -e OUTPUT_DIR="$RUNNER_TEMP/dash-ios-ui" \
+            --test-output-dir "$RUNNER_TEMP/dash-ios-ui" \
             apps/mobile/e2e/ios-startup.yaml
 
       - name: Upload native navigation evidence
