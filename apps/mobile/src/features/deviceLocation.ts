@@ -35,7 +35,10 @@ export async function currentLocation(): Promise<LocationResult> {
     };
   }
   try {
-    const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+    const position = await withTimeout(
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+      PLACE_FIX_TIMEOUT_MS,
+    );
     return {
       ok: true,
       latitude: position.coords.latitude,
