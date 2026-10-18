@@ -33,21 +33,20 @@ afterEach(async () => { if (root) await act(async () => root!.unmount()); root =
 describe('existing payment return link', () => {
   it.each(['dash://orders', 'dash://orders/', 'dash://orders?status=success&orderId=someone-else', 'dash://orders?status=cancelled', 'dash://orders?status=failed'])(
     'opens only server-backed Customer Orders for %s', (url) => {
-      const next = orderReturnNavigation(url, navigate(createNavigationState('customer'), { name: 'customer.checkout' }), false);
+      const next = orderReturnNavigation(url, navigate(createNavigationState('customer'), { name: 'customer.checkout' }));
       expect(next?.face).toBe('customer');
       expect(next && currentRoute(next)).toEqual({ name: 'customer.orders' });
     },
   );
   it.each(['https://orders', 'dash://orders.evil.test', 'dash://user:pass@orders', 'dash://orders/other', 'dash://rider.delivery', 'not a URL', 'dash://orders#paid'])(
-    'ignores unrelated/malformed link %s', (url) => expect(orderReturnNavigation(url, createNavigationState('customer'), false)).toBeNull(),
+    'ignores unrelated/malformed link %s', (url) => expect(orderReturnNavigation(url, createNavigationState('customer'))).toBeNull(),
   );
   it('preserves an active Rider delivery', () => {
-    expect(orderReturnNavigation('dash://orders', navigate(createNavigationState('rider'), { name: 'rider.delivery' }), true)).toBeNull();
+    expect(orderReturnNavigation('dash://orders', navigate(createNavigationState('rider'), { name: 'rider.delivery' }))).toBeNull();
   });
-  it('allows an idle Rider to return to their Customer orders', () => {
-    const next = orderReturnNavigation('dash://orders', createNavigationState('rider'), false);
-    expect(next?.face).toBe('customer');
-    expect(next && currentRoute(next).name).toBe('customer.orders');
+  it('preserves the Rider face while its delivery may still be restoring', () => {
+    const next = orderReturnNavigation('dash://orders', createNavigationState('rider'));
+    expect(next).toBeNull();
   });
   it('receives a cold-start callback when authenticated navigation mounts', async () => {
     h.initial.mockResolvedValue('dash://orders');

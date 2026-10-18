@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { Linking, Platform } from 'react-native';
 
-import { selectTab, switchFace, type NavigationState } from './model';
+import { selectTab, type NavigationState } from './model';
 
 /** Existing /pay/complete contract. A URL never proves payment or names an order. */
-export function orderReturnNavigation(url: string, current: NavigationState, deliveryInProgress: boolean): NavigationState | null {
+export function orderReturnNavigation(url: string, current: NavigationState): NavigationState | null {
   try {
     const link = new URL(url);
     if (link.protocol !== 'dash:' || link.hostname !== 'orders' || link.username || link.password || link.port ||
@@ -12,10 +12,12 @@ export function orderReturnNavigation(url: string, current: NavigationState, del
   } catch {
     return null;
   }
-  if (current.face === 'rider' && deliveryInProgress) return null;
+  // A Rider's delivery may still be restoring on cold start. Never switch
+  // their face based on a Customer payment callback.
+  if (current.face === 'rider') return null;
   // Ignore all query parameters, including forged payment status/reference.
   // The signed-in Orders screen loads only this customer's server-owned data.
-  return selectTab(current.face === 'customer' ? current : switchFace(current, 'customer'), { name: 'customer.orders' });
+  return selectTab(current, { name: 'customer.orders' });
 }
 
 /** Mount inside authenticated navigation, after /me confirms the account. */

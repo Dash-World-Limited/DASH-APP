@@ -177,7 +177,7 @@ function Navigator() {
   const riderFlow = useRiderFlow();
   const deliveryInProgress = Boolean(riderFlow.delivery && riderFlow.delivery.status !== 'delivered');
   useOrderReturnLink((url) => {
-    const next = orderReturnNavigation(url, state, deliveryInProgress);
+    const next = orderReturnNavigation(url, state);
     if (!next) return;
     if (next.face !== state.face) setMode(next.face);
     setState(next);

@@ -39,7 +39,7 @@ real profile data as CI artifacts. No reusable staging credentials were supplied
 | Rider | Existing approved-role gating, availability, offer/accept, pickup/delivery PIN and GPS/resume flow retained; existing tests pass | Approved staging login, online/offline, offers, acceptance, arrival/pickup/start/complete, earnings/history, resume/offline recovery |
 | Location/maps | Foreground-only configuration; bounded address GPS lookup; contract tests for refused permission, unavailable fix and approximate accuracy | Native MapLibre tiles/markers, simulated location, denied/restricted/approximate vs precise, Settings recovery and coordinates through checkout |
 | Push | Existing APNs-to-FCM safeguard and notification-open routing tests retained | Real iOS token provider, Apple/Firebase configuration, permission/token refresh and foreground/background delivery on a signed physical phone |
-| Payment return | Existing web `/pay/complete` emits `dash://orders`; iOS receives warm/cold URLs only inside authenticated navigation; ignores payment-status/order parameters; protects active Rider delivery | Actual Paystack test-mode success/cancel/failure and cold/warm browser returns with the staging account |
+| Payment return | Existing web `/pay/complete` emits `dash://orders`; iOS receives warm/cold URLs only inside authenticated navigation; ignores payment-status/order parameters; preserves the Rider face, including while delivery state restores | Actual Paystack test-mode success/cancel/failure and cold/warm browser returns with the staging account |
 | Lifecycle | Shared request refresh and foreground resume/poll paths retained; stale-session race regression tests added | Active order across suspension, network loss/recovery, permission changes, identity/session expiry, notification opens |
 | Distribution | Staging ID `com.dashworldng.dash.staging`, production `com.dashworldng.dash`; iOS buildNumber follows existing DASH_VERSION_CODE; native configuration contract checks generated CFBundleVersion | Apple team, registered identifiers/capabilities, profiles, signed archive/device/TestFlight, privacy/export declarations |
 
@@ -54,6 +54,7 @@ The callback merely opens the signed-in Customer Orders tab. The server remains
 the only payment authority. Tracking checks a pending payment on resume and
 mount; Wallet checks pending card setup on resume/reopen. No URL creates an
 order, settles a payment, grants a role or chooses another customer's order.
+A Rider must switch to Customer mode intentionally; a callback never switches faces, even while an active delivery has not finished restoring.
 The callback does not include an order ID, so it cannot reopen a specific order.
 Android's existing link behavior is deliberately unchanged by this iOS fix.
 No universal links/associated domains are configured; browser callbacks rely on
