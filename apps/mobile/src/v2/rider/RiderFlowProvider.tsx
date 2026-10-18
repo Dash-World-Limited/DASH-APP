@@ -1,6 +1,6 @@
 import * as Location from 'expo-location';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 import { api, ApiError } from '../../api';
 import { useAppSession } from '../auth/AppSessionProvider';
@@ -194,6 +194,10 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const freshFix = useRef<Promise<boolean> | null>(null);
   const watchState = useRef<'idle' | 'starting' | 'running'>('idle');
   const [watchAttempt, setWatchAttempt] = useState(0);
+  const deliveryRevision = useRef(0);
+  const deliveryReadGeneration = useRef(0);
+  const busyNow = useRef(busy);
+  busyNow.current = busy;
 
   const fail = useCallback((caught: unknown) => {
     setError(caught instanceof ApiError ? caught.message : 'Something went wrong. Please try again.');
@@ -382,24 +386,34 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(timer);
   }, [fail, online, publishPosition]);
 
-  const restoreDelivery = useCallback(async () => {
+  const restoreDelivery = useCallback(async (current: () => boolean = () => true) => {
     if (!api.configured) return;
-    const response = await api.request<{ deliveries: ApiRiderDelivery[] }>('/v1/rider/deliveries');
-    const active = response.deliveries[0];
-    if (!active) {
-      setDelivery(null);
-      return;
+    const read = ++deliveryReadGeneration.current;
+    const revision = deliveryRevision.current;
+    const valid = () => current() && (Platform.OS !== 'ios'
+      || (read === deliveryReadGeneration.current && revision === deliveryRevision.current));
+    try {
+      const response = await api.request<{ deliveries: ApiRiderDelivery[] }>('/v1/rider/deliveries');
+      if (!valid()) return;
+      const active = response.deliveries[0];
+      if (!active) {
+        setDelivery(null);
+        return;
+      }
+      // The list leaves out the pickup code, so a delivery restored after a
+      // relaunch is read in full — otherwise the rider would arrive at the shop
+      // with no code to give.
+      const detail = await api.request<{ delivery: ApiRiderDelivery }>(`/v1/rider/deliveries/${encodeURIComponent(active.id)}`);
+      if (valid()) setDelivery(normaliseDelivery(detail.delivery));
+    } catch (caught) {
+      if (valid()) throw caught;
     }
-    // The list leaves out the pickup code, so a delivery restored after a
-    // relaunch is read in full — otherwise the rider would arrive at the shop
-    // with no code to give.
-    const detail = await api.request<{ delivery: ApiRiderDelivery }>(`/v1/rider/deliveries/${encodeURIComponent(active.id)}`);
-    setDelivery(normaliseDelivery(detail.delivery));
   }, []);
 
   useEffect(() => {
     if (!api.configured) return;
     if (auth.state !== 'authenticated') {
+      deliveryRevision.current += 1;
       setOnline(false);
       setOffer(null);
       setDelivery(null);
@@ -419,11 +433,22 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     }
   }, [auth.state, auth.viewer?.riderAvailability, fail, reportCurrentPosition, restoreDelivery]);
 
+  useEffect(() => () => { deliveryRevision.current += 1; }, []);
+
   useEffect(() => {
     if (!api.configured || !online || auth.state !== 'authenticated') return;
+    let disposed = false;
+    let backgrounded = AppState.currentState === 'background';
     const subscription = AppState.addEventListener('change', (nextState) => {
       riderTrace('appstate', { state: nextState, watch: watchState.current });
+      if (nextState === 'background') backgrounded = true;
       if (nextState === 'active') {
+        if (Platform.OS === 'ios' && backgrounded && !busyNow.current) {
+          // iOS suspends JS while hidden. The server may cancel/reassign or
+          // advance the delivery meanwhile; GPS/offer refresh cannot recover it.
+          void restoreDelivery(() => !disposed).catch(fail);
+        }
+        backgrounded = false;
         // Android may suspend foreground GPS while DASH is backgrounded. As
         // soon as the rider returns, push a fresh fix immediately rather than
         // waiting for the next watchPosition callback — and ask dispatch at
@@ -436,8 +461,8 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
         void findOffers();
       }
     });
-    return () => subscription.remove();
-  }, [auth.state, fail, findOffers, online, reportCurrentPosition]);
+    return () => { disposed = true; subscription.remove(); };
+  }, [auth.state, fail, findOffers, online, reportCurrentPosition, restoreDelivery]);
 
   const goOnline = useCallback(async (): Promise<boolean> => {
     setBusy(true);
@@ -478,6 +503,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   }, [fail, reportCurrentPosition, restoreDelivery]);
 
   const goOffline = useCallback(async (): Promise<boolean> => {
+    deliveryRevision.current += 1;
     setBusy(true);
     setError(null);
     try {
@@ -498,6 +524,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
 
   const respondToOffer = useCallback(async (accept: boolean): Promise<string | null> => {
     if (!offer) return null;
+    deliveryRevision.current += 1;
     setBusy(true);
     setError(null);
     try {
@@ -525,6 +552,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
 
   const progress = useCallback(async (to: Exclude<DeliveryStatus, 'rider_assigned' | 'delivered'>): Promise<boolean> => {
     if (!delivery) return false;
+    deliveryRevision.current += 1;
     setBusy(true);
     setError(null);
     try {
@@ -545,6 +573,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
 
   const complete = useCallback(async (pin: string): Promise<boolean> => {
     if (!delivery) return false;
+    deliveryRevision.current += 1;
     setBusy(true);
     setError(null);
     try {
@@ -586,7 +615,10 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     expireOffer: (offerId: string) => setOffer((current) => (current?.id === offerId ? null : current)),
     progress,
     complete,
-    clearCompletedDelivery: () => setDelivery((current) => (current?.status === 'delivered' ? null : current)),
+    clearCompletedDelivery: () => {
+      deliveryRevision.current += 1;
+      setDelivery((current) => (current?.status === 'delivered' ? null : current));
+    },
     clearError: () => setError(null),
     offerSeenAt,
     offersCheckedAt,

@@ -18,6 +18,8 @@ const h = vi.hoisted(() => {
   const listeners = new Set<(state: string) => void>();
   return {
     listeners,
+    os: 'android',
+    appState: 'active',
     location: {
       getForegroundPermissionsAsync: vi.fn(),
       requestForegroundPermissionsAsync: vi.fn(),
@@ -31,7 +33,9 @@ const h = vi.hoisted(() => {
 
 vi.mock('expo-location', () => ({ ...h.location, Accuracy: { High: 4 } }));
 vi.mock('react-native', () => ({
+  Platform: { get OS() { return h.os; } },
   AppState: {
+    get currentState() { return h.appState; },
     addEventListener: (_type: string, listener: (state: string) => void) => {
       h.listeners.add(listener);
       return { remove: () => h.listeners.delete(listener) };
@@ -86,6 +90,7 @@ async function mount(availability: string) {
 
 async function appState(next: string) {
   await act(async () => {
+    h.appState = next;
     for (const listener of [...h.listeners]) listener(next);
   });
   await settle();
@@ -109,6 +114,9 @@ const availabilityPosts = () =>
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
   h.listeners.clear();
+  h.os = 'android';
+  h.appState = 'active';
+  h.session.state = 'authenticated';
   permissionState = GRANTED;
   requestAnswer = true;
   watchRemove = vi.fn();
@@ -127,6 +135,153 @@ beforeEach(() => {
     if (url === '/v1/rider/offers') return { offers: [] };
     if (url === '/v1/rider/deliveries') return { deliveries: [] };
     return {};
+  });
+});
+
+describe('iOS active delivery recovery after suspension', () => {
+  const delivery = (status = 'rider_assigned') => ({
+    id: 'test-delivery', code: 'TEST-1', status,
+    branch: { name: 'Test shop', address: 'Test pickup', latitude: 6.2, longitude: 6.7, phone: null },
+    address: { line1: 'Test dropoff', landmark: null, instructions: null, contactPhone: null, latitude: 6.3, longitude: 6.8 },
+    items: [], pickupCode: '1234',
+  });
+  let remote = delivery();
+  beforeEach(() => {
+    h.os = 'ios';
+    remote = delivery();
+    h.request.mockImplementation(async (url: string) => {
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [remote] };
+      if (url === '/v1/rider/deliveries/test-delivery') return { delivery: remote };
+      return {};
+    });
+  });
+
+  it('reloads the server delivery and pickup code after background/active', async () => {
+    await mount('on_delivery');
+    expect(flow.delivery?.status).toBe('rider_assigned');
+    await appState('background');
+    remote = delivery('en_route');
+    await appState('active');
+    expect(flow.delivery?.status).toBe('en_route');
+    expect(flow.delivery?.pickupCode).toBe('1234');
+    expect(posts('/v1/rider/deliveries')).toHaveLength(2);
+    expect(h.location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
+  });
+
+  it('clears a delivery no longer assigned on the server', async () => {
+    await mount('on_delivery');
+    h.request.mockImplementation(async (url: string) => {
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [] };
+      return {};
+    });
+    await appState('background');
+    await appState('active');
+    expect(flow.delivery).toBeNull();
+  });
+
+  it('ignores permission-dialog transitions and duplicate active events', async () => {
+    await mount('on_delivery');
+    await appState('inactive');
+    await appState('active');
+    await appState('active');
+    expect(posts('/v1/rider/deliveries')).toHaveLength(1);
+  });
+
+  it('does not add delivery reloads to Android resume', async () => {
+    h.os = 'android';
+    await mount('on_delivery');
+    await appState('background');
+    await appState('active');
+    expect(posts('/v1/rider/deliveries')).toHaveLength(1);
+  });
+
+  it('discards a resume detail response after sign-out', async () => {
+    await mount('on_delivery');
+    let finish!: (value: unknown) => void;
+    h.request.mockImplementation(async (url: string) => {
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [remote] };
+      if (url === '/v1/rider/deliveries/test-delivery') return new Promise((resolve) => { finish = resolve; });
+      return {};
+    });
+    await appState('background');
+    await appState('active');
+    expect(finish).toBeTypeOf('function');
+    h.session.state = 'unauthenticated';
+    await act(async () => root!.render(<RiderFlowProvider><Probe /></RiderFlowProvider>));
+    await settle();
+    await act(async () => finish({ delivery: delivery('en_route') }));
+    await settle();
+    expect(flow.delivery).toBeNull();
+    expect(flow.online).toBe(false);
+  });
+
+  it('does not roll back progress with an older resume response', async () => {
+    await mount('on_delivery');
+    let finish!: (value: unknown) => void;
+    h.request.mockImplementation(async (url: string) => {
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [remote] };
+      if (url === '/v1/rider/deliveries/test-delivery') return new Promise((resolve) => { finish = resolve; });
+      return {};
+    });
+    await appState('background');
+    await appState('active');
+    expect(finish).toBeTypeOf('function');
+    await act(async () => { await flow.progress('rider_arrived'); });
+    await act(async () => finish({ delivery: delivery('rider_assigned') }));
+    await settle();
+    expect(flow.delivery?.status).toBe('rider_arrived');
+  });
+
+  it('drops an older resume when a newer resume returns no assignment', async () => {
+    await mount('on_delivery');
+    let finish!: (value: unknown) => void;
+    let lists = 0;
+    h.request.mockImplementation(async (url: string) => {
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: ++lists === 1 ? [remote] : [] };
+      if (url === '/v1/rider/deliveries/test-delivery') return new Promise((resolve) => { finish = resolve; });
+      return {};
+    });
+    await appState('background'); await appState('active');
+    expect(finish).toBeTypeOf('function');
+    await appState('background'); await appState('active');
+    await act(async () => finish({ delivery: remote }));
+    await settle();
+    expect(flow.delivery).toBeNull();
+  });
+
+  it('does not let a delayed initial restore replace a newer resume result', async () => {
+    let finish!: (value: unknown) => void;
+    let lists = 0;
+    h.request.mockImplementation(async (url: string) => {
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') {
+        if (++lists === 1) return new Promise((resolve) => { finish = resolve; });
+        return { deliveries: [] };
+      }
+      if (url === '/v1/rider/deliveries/test-delivery') return { delivery: remote };
+      return {};
+    });
+    await mount('on_delivery');
+    await appState('background'); await appState('active');
+    await act(async () => finish({ deliveries: [remote] }));
+    await settle();
+    expect(flow.delivery).toBeNull();
+    expect(posts('/v1/rider/deliveries/test-delivery')).toHaveLength(0);
+  });
+
+  it('keeps the last delivery on network failure and retries next resume', async () => {
+    await mount('on_delivery');
+    h.request.mockRejectedValueOnce(new Error('Offline'));
+    await appState('background'); await appState('active');
+    expect(flow.delivery?.status).toBe('rider_assigned');
+    remote = delivery('en_route');
+    await appState('background'); await appState('active');
+    expect(flow.delivery?.status).toBe('en_route');
   });
 });
 
