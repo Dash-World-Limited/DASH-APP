@@ -94,6 +94,10 @@ export function createApiClient({ baseUrl, fetch, session, timeoutMs = 15_000 }:
           method: 'POST',
           headers: { Accept: 'application/json', [CSRF_HEADER]: csrf },
         });
+        // A sign-out or newer login can finish while this HTTP request is in
+        // flight. Its old response must neither restore that account nor clear
+        // the newer one when the server refuses the superseded refresh.
+        if (session.csrfToken() !== csrf) return false;
         if (response.status === 401 || response.status === 403) {
           // The server has refused the session — expired, revoked, or reused.
           await session.clear();

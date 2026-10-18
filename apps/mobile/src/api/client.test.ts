@@ -178,6 +178,34 @@ describe('failures', () => {
 });
 
 describe('signing out', () => {
+  it.each([200, 401])('does not let an old refresh (%s) replace or clear a newer login', async (status) => {
+    let finish!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { finish = resolve; });
+    const { api, session, calls } = harness(({ url }) => url.endsWith('/v1/auth/refresh') ? pending : json(401, {}));
+    await session.adopt({ accessToken: 'old-access', csrfToken: 'old-csrf' });
+    const request = api.request('/v1/orders').catch(() => undefined);
+    await vi.waitFor(() => expect(calls.some((call) => call.url.endsWith('/v1/auth/refresh'))).toBe(true));
+    await session.clear();
+    await session.adopt({ accessToken: 'new-access', csrfToken: 'new-csrf' });
+    finish(json(status, { accessToken: 'stale-access', csrfToken: 'stale-csrf' }));
+    await request;
+    expect(session.accessToken()).toBe('new-access');
+    expect(session.csrfToken()).toBe('new-csrf');
+    expect(session.state()).toBe('authenticated');
+  });
+
+  it('does not let a pending refresh sign the person back in after logout', async () => {
+    let finish!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => { finish = resolve; });
+    const { api, session, fetch } = harness(({ url }) => url.endsWith('/v1/auth/refresh') ? pending : json(200, {}), 'csrf-1');
+    const restore = api.restore();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    await api.signOut();
+    finish(json(200, { accessToken: 'stale-access', csrfToken: 'stale-csrf' }));
+    expect(await restore).toBe('unauthenticated');
+    expect(session.accessToken()).toBeNull();
+  });
+
   it('tells the server with the CSRF header, and clears locally even if the server is unreachable', async () => {
     const { api, session, store, calls } = harness(() => Promise.reject(new TypeError('offline')));
     await session.adopt({ accessToken: 'access-1', csrfToken: 'csrf-1' });
