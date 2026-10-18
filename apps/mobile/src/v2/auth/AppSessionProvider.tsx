@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { api, ApiError, session, type SessionState } from '../../api';
 import { forgetPushRegistration } from '../push/pushRegistration';
@@ -49,15 +49,19 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const sessionGeneration = useRef(0);
 
   const fail = useCallback((caught: unknown) => {
     setError(caught instanceof ApiError ? caught.message : 'Something went wrong. Please try again.');
   }, []);
 
   const loadViewer = useCallback(async () => {
+    const generation = sessionGeneration.current;
     const response = await api.request<Viewer>('/v1/auth/me');
+    if (generation !== sessionGeneration.current || session.state() !== 'authenticated') return false;
     setViewer(response);
     setState('authenticated');
+    return true;
   }, []);
 
   const restore = useCallback(async () => {
@@ -70,25 +74,42 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
         return;
       }
       const restored = await api.restore();
-      setState(restored);
-      if (restored === 'authenticated') await loadViewer();
+      if (restored === 'authenticated') {
+        setState('restoring');
+        await loadViewer();
+      } else {
+        setViewer(null);
+        setState(restored);
+      }
     } catch (caught) {
       fail(caught);
-      setState(session.state());
+      // Tokens alone cannot open Customer/Rider navigation. If /me failed,
+      // keep the restore/retry screen until the identity is actually loaded.
+      setState(session.state() === 'authenticated' ? 'restoring' : session.state());
     } finally {
       setBusy(false);
     }
   }, [fail, loadViewer]);
 
   useEffect(() => {
+    const unsubscribe = session.subscribe((next) => {
+      // Refresh and OTP publish tokens before /me returns. Only loadViewer
+      // may publish the provider's authenticated state with its identity.
+      if (next === 'authenticated') return;
+      sessionGeneration.current += 1;
+      setViewer(null);
+      setState(next);
+    });
     void restore();
-    return session.subscribe(setState);
+    return unsubscribe;
   }, [restore]);
 
   const refreshViewer = useCallback(async () => {
     if (!api.configured || session.state() !== 'authenticated') return;
+    const generation = sessionGeneration.current;
     try {
-      setViewer(await api.request<Viewer>('/v1/auth/me'));
+      const response = await api.request<Viewer>('/v1/auth/me');
+      if (generation === sessionGeneration.current && session.state() === 'authenticated') setViewer(response);
     } catch {
       // Keep the viewer already shown; the next restore will correct it.
     }
@@ -121,8 +142,8 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
         body: { ...destination, code, purpose: 'login' },
       });
       await session.adopt(tokens);
-      await loadViewer();
-      return true;
+      setState('restoring');
+      return await loadViewer();
     } catch (caught) {
       fail(caught);
       return false;
