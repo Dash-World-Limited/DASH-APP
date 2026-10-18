@@ -23,7 +23,8 @@ import { Text } from '../../ui/Text';
 import { useAppSession } from '../auth/AppSessionProvider';
 import { NewAddressForm } from './NewAddressForm';
 import { BackHeader, Card, Empty, Notice, OrderPage, PrimaryCheckoutButton, SecondaryButton } from './parts';
-import { detectPlace, recentDetection } from './useDeliveryLocation';
+import { detectPlace, recentDetection, resumePlaceDetection } from './useDeliveryLocation';
+import { useIosLocationResume } from './useIosLocationResume';
 
 const describeError = (error: unknown): string =>
   error instanceof ApiError
@@ -46,15 +47,28 @@ export function DeliveryLocationScreen({ onBack, onAccount }: { onBack: () => vo
   const [choosingId, setChoosingId] = useState<string | null>(null);
   const [chooseError, setChooseError] = useState<string | null>(null);
   const choosing = useRef(false);
+  const detectionGeneration = useRef(0);
 
-  const locate = useCallback(async (ask: boolean) => {
+  const locate = useCallback(async (ask: boolean, resuming = false) => {
+    const mine = ++detectionGeneration.current;
     setLocating(true);
+    if (resuming) {
+      setDetection(null);
+    }
     try {
-      setDetection(await detectPlace({ ask, fresh: ask }));
+      const result = await (resuming ? resumePlaceDetection() : detectPlace({ ask, fresh: ask }));
+      if (mine === detectionGeneration.current) setDetection(result);
     } finally {
-      setLocating(false);
+      if (mine === detectionGeneration.current) setLocating(false);
     }
   }, []);
+
+  const resume = useCallback(() => {
+    // A location already chosen for an address draft is intentional. Keep the
+    // customer's typed form intact when switching apps to check an address.
+    if (!confirming) void locate(false, true);
+  }, [confirming, locate]);
+  useIosLocationResume(resume);
 
   const loadAddresses = useCallback(async () => {
     if (!signedIn) return;
@@ -70,6 +84,7 @@ export function DeliveryLocationScreen({ onBack, onAccount }: { onBack: () => vo
     // Opening this screen is the customer asking where they are, so a missing
     // permission may be asked for here.
     if (!recentDetection()) void locate(true);
+    return () => { detectionGeneration.current += 1; };
   }, [locate]);
 
   useEffect(() => {

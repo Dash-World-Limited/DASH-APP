@@ -20,6 +20,7 @@ import { listAddresses, type Address } from '../../data/orders';
 import { describePlace, type HomeLocation } from '../../features/delivery';
 import { detectCurrentPlace, type PermissionAsk, type PlaceResult } from '../../features/deviceLocation';
 import { useAppSession } from '../auth/AppSessionProvider';
+import { useIosLocationResume } from './useIosLocationResume';
 
 const DETECTION_TTL_MS = 5 * 60_000;
 
@@ -56,15 +57,28 @@ export function detectPlace({ ask, fresh = false }: { ask: boolean; fresh?: bool
   if (inFlight) return inFlight;
   const permissionAsk: PermissionAsk = ask ? 'always' : askedThisSession ? 'never' : 'first-time';
   askedThisSession = true;
-  inFlight = detectCurrentPlace({ ask: permissionAsk })
+  return startDetection(permissionAsk);
+}
+
+function startDetection(ask: PermissionAsk): Promise<PlaceResult> {
+  const work = detectCurrentPlace({ ask })
     .then((result) => {
-      lastDetection = { at: Date.now(), result };
+      // A pre-suspension fix must not restore coordinates after access was
+      // revoked in Settings, or overwrite a newer post-resume result.
+      if (inFlight === work) lastDetection = { at: Date.now(), result };
       return result;
     })
     .finally(() => {
-      inFlight = null;
+      if (inFlight === work) inFlight = null;
     });
-  return inFlight;
+  inFlight = work;
+  return work;
+}
+
+/** Bypass cached permission/coordinates on iOS resume, without opening a dialog. */
+export function resumePlaceDetection(): Promise<PlaceResult> {
+  lastDetection = null;
+  return startDetection('never');
 }
 
 export function homeLocationFrom(result: PlaceResult): HomeLocation {
@@ -78,7 +92,7 @@ export function useDeliveryLocation(): { location: HomeLocation; defaultAddress:
   const [defaultAddress, setDefaultAddress] = useState<Address | null>(null);
   const generation = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (resuming = false) => {
     const mine = ++generation.current;
     if (sessionState === 'authenticated' && api.configured) {
       try {
@@ -95,9 +109,14 @@ export function useDeliveryLocation(): { location: HomeLocation; defaultAddress:
     }
     if (mine !== generation.current) return;
     setDefaultAddress(null);
-    const result = await detectPlace({ ask: false });
+    const result = await (resuming ? resumePlaceDetection() : detectPlace({ ask: false }));
     if (mine === generation.current) setLocation(homeLocationFrom(result));
   }, [sessionState]);
+
+  const resume = useCallback(() => {
+    if (sessionState !== 'restoring') void load(true);
+  }, [load, sessionState]);
+  useIosLocationResume(resume);
 
   useEffect(() => {
     // Wait for the session to settle, so a signed-in customer's saved address
