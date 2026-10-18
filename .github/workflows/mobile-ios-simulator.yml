@@ -8,12 +8,16 @@ on:
       - 'apps/mobile/**'
       - 'packages/domain/**'
       - 'package-lock.json'
+      - '.gitignore'
+      - 'scripts/check-secrets.mjs'
       - '.github/workflows/mobile-ios-simulator.yml'
   pull_request:
     paths:
       - 'apps/mobile/**'
       - 'packages/domain/**'
       - 'package-lock.json'
+      - '.gitignore'
+      - 'scripts/check-secrets.mjs'
       - '.github/workflows/mobile-ios-simulator.yml'
 
 concurrency:
@@ -50,12 +54,18 @@ jobs:
 
       - name: Select and record the Apple toolchain
         run: |
+          set -euo pipefail
           sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
-          xcodebuild -version
-          xcrun --sdk iphonesimulator --show-sdk-version
-          pod --version
-          node --version
-          npm --version
+          {
+            xcodebuild -version
+            xcrun --sdk iphonesimulator --show-sdk-version
+            pod --version
+            node --version
+            npm --version
+          } | tee "$RUNNER_TEMP/dash-ios-toolchain.txt"
+
+      - name: Check private-file and environment hygiene
+        run: node scripts/check-secrets.mjs
 
       - name: Install locked dependencies
         run: |
@@ -110,7 +120,9 @@ jobs:
 
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
-        run: pod install
+        run: |
+          pod install
+          cp Podfile.lock "$RUNNER_TEMP/dash-ios-Podfile.lock"
 
       - name: Build unsigned iOS simulator app
         working-directory: apps/mobile/ios
@@ -179,10 +191,42 @@ jobs:
             ${{ runner.temp }}/dash-ios-startup.png
             ${{ runner.temp }}/dash-ios-startup.log
             ${{ runner.temp }}/xcode-list.json
+            ${{ runner.temp }}/dash-ios-toolchain.txt
+            ${{ runner.temp }}/dash-ios-Podfile.lock
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Verify signed-out navigation on the iPhone simulator
+        shell: bash
+        timeout-minutes: 15
+        env:
+          MAESTRO_CLI_NO_ANALYTICS: '1'
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/mobile-dev-inc/Maestro/releases/download/cli-2.11.0/maestro.zip \
+            --output "$RUNNER_TEMP/maestro.zip"
+          echo "5384593cb4e7a106489e75a821d157dd43f4e438df6bc308b72e82c685e1283a  $RUNNER_TEMP/maestro.zip" | shasum -a 256 --check
+          unzip -q "$RUNNER_TEMP/maestro.zip" -d "$RUNNER_TEMP/maestro-dist"
+          mkdir -p "$RUNNER_TEMP/dash-ios-ui"
+          "$RUNNER_TEMP/maestro-dist/maestro/bin/maestro" --device "$IOS_SIMULATOR_ID" test \
+            --format JUNIT --output "$RUNNER_TEMP/dash-ios-ui/results.xml" \
+            --debug-output "$RUNNER_TEMP/dash-ios-ui/debug" \
+            -e OUTPUT_DIR="$RUNNER_TEMP/dash-ios-ui" \
+            apps/mobile/e2e/ios-startup.yaml
+
+      - name: Upload native navigation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-ios-navigation-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/dash-ios-ui
           if-no-files-found: warn
           retention-days: 7
 
       - name: Upload iOS simulator artifact
+        if: always() && env.IOS_SIMULATOR_ZIP != ''
         uses: actions/upload-artifact@v4
         with:
           name: dash-ios-simulator-${{ github.sha }}

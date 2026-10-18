@@ -1,0 +1,23 @@
+appId: com.dashworldng.dash.staging
+name: iOS startup and signed-out navigation
+---
+# No credentials, API mutations or permission grants. Exercise the real
+# release binary through the same accessible controls a person uses.
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Everything around you, one DASH away."
+    timeout: 60000
+- takeScreenshot: "${OUTPUT_DIR}/welcome"
+- tapOn: "Sign in"
+- assertVisible: "Welcome back"
+- takeScreenshot: "${OUTPUT_DIR}/signin"
+- tapOn: "Back"
+- assertVisible: "Everything around you, one DASH away."
+- tapOn: "Create account"
+- assertVisible:
+    id: "register-v2"
+- assertVisible: "Full name"
+- takeScreenshot: "${OUTPUT_DIR}/register"
+- tapOn: "Go back"
+- assertVisible: "Everything around you, one DASH away."
