@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, Linking, Pressable, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, Linking, Platform, Pressable, ScrollView, View } from 'react-native';
 import { formatNaira, formatNairaCompact, type Kobo } from '@dash/domain/money';
 
 import { api, ApiError } from '../../api';
@@ -71,18 +71,23 @@ export function CustomerOrdersScreen({ onTrack, onAccount }: { onTrack: (id: str
   const [orders, setOrders] = useState<OrderSummary[]>([]);
   const [busy, setBusy] = useState(api.configured);
   const [error, setError] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
     if (!api.configured || auth.state !== 'authenticated') return;
+    const generation = ++loadGeneration.current;
+    // A suspended iOS request must not replace a newer resume/segment read.
+    // Android retains its existing request/result behavior.
+    const current = () => Platform.OS !== 'ios' || generation === loadGeneration.current;
     setBusy(true);
     setError(null);
     try {
       const response = await api.request<{ orders: OrderSummary[] }>(`/v1/orders?status=${segment}&limit=20`);
-      setOrders(response.orders);
+      if (current()) setOrders(response.orders);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : 'Could not load your orders.');
+      if (current()) setError(caught instanceof ApiError ? caught.message : 'Could not load your orders.');
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }, [auth.state, segment]);
 
@@ -92,7 +97,22 @@ export function CustomerOrdersScreen({ onTrack, onAccount }: { onTrack: (id: str
       return;
     }
     void load();
+    return () => { if (Platform.OS === 'ios') loadGeneration.current += 1; };
   }, [load, segment]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || !api.configured || auth.state !== 'authenticated') return;
+    let backgrounded = AppState.currentState === 'background';
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'background') backgrounded = true;
+      if (next !== 'active' || !backgrounded) return;
+      backgrounded = false;
+      // The list stays mounted while iOS suspends DASH. Read server-owned
+      // state again, including after an offline load or browser round-trip.
+      void load();
+    });
+    return () => subscription.remove();
+  }, [auth.state, load]);
 
   return (
     <OrderPage>
