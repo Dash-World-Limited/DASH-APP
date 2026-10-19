@@ -4,6 +4,23 @@ Continue on `ios/first-native-build`. The generated `apps/mobile/ios/` directory
 is ignored; `app.config.ts`, the config plugins and the mobile lockfile own it.
 Do not copy an Android native project or merge a release branch to restart iOS.
 
+## Push is an independent integration dependency
+
+`ios`, `ios:generate`, `ios:bundle` and `ios:verify-config` select
+`DASH_BUILD_PLATFORM=ios` only in their Expo child process. These commands do
+not require or read Android's `GOOGLE_SERVICES_JSON`. Unscoped configuration
+and Android builds retain the existing production Firebase client-file guard.
+For a direct iOS Expo command, scope `DASH_BUILD_PLATFORM=ios` to that command;
+do not export it for a shell used to build Android. Shared production URL,
+map-style and version validation still applies. This permits native generation
+and simulator verification; it is not proof of push readiness or approval to
+ship a production app without push.
+
+No Apple/Firebase artifact is required for the current staging simulator path.
+Real iOS FCM registration/delivery still requires the owner integration listed
+in [IOS_PUSH_PARITY.md](IOS_PUSH_PARITY.md). Preserve that explicit unavailable
+state until a real provider is wired. Continue other iOS work independently.
+
 ## Reproduce on macOS
 
 The workflow uses macOS 26, Xcode 26.6, Node 22.23.3 and CocoaPods 1.17.0. Select
@@ -104,8 +121,8 @@ after downloading both files into one folder.
 
 - Push: Expo's iOS native token is APNs, but DASH's sender accepts FCM tokens.
   This build deliberately does not prompt/register iOS for FCM; settings explain
-  the limitation. Choose and implement an iOS FCM client with APNs credentials,
-  or a separate APNs sender. Do not send APNs tokens to FCM or reuse Android's
+  the limitation. Integrate a real iOS FCM client with owner-supplied Apple/Firebase setup
+  through the existing registration pipeline; see IOS_PUSH_PARITY.md. Do not send APNs tokens to FCM or reuse Android's
   google-services.json as Apple configuration. No backend behavior changed.
 - Startup/navigation: test cold launch, sign-in/restoration, Customer tabs,
   back headers, checkout, chat, Profile/settings and approved Rider face switching.

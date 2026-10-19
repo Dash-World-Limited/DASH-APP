@@ -7,9 +7,9 @@
   "scripts": {
     "start": "expo start --dev-client",
     "android": "expo run:android",
-    "ios": "expo run:ios",
-    "ios:generate": "expo prebuild --platform ios --clean --no-install",
-    "ios:bundle": "expo export --platform ios",
+    "ios": "node scripts/ios-cli.mjs run",
+    "ios:generate": "node scripts/ios-cli.mjs generate",
+    "ios:bundle": "node scripts/ios-cli.mjs bundle",
     "ios:verify-config": "node scripts/verify-ios-config.mjs",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit -p tsconfig.json",

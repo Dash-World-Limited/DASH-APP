@@ -11,6 +11,7 @@ const cli = resolve(dirname(require.resolve('expo/package.json')), 'bin/cli');
 // This can run on Windows without pretending that an Xcode project was built.
 const config = JSON.parse(execFileSync(process.execPath, [cli, 'config', '--type', 'introspect', '--json'], {
   cwd: mobile,
+  env: { ...process.env, DASH_BUILD_PLATFORM: 'ios' },
   encoding: 'utf8',
   maxBuffer: 10 * 1024 * 1024,
 }));

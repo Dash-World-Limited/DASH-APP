@@ -154,7 +154,11 @@ function resolveReleaseConfig(variant, env) {
  * must belong to that project. Errors name package and project ids only,
  * never the file's keys.
  */
-function resolveGoogleServicesFile(variant, env, packageName) {
+function resolveGoogleServicesFile(variant, env, packageName, platform = 'android') {
+  // iOS commands explicitly scope this value to their child process. Android
+  // and unscoped config evaluation retain the existing production requirement.
+  if (platform === 'ios') return null;
+  if (platform !== 'android') throw new Error('DASH_BUILD_PLATFORM must be android or ios.');
   const raw = typeof env.GOOGLE_SERVICES_JSON === 'string' ? env.GOOGLE_SERVICES_JSON.trim() : '';
   if (!raw) {
     if (variant === 'production') {

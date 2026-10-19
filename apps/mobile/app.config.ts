@@ -31,7 +31,7 @@ const { resolveReleaseConfig, resolveGoogleServicesFile } = require('./plugins/r
     variant: string,
     env: NodeJS.ProcessEnv,
   ) => { versionCode: number; versionName: string; apiUrl: string | null; mapStyleUrl: string };
-  resolveGoogleServicesFile: (variant: string, env: NodeJS.ProcessEnv, packageName: string) => string | null;
+  resolveGoogleServicesFile: (variant: string, env: NodeJS.ProcessEnv, packageName: string, platform?: string) => string | null;
 };
 
 type Variant = 'development' | 'staging' | 'production';
@@ -77,7 +77,7 @@ const release = resolveReleaseConfig(variant, process.env);
  * production; development and staging build without it and have no push.
  * See docs/release/PUSH_NOTIFICATIONS.md.
  */
-const googleServicesFile = resolveGoogleServicesFile(variant, process.env, identity[variant].id);
+const googleServicesFile = resolveGoogleServicesFile(variant, process.env, identity[variant].id, process.env.DASH_BUILD_PLATFORM);
 
 /**
  * The launcher icon and splash: the measured DASH wordmark in its approved

@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
 const { resolveReleaseConfig, resolveGoogleServicesFile, isPrivateHost, productionApiOrigin, DEFAULT_MAP_STYLE_URL } = require('./releaseConfig.js') as {
-  resolveGoogleServicesFile: (variant: string, env: Record<string, string | undefined>, packageName: string) => string | null;
+  resolveGoogleServicesFile: (variant: string, env: Record<string, string | undefined>, packageName: string, platform?: string) => string | null;
   resolveReleaseConfig: (
     variant: string,
     env: Record<string, string | undefined>,
@@ -175,5 +175,26 @@ describe('Firebase client configuration for push', () => {
       message = (error as Error).message;
     }
     expect(message).not.toContain('AIza');
+  });
+});
+
+
+describe('iOS build independence from Android Firebase configuration', () => {
+  it('does not require an Android client file for an explicitly selected iOS build', () => {
+    expect(resolveGoogleServicesFile('production', {}, 'com.dashworldng.dash', 'ios')).toBeNull();
+  });
+
+  it('does not read an unrelated Android client path during iOS configuration', () => {
+    expect(resolveGoogleServicesFile('staging', { GOOGLE_SERVICES_JSON: '/missing/android-only.json' }, 'com.dashworldng.dash.staging', 'ios')).toBeNull();
+  });
+
+  it('still requires the real Android production file by default and with explicit Android selection', () => {
+    for (const platform of [undefined, 'android']) {
+      expect(() => resolveGoogleServicesFile('production', {}, 'com.dashworldng.dash', platform)).toThrow('GOOGLE_SERVICES_JSON is required');
+    }
+  });
+
+  it('rejects an unknown target rather than bypassing the Android guard', () => {
+    expect(() => resolveGoogleServicesFile('production', {}, 'com.dashworldng.dash', 'typo')).toThrow('DASH_BUILD_PLATFORM');
   });
 });
