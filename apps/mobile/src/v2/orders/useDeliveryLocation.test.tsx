@@ -174,6 +174,53 @@ describe('iOS Settings recovery', () => {
     expect(h.reads + h.requests + h.fixes).toBe(0);
   });
 
+  it('invalidates cached coordinates on iOS resume even when a saved default wins', async () => {
+    await detectPlace({ ask: false });
+    expect(recentDetection()?.ok).toBe(true);
+    h.addresses = [{ id: 'home', label: 'Home', line1: 'Saved address', isDefault: true }];
+    await openHome();
+    await changeAppState('background');
+    h.permission = { status: 'denied', canAskAgain: false };
+    await changeAppState('active');
+    expect(location.kind).toBe('confirmed');
+    expect(h.reads).toBe(1);
+    expect(h.fixes).toBe(1);
+    expect(recentDetection()).toBeNull();
+    // The next location-screen detection must read the new permission.
+    await expect(detectPlace({ ask: false })).resolves.toMatchObject({ ok: false, reason: 'denied' });
+    expect(h.reads).toBe(2);
+    expect(h.requests).toBe(0);
+    expect(h.fixes).toBe(1);
+  });
+
+  it('prevents an old pending fix from repopulating the cache after saved-address resume', async () => {
+    let complete!: (value: unknown) => void;
+    h.delayedFix = () => new Promise((resolve) => { complete = resolve; });
+    const old = detectPlace({ ask: false });
+    await settle();
+    h.addresses = [{ id: 'home', label: 'Home', line1: 'Saved address', isDefault: true }];
+    await openHome();
+    await changeAppState('background');
+    await changeAppState('active');
+    complete({ coords: { latitude: 6.2, longitude: 6.7, accuracy: 12 } });
+    await old;
+    expect(recentDetection()).toBeNull();
+    expect(location.kind).toBe('confirmed');
+    expect(h.fixes).toBe(1);
+  });
+
+  it('retains Android cached coordinates across saved-address resume', async () => {
+    h.os = 'android';
+    await detectPlace({ ask: false });
+    h.addresses = [{ id: 'home', label: 'Home', line1: 'Saved address', isDefault: true }];
+    await openHome();
+    await changeAppState('background');
+    await changeAppState('active');
+    expect(recentDetection()?.ok).toBe(true);
+    expect(h.reads).toBe(1);
+    expect(h.fixes).toBe(1);
+  });
+
   it('keeps Android resume behavior unchanged and removes the iOS listener on unmount', async () => {
     h.os = 'android';
     await openHome();

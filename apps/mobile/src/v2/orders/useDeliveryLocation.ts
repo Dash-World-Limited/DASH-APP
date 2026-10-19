@@ -94,6 +94,12 @@ export function useDeliveryLocation(): { location: HomeLocation; defaultAddress:
 
   const load = useCallback(async (resuming = false) => {
     const mine = ++generation.current;
+    if (resuming) {
+      // Settings may have changed access even when the saved address wins.
+      // Invalidate before the address read, without requesting another fix.
+      lastDetection = null;
+      inFlight = null;
+    }
     if (sessionState === 'authenticated' && api.configured) {
       try {
         const saved = (await listAddresses(api)).find((address) => address.isDefault) ?? null;
