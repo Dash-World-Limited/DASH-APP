@@ -310,6 +310,142 @@ describe('iOS active delivery recovery after suspension', () => {
     expect(posts('/v1/rider/deliveries/test-delivery')).toHaveLength(0);
   });
 
+  it.each(['ios', 'android'])('%s: reconciles a resume deferred by a failed progress request only on iOS', async (os) => {
+    h.os = os;
+    await mount('on_delivery');
+    let rejectProgress!: (error: Error) => void;
+    h.request.mockImplementation(async (url: string) => {
+      if (url.endsWith('/progress')) return new Promise((_resolve, reject) => { rejectProgress = reject; });
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [] };
+      return {};
+    });
+    let action!: Promise<boolean>;
+    await act(async () => { action = flow.progress('rider_arrived'); });
+    expect(flow.busy).toBe(true);
+    await appState('background'); await appState('active');
+    expect(posts('/v1/rider/deliveries')).toHaveLength(1);
+    await act(async () => { rejectProgress(new Error('Connection lost')); await action; });
+    await settle();
+    expect(flow.busy).toBe(false);
+    expect(posts('/v1/rider/deliveries')).toHaveLength(os === 'ios' ? 2 : 1);
+    if (os === 'ios') expect(flow.delivery).toBeNull();
+    else expect(flow.delivery?.status).toBe('rider_assigned');
+    expect(h.location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
+  });
+
+  it('coalesces busy iOS resumes and waits for the successful action before reading server state', async () => {
+    await mount('on_delivery');
+    let finishProgress!: (value: unknown) => void;
+    h.request.mockImplementation(async (url: string) => {
+      if (url.endsWith('/progress')) return new Promise((resolve) => { finishProgress = resolve; });
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [remote] };
+      if (url === '/v1/rider/deliveries/test-delivery') return { delivery: remote };
+      return {};
+    });
+    let action!: Promise<boolean>;
+    await act(async () => { action = flow.progress('rider_arrived'); });
+    await appState('background'); await appState('active');
+    await appState('background'); await appState('active');
+    expect(posts('/v1/rider/deliveries')).toHaveLength(1);
+    remote = delivery('en_route');
+    await act(async () => { finishProgress({}); await action; });
+    await settle();
+    expect(flow.delivery?.status).toBe('en_route');
+    expect(posts('/v1/rider/deliveries')).toHaveLength(2);
+    await appState('active');
+    expect(posts('/v1/rider/deliveries')).toHaveLength(2);
+  });
+
+  it.each(['background', 'inactive', 'sign-out', 'unmount'])('does not drain a deferred resume after %s', async (boundary) => {
+    await mount('on_delivery');
+    let finishProgress!: (value: unknown) => void;
+    h.request.mockImplementation(async (url: string) => {
+      if (url.endsWith('/progress')) return new Promise((resolve) => { finishProgress = resolve; });
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [] };
+      return {};
+    });
+    let action!: Promise<boolean>;
+    await act(async () => { action = flow.progress('rider_arrived'); });
+    await appState('background'); await appState('active');
+    if (boundary === 'background' || boundary === 'inactive') await appState(boundary);
+    if (boundary === 'sign-out') {
+      h.session.state = 'unauthenticated';
+      await act(async () => root!.render(<RiderFlowProvider><Probe /></RiderFlowProvider>));
+    }
+    if (boundary === 'unmount') {
+      await act(async () => root!.unmount()); root = null;
+    }
+    await act(async () => { finishProgress({}); await action; });
+    await settle();
+    expect(posts('/v1/rider/deliveries')).toHaveLength(1);
+    if (boundary === 'background' || boundary === 'inactive') {
+      await appState('active');
+      expect(posts('/v1/rider/deliveries')).toHaveLength(2);
+      expect(flow.delivery).toBeNull();
+    }
+  });
+
+  it('does not add a refresh after an ordinary foreground action without a resume', async () => {
+    await mount('on_delivery');
+    await act(async () => { await flow.progress('rider_arrived'); });
+    await settle();
+    expect(flow.delivery?.status).toBe('rider_arrived');
+    expect(posts('/v1/rider/deliveries')).toHaveLength(1);
+  });
+
+  it('retains the delivery on deferred refresh failure without a retry loop', async () => {
+    await mount('on_delivery');
+    let finishProgress!: (value: unknown) => void;
+    h.request.mockImplementation(async (url: string) => {
+      if (url.endsWith('/progress')) return new Promise((resolve) => { finishProgress = resolve; });
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') throw new Error('Offline');
+      return {};
+    });
+    let action!: Promise<boolean>;
+    await act(async () => { action = flow.progress('rider_arrived'); });
+    await appState('background'); await appState('active');
+    await act(async () => { finishProgress({}); await action; });
+    await settle(); await settle();
+    expect(flow.delivery?.status).toBe('rider_arrived');
+    expect(flow.error).toBeTruthy();
+    expect(posts('/v1/rider/deliveries')).toHaveLength(2);
+    await appState('active');
+    expect(posts('/v1/rider/deliveries')).toHaveLength(2);
+  });
+
+  it('does not roll back a newer action with an old deferred detail response', async () => {
+    await mount('on_delivery');
+    let finishProgress!: (value: unknown) => void;
+    let finishDetail!: (value: unknown) => void;
+    let progressCalls = 0;
+    h.request.mockImplementation(async (url: string) => {
+      if (url.endsWith('/progress') && ++progressCalls === 1) return new Promise((resolve) => { finishProgress = resolve; });
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [remote] };
+      if (url === '/v1/rider/deliveries/test-delivery') return new Promise((resolve) => { finishDetail = resolve; });
+      return {};
+    });
+    let action!: Promise<boolean>;
+    await act(async () => { action = flow.progress('rider_arrived'); });
+    await appState('background'); await appState('active');
+    await act(async () => { finishProgress({}); await action; });
+    await settle();
+    const oldDetail = finishDetail;
+    expect(oldDetail).toBeTypeOf('function');
+    await act(async () => { await flow.progress('picked_up'); });
+    await act(async () => oldDetail({ delivery: delivery('rider_assigned') }));
+    await settle();
+    expect(flow.delivery?.status).toBe('picked_up');
+    // Settle the replacement read after the newer action as well.
+    await act(async () => finishDetail({ delivery: delivery('picked_up') }));
+    await settle();
+    expect(flow.delivery?.status).toBe('picked_up');
+  });
+
   it('keeps the last delivery on network failure and retries next resume', async () => {
     await mount('on_delivery');
     h.request.mockRejectedValueOnce(new Error('Offline'));

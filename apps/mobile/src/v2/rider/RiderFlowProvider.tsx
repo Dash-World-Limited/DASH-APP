@@ -183,6 +183,8 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const [offer, setOffer] = useState<RiderOffer | null>(null);
   const [delivery, setDelivery] = useState<RiderDelivery | null>(null);
   const [deliveryRestored, setDeliveryRestored] = useState(false);
+  const [deferredResumeRestore, setDeferredResumeRestore] = useState(false);
+  const [iosAppActive, setIosAppActive] = useState(AppState.currentState === 'active');
   const [riderPosition, setRiderPosition] = useState<Coordinate | null>(null);
   const [positionUpdatedAt, setPositionUpdatedAt] = useState<number | null>(null);
   const [positionAccuracyMetres, setPositionAccuracyMetres] = useState<number | null>(null);
@@ -451,12 +453,17 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     let backgrounded = AppState.currentState === 'background';
     const subscription = AppState.addEventListener('change', (nextState) => {
       riderTrace('appstate', { state: nextState, watch: watchState.current });
+      if (Platform.OS === 'ios') setIosAppActive(nextState === 'active');
       if (nextState === 'background') backgrounded = true;
       if (nextState === 'active') {
-        if (Platform.OS === 'ios' && backgrounded && !busyNow.current) {
-          // iOS suspends JS while hidden. The server may cancel/reassign or
-          // advance the delivery meanwhile; GPS/offer refresh cannot recover it.
-          void restoreDelivery(() => !disposed).catch(fail);
+        if (Platform.OS === 'ios' && backgrounded) {
+          // Do not race an in-flight rider action, but remember this resume:
+          // a suspended request may fail after the server changed assignment.
+          if (busyNow.current) setDeferredResumeRestore(true);
+          else {
+            setDeferredResumeRestore(false);
+            void restoreDelivery(() => !disposed).catch(fail);
+          }
         }
         backgrounded = false;
         // Android may suspend foreground GPS while DASH is backgrounded. As
@@ -473,6 +480,22 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     });
     return () => { disposed = true; subscription.remove(); };
   }, [auth.state, fail, findOffers, online, reportCurrentPosition, restoreDelivery]);
+
+  useEffect(() => {
+    if (!deferredResumeRestore) return;
+    if (!online || auth.state !== 'authenticated') {
+      setDeferredResumeRestore(false);
+      return;
+    }
+    if (busy || !iosAppActive || AppState.currentState !== 'active') return;
+    let disposed = false;
+    // Multiple busy resumes need one read after the action settles. Keep the
+    // existing generation/revision guard so a later action or logout wins.
+    void restoreDelivery(() => !disposed).catch(fail).finally(() => {
+      if (!disposed) setDeferredResumeRestore(false);
+    });
+    return () => { disposed = true; };
+  }, [auth.state, busy, deferredResumeRestore, fail, iosAppActive, online, restoreDelivery]);
 
   const goOnline = useCallback(async (): Promise<boolean> => {
     setBusy(true);
