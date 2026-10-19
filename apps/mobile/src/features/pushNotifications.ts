@@ -136,10 +136,10 @@ const TABS: ReadonlySet<string> = new Set([...CUSTOMER_TABS, ...RIDER_TABS].map(
 export function openPushTarget(
   state: NavigationState,
   target: PushTarget,
-  guard: { riderApproved: boolean; deliveryInProgress: boolean },
+  guard: { riderApproved: boolean; deliveryInProgress: boolean; deliveryRestoring?: boolean },
 ): NavigationState | null {
   if (target.face === 'rider' && !guard.riderApproved) return null;
-  if (target.face !== state.face && state.face === 'rider' && guard.deliveryInProgress) return null;
+  if (target.face !== state.face && state.face === 'rider' && (guard.deliveryInProgress || guard.deliveryRestoring)) return null;
   let next = target.face === state.face ? state : createNavigationState(target.face);
   for (const route of target.routes) next = TABS.has(route.name) ? selectTab(next, route) : navigate(next, route);
   return next;

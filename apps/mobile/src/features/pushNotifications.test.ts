@@ -89,6 +89,16 @@ describe('where a tapped push goes', () => {
 });
 
 describe('opening the target', () => {
+  it('keeps the Rider face while an iOS active delivery is still restoring', () => {
+    const restoring = createNavigationState('rider');
+    const target = notificationTarget(readPushData({ type: 'payment_update', audience: 'customer', orderId: 'o' }), rider)!;
+    expect(openPushTarget(restoring, target, { riderApproved: true, deliveryInProgress: false, deliveryRestoring: true })).toBeNull();
+    // Once delivery state is known and idle, the existing face switch remains.
+    expect(openPushTarget(restoring, target, { riderApproved: true, deliveryInProgress: false, deliveryRestoring: false })?.face).toBe('customer');
+    // Restoration does not prevent opening a notification for the Rider face.
+    const offer = notificationTarget(readPushData({ type: 'rider_offer', offerId: 'restoring_offer' }), rider)!;
+    expect(openPushTarget(restoring, offer, { riderApproved: true, deliveryInProgress: false, deliveryRestoring: true })?.face).toBe('rider');
+  });
   it('opens on top of what is showing on the same face, so Back returns there', () => {
     const wallet = selectTab(createNavigationState('customer'), { name: 'customer.wallet' });
     const target = notificationTarget(readPushData({ type: 'order_chat', audience: 'customer', orderId: 'ord_1' }), customer)!;

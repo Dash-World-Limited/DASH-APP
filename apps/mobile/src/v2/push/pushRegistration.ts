@@ -153,6 +153,13 @@ export function buildAppId(): string | null {
  */
 export async function forgetPushRegistration(api: ApiClient): Promise<void> {
   try {
+    // A tap cached before sign-out must not be replayed into the next iOS
+    // account. This cleanup is independent of whether FCM is configured.
+    if (Platform.OS === 'ios') await Notifications.clearLastNotificationResponseAsync();
+  } catch {
+    // A native cache failure must not skip server-side token revocation.
+  }
+  try {
     if (!supported() || !api.configured) return;
     const token = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
     if (token) await unregisterDevice(api, token);
@@ -168,12 +175,21 @@ export async function notificationPermission(): Promise<{ granted: boolean; canA
   return { granted: permission.granted, canAskAgain: permission.canAskAgain };
 }
 
-/** The identifiers a DASH push carries, wherever Android put them. */
+/** The identifiers a DASH push carries in Expo's platform-specific records. */
 export function pushDataOf(notification: Notifications.Notification): unknown {
   const content = notification.request.content.data as Record<string, unknown> | null | undefined;
   if (content && typeof content['type'] === 'string') return content;
   // A message FCM displayed itself (the app was closed) arrives with its data
   // on the remote message rather than the content.
-  const trigger = notification.request.trigger as { remoteMessage?: { data?: Record<string, string> } } | null;
+  const trigger = notification.request.trigger as {
+    type?: string;
+    remoteMessage?: { data?: Record<string, string> };
+    payload?: unknown;
+  } | null;
+  // Expo iOS serializes remote content.data from userInfo["body"], the Expo
+  // push-service envelope. DASH sends directly through FCM, whose identifiers
+  // are top-level APNs userInfo, exposed by Expo as trigger.payload instead.
+  // The caller still validates these identifiers with readPushData.
+  if (Platform.OS === 'ios' && trigger?.type === 'push') return trigger.payload ?? content ?? null;
   return trigger?.remoteMessage?.data ?? content ?? null;
 }

@@ -9,7 +9,7 @@ import {
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { ActivityIndicator, BackHandler, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { ActivityIndicator, BackHandler, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 
@@ -185,7 +185,14 @@ function Navigator() {
   usePushNotifications({
     current: { face: state.face, route },
     onOpen: (target) => {
-      const next = openPushTarget(state, target, { riderApproved: viewer?.riderStatus === 'approved', deliveryInProgress });
+      const next = openPushTarget(state, target, {
+        riderApproved: viewer?.riderStatus === 'approved',
+        deliveryInProgress,
+        // /auth/me knows about the assignment before RiderFlow's detail read
+        // completes. A cold-start iOS Customer tap must not switch faces in
+        // that interval. Android retains its existing guard.
+        deliveryRestoring: Platform.OS === 'ios' && viewer?.riderAvailability === 'on_delivery' && !riderFlow.deliveryRestored,
+      });
       if (!next) return;
       if (next.face !== state.face) setMode(next.face);
       setState(next);

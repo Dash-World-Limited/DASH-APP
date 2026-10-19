@@ -74,7 +74,7 @@ export function NotificationSettingsScreen({ audience, onBack }: { audience: 'cu
 
       {Platform.OS !== 'ios' && buildVariant !== 'production' ? <TestNotificationCard /> : null}
 
-      {audience === 'rider' ? (
+      {audience === 'rider' && Platform.OS !== 'ios' ? (
         <Notice icon="information-outline" text="Delivery offers — and word that a delivery you are carrying was cancelled — still reach you while you are online, whatever you choose here." />
       ) : null}
       <Text variant="caption" tone="muted">This choice is saved on this phone for your account, and DASH follows it when sending notifications here.</Text>

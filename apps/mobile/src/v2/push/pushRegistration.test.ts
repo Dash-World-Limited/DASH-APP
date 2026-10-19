@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   request: vi.fn(),
   platform: { OS: 'android' },
   tokenReads: 0,
+  clearedResponses: 0,
+  clearFails: false,
 }));
 
 vi.mock('@react-native-async-storage/async-storage', () => ({
@@ -40,9 +42,14 @@ vi.mock('expo-notifications', () => ({
     if (!h.token) throw new Error('Default FirebaseApp is not initialized');
     return { type: 'android', data: h.token };
   },
+  clearLastNotificationResponseAsync: async () => {
+    h.clearedResponses += 1;
+    if (h.clearFails) throw new Error('Native response cache unavailable');
+  },
 }));
 
 import type { ApiClient } from '../../api/client';
+import { notificationTarget, readPushData, showInForeground } from '../../features/pushNotifications';
 import { PUSH_ASKED_KEY, PUSH_TOKEN_KEY, deviceToken, forgetPushRegistration, pushDataOf, syncPushRegistration } from './pushRegistration';
 
 const api = { configured: true, request: h.request } as unknown as ApiClient;
@@ -52,6 +59,8 @@ beforeEach(() => {
   h.store.clear();
   h.platform.OS = 'android';
   h.tokenReads = 0;
+  h.clearedResponses = 0;
+  h.clearFails = false;
   h.permission = { granted: false, canAskAgain: true };
   h.requested = { granted: true, canAskAgain: true };
   h.token = 'fcm-token-aaaaaaaaaaaaaaaa';
@@ -132,9 +141,26 @@ describe('registering after sign-in', () => {
 });
 
 describe('signing out', () => {
+  it('clears an iOS cached notification tap even without an API or registered token', async () => {
+    h.platform.OS = 'ios';
+    await forgetPushRegistration({ configured: false } as ApiClient);
+    expect(h.clearedResponses).toBe(1);
+    expect(h.request).not.toHaveBeenCalled();
+  });
+
+  it('still unregisters an iOS stored token if clearing the tap cache fails', async () => {
+    h.platform.OS = 'ios';
+    h.clearFails = true;
+    h.store.set(PUSH_TOKEN_KEY, 'fcm-token-aaaaaaaaaaaaaaaa');
+    await expect(forgetPushRegistration(api)).resolves.toBeUndefined();
+    expect(h.clearedResponses).toBe(1);
+    expect(h.request).toHaveBeenCalledWith('/v1/devices', { method: 'DELETE', body: { pushToken: 'fcm-token-aaaaaaaaaaaaaaaa' } });
+  });
+
   it('unregisters the phone’s token, and never throws', async () => {
     h.store.set(PUSH_TOKEN_KEY, 'fcm-token-aaaaaaaaaaaaaaaa');
     await forgetPushRegistration(api);
+    expect(h.clearedResponses).toBe(0); // Android cleanup contract is unchanged.
     expect(h.request).toHaveBeenCalledWith('/v1/devices', { method: 'DELETE', body: { pushToken: 'fcm-token-aaaaaaaaaaaaaaaa' } });
 
     h.request.mockRejectedValueOnce(new Error('offline'));
@@ -143,6 +169,46 @@ describe('signing out', () => {
 });
 
 describe('reading a push’s data', () => {
+  it.each(['order_update', 'order_chat', 'payment_update'])('reads iOS FCM %s identifiers from Expo’s raw APNs trigger payload', (type) => {
+    h.platform.OS = 'ios';
+    // Expo SDK 57 NotificationRecords.swift exposes remote userInfo as
+    // trigger.payload; content.data only reads userInfo["body"]. FCM sends
+    // DASH's custom data at the top level, without that Expo-service wrapper.
+    const payload = { aps: { alert: { title: 'DASH update', body: 'Open DASH' } }, type, audience: 'customer', orderId: 'ios_order' };
+    const notification = { request: { identifier: 'ios_fcm', content: { data: null }, trigger: { type: 'push', payload } } };
+    const data = readPushData(pushDataOf(notification as never));
+    expect(data).toEqual({ type, audience: 'customer', orderId: 'ios_order' });
+    expect(notificationTarget(data, { customerId: 'customer', riderStatus: null })?.face).toBe('customer');
+  });
+
+  it('reads iOS Rider payloads and keeps the role gate', () => {
+    h.platform.OS = 'ios';
+    const notification = { request: { identifier: 'ios_offer', content: { data: {} }, trigger: { type: 'push', payload: { type: 'rider_offer', offerId: 'ios_offer' } } } };
+    const data = readPushData(pushDataOf(notification as never));
+    expect(notificationTarget(data, { customerId: 'customer', riderStatus: null })).toBeNull();
+    expect(notificationTarget(data, { customerId: 'customer', riderStatus: 'approved' })?.face).toBe('rider');
+  });
+
+  it('applies existing foreground suppression to raw iOS FCM payloads', () => {
+    h.platform.OS = 'ios';
+    const notification = { request: { content: { data: null }, trigger: { type: 'push', payload: { type: 'order_chat', audience: 'customer', orderId: 'ios_chat' } } } };
+    const data = readPushData(pushDataOf(notification as never));
+    expect(showInForeground(data, { face: 'customer', route: { name: 'customer.chat', params: { id: 'ios_chat' } } })).toBe(false);
+    expect(showInForeground(data, { face: 'customer', route: { name: 'customer.home' } })).toBe(true);
+  });
+
+  it('does not interpret a local iOS trigger or malformed payload as a DASH push', () => {
+    h.platform.OS = 'ios';
+    const data = { type: 'rider_offer', offerId: 'local' };
+    expect(readPushData(pushDataOf({ request: { content: { data: null }, trigger: { type: 'timeInterval', payload: data } } } as never))).toBeNull();
+    expect(readPushData(pushDataOf({ request: { content: { data: null }, trigger: { type: 'push', payload: { aps: { alert: 'Other message' } } } } } as never))).toBeNull();
+  });
+
+  it('keeps Android remote-message data ahead of an iOS-shaped payload', () => {
+    const data = { type: 'rider_offer', offerId: 'android_offer' };
+    const notification = { request: { content: { data: {} }, trigger: { type: 'push', remoteMessage: { data }, payload: { type: 'rider_offer', offerId: 'ios_offer' } } } };
+    expect(pushDataOf(notification as never)).toEqual(data);
+  });
   it('finds it on the content, or on the FCM message when Android displayed it', () => {
     const shown = { request: { identifier: 'n1', content: { data: { type: 'order_chat', orderId: 'o' } }, trigger: null } };
     expect(pushDataOf(shown as never)).toEqual({ type: 'order_chat', orderId: 'o' });

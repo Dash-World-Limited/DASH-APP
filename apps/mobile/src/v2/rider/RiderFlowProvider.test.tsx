@@ -139,6 +139,42 @@ beforeEach(() => {
 });
 
 describe('iOS active delivery recovery after suspension', () => {
+  it('distinguishes initial assignment restoration from a confirmed empty workload', async () => {
+    h.os = 'ios';
+    let finish!: (value: unknown) => void;
+    h.request.mockImplementation(async (url: string) => {
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return new Promise((resolve) => { finish = resolve; });
+      return {};
+    });
+    await mount('on_delivery');
+    expect(flow.delivery).toBeNull();
+    expect(flow.deliveryRestored).toBe(false);
+    await act(async () => finish({ deliveries: [] }));
+    await settle();
+    expect(flow.delivery).toBeNull();
+    expect(flow.deliveryRestored).toBe(true);
+  });
+
+  it('keeps delivery readiness after completion/clear so Customer notifications are not blocked forever', async () => {
+    await mount('on_delivery');
+    expect(flow.deliveryRestored).toBe(true);
+    await act(async () => { await flow.complete('1234'); });
+    await act(async () => flow.clearCompletedDelivery());
+    expect(flow.delivery).toBeNull();
+    expect(flow.deliveryRestored).toBe(true);
+  });
+
+  it('does not claim assignment restoration when the server read fails', async () => {
+    h.request.mockImplementation(async (url: string) => {
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') throw new Error('Offline');
+      return {};
+    });
+    await mount('on_delivery');
+    expect(flow.deliveryRestored).toBe(false);
+    expect(flow.delivery).toBeNull();
+  });
   const delivery = (status = 'rider_assigned') => ({
     id: 'test-delivery', code: 'TEST-1', status,
     branch: { name: 'Test shop', address: 'Test pickup', latitude: 6.2, longitude: 6.7, phone: null },

@@ -61,8 +61,19 @@ export function usePushNotifications(input: { current: { face: AppFace; route: A
     if (!native || !api.configured || !identityId) return;
     let last: { outcome: SyncOutcome; at: number } | null = null;
     let running = false;
+    let disposed = false;
+    let pending: { reason: 'token' | 'preference'; userAsked: boolean } | null = null;
     const sync = (reason: 'start' | 'resume' | 'token' | 'preference', userAsked = false) => {
-      if (running) return;
+      if (disposed) return;
+      if (running) {
+        // A token rotation or preference change can land during permission,
+        // token lookup or HTTP registration. Re-read the latest values once
+        // afterward instead of dropping the change until a later resume.
+        if (reason === 'token' || reason === 'preference') {
+          pending = { reason, userAsked: userAsked || (pending?.userAsked ?? false) };
+        }
+        return;
+      }
       if (reason === 'resume' && last?.outcome === 'registered' && Date.now() - last.at < RESUME_SYNC_MS) return;
       running = true;
       syncPushRegistration(api, { identityId, userAsked })
@@ -76,6 +87,9 @@ export function usePushNotifications(input: { current: { face: AppFace; route: A
         })
         .finally(() => {
           running = false;
+          const next = pending;
+          pending = null;
+          if (next) sync(next.reason, next.userAsked);
         });
     };
 
@@ -86,6 +100,8 @@ export function usePushNotifications(input: { current: { face: AppFace; route: A
     const tokens = Notifications.addPushTokenListener(() => sync('token'));
     const preference = onPushPreferenceChanged((enabled) => sync('preference', enabled));
     return () => {
+      disposed = true;
+      pending = null;
       appState.remove();
       tokens.remove();
       preference();
@@ -95,8 +111,10 @@ export function usePushNotifications(input: { current: { face: AppFace; route: A
   // Taps: the one that opened the app, and any while it runs.
   useEffect(() => {
     if (!native) return;
+    let alive = true;
+    let receivedLiveResponse = false;
     const take = (response: Notifications.NotificationResponse | null) => {
-      if (!response || response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
+      if (!alive || !response || response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) return;
       const id = response.notification.request.identifier;
       if (handledTaps.has(id)) return;
       handledTaps.add(id);
@@ -104,9 +122,17 @@ export function usePushNotifications(input: { current: { face: AppFace; route: A
       void Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
       deliver();
     };
-    void Notifications.getLastNotificationResponseAsync().then(take, () => undefined);
-    const subscription = Notifications.addNotificationResponseReceivedListener(take);
-    return () => subscription.remove();
+    // Listen first. A user tap while the cached cold-start read is pending
+    // must win; a late response after AuthGate unmounts must remain available
+    // to the next authenticated mount, rather than being marked as handled.
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      receivedLiveResponse = true;
+      take(response);
+    });
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (!receivedLiveResponse) take(response);
+    }, () => undefined);
+    return () => { alive = false; subscription.remove(); };
     // `deliver` reads refs only, so it needs no dependency.
   }, []);
 

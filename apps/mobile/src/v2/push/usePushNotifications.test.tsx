@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   tokenListeners: new Set<() => void>(),
   appStateListeners: new Set<(state: string) => void>(),
   handler: null as null | { handleNotification: (notification: unknown) => Promise<{ shouldShowBanner: boolean }> },
+  os: 'android',
+  initialRead: vi.fn(),
 }));
 
 vi.mock('expo-notifications', () => ({
@@ -29,7 +31,7 @@ vi.mock('expo-notifications', () => ({
     h.tokenListeners.add(listener);
     return { remove: () => h.tokenListeners.delete(listener) };
   },
-  getLastNotificationResponseAsync: async () => h.lastResponse,
+  getLastNotificationResponseAsync: () => h.initialRead(),
   clearLastNotificationResponseAsync: async () => {
     h.lastResponse = null;
   },
@@ -39,7 +41,7 @@ vi.mock('expo-notifications', () => ({
   },
 }));
 vi.mock('react-native', () => ({
-  Platform: { OS: 'android' },
+  Platform: { get OS() { return h.os; } },
   AppState: {
     addEventListener: (_type: string, listener: (state: string) => void) => {
       h.appStateListeners.add(listener);
@@ -86,6 +88,8 @@ beforeEach(() => {
   h.sync.mockReset();
   h.sync.mockResolvedValue('registered');
   h.lastResponse = null;
+  h.os = 'android';
+  h.initialRead.mockReset().mockImplementation(async () => h.lastResponse);
   h.responseListeners.clear();
   h.tokenListeners.clear();
   h.appStateListeners.clear();
@@ -99,6 +103,34 @@ afterEach(async () => {
 });
 
 describe('registration', () => {
+  it.each(['ios', 'android'])('%s: coalesces token/preference changes during a pending registration', async (os) => {
+    h.os = os;
+    let finish!: (value: string) => void;
+    h.sync.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await render();
+    await act(async () => {
+      h.tokenListeners.forEach((listener) => listener());
+      pushPreferenceChanged(true);
+      h.tokenListeners.forEach((listener) => listener());
+    });
+    expect(h.sync).toHaveBeenCalledTimes(1);
+    await act(async () => finish('registered'));
+    expect(h.sync).toHaveBeenCalledTimes(2);
+    expect(h.sync).toHaveBeenLastCalledWith(expect.anything(), { identityId: 'identity_1', userAsked: true });
+  });
+
+  it.each(['ios', 'android'])('%s: discards queued registration work when the account changes', async (os) => {
+    h.os = os;
+    let finish!: (value: string) => void;
+    h.sync.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await render();
+    await act(async () => h.tokenListeners.forEach((listener) => listener()));
+    h.session = { state: 'authenticated', viewer: { identity: { id: 'identity_2' }, customerId: 'cus_2', riderStatus: null } };
+    await rerender();
+    await act(async () => finish('registered'));
+    expect(h.sync).toHaveBeenCalledTimes(2);
+    expect(h.sync).toHaveBeenLastCalledWith(expect.anything(), { identityId: 'identity_2', userAsked: false });
+  });
   it('registers for the signed-in account, and again when the token rotates or the switch changes', async () => {
     await render();
     expect(h.sync).toHaveBeenCalledWith(expect.anything(), { identityId: 'identity_1', userAsked: false });
@@ -123,6 +155,54 @@ describe('registration', () => {
 });
 
 describe('a tapped push', () => {
+  it.each(['ios', 'android'])('%s: a newer warm tap wins over a delayed cold-start response', async (os) => {
+    h.os = os;
+    let finish!: (value: unknown) => void;
+    h.initialRead.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await render();
+    await act(async () => h.responseListeners.forEach((listener) => listener(tap({ type: 'order_update', audience: 'customer', orderId: 'new_order' }))));
+    await act(async () => finish(tap({ type: 'order_update', audience: 'customer', orderId: 'old_order' })));
+    expect(opened).toEqual([{ face: 'customer', routes: [{ name: 'customer.track-order', params: { id: 'new_order' } }] }]);
+  });
+
+  it.each(['ios', 'android'])('%s: an unmounted reader cannot consume the next authenticated mount’s tap', async (os) => {
+    h.os = os;
+    const response = tap({ type: 'support_reply', audience: 'customer', conversationId: 'case_after_restore' });
+    h.lastResponse = response;
+    let finish!: (value: unknown) => void;
+    h.initialRead.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    await render();
+    await act(async () => root!.unmount());
+    root = null;
+    await act(async () => finish(response));
+    expect(opened).toEqual([]);
+    expect(h.lastResponse).toBe(response);
+    await render();
+    expect(opened).toEqual([{ face: 'customer', routes: [{ name: 'customer.support-chat' }] }]);
+  });
+
+  it('iOS: waits for an authenticated viewer and rejects an unapproved Rider target', async () => {
+    h.os = 'ios';
+    h.session = { state: 'authenticated', viewer: null };
+    h.lastResponse = tap({ type: 'rider_offer', offerId: 'offer_after_restore' });
+    await render();
+    expect(opened).toEqual([]);
+    h.session = { state: 'authenticated', viewer: { identity: { id: 'identity_1' }, customerId: 'cus_1', riderStatus: 'pending' } };
+    await rerender();
+    expect(opened).toEqual([]);
+  });
+
+  it('iOS: never opens a queued restore-time tap after the session expires', async () => {
+    h.os = 'ios';
+    h.session = { state: 'restoring', viewer: null };
+    h.lastResponse = tap({ type: 'order_update', audience: 'customer', orderId: 'expired_order' });
+    await render();
+    h.session = { state: 'unauthenticated', viewer: null };
+    await rerender();
+    h.session = { state: 'authenticated', viewer: { identity: { id: 'identity_2' }, customerId: 'cus_2', riderStatus: null } };
+    await rerender();
+    expect(opened).toEqual([]);
+  });
   it('opens its screen', async () => {
     await render();
     await act(async () => h.responseListeners.forEach((listener) => listener(tap({ type: 'order_chat', audience: 'customer', orderId: 'ord_1' }))));

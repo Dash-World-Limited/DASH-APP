@@ -88,6 +88,8 @@ interface RiderFlowValue {
   /** When dispatch was last asked for offers successfully. Real, so "checked 4s ago" is true. */
   offersCheckedAt: number | null;
   delivery: RiderDelivery | null;
+  /** Whether the initial active-assignment read has succeeded for this session. */
+  deliveryRestored: boolean;
   riderPosition: Coordinate | null;
   /** When the last GPS fix arrived on this phone. */
   positionUpdatedAt: number | null;
@@ -180,6 +182,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [offer, setOffer] = useState<RiderOffer | null>(null);
   const [delivery, setDelivery] = useState<RiderDelivery | null>(null);
+  const [deliveryRestored, setDeliveryRestored] = useState(false);
   const [riderPosition, setRiderPosition] = useState<Coordinate | null>(null);
   const [positionUpdatedAt, setPositionUpdatedAt] = useState<number | null>(null);
   const [positionAccuracyMetres, setPositionAccuracyMetres] = useState<number | null>(null);
@@ -398,13 +401,17 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       const active = response.deliveries[0];
       if (!active) {
         setDelivery(null);
+        setDeliveryRestored(true);
         return;
       }
       // The list leaves out the pickup code, so a delivery restored after a
       // relaunch is read in full — otherwise the rider would arrive at the shop
       // with no code to give.
       const detail = await api.request<{ delivery: ApiRiderDelivery }>(`/v1/rider/deliveries/${encodeURIComponent(active.id)}`);
-      if (valid()) setDelivery(normaliseDelivery(detail.delivery));
+      if (valid()) {
+        setDelivery(normaliseDelivery(detail.delivery));
+        setDeliveryRestored(true);
+      }
     } catch (caught) {
       if (valid()) throw caught;
     }
@@ -417,6 +424,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       setOnline(false);
       setOffer(null);
       setDelivery(null);
+      setDeliveryRestored(false);
       return;
     }
     const availability = auth.viewer?.riderAvailability;
@@ -430,6 +438,8 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       // without forcing them to toggle Offline -> Online.
       void reportCurrentPosition(false).catch(fail);
       void restoreDelivery().catch(fail);
+    } else {
+      setDeliveryRestored(true);
     }
   }, [auth.state, auth.viewer?.riderAvailability, fail, reportCurrentPosition, restoreDelivery]);
 
@@ -541,6 +551,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
       const detail = await api.request<{ delivery: ApiRiderDelivery }>(`/v1/rider/deliveries/${encodeURIComponent(response.orderId)}`);
       const next = normaliseDelivery(detail.delivery);
       setDelivery(next);
+      setDeliveryRestored(true);
       return next.id;
     } catch (caught) {
       fail(caught);
@@ -607,6 +618,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     error,
     offer,
     delivery,
+    deliveryRestored,
     riderPosition,
     goOnline,
     goOffline,
@@ -624,7 +636,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     offersCheckedAt,
     positionUpdatedAt,
     positionAccuracyMetres,
-  }), [busy, complete, delivery, error, findOffers, goOffline, goOnline, offer, offerSeenAt, offersCheckedAt, online, positionAccuracyMetres, positionUpdatedAt, progress, respondToOffer, riderPosition]);
+  }), [busy, complete, delivery, deliveryRestored, error, findOffers, goOffline, goOnline, offer, offerSeenAt, offersCheckedAt, online, positionAccuracyMetres, positionUpdatedAt, progress, respondToOffer, riderPosition]);
 
   return <RiderFlowContext.Provider value={value}>{children}</RiderFlowContext.Provider>;
 }
