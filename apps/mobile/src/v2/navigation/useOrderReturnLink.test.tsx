@@ -56,7 +56,7 @@ describe('existing payment return link', () => {
     const next = orderReturnNavigation('dash://orders', createNavigationState('rider'));
     expect(next).toBeNull();
   });
-  it('receives a cold-start callback when authenticated navigation mounts', async () => {
+  it('receives a cold-start callback when the app listener mounts', async () => {
     h.initial.mockResolvedValue('dash://orders');
     await mount();
     expect(opened).toHaveBeenCalledWith('dash://orders');
@@ -73,7 +73,7 @@ describe('existing payment return link', () => {
     await act(async () => { for (const listener of h.listeners) listener({ url: 'dash://orders' }); done('dash://unrelated'); });
     expect(opened).toHaveBeenCalledExactlyOnceWith('dash://orders');
   });
-  it('drops a delayed callback after navigation unmounts at sign-out', async () => {
+  it('drops a delayed callback after the app listener unmounts', async () => {
     let done!: (url: string) => void;
     h.initial.mockImplementation(() => new Promise<string>((resolve) => { done = resolve; }));
     await mount();
@@ -82,6 +82,22 @@ describe('existing payment return link', () => {
     await act(async () => done('dash://orders'));
     expect(h.listeners.size).toBe(0);
     expect(opened).not.toHaveBeenCalled();
+  });
+  it('does not let an unrelated live URL discard a delayed valid cold return', async () => {
+    let done!: (url: string) => void;
+    h.initial.mockImplementation(() => new Promise<string>((resolve) => { done = resolve; }));
+    await mount();
+    await act(async () => { for (const listener of h.listeners) listener({ url: 'dash://unrelated' }); done('dash://orders'); });
+    expect(opened).toHaveBeenCalledExactlyOnceWith('dash://orders');
+  });
+  it('does not pass unrelated cold links to the pending payment-return slot', async () => {
+    h.initial.mockResolvedValue('dash://orders.evil.test');
+    await mount();
+    expect(opened).not.toHaveBeenCalled();
+  });
+  it('keeps duplicate returns idempotent while Customer Orders is already selected', () => {
+    const current = orderReturnNavigation('dash://orders', createNavigationState('customer'))!;
+    expect(orderReturnNavigation('dash://orders?status=success', current)).toBe(current);
   });
   it('leaves the existing Android link behavior untouched', async () => {
     h.os = 'android';

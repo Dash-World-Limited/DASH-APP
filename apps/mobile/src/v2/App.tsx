@@ -111,6 +111,11 @@ export default function DashApp() {
 }
 
 function Bootstrap() {
+  // Capture iOS browser returns even while fonts/session restoration hide navigation.
+  // Keep only an intent to open Orders; the authenticated screen reads server data.
+  const [orderReturnUrl, setOrderReturnUrl] = useState<string | null>(null);
+  useOrderReturnLink(setOrderReturnUrl);
+  const acknowledgeOrderReturn = useCallback(() => setOrderReturnUrl(null), []);
   const { ready: themeReady, palette } = useTheme();
   const { ready: modeReady } = useAppMode();
   const [fontsLoaded, fontError] = useFonts({
@@ -136,13 +141,13 @@ function Bootstrap() {
     <View style={{ flex: 1, backgroundColor: palette.background }}>
       <StatusBar style={palette.statusBar} />
       <AuthGate>
-        <Navigator />
+        <Navigator orderReturnUrl={orderReturnUrl} onOrderReturnHandled={acknowledgeOrderReturn} />
       </AuthGate>
     </View>
   );
 }
 
-function Navigator() {
+function Navigator({ orderReturnUrl, onOrderReturnHandled }: { orderReturnUrl: string | null; onOrderReturnHandled: () => void }) {
   const { mode, setMode } = useAppMode();
   const { viewer, state: sessionState } = useAppSession();
   const [state, setState] = useState<NavigationState>(() => createNavigationState(mode));
@@ -176,12 +181,12 @@ function Navigator() {
   // Profile switch follows: a delivery in progress keeps the rider face.
   const riderFlow = useRiderFlow();
   const deliveryInProgress = Boolean(riderFlow.delivery && riderFlow.delivery.status !== 'delivered');
-  useOrderReturnLink((url) => {
-    const next = orderReturnNavigation(url, state);
-    if (!next) return;
-    if (next.face !== state.face) setMode(next.face);
-    setState(next);
-  });
+  useEffect(() => {
+    if (!orderReturnUrl) return;
+    setState((current) => orderReturnNavigation(orderReturnUrl, current) ?? current);
+    // Consume Rider-rejected returns too, so they cannot replay after a face change.
+    onOrderReturnHandled();
+  }, [orderReturnUrl, onOrderReturnHandled]);
   usePushNotifications({
     current: { face: state.face, route },
     onOpen: (target) => {
