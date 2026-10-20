@@ -218,4 +218,34 @@ describe('iOS order detail reads across suspension and navigation', () => {
     expect(h.request).toHaveBeenCalledTimes(3);
     expect(verifyCalls()).toHaveLength(0);
   });
+  it.each([
+    ['failed', 'preparing', 'Payment did not go through'],
+    ['pending', 'cancelled', 'Payment not finished'],
+  ])('hides obsolete %s retry controls after the server advances the order to %s', async (outcome, status, title) => {
+    vi.useFakeTimers();
+    h.request.mockResolvedValueOnce(detail('payment_pending'))
+      .mockResolvedValueOnce({ payment: { outcome } }).mockResolvedValueOnce(detail('payment_pending'))
+      .mockResolvedValueOnce(detail(status));
+    await render();
+    expect(container.textContent).toContain('Pay again');
+    expect(container.textContent).toContain(title);
+    await act(async () => { vi.advanceTimersByTime(12_000); }); await settle();
+    expect(container.textContent).toContain(`Server: ${status}`);
+    expect(container.textContent).not.toContain('Pay again');
+    expect(container.textContent).not.toContain(title);
+    expect(container.textContent).not.toContain('Payment confirmed');
+    expect(verifyCalls()).toHaveLength(1);
+  });
+  it.each([
+    ['captured', 'preparing', 'Payment confirmed'],
+    ['refunded', 'refunded', 'Payment refunded'],
+    ['captured_for_closed_order', 'cancelled', 'We need to check this payment'],
+  ])('preserves the server-verified %s information when the order is %s', async (outcome, status, title) => {
+    h.request.mockResolvedValueOnce(detail('payment_pending'))
+      .mockResolvedValueOnce({ payment: { outcome } }).mockResolvedValueOnce(detail(status));
+    await render();
+    expect(container.textContent).toContain(title);
+    expect(container.textContent).toContain(`Server: ${status}`);
+    expect(container.textContent).not.toContain('Pay again');
+  });
 });

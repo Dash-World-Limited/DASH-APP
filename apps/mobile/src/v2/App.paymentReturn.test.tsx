@@ -3,10 +3,12 @@
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PushTarget } from '../features/pushNotifications';
 
 const h = vi.hoisted(() => ({
   os: 'ios', session: 'restoring', mode: 'customer', ready: true,
   initial: vi.fn(), request: vi.fn(), listeners: new Set<(event: { url: string }) => void>(),
+  openPush: null as ((target: PushTarget) => void) | null, recall: vi.fn(),
 }));
 vi.mock('react-native', () => {
   const Box = ({ children, testID }: { children?: ReactNode; testID?: string }) => <div data-testid={testID}>{children}</div>;
@@ -41,16 +43,17 @@ vi.mock('./rider/RiderFlowProvider', () => ({
   RiderFlowProvider: ({ children }: { children: ReactNode }) => children,
   useRiderFlow: () => ({ online: true, deliveryRestored: true, delivery: { id: 'assigned', code: 'TEST-RIDER', status: 'en_route', branch: { name: 'Test shop' } } }),
 }));
-vi.mock('./push/usePushNotifications', () => ({ usePushNotifications: () => undefined }));
+vi.mock('./push/usePushNotifications', () => ({ usePushNotifications: ({ onOpen }: { onOpen: (target: PushTarget) => void }) => { h.openPush = onOpen; } }));
 vi.mock('./orders/useDeliveryLocation', () => ({ useDeliveryLocation: () => ({ location: { kind: 'unavailable' } }) }));
 vi.mock('../ui/Text', () => ({ Text: ({ children }: { children: ReactNode }) => <span>{children}</span> }));
 vi.mock('../ui/Icon', () => ({ Icon: () => null }));
 vi.mock('../brand/Wordmark', () => ({ Wordmark: () => null }));
 vi.mock('../rider/MapShell', () => ({ MapShell: () => null }));
-vi.mock('../features/orderMemory', () => ({ recallOrder: async () => ({}), rememberOrder: async () => undefined }));
+vi.mock('../features/orderMemory', () => ({ recallOrder: h.recall, rememberOrder: async () => undefined }));
 vi.mock('./orders/parts', () => {
   const Box = ({ children }: { children: ReactNode }) => <div>{children}</div>;
-  return { OrderPage: Box, Card: Box, BackHeader: () => null, Notice: ({ text }: { text: string }) => <p>{text}</p>, Empty: ({ title }: { title: string }) => <p>{title}</p>, PrimaryCheckoutButton: () => null, SecondaryButton: () => null };
+  const Button = ({ label, onPress, disabled }: { label: string; onPress: () => void; disabled?: boolean }) => <button disabled={disabled} onClick={onPress}>{label}</button>;
+  return { OrderPage: Box, Card: Box, BackHeader: ({ title, onBack }: { title: string; onBack: () => void }) => <><h1>{title}</h1><button onClick={onBack}>Back</button></>, Notice: ({ text }: { text: string }) => <p>{text}</p>, Empty: ({ title }: { title: string }) => <p>{title}</p>, PrimaryCheckoutButton: Button, SecondaryButton: Button };
 });
 vi.mock('../../assets/fonts/DashNairaSign-400.ttf', () => ({ default: 1 }));
 vi.mock('../../assets/fonts/DashNairaSign-500.ttf', () => ({ default: 1 }));
@@ -91,7 +94,114 @@ const isHome = () => container.querySelector('[data-testid="customer-home-v2"]')
 beforeEach(() => {
   h.os = 'ios'; h.session = 'restoring'; h.mode = 'customer'; h.ready = true; h.listeners.clear();
   h.initial.mockReset().mockResolvedValue(null); h.request.mockReset().mockResolvedValue({ orders: [] });
+  h.openPush = null; h.recall.mockReset().mockResolvedValue({});
   container = document.createElement('div'); root = createRoot(container);
+});
+
+const detail = (id: string, status = 'preparing') => ({ order: {
+  id, code: id, status, statusLabel: `Server: ${status}`, phase: status,
+  total: 10000, itemsSubtotal: 10000, discountTotal: 0, deliveryFee: 0, serviceFee: 0,
+  smallOrderFee: 0, surgeAmount: 0, tax: 0, tip: 0, createdAt: '2026-10-20T10:00:00Z',
+  vendor: { name: 'Test shop', slug: 'test', category: 'food' }, items: [],
+  branch: { name: 'Test shop', address: 'Test address', latitude: 0, longitude: 0 },
+  address: null, rider: null, statusEvents: [],
+}, cancellation: { allowed: status === 'payment_pending', explanation: 'Server cancellation policy' } });
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+async function openOrder(id: string) {
+  await act(async () => h.openPush!({ face: 'customer', routes: [{ name: 'customer.track-order', params: { id } }] }));
+  await settle();
+}
+
+describe('iOS order detail identity through real notification navigation', () => {
+  it('does not expose the previous order, PIN or payment controls while the newly opened order loads', async () => {
+    h.session = 'authenticated';
+    const next = deferred<ReturnType<typeof detail>>();
+    h.request.mockResolvedValueOnce(detail('ORDER-A', 'payment_pending'))
+      .mockResolvedValueOnce({ payment: { outcome: 'failed' } })
+      .mockResolvedValueOnce(detail('ORDER-A', 'payment_pending'))
+      .mockImplementationOnce(() => next.promise);
+    h.recall.mockResolvedValueOnce({ deliveryPin: '1111' }).mockImplementationOnce(() => new Promise(() => undefined));
+    await render(); await openOrder('ORDER-A');
+    expect(container.textContent).toContain('Order ORDER-A');
+    expect(container.textContent).toContain('1111');
+    expect(container.textContent).toContain('Pay again');
+    await openOrder('ORDER-B');
+    expect(container.textContent).toContain('Loading');
+    expect(container.textContent).not.toContain('Order ORDER-A');
+    expect(container.textContent).not.toContain('1111');
+    expect(container.textContent).not.toContain('Pay again');
+    expect(container.textContent).not.toContain('Cancel this order');
+    await act(async () => next.resolve(detail('ORDER-B'))); await settle();
+    expect(container.textContent).toContain('Order ORDER-B');
+    expect(container.textContent).not.toContain('Payment did not go through');
+    expect(container.textContent).not.toContain('1111');
+  });
+  it('shows a failed new-order read instead of retaining the previous order and its actions', async () => {
+    h.session = 'authenticated';
+    h.request.mockResolvedValueOnce(detail('ORDER-A')).mockRejectedValueOnce(new Error('offline'));
+    await render(); await openOrder('ORDER-A'); await openOrder('ORDER-B');
+    expect(container.textContent).toContain('Tracking unavailable');
+    expect(container.textContent).not.toContain('Order ORDER-A');
+  });
+  it('does not remount or refetch on a repeated notification for the currently open order', async () => {
+    h.session = 'authenticated'; h.request.mockResolvedValue(detail('ORDER-A'));
+    h.recall.mockResolvedValue({ deliveryPin: '1111' });
+    await render(); await openOrder('ORDER-A'); await openOrder('ORDER-A');
+    expect(container.textContent).toContain('Order ORDER-A');
+    expect(container.textContent).toContain('1111');
+    expect(h.request).toHaveBeenCalledExactlyOnceWith('/v1/orders/ORDER-A');
+    expect(h.recall).toHaveBeenCalledTimes(1);
+  });
+  it('loads the original order afresh on Back without displaying the newer order during restoration', async () => {
+    h.session = 'authenticated';
+    const backRead = deferred<ReturnType<typeof detail>>();
+    h.request.mockResolvedValueOnce(detail('ORDER-A')).mockResolvedValueOnce(detail('ORDER-B'))
+      .mockImplementationOnce(() => backRead.promise);
+    await render(); await openOrder('ORDER-A'); await openOrder('ORDER-B');
+    const back = [...container.querySelectorAll('button')].find(node => node.textContent === 'Back');
+    expect(back).toBeDefined();
+    await act(async () => back!.click()); await settle();
+    expect(container.textContent).toContain('Loading');
+    expect(container.textContent).not.toContain('Order ORDER-B');
+    await act(async () => backRead.resolve(detail('ORDER-A', 'delivered'))); await settle();
+    expect(container.textContent).toContain('Order ORDER-A');
+    expect(container.textContent).toContain('Server: delivered');
+    expect(h.request.mock.calls.map(([url]) => url)).toEqual(['/v1/orders/ORDER-A', '/v1/orders/ORDER-B', '/v1/orders/ORDER-A']);
+  });
+  it('discards the old screen read after notification navigation without verifying its obsolete pending payment', async () => {
+    h.session = 'authenticated';
+    const old = deferred<ReturnType<typeof detail>>();
+    h.request.mockImplementationOnce(() => old.promise).mockResolvedValueOnce(detail('ORDER-B'));
+    await render(); await openOrder('ORDER-A'); await openOrder('ORDER-B');
+    await act(async () => old.resolve(detail('ORDER-A', 'payment_pending'))); await settle();
+    expect(container.textContent).toContain('Order ORDER-B');
+    expect(container.textContent).not.toContain('Order ORDER-A');
+    expect(h.request).toHaveBeenCalledTimes(2);
+  });
+  it('does not open a Customer order notification over an active Rider workspace', async () => {
+    h.session = 'authenticated'; h.mode = 'rider'; await render();
+    const resume = [...container.querySelectorAll('button')].find(node => node.textContent === 'Continue delivery');
+    expect(resume).toBeDefined();
+    await act(async () => resume!.click()); await settle();
+    await openOrder('ORDER-A');
+    expect(container.textContent).toContain('Rider workspace');
+    expect(h.mode).toBe('rider');
+    expect(h.request.mock.calls.some(([url]) => String(url).startsWith('/v1/orders/'))).toBe(false);
+  });
+  it('preserves Android server reads and duplicate-target behavior', async () => {
+    h.os = 'android'; h.session = 'authenticated';
+    h.request.mockResolvedValueOnce(detail('ORDER-A')).mockResolvedValueOnce(detail('ORDER-B'));
+    await render(); await openOrder('ORDER-A'); await openOrder('ORDER-B'); await openOrder('ORDER-B');
+    expect(container.textContent).toContain('Order ORDER-B');
+    expect(h.request.mock.calls.map(([url]) => url)).toEqual(['/v1/orders/ORDER-A', '/v1/orders/ORDER-B']);
+    expect(h.initial).not.toHaveBeenCalled();
+    expect(h.listeners.size).toBe(0);
+  });
 });
 afterEach(async () => { await act(async () => root.unmount()); });
 

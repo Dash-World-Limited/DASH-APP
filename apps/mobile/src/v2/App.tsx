@@ -290,7 +290,9 @@ function RouteView({
     case 'customer.checkout':
       return <CustomerCheckoutScreen onBack={onBack} onAccount={() => onPush({ name: 'customer.account' })} onTrack={(id) => onPush({ name: 'customer.track-order', params: { id } })} />;
     case 'customer.track-order':
-      return <CustomerTrackingScreen orderId={route.params?.id ?? ''} onBack={onBack} onChat={(id) => onPush({ name: 'customer.chat', params: { id } })} />;
+      // A different iOS notification target needs fresh order/PIN/payment state,
+      // including while its server read is pending or fails. Keep Android's lifetime.
+      return <CustomerTrackingScreen key={Platform.OS === 'ios' ? route.params?.id ?? '' : undefined} orderId={route.params?.id ?? ''} onBack={onBack} onChat={(id) => onPush({ name: 'customer.chat', params: { id } })} />;
     case 'customer.chat':
       return <OrderChatScreen orderId={route.params?.id ?? ''} onBack={onBack} />;
     case 'customer.register':

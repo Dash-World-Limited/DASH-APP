@@ -395,6 +395,9 @@ function PaymentSection({
   const { palette } = useTheme();
   if (status !== 'payment_pending' && !outcome) return null;
   const said = outcome ? describeOutcome(outcome) : null;
+  // A newer server order status can supersede an earlier retryable check.
+  // Do not offer another payment on iOS or invent a replacement payment outcome.
+  if (Platform.OS === 'ios' && status !== 'payment_pending' && said?.canRetry) return null;
   const tone = said?.tone === 'success' ? palette.success : said?.tone === 'problem' ? palette.danger : palette.accent;
   return (
     <Card>
