@@ -148,6 +148,9 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
   // The poll and the AppState listener need the current status without
   // re-subscribing every time it changes.
   const statusRef = useRef<string | null>(null);
+  // iOS suspension can finish an older read after a resume/poll has replaced it.
+  const loadGeneration = useRef(0);
+  const checkGeneration = useRef(0);
 
   const load = useCallback(async () => {
     if (!api.configured || auth.state !== 'authenticated') return;
@@ -158,18 +161,23 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
       setError('No order was selected.');
       return;
     }
+    const generation = ++loadGeneration.current;
+    const current = () => Platform.OS !== 'ios' || generation === loadGeneration.current;
     try {
       const response = await api.request<{ order: OrderDetail; cancellation?: { allowed: boolean; explanation: string } }>(
         `/v1/orders/${encodeURIComponent(orderId)}`,
       );
+      if (!current()) return false;
       setOrder(response.order);
       setCancellation(response.cancellation ?? null);
       statusRef.current = response.order.status;
       setError(null);
+      return true;
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : 'Could not refresh this delivery.');
+      if (current()) setError(caught instanceof ApiError ? caught.message : 'Could not refresh this delivery.');
+      return false;
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }, [auth.state, orderId]);
 
@@ -180,23 +188,41 @@ export function CustomerTrackingScreen({ orderId, onBack, onChat }: { orderId: s
    */
   const check = useCallback(async () => {
     if (!orderId || statusRef.current !== 'payment_pending') return;
+    const generation = ++checkGeneration.current;
+    const detailGeneration = loadGeneration.current;
+    const current = () => Platform.OS !== 'ios' || generation === checkGeneration.current;
+    // A later detail read can supersede this verification even without another check.
+    const mayApply = () => current() && (Platform.OS !== 'ios' || detailGeneration === loadGeneration.current);
     setChecking(true);
     setPayProblem(null);
     try {
       const result = await verifyPayment(api, orderId);
+      if (!mayApply()) return;
       setOutcome(result.payment.outcome);
       await load();
     } catch (caught) {
-      setPayProblem(caught instanceof ApiError ? caught.message : 'Could not check this payment.');
+      if (mayApply()) setPayProblem(caught instanceof ApiError ? caught.message : 'Could not check this payment.');
     } finally {
-      setChecking(false);
+      if (current()) setChecking(false);
     }
   }, [orderId, load]);
 
   useEffect(() => {
     if (!orderId) return;
-    void recallOrder(orderId).then(setMemory);
-    void load().then(() => check());
+    let live = true;
+    void recallOrder(orderId).then((value) => {
+      if (Platform.OS !== 'ios' || live) setMemory(value);
+    });
+    void load().then((loaded) => {
+      if (Platform.OS !== 'ios' || (live && loaded)) return check();
+    });
+    return () => {
+      live = false;
+      if (Platform.OS !== 'ios') return;
+      // Invalidate suspended work before an order change, logout or return to Orders.
+      loadGeneration.current += 1;
+      checkGeneration.current += 1;
+    };
   }, [orderId, load, check]);
 
   // Back from Paystack's page, or reopened after being closed: check now.
