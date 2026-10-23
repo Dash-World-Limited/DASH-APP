@@ -12,7 +12,15 @@ import { z } from 'zod';
 import { kobo } from '@dash/domain/money';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import { recordOrderChange } from '../realtime/notify.js';
-import { ACTIVE_STATUSES, assertTransition, type OrderStatus } from '@dash/domain/orders';
+import {
+  ACTIVE_STATUSES,
+  assertTransition,
+  RIDER_CLAIMABLE_STATUSES,
+  RIDER_HOLDING_STATUSES,
+  type OrderStatus,
+} from '@dash/domain/orders';
+import { releaseRiderBeforePickup, releaseRidersFromStoppedOrder, withdrawOpenOffers } from '../orders/rider-release.js';
+import { DISPATCH_REOPENED } from '../workers/dispatch.js';
 import { buildRefund, buildWalletCredit, verifyLedgerIntegrity } from '@dash/domain/ledger';
 import { postLedgerTransaction, writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
@@ -182,95 +190,247 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       const actor = actorOf(request);
       const order = await prisma.order.findUnique({
         where: { id: request.params.id },
-        select: { id: true, status: true, riderId: true, vendor: { select: { cityId: true } } },
+        select: { id: true, status: true, riderId: true, readyAt: true, vendor: { select: { cityId: true } } },
       });
       if (!order) throw ApiError.notFound();
       requireScope(actor, { cityId: order.vendor.cityId });
 
-      assertTransition(order.status as OrderStatus, 'ready', 'ops');
+      // Only an order a rider is on but has not collected. With no rider there
+      // is nobody to take off (see /redispatch). After pickup the rider has the
+      // customer's order, and sending another rider would leave it
+      // unaccounted for: that is an incident — contact the rider, or cancel
+      // with an incident reason, which keeps the record of who has it.
+      if (!order.riderId) {
+        throw ApiError.conflict('No rider is on this order. Use Redispatch to restart the search.');
+      }
+      if (RIDER_HOLDING_STATUSES.has(order.status as OrderStatus)) {
+        throw ApiError.conflict(
+          'The rider has already collected this order, so it cannot be reassigned. Contact the rider, or cancel it as an incident.',
+        );
+      }
 
-      await prisma.$transaction(async (tx) => {
-        // Created first so its id can key the dispatch job below.
-        const event = await tx.orderStatusEvent.create({
-          data: {
-            orderId: order.id,
-            fromStatus: order.status,
-            toStatus: 'ready',
-            actorType: 'ops',
-            actorId: actor.identityId,
-            reasonCode: body.reasonCode,
-            reason: body.note ?? null,
-          },
-          select: { id: true },
-        });
-
-        await tx.order.update({
-          where: { id: order.id },
-          data: { status: 'ready', riderId: null },
-        });
-
-        if (order.riderId) {
-          await tx.rider.update({
-            where: { id: order.riderId },
-            data: { availability: 'idle' },
-          });
-          await tx.dispatchOffer.updateMany({
-            where: { orderId: order.id, riderId: order.riderId, status: 'accepted' },
-            data: { status: 'withdrawn' },
-          });
-        }
-
-        // Recorded with the reassignment, in the same transaction. The key is
-        // the event id, so a genuine second reassignment still dispatches while
-        // a retried publish of this one does not.
-        await enqueueViaOutbox(tx, {
-          name: 'dispatch.find_rider',
-          payload: { orderId: order.id },
-          idempotencyKey: `dispatch_${order.id}_reassign_${event.id}`,
-        });
-
-        // Recorded after the rider is cleared, so the fan-out is computed from
-        // the order as it now stands. That matters here more than anywhere
-        // else: the reassigned rider is no longer on the order, so the
-        // `rider:` topic in this notification is absent rather than naming
-        // someone who has just been taken off the job.
-        await recordOrderChange(tx, order.id);
-      });
+      // Atomic on the status and rider read above: a pickup, an acceptance or
+      // another reassignment landing first makes this fail rather than act on
+      // an order that has moved. The order goes back to `preparing` or `ready`
+      // by whether the food is actually ready, and dispatch restarts at once
+      // without the rider just removed.
+      const released = await prisma.$transaction((tx) =>
+        releaseRiderBeforePickup(tx, {
+          orderId: order.id,
+          expectedStatus: order.status as OrderStatus,
+          riderId: order.riderId as string,
+          readyAt: order.readyAt,
+          actorType: 'ops',
+          transitionActor: 'ops',
+          actorId: actor.identityId,
+          reasonCode: body.reasonCode,
+          reason: body.note ?? null,
+        }),
+      );
 
       // Publish now if the queue is reachable; the scheduled relay covers it
       // if not. Never raises — the row is already durable.
       await flushOutbox(prisma, queue);
 
-      // Keyed on the reassignment itself rather than the clock.
-      //
-      // `Date.now()` here meant every call produced a fresh key, so a
-      // double-clicked reassign enqueued two dispatch jobs and two expiry
-      // sweeps — offers going to more riders than intended, for an order only
-      // one of them can claim. Not a money bug (the claim is an atomic
-      // updateMany guarded on riderId: null), but wasteful and confusing for
-      // the riders who receive a dead offer.
-      //
-      // The event id is unique per real reassignment, so a genuine second
-      // reassignment still dispatches, and the key traces back to the audited
-      // action that caused it.
-      //
-      // Note this does not make the *endpoint* idempotent: two requests create
-      // two events. Request-level double-submit protection would mean requiring
-      // an Idempotency-Key header here, as order creation does. Recorded as an
-      // open item rather than changed silently, because it alters the contract
-      // for every existing ops client.
+      // The dispatch job is keyed on the status event the release wrote, so a
+      // retried publish of this reassignment does not dispatch twice while a
+      // genuine second reassignment still does. Two requests still make two
+      // events: request-level double-submit protection would mean requiring an
+      // Idempotency-Key header, which changes the contract for ops clients.
       await writeAudit(prisma, {
         identityId: actor.identityId,
         action: 'ops.order.reassigned',
         resourceType: 'order',
         resourceId: order.id,
-        before: { riderId: order.riderId },
-        after: { reasonCode: body.reasonCode },
+        before: { status: order.status, riderId: order.riderId },
+        after: { status: released.status, reasonCode: body.reasonCode, note: body.note ?? null },
         ipAddress: request.ip,
         requestId: request.id,
       });
 
-      return { reassigned: true };
+      return { reassigned: true, status: released.status };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/ops/orders/:id/redispatch — restart the search for an order
+  // with no rider
+  //
+  // For an order dispatch gave up on (every rider tried, or four rounds
+  // without an answer) and that a dispatcher now wants offered again. Riders
+  // offered it before may be offered it again: that is the point. Any offer
+  // still open is withdrawn first so the search starts clean.
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/ops/orders/:id/redispatch',
+    { preHandler: requirePermission('ops:dispatch:reassign') },
+    async (request) => {
+      const body = z
+        .object({
+          reasonCode: z.enum(['no_rider_found', 'riders_back_online', 'customer_request', 'other']),
+          note: z.string().trim().max(280).optional(),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+      const order = await prisma.order.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, status: true, riderId: true, mode: true, vendor: { select: { cityId: true } } },
+      });
+      if (!order) throw ApiError.notFound();
+      requireScope(actor, { cityId: order.vendor.cityId });
+
+      if (order.riderId) throw ApiError.conflict('A rider is on this order. Use Reassign to replace them.');
+      if (order.mode !== 'delivery' || !RIDER_CLAIMABLE_STATUSES.has(order.status as OrderStatus) || order.status === 'accepted') {
+        // `accepted` is excluded deliberately: dispatch starts when the vendor
+        // starts preparing, and an ops redispatch must not jump that.
+        throw ApiError.conflict('This order is not waiting for a rider.');
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await withdrawOpenOffers(tx, order.id);
+        // The marker the worker reads (see DISPATCH_REOPENED): offers before it
+        // no longer rule a rider out.
+        const event = await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: order.status,
+            actorType: 'ops',
+            actorId: actor.identityId,
+            reasonCode: DISPATCH_REOPENED,
+            reason: `${body.reasonCode}${body.note ? `: ${body.note}` : ''}`,
+          },
+          select: { id: true },
+        });
+        await enqueueViaOutbox(tx, {
+          name: 'dispatch.find_rider',
+          payload: { orderId: order.id, round: 1 },
+          idempotencyKey: `dispatch_${order.id}_reopen_${event.id}`,
+        });
+        await recordOrderChange(tx, order.id);
+      });
+      await flushOutbox(prisma, queue);
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'ops.order.redispatched',
+        resourceType: 'order',
+        resourceId: order.id,
+        after: { reasonCode: body.reasonCode, note: body.note ?? null },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return { redispatched: true };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/ops/orders/:id/cancel — staff cancel an active order
+  //
+  // Any status before delivery. Before pickup it simply stops the order:
+  // offers are withdrawn, the rider is stood down, and nothing dispatches
+  // again. After pickup it is an incident — the rider still has the order —
+  // so it needs an incident reason, and the order keeps its rider and pickup
+  // time as the record of who has custody.
+  //
+  // Money: no refund is decided here. Who bears an ops cancellation (customer,
+  // vendor, DASH) is a judgement the existing finance refund flow makes with
+  // its own approval and cap; the answer says whether a payment was captured
+  // so the operator knows a refund decision is owed.
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/ops/orders/:id/cancel',
+    { preHandler: requirePermission('ops:order:intervene') },
+    async (request) => {
+      const body = z
+        .object({
+          reasonCode: z.enum([
+            'customer_request',
+            'vendor_request',
+            'vendor_unavailable',
+            'no_rider_available',
+            'duplicate_order',
+            'suspected_fraud',
+            'rider_incident',
+            'delivery_incident',
+            'other',
+          ]),
+          // A cancellation by staff is never silent.
+          note: z.string().trim().min(3).max(280),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+      const order = await prisma.order.findUnique({
+        where: { id: request.params.id },
+        select: {
+          id: true,
+          status: true,
+          riderId: true,
+          vendor: { select: { cityId: true } },
+          payments: { where: { status: 'captured' }, select: { amount: true }, take: 1 },
+        },
+      });
+      if (!order) throw ApiError.notFound();
+      requireScope(actor, { cityId: order.vendor.cityId });
+
+      const status = order.status as OrderStatus;
+      assertTransition(status, 'cancelled', 'ops');
+      const custody = RIDER_HOLDING_STATUSES.has(status);
+      if (custody && body.reasonCode !== 'rider_incident' && body.reasonCode !== 'delivery_incident') {
+        throw ApiError.conflict(
+          'The rider has already collected this order. Cancel it only as a rider or delivery incident, once you know where the order is.',
+        );
+      }
+
+      await prisma.$transaction(async (tx) => {
+        const moved = await tx.order.updateMany({
+          where: { id: order.id, status, riderId: order.riderId },
+          data: {
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancelledBy: actor.identityId,
+            cancellationReason: body.note,
+          },
+        });
+        if (moved.count === 0) throw ApiError.conflict('That order has just changed. Reload and try again.');
+        await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: status,
+            toStatus: 'cancelled',
+            actorType: 'ops',
+            actorId: actor.identityId,
+            reasonCode: `ops_cancelled:${body.reasonCode}`,
+            reason: body.note,
+          },
+        });
+        await releaseRidersFromStoppedOrder(tx, order);
+        await recordOrderChange(tx, order.id);
+      });
+      await flushOutbox(prisma, queue);
+
+      const captured = order.payments[0]?.amount ?? 0;
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'ops.order.cancelled',
+        resourceType: 'order',
+        resourceId: order.id,
+        before: { status, riderId: order.riderId },
+        after: { reasonCode: body.reasonCode, note: body.note, riderHadCustody: custody, capturedAmount: captured },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return {
+        cancelled: true,
+        riderHadCustody: custody,
+        // Whether a refund decision is owed, for the finance refund flow.
+        capturedAmount: kobo(captured),
+        refundDecisionNeeded: captured > 0,
+      };
     },
   );
 

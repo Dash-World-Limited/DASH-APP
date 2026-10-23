@@ -13,7 +13,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { customerLabel, deliveryAddressOf, type OrderStatus } from '@dash/domain/orders';
+import { customerLabel, deliveryAddressOf, riderSearchState, type OrderStatus } from '@dash/domain/orders';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission } from '../http/context.js';
 
@@ -156,7 +156,23 @@ export async function registerOrderHistoryRoutes(app: FastifyInstance): Promise<
             orderBy: { id: 'asc' },
           },
           statusEvents: {
-            select: { fromStatus: true, toStatus: true, actorType: true, reasonCode: true, createdAt: true },
+            select: { fromStatus: true, toStatus: true, actorType: true, reasonCode: true, reason: true, createdAt: true },
+            orderBy: { createdAt: 'asc' },
+          },
+          riderId: true,
+          // Every offer dispatch made, so staff can see who was asked, who
+          // said no, who let it lapse and who is being asked now.
+          offers: {
+            select: {
+              id: true,
+              round: true,
+              status: true,
+              createdAt: true,
+              expiresAt: true,
+              respondedAt: true,
+              declineReason: true,
+              rider: { select: { id: true, identity: { select: { displayName: true } } } },
+            },
             orderBy: { createdAt: 'asc' },
           },
           payments: {
@@ -246,6 +262,19 @@ export async function registerOrderHistoryRoutes(app: FastifyInstance): Promise<
           cancellation: order.cancelledAt ? { reason: order.cancellationReason, by: order.cancelledBy } : null,
           payments: order.payments,
           statusEvents: order.statusEvents,
+          riderSearch: riderSearchState({ status, riderId: order.riderId, mode: order.mode }, order.statusEvents),
+          dispatchOffers: order.offers.map((offer) => ({
+            id: offer.id,
+            round: offer.round,
+            // A pending offer past its deadline is effectively expired even
+            // before the sweep marks it.
+            status: offer.status === 'pending' && offer.expiresAt.getTime() <= Date.now() ? 'expired' : offer.status,
+            createdAt: offer.createdAt,
+            expiresAt: offer.expiresAt,
+            respondedAt: offer.respondedAt,
+            declineReason: offer.declineReason,
+            rider: { id: offer.rider.id, name: offer.rider.identity.displayName },
+          })),
           riderRating: order.reviews[0] ?? null,
         },
       };

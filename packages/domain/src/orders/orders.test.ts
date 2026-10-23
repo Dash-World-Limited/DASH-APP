@@ -26,6 +26,10 @@ import {
   vendorRejectionOutcome,
   type OrderStatus,
   type TransitionActor,
+  isFindingRider,
+  RIDER_RELEASABLE_STATUSES,
+  riderSearchState,
+  statusAfterRiderRelease,
 } from './index.js';
 
 const ACTORS: readonly TransitionActor[] = ['customer', 'vendor', 'rider', 'ops', 'system'];
@@ -431,5 +435,68 @@ describe('the delivery address frozen on an order', () => {
     expect(deliveryAddressOf('not json', home)).toEqual(home);
     expect(deliveryAddressOf('{"line1": 4}', home)).toEqual(home);
     expect(deliveryAddressOf(null, null)).toBeNull();
+  });
+});
+
+describe('taking a rider off an order', () => {
+  it('is possible only before pickup, and only for ops and the system', () => {
+    for (const from of ['rider_assigned', 'rider_arrived'] as const) {
+      for (const to of ['ready', 'preparing'] as const) {
+        expect(canTransition(from, to, 'ops'), `${from}->${to}`).toBe(true);
+        expect(canTransition(from, to, 'system'), `${from}->${to}`).toBe(true);
+        for (const actor of ['customer', 'vendor', 'rider'] as const) {
+          expect(canTransition(from, to, actor), `${actor} ${from}->${to}`).toBe(false);
+        }
+      }
+    }
+    for (const from of ['picked_up', 'en_route', 'arrived', 'delivered'] as const) {
+      expect(canTransition(from, 'ready', 'ops'), from).toBe(false);
+      expect(canTransition(from, 'preparing', 'ops'), from).toBe(false);
+    }
+    expect([...RIDER_RELEASABLE_STATUSES]).toEqual(['rider_assigned', 'rider_arrived']);
+  });
+
+  it('returns the order to the kitchen state it is really in', () => {
+    expect(statusAfterRiderRelease(null)).toBe('preparing');
+    expect(statusAfterRiderRelease(new Date())).toBe('ready');
+    expect(statusAfterRiderRelease('2026-10-23T10:00:00.000Z')).toBe('ready');
+  });
+});
+
+describe('a vendor cancelling', () => {
+  it('may cancel from accepting until a rider takes the food', () => {
+    for (const from of ['accepted', 'preparing', 'ready', 'rider_assigned', 'rider_arrived'] as const) {
+      expect(canTransition(from, 'cancelled', 'vendor'), from).toBe(true);
+    }
+    for (const from of ['placed', 'vendor_reviewing', 'picked_up', 'en_route', 'arrived', 'delivered'] as const) {
+      expect(canTransition(from, 'cancelled', 'vendor'), from).toBe(false);
+    }
+  });
+});
+
+describe('the rider search shown to customers and vendors', () => {
+  const order = (status: string, riderId: string | null = null, mode = 'delivery') => ({ status, riderId, mode });
+  const released = [{ fromStatus: 'rider_assigned', toStatus: 'preparing' }];
+
+  it('is "finding" only while a delivery order has no rider and dispatch is running', () => {
+    expect(riderSearchState(order('preparing'), [])).toBe('finding');
+    expect(riderSearchState(order('ready'), [])).toBe('finding');
+    expect(riderSearchState(order('accepted'), [])).toBeNull();
+    expect(riderSearchState(order('ready', null, 'pickup'), [])).toBeNull();
+    expect(riderSearchState(order('cancelled'), released)).toBeNull();
+  });
+
+  it('never claims a search while a rider is assigned', () => {
+    for (const status of ['rider_assigned', 'rider_arrived', 'picked_up']) {
+      expect(riderSearchState(order(status, 'rider_1'), released), status).toBeNull();
+    }
+    expect(isFindingRider(order('ready', 'rider_1'))).toBe(false);
+  });
+
+  it('says "another" once a rider who accepted was taken off', () => {
+    expect(riderSearchState(order('preparing'), released)).toBe('finding_another');
+    expect(riderSearchState(order('ready'), [{ fromStatus: 'rider_arrived', toStatus: 'ready' }])).toBe('finding_another');
+    // The vendor marking food ready is not a release.
+    expect(riderSearchState(order('ready'), [{ fromStatus: 'preparing', toStatus: 'ready' }])).toBe('finding');
   });
 });

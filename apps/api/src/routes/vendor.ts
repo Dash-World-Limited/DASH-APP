@@ -10,7 +10,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import sharp from 'sharp';
 import { pickupCodeMatches } from '../orders/pickup-code.js';
-import { assertTransition, type OrderStatus } from '@dash/domain/orders';
+import { assertTransition, riderSearchState, RIDER_HOLDING_STATUSES, type OrderStatus } from '@dash/domain/orders';
+import { releaseRidersFromStoppedOrder } from '../orders/rider-release.js';
 import { writeAudit } from '@dash/db';
 import { ApiError } from '../http/errors.js';
 import { readMaskedPayoutDetails, setPayoutDetails } from '../vendor/payout.js';
@@ -98,6 +99,7 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
         branchId: true,
         pickupCodeHash: true,
         estimatedReadyAt: true,
+        riderId: true,
       },
     });
     if (!order) throw ApiError.notFound();
@@ -740,6 +742,9 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
           // phone number or the full address to cook the food; the rider does.
           customer: { select: { identity: { select: { displayName: true } } } },
           rider: { select: { identity: { select: { displayName: true } } } },
+          // Enough to say whether a rider is being found, or found again.
+          riderId: true,
+          statusEvents: { select: { fromStatus: true, toStatus: true } },
         },
         orderBy: { createdAt: query.status === 'completed' ? 'desc' : 'asc' },
         take: query.limit,
@@ -755,8 +760,11 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
 
       return {
         vendor: { category: vendor?.category ?? null },
-        orders: orders.map((order) => ({
+        orders: orders.map(({ riderId, statusEvents, ...order }) => ({
           ...order,
+          // "Finding a rider" rather than a blank where the rider would be,
+          // so an order nobody is coming for never looks like one somebody is.
+          riderSearch: riderSearchState({ status: order.status, riderId, mode: order.mode }, statusEvents),
           customer: { name: order.customer.identity.displayName?.split(' ')[0] ?? 'Customer' },
           rider: order.rider ? { name: order.rider.identity.displayName } : null,
           items: order.items.map((item) => ({
@@ -947,6 +955,100 @@ export async function registerVendorRoutes(app: FastifyInstance): Promise<void> 
       });
 
       return { rejected: true, refundQueued: true };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/vendor/orders/:id/cancel — the vendor cannot fulfil after all
+  //
+  // For an order the vendor has already accepted (before that, Reject is the
+  // answer), up to the moment a rider takes the food. Same authority as
+  // rejecting, and the same money rule: the customer did nothing wrong, so the
+  // whole payment is owed back and queued exactly as a rejection's is.
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/vendor/orders/:id/cancel',
+    { preHandler: requirePermission('vendor:order:reject') },
+    async (request) => {
+      const body = z
+        .object({
+          reasonCode: z.enum([
+            'out_of_stock',
+            'kitchen_problem',
+            'closing_early',
+            'cannot_fulfil_instructions',
+            'other',
+          ]),
+          note: z.string().trim().max(280).optional(),
+        })
+        .parse(request.body);
+
+      const { actor, order } = await loadScopedOrder(request, request.params.id);
+      const status = order.status as OrderStatus;
+      if (status === 'placed' || status === 'vendor_reviewing') {
+        throw ApiError.conflict('This order has not been accepted yet. Reject it instead.');
+      }
+      if (RIDER_HOLDING_STATUSES.has(status)) {
+        throw ApiError.conflict('The rider has already collected this order. Contact DASH support.');
+      }
+      const actingAs = transitionActorFor(actor);
+      assertTransition(status, 'cancelled', actingAs);
+
+      await prisma.$transaction(async (tx) => {
+        // Compare-and-set on the status and rider that were read, so a pickup
+        // or a rider change landing first makes this fail rather than cancel
+        // an order that has moved on.
+        const moved = await tx.order.updateMany({
+          where: { id: order.id, status, riderId: order.riderId },
+          data: {
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancelledBy: actor.identityId,
+            cancellationReason: body.note ?? body.reasonCode,
+          },
+        });
+        if (moved.count === 0) throw ApiError.conflict('That order has just changed. Reload and try again.');
+
+        await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: status,
+            toStatus: 'cancelled',
+            actorType: actingAs,
+            actorId: actor.identityId,
+            reasonCode: `vendor_cancelled:${body.reasonCode}`,
+            reason: body.note ?? null,
+          },
+        });
+
+        // No rider may take it now, and one already on the way is stood down.
+        // Cancelled is not assignable, so no dispatch round can start again.
+        await releaseRidersFromStoppedOrder(tx, order);
+
+        await enqueueViaOutbox(tx, {
+          name: 'refund.full',
+          payload: { orderId: order.id, reason: 'vendor_cancelled' },
+          idempotencyKey: `refund_${order.id}`,
+        });
+
+        // Customer, vendor and — through its topic while it still names them —
+        // the rider who was coming are all told with the commit.
+        await recordOrderChange(tx, order.id);
+      });
+
+      await flushOutbox(prisma, queue);
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: actingAs === 'vendor' ? 'vendor.order.cancelled' : 'ops.order.cancelled',
+        resourceType: 'order',
+        resourceId: order.id,
+        before: { status, riderId: order.riderId },
+        after: { reasonCode: body.reasonCode },
+        requestId: request.id,
+      });
+
+      return { cancelled: true, refundQueued: true };
     },
   );
 

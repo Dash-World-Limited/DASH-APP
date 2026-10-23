@@ -14,7 +14,13 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { verifyOtp } from '@dash/domain/crypto';
 import { checkLocationJump, coarsen, haversineMetres } from '@dash/domain/geo';
-import { assertTransition, RIDER_HOLDING_STATUSES, type OrderStatus } from '@dash/domain/orders';
+import {
+  assertTransition,
+  RIDER_CLAIMABLE_STATUSES,
+  RIDER_HOLDING_STATUSES,
+  RIDER_RELEASABLE_STATUSES,
+  type OrderStatus,
+} from '@dash/domain/orders';
 import { kobo } from '@dash/domain/money';
 import { computeRiderPay, DEFAULT_RIDER_PAY_RULES } from '@dash/domain/pay';
 import { buildRiderAssignment } from '@dash/domain/ledger';
@@ -32,6 +38,7 @@ import { actorOf, requirePermission, requireScope } from '../http/context.js';
 import { enqueueViaOutbox, flushOutbox } from '../events/outbox.js';
 import { recordOrderChange } from '../realtime/notify.js';
 import { PICKUP_CODE_VISIBLE, pickupCodeFor } from '../orders/pickup-code.js';
+import { enqueueNextRound, releaseRiderBeforePickup } from '../orders/rider-release.js';
 
 /**
  * The fastest plausible sustained speed for a Lagos rider, in metres/second.
@@ -39,6 +46,19 @@ import { PICKUP_CODE_VISIBLE, pickupCodeFor } from '../orders/pickup-code.js';
  * teleport is caught.
  */
 const MAX_PLAUSIBLE_SPEED_MPS = 25;
+
+/** Thrown inside the acceptance transaction to roll back an offer claim whose order was lost. */
+class LostClaim extends Error {}
+
+/** Why a rider is giving back a job they accepted. Mandatory and recorded on the order. */
+const RELEASE_REASONS = [
+  'vehicle_problem',
+  'emergency',
+  'vendor_closed_or_unreachable',
+  'order_not_ready_too_long',
+  'unsafe_location',
+  'other',
+] as const;
 
 /**
  * The statuses that mean "this rider still owes someone this order".
@@ -395,6 +415,7 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
           riderId: true,
           status: true,
           expiresAt: true,
+          round: true,
           eligibilityMode: true,
           // The pickup point, so acceptance can re-measure distance and zone
           // against the rider's *fresh* position rather than trusting the one
@@ -423,14 +444,41 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
       }
 
       if (!body.accept) {
-        await prisma.dispatchOffer.update({
-          where: { id: offer.id },
-          data: {
-            status: 'declined',
-            respondedAt: new Date(),
-            declineReason: body.declineReason ?? null,
-          },
+        // A decline moves the order on now. It used to close the offer and
+        // nothing else, so the order sat with nobody looking for a rider until
+        // the round's expiry sweep — up to the whole offer window plus two
+        // seconds — while the customer and vendor waited on a rider who had
+        // already said no.
+        await prisma.$transaction(async (tx) => {
+          const closed = await tx.dispatchOffer.updateMany({
+            where: { id: offer.id, status: 'pending' },
+            data: {
+              status: 'declined',
+              respondedAt: new Date(),
+              declineReason: body.declineReason ?? null,
+            },
+          });
+          if (closed.count === 0) throw ApiError.conflict('That offer is no longer available.');
+
+          const order = await tx.order.findUnique({
+            where: { id: offer.order.id },
+            select: { riderId: true, status: true },
+          });
+          if (!order || order.riderId || !RIDER_CLAIMABLE_STATUSES.has(order.status as OrderStatus)) return;
+
+          // With more than one rider offered at once, the round is still live
+          // while any of them can answer.
+          const stillOpen = await tx.dispatchOffer.count({
+            where: { orderId: offer.order.id, status: 'pending', expiresAt: { gt: new Date() } },
+          });
+          if (stillOpen > 0) return;
+
+          // The same key the expiry sweep will use for this round, so when it
+          // fires later it finds this job already done rather than starting
+          // another round.
+          await enqueueNextRound(tx, offer.order.id, { id: offer.id, round: offer.round });
         });
+        await flushOutbox(prisma, queue);
         return { accepted: false };
       }
 
@@ -526,32 +574,38 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
         throw ApiError.conflict(ACCEPTANCE_REFUSAL_MESSAGES[refusal]);
       }
 
-      // Claim the order atomically. `updateMany` with a riderId: null guard
-      // means two riders accepting simultaneously cannot both win — the second
-      // update matches zero rows.
-      const claimed = await prisma.order.updateMany({
-        where: { id: offer.order.id, riderId: null },
-        data: { riderId, status: 'rider_assigned' },
-      });
-
-      if (claimed.count === 0) {
-        await prisma.dispatchOffer.update({
-          where: { id: offer.id },
-          data: { status: 'withdrawn', respondedAt: new Date() },
-        });
-        throw ApiError.conflict('Another rider took that order first.');
-      }
-
+      // Claim the offer and the order together, each as a compare-and-set, in
+      // one transaction.
+      //
+      // The order: `riderId: null` means two riders accepting simultaneously
+      // cannot both win — the second update matches zero rows. The status
+      // guard means an order that was cancelled while its offer was still
+      // open cannot be claimed at all; without it, accepting that offer moved
+      // the cancelled order back to `rider_assigned`.
+      //
+      // The offer: `status: 'pending'` means an offer withdrawn between the
+      // read above and now — by a cancellation, a release, or a reassignment —
+      // cannot be replayed into an assignment.
+      //
       // The callback form rather than the array form, so the notification can
       // be recorded inside the same transaction. This transition changes who
       // may watch the order — the rider topic only exists once a rider is
       // assigned — so `recordOrderChange` recomputes the fan-out from the row
       // it has just claimed rather than from anything read earlier.
-      await prisma.$transaction(async (tx) => {
-        await tx.dispatchOffer.update({
-          where: { id: offer.id },
+      const lost = await prisma.$transaction(async (tx) => {
+        const offerClaimed = await tx.dispatchOffer.updateMany({
+          where: { id: offer.id, status: 'pending' },
           data: { status: 'accepted', respondedAt: new Date() },
         });
+        if (offerClaimed.count === 0) return 'offer' as const;
+
+        const claimed = await tx.order.updateMany({
+          where: { id: offer.order.id, riderId: null, status: { in: [...RIDER_CLAIMABLE_STATUSES] } },
+          data: { riderId, status: 'rider_assigned' },
+        });
+        // Throwing rolls the offer claim back with it.
+        if (claimed.count === 0) throw new LostClaim();
+
         await tx.orderStatusEvent.create({
           data: {
             orderId: offer.order.id,
@@ -567,7 +621,21 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
         });
 
         await recordOrderChange(tx, offer.order.id);
+        return null;
+      }).catch((caught: unknown) => {
+        if (caught instanceof LostClaim) return 'order' as const;
+        throw caught;
       });
+
+      if (lost === 'offer') throw ApiError.conflict('That offer is no longer available.');
+      if (lost === 'order') {
+        await prisma.dispatchOffer.updateMany({
+          where: { id: offer.id, status: 'pending' },
+          data: { status: 'withdrawn', respondedAt: new Date() },
+        });
+        const now = await prisma.order.findUnique({ where: { id: offer.order.id }, select: { riderId: true } });
+        throw ApiError.conflict(now?.riderId ? 'Another rider took that order first.' : 'That order is no longer available.');
+      }
 
       await flushOutbox(prisma, queue);
 
@@ -651,7 +719,12 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
       if (!order) throw ApiError.notFound();
       // Only the assigned rider sees this. Everyone else gets a 404, including
       // riders who merely guessed the id.
-      requireScope(actor, { riderId: order.riderId ?? undefined });
+      // An order with no rider is nobody's to touch here. `riderId: undefined`
+      // would make the scope check pass for every rider, and the state machine
+      // lets a rider move a `ready` order on, so a rider taken off an order
+      // could otherwise walk straight back onto it.
+      if (order.riderId === null) throw ApiError.notFound();
+      requireScope(actor, { riderId: order.riderId });
 
       return {
         delivery: {
@@ -681,7 +754,12 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
         select: { id: true, status: true, riderId: true },
       });
       if (!order) throw ApiError.notFound();
-      requireScope(actor, { riderId: order.riderId ?? undefined });
+      // An order with no rider is nobody's to touch here. `riderId: undefined`
+      // would make the scope check pass for every rider, and the state machine
+      // lets a rider move a `ready` order on, so a rider taken off an order
+      // could otherwise walk straight back onto it.
+      if (order.riderId === null) throw ApiError.notFound();
+      requireScope(actor, { riderId: order.riderId });
 
       assertTransition(order.status as OrderStatus, body.to, 'rider');
 
@@ -704,7 +782,9 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
         // first request to commit moves the delivery, and the second matches no
         // row, throws, and takes its own writes down with it.
         const claimed = await tx.order.updateMany({
-          where: { id: order.id, status: order.status },
+          // The rider too: a release or reassignment landing first takes the
+          // order off this rider, and their tap must then match nothing.
+          where: { id: order.id, status: order.status, riderId: order.riderId },
           data: {
             status: body.to,
             ...(body.to === 'picked_up' ? { pickedUpAt: new Date() } : {}),
@@ -730,6 +810,73 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
       await flushOutbox(prisma, queue);
 
       return { status: body.to };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /v1/rider/deliveries/:id/release — "I can't do this delivery"
+  //
+  // Only before pickup. Until then the rider is holding nothing, so the job
+  // can go straight back to dispatch and another rider sent. From `picked_up`
+  // on they have the customer's order in their hands, and handing the job to
+  // someone else automatically would leave that food unaccounted for; that is
+  // an incident for DASH support, who can see who has it and act.
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/v1/rider/deliveries/:id/release',
+    { preHandler: requirePermission('rider:delivery:progress') },
+    async (request) => {
+      const body = z
+        .object({
+          reasonCode: z.enum(RELEASE_REASONS),
+          note: z.string().trim().max(280).optional(),
+        })
+        .parse(request.body);
+
+      const actor = actorOf(request);
+      const riderId = riderIdOf(request);
+      const order = await prisma.order.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, status: true, riderId: true, readyAt: true },
+      });
+      if (!order || order.riderId !== riderId) throw ApiError.notFound();
+
+      if (RIDER_HOLDING_STATUSES.has(order.status as OrderStatus)) {
+        throw ApiError.conflict(
+          'You already have this order, so it cannot be passed to another rider from the app. Contact DASH support now so they can arrange what happens to it.',
+        );
+      }
+      if (!RIDER_RELEASABLE_STATUSES.has(order.status as OrderStatus)) {
+        throw ApiError.conflict('This delivery can no longer be given back.');
+      }
+
+      const released = await prisma.$transaction((tx) =>
+        releaseRiderBeforePickup(tx, {
+          orderId: order.id,
+          expectedStatus: order.status as OrderStatus,
+          riderId,
+          readyAt: order.readyAt,
+          actorType: 'rider',
+          transitionActor: 'system',
+          actorId: actor.identityId,
+          reasonCode: `rider_released:${body.reasonCode}`,
+          reason: body.note ?? null,
+        }),
+      );
+      await flushOutbox(prisma, queue);
+
+      await writeAudit(prisma, {
+        identityId: actor.identityId,
+        action: 'rider.delivery.released',
+        resourceType: 'order',
+        resourceId: order.id,
+        before: { status: order.status, riderId },
+        after: { status: released.status, reasonCode: body.reasonCode },
+        ipAddress: request.ip,
+        requestId: request.id,
+      });
+
+      return { released: true, status: released.status };
     },
   );
 
@@ -777,7 +924,12 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
         },
       });
       if (!order) throw ApiError.notFound();
-      requireScope(actor, { riderId: order.riderId ?? undefined });
+      // An order with no rider is nobody's to touch here. `riderId: undefined`
+      // would make the scope check pass for every rider, and the state machine
+      // lets a rider move a `ready` order on, so a rider taken off an order
+      // could otherwise walk straight back onto it.
+      if (order.riderId === null) throw ApiError.notFound();
+      requireScope(actor, { riderId: order.riderId });
 
       if (!RIDER_HOLDING_STATUSES.has(order.status as OrderStatus)) {
         throw ApiError.conflict('This order is not ready to be completed.');

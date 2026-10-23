@@ -28,6 +28,14 @@ import { flushOutbox } from '../events/outbox.js';
 import { recordOrderChange } from '../realtime/notify.js';
 import { enqueueViaOutbox } from '../events/outbox.js';
 import { PUSH_RIDER_OFFER } from '../push/worker.js';
+import { nextRoundKey } from '../orders/rider-release.js';
+
+/**
+ * The status-event reason code a dispatcher's "offer it to everyone again"
+ * leaves on an order. The worker reads it to decide which earlier offers still
+ * rule a rider out.
+ */
+export const DISPATCH_REOPENED = 'dispatch_reopened';
 
 export interface FindRiderJob {
   orderId: string;
@@ -102,6 +110,19 @@ export function registerDispatchWorker(deps: {
       return;
     }
 
+    // One round at a time. A decline and the round's expiry sweep both ask for
+    // the next round, and a release or reassignment asks for a fresh one; if a
+    // round is already waiting on a rider, a second request is the same
+    // intent arriving twice, not a reason to offer the order to more people.
+    const liveOffer = await prisma.dispatchOffer.findFirst({
+      where: { orderId: order.id, status: 'pending', expiresAt: { gt: now } },
+      select: { id: true },
+    });
+    if (liveOffer) {
+      log.debug({ code: order.code, round }, 'dispatch: a round is already open');
+      return;
+    }
+
     const requiresCash = order.payments.some(
       (payment) => payment.method === 'cash' && payment.status !== 'captured',
     );
@@ -153,8 +174,17 @@ export function registerDispatchWorker(deps: {
 
     // Riders already offered this order in an earlier round are not offered it
     // again â€” a rider who declined should not be pestered.
+    //
+    // Except after a dispatcher deliberately reopens the search (POST
+    // /v1/ops/orders/:id/redispatch): from then on only offers made since
+    // count, so an order that ran out of riders can be offered to them again.
+    const reopened = await prisma.orderStatusEvent.findFirst({
+      where: { orderId: order.id, reasonCode: DISPATCH_REOPENED },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
     const alreadyOffered = await prisma.dispatchOffer.findMany({
-      where: { orderId: order.id },
+      where: { orderId: order.id, ...(reopened ? { createdAt: { gte: reopened.createdAt } } : {}) },
       select: { riderId: true },
     });
     const excludedRiderIds = new Set(alreadyOffered.map((offer) => offer.riderId));
@@ -411,16 +441,33 @@ export function registerDispatchWorker(deps: {
       log.info({ code: order.code, round, expired: expired.count }, 'dispatch: round expired');
     }
 
-    const next = resolveOfferRound({ round, remainingCandidates: 1 });
-    if (next.action !== 'reoffer') {
-      log.warn({ code: order.code, round, reason: next.reason }, 'dispatch: no further rounds');
+    // Move on from the newest offer, not from the round number this sweep was
+    // scheduled for. A decline may already have started the next round, and a
+    // release or reassignment restarts the numbering; either way the newest
+    // offer is where dispatch actually is.
+    const latest = await prisma.dispatchOffer.findFirst({
+      where: { orderId: order.id },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, round: true, status: true, expiresAt: true },
+    });
+    if (!latest) return;
+    if (latest.status === 'pending' && latest.expiresAt.getTime() > Date.now()) {
+      // A newer round is still waiting on its rider; its own sweep moves it on.
       return;
     }
 
+    const next = resolveOfferRound({ round: latest.round, remainingCandidates: 1 });
+    if (next.action !== 'reoffer') {
+      log.warn({ code: order.code, round: latest.round, reason: next.reason }, 'dispatch: no further rounds');
+      return;
+    }
+
+    // The same key a decline of this offer uses (see orders/rider-release.ts),
+    // so the two can never start two rounds.
     await queue.enqueue<FindRiderJob>({
       name: 'dispatch.find_rider',
-      payload: { orderId: order.id, round: next.nextRound ?? round + 1 },
-      idempotencyKey: `dispatch_${order.id}_round_${next.nextRound}`,
+      payload: { orderId: order.id, round: next.nextRound ?? latest.round + 1 },
+      idempotencyKey: nextRoundKey(order.id, latest.id),
     });
   });
 
