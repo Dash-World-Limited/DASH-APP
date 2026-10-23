@@ -38,6 +38,7 @@ import type { ApiClient } from '../../api/client';
 import { registerDevice, unregisterDevice } from '../../data/devices';
 import { readNotificationPreference } from '../../features/notificationPreference';
 import { permissionStep } from '../../features/pushNotifications';
+import { iosFcmToken, iosPushConfigured } from './iosFcm';
 
 /** The token this phone last registered, so a rotation can name what it replaces. */
 export const PUSH_TOKEN_KEY = 'dash.push.token.v1';
@@ -74,6 +75,7 @@ export async function deviceToken(): Promise<string | null> {
   // Expo returns an APNs token on iOS. DASH currently sends through FCM,
   // which requires an FCM registration token, even for Apple devices.
   // Do not register an undeliverable APNs token or wait for APNs in a simulator.
+  if (Platform.OS === 'ios') return iosFcmToken();
   if (Platform.OS !== 'android') return null;
   try {
     const token = await Notifications.getDevicePushTokenAsync();
@@ -92,16 +94,17 @@ export type SyncOutcome = 'registered' | 'waiting' | 'unavailable';
  */
 export async function syncPushRegistration(
   api: ApiClient,
-  input: { identityId: string; userAsked?: boolean },
+  input: { identityId: string; userAsked?: boolean; isCurrent?: () => boolean },
 ): Promise<SyncOutcome> {
-  // iOS needs an FCM client integration (or a separate APNs backend) first.
-  // Until then, do not ask for permission for a service this build cannot use.
-  if (Platform.OS !== 'android' || !api.configured) return 'unavailable';
+  const current = () => input.isCurrent?.() !== false;
+  // Do not prompt in an iOS build without its validated native FCM client.
+  if (!current() || !supported() || !api.configured || (Platform.OS === 'ios' && !iosPushConfigured())) return 'unavailable';
   await ensureChannels();
 
   const enabled = await readNotificationPreference(AsyncStorage, input.identityId);
   let permission = await Notifications.getPermissionsAsync();
   const askedBefore = (await AsyncStorage.getItem(PUSH_ASKED_KEY)) === 'yes';
+  if (!current()) return 'unavailable';
   const step = permissionStep({
     granted: permission.granted,
     canAskAgain: permission.canAskAgain,
@@ -112,23 +115,26 @@ export async function syncPushRegistration(
   if (step === 'wait') return 'waiting';
   if (step === 'ask') {
     await AsyncStorage.setItem(PUSH_ASKED_KEY, 'yes');
+    if (!current()) return 'unavailable';
     permission = await Notifications.requestPermissionsAsync();
     if (!permission.granted) return 'waiting';
   }
 
   const token = await deviceToken();
-  if (!token) return 'unavailable';
+  if (!token || !current()) return 'unavailable';
 
   const previous = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
+  if (!current()) return 'unavailable';
   const appId = buildAppId();
   await registerDevice(api, {
     pushToken: token,
-    platform: 'android',
+    platform: Platform.OS === 'ios' ? 'ios' : 'android',
     notifications: enabled ? 'on' : 'off',
     ...(appId ? { appId } : {}),
     ...(Constants.expoConfig?.version ? { appVersion: Constants.expoConfig.version } : {}),
     ...(previous && previous !== token ? { replacesPushToken: previous } : {}),
   });
+  if (!current()) return 'unavailable';
   await AsyncStorage.setItem(PUSH_TOKEN_KEY, token);
   return 'registered';
 }

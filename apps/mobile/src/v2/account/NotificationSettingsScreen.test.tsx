@@ -3,7 +3,8 @@ import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ os: 'ios' }));
+const h = vi.hoisted(() => ({ os: 'ios', configured: false }));
+vi.mock('../push/iosFcm', () => ({ iosPushConfigured: () => h.configured }));
 vi.mock('react-native', () => ({
   Platform: { get OS() { return h.os; } },
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -32,7 +33,14 @@ let root: Root | null = null;
 afterEach(async () => { await act(async () => root?.unmount()); root = null; });
 
 describe('Rider notification capability copy', () => {
+  it('does not expose the notification test helper in production Android', async () => {
+    h.os = 'android'; h.configured = false;
+    const container = document.createElement('div'); root = createRoot(container);
+    await act(async () => root!.render(<NotificationSettingsScreen audience="customer" onBack={() => undefined} />));
+    expect(container.textContent).not.toContain('Test notifications');
+  });
   it.each(['ios', 'android'])('%s reports its real current push capability', async (os) => {
+    h.configured = false;
     h.os = os;
     const container = document.createElement('div');
     root = createRoot(container);
@@ -44,5 +52,12 @@ describe('Rider notification capability copy', () => {
       expect(container.textContent).toContain('still reach you while you are online');
       expect(container.textContent).not.toContain('Push notifications are not available in this iOS build yet');
     }
+  });
+  it('does not claim configured iOS builds lack push or expose staging push helpers', async () => {
+    h.os = 'ios'; h.configured = true;
+    const container = document.createElement('div'); root = createRoot(container);
+    await act(async () => root!.render(<NotificationSettingsScreen audience="rider" onBack={() => undefined} />));
+    expect(container.textContent).not.toContain('Push notifications are not available');
+    expect(container.textContent).not.toContain('Send a test notification');
   });
 });

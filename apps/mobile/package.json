@@ -11,6 +11,7 @@
     "ios:generate": "node scripts/ios-cli.mjs generate",
     "ios:bundle": "node scripts/ios-cli.mjs bundle",
     "ios:verify-config": "node scripts/verify-ios-config.mjs",
+    "ios:verify-release": "node scripts/verify-ios-config.mjs --release",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "doctor": "expo-doctor"
@@ -22,13 +23,16 @@
     "@expo/vector-icons": "^15.0.2",
     "@maplibre/maplibre-react-native": "11.4.1",
     "@react-native-async-storage/async-storage": "2.2.0",
-    "expo": "~57.0.30",
+    "@react-native-firebase/app": "26.0.0",
+    "@react-native-firebase/messaging": "26.0.0",
+    "expo": "~57.0.31",
+    "expo-build-properties": "57.0.22",
     "expo-constants": "~57.0.22",
     "expo-font": "~57.0.4",
     "expo-image": "~57.0.5",
     "expo-linking": "~57.0.13",
-    "expo-location": "~57.0.21",
-    "expo-notifications": "~57.0.23",
+    "expo-location": "~57.0.22",
+    "expo-notifications": "~57.0.24",
     "expo-secure-store": "~57.0.4",
     "expo-splash-screen": "~57.0.10",
     "expo-status-bar": "~57.0.1",
@@ -41,13 +45,22 @@
     "react-native-web": "^0.21.2"
   },
   "devDependencies": {
+    "@expo/plist": "0.8.1",
     "@types/react": "~19.2.4",
     "expo-doctor": "1.21.5",
     "typescript": "~6.0.3"
   },
   "overrides": {
+    "@grpc/grpc-js": "1.14.6",
     "expo-modules-core": {
       "react-native-worklets": "0.12.2"
+    }
+  },
+  "expo": {
+    "autolinking": {
+      "ios": {
+        "buildFromSource": ["expo-modules-core"]
+      }
     }
   }
 }

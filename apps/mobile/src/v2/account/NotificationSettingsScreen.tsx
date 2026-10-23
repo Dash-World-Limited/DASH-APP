@@ -21,6 +21,7 @@ import { Text } from '../../ui/Text';
 import { useAppSession } from '../auth/AppSessionProvider';
 import { BackHeader, Card, Notice, OrderPage, SecondaryButton } from '../orders/parts';
 import { useNotificationPermission } from '../push/useNotificationPermission';
+import { iosPushConfigured } from '../push/iosFcm';
 import { useNotificationPreference } from './useNotificationPreference';
 
 export function NotificationSettingsScreen({ audience, onBack }: { audience: 'customer' | 'rider'; onBack: () => void }) {
@@ -28,6 +29,7 @@ export function NotificationSettingsScreen({ audience, onBack }: { audience: 'cu
   const { viewer } = useAppSession();
   const preference = useNotificationPreference(viewer?.identity.id);
   const permission = useNotificationPermission();
+  const pushAvailable = Platform.OS !== 'ios' || iosPushConfigured();
 
   return (
     <OrderPage testID={`${audience}-notification-settings-v2`}>
@@ -61,13 +63,13 @@ export function NotificationSettingsScreen({ audience, onBack }: { audience: 'cu
 
       {preference.error ? <Notice icon="alert-circle-outline" text={preference.error} danger /> : null}
 
-      {Platform.OS === 'ios' ? (
+      {!pushAvailable ? (
         <Notice icon="information-outline" text="Push notifications are not available in this iOS build yet. Open DASH to check your orders, deliveries and messages." />
       ) : null}
 
-      {Platform.OS !== 'ios' && preference.enabled && permission && !permission.granted ? (
+      {pushAvailable && preference.enabled && permission && !permission.granted ? (
         <>
-          <Notice icon="bell-alert-outline" text="Android is not letting DASH show notifications on this phone. Allow them in your phone’s settings to get updates while DASH is closed." danger />
+          <Notice icon="bell-alert-outline" text={`${Platform.OS === 'ios' ? 'iOS' : 'Android'} is not letting DASH show notifications on this phone. Allow them in your phone’s settings to get updates while DASH is closed.`} danger />
           <SecondaryButton label="Open phone settings" onPress={() => void Linking.openSettings()} />
         </>
       ) : null}

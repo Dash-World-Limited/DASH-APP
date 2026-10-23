@@ -1,4 +1,16 @@
-# iOS push parity checkpoint — 19 October 2026
+# iOS push readiness — 23 October 2026
+
+The release-candidate branch adds an optional native iOS FCM token/refresh bridge
+to the existing registration architecture. Its Firebase client is validated by
+exact bundle and explicit project pin; Android autolinking/token behavior stays
+on Expo. Credential-free iOS generation remains supported. Real configured SDK
+compilation, APNs delivery and signed-device behavior still require owner setup.
+See [IOS_RELEASE_CANDIDATE.md](IOS_RELEASE_CANDIDATE.md) for the current source,
+configuration gates and precise remaining integration/device boundaries.
+
+The record below is historical and describes the earlier accepted checkpoint.
+
+# Historical iOS push parity checkpoint — 19 October 2026
 
 Audit started from clean `ios/first-native-build` at
 `5e5cc05b1917c20af4ea4d54de7f336994bf71a3`. Its accepted native build/startup
