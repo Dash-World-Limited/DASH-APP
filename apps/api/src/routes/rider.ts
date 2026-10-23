@@ -21,6 +21,7 @@ import { buildRiderAssignment } from '@dash/domain/ledger';
 import {
   DEFAULT_CONFIG,
   judgeAcceptance,
+  resolveOfferRound,
   shouldRedispatch,
   VEHICLE_CAPACITY,
   type AcceptanceRefusal,
@@ -39,6 +40,13 @@ import { PICKUP_CODE_VISIBLE, pickupCodeFor } from '../orders/pickup-code.js';
  * teleport is caught.
  */
 const MAX_PLAUSIBLE_SPEED_MPS = 25;
+
+/**
+ * Order statuses the dispatch worker still finds a rider for. Mirrors
+ * `ASSIGNABLE` in workers/dispatch.ts: a decline only asks for the next round
+ * when the worker would act on it.
+ */
+const REDISPATCHABLE = new Set(['accepted', 'preparing', 'ready', 'placed', 'vendor_reviewing']);
 
 /**
  * The statuses that mean "this rider still owes someone this order".
@@ -395,6 +403,7 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
           riderId: true,
           status: true,
           expiresAt: true,
+          round: true,
           eligibilityMode: true,
           // The pickup point, so acceptance can re-measure distance and zone
           // against the rider's *fresh* position rather than trusting the one
@@ -411,6 +420,11 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
       if (!offer) throw ApiError.notFound();
       requireScope(actor, { riderId: offer.riderId });
 
+      // A repeated decline — a double tap, or a retry after a dropped
+      // connection — is answered as the first one was, and changes nothing.
+      if (!body.accept && offer.status === 'declined') {
+        return { accepted: false };
+      }
       if (offer.status !== 'pending') {
         throw ApiError.conflict('That offer is no longer available.');
       }
@@ -423,14 +437,55 @@ export async function registerRiderRoutes(app: FastifyInstance): Promise<void> {
       }
 
       if (!body.accept) {
-        await prisma.dispatchOffer.update({
-          where: { id: offer.id },
-          data: {
-            status: 'declined',
-            respondedAt: new Date(),
-            declineReason: body.declineReason ?? null,
-          },
+        // An explicit decline moves the order on now.
+        //
+        // It used to close the offer and nothing else. Only the round's expiry
+        // sweep ever asks dispatch for the next rider, and that sweep is
+        // scheduled for the end of the declined offer's window — so a rider
+        // who said no straight away left the order with nobody looking for a
+        // rider until the window they had just refused ran out (up to 62s, or
+        // 92s for a woken rider before the 60s change). Asking for the next
+        // round here puts a decline on the same road a timeout takes, minus
+        // the wait.
+        await prisma.$transaction(async (tx) => {
+          // Compare-and-set, so a decline racing the sweep or a second tap
+          // closes the offer once and asks for the next round once.
+          const closed = await tx.dispatchOffer.updateMany({
+            where: { id: offer.id, status: 'pending' },
+            data: {
+              status: 'declined',
+              respondedAt: new Date(),
+              declineReason: body.declineReason ?? null,
+            },
+          });
+          if (closed.count === 0) return;
+
+          const order = await tx.order.findUnique({
+            where: { id: offer.order.id },
+            select: { riderId: true, status: true },
+          });
+          if (!order || order.riderId || !REDISPATCHABLE.has(order.status)) return;
+
+          // With more than one rider offered at once the round is still open
+          // while any of them can answer; its own sweep moves it on.
+          const stillOpen = await tx.dispatchOffer.count({
+            where: { orderId: offer.order.id, status: 'pending', expiresAt: { gt: new Date() } },
+          });
+          if (stillOpen > 0) return;
+
+          const next = resolveOfferRound({ round: offer.round, remainingCandidates: 1 });
+          if (next.action !== 'reoffer') return;
+
+          // The same job, under the same key, that the expiry sweep enqueues
+          // for this round (workers/dispatch.ts). When the sweep fires later
+          // the queue already holds it and does not start a second round.
+          await enqueueViaOutbox(tx, {
+            name: 'dispatch.find_rider',
+            payload: { orderId: offer.order.id, round: next.nextRound ?? offer.round + 1 },
+            idempotencyKey: `dispatch_${offer.order.id}_round_${next.nextRound}`,
+          });
         });
+        await flushOutbox(prisma, queue);
         return { accepted: false };
       }
 
