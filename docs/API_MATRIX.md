@@ -48,6 +48,7 @@ Notes:
 | `/v1/vendor/orders` | GET | `vendor:order:read` | filtered by `actor.vendorId` (+ `branchId` when branch-bound) | — | ✅ |
 | `/v1/vendor/orders/:id/accept` | POST | `vendor:order:accept` | `requireScope(vendorId, branchId)` | `placed/vendor_reviewing → accepted` | ✅ |
 | `/v1/vendor/orders/:id/reject` | POST | `vendor:order:reject` | `requireScope(vendorId, branchId)` | `→ rejected`, queues refund | ✅ |
+| `/v1/vendor/orders/:id/cancel` | POST | `vendor:order:reject` | own vendor/branch | `accepted…rider_arrived → cancelled` (refused before accept and after pickup); offers withdrawn, rider stood down, full refund queued as for a rejection | ✅ |
 | `/v1/vendor/orders/:id/progress` | POST | `vendor:order:progress` | `requireScope(vendorId, branchId)` | `accepted → preparing → ready` | ✅ |
 | `/v1/vendor/orders/:id/verify-pickup` | POST | `vendor:order:progress` | `requireScope(vendorId, branchId)` | — (verifies hashed code) | ✅ |
 | `/v1/vendor/branch/:id/state` | PATCH | `vendor:hours:write` | `requireScope(vendorId)` | — | ✅ |
@@ -74,6 +75,7 @@ Notes:
 | `/v1/rider/offers/:id/respond` | POST | `rider:offer:respond` | `requireScope(riderId)` | `ready → rider_assigned` (atomic claim) | ✅ |
 | `/v1/rider/deliveries/:id` | GET | `rider:delivery:progress` | `requireScope(riderId)` | — | ✅ |
 | `/v1/rider/deliveries/:id/progress` | POST | `rider:delivery:progress` | `requireScope(riderId)` | `rider_arrived → picked_up → en_route → arrived` | ✅ |
+| `/v1/rider/deliveries/:id/release` | POST | `rider:delivery:progress` | assigned rider only | before pickup: `rider_assigned/rider_arrived → preparing/ready` (by `readyAt`), rider released, next round dispatched; after pickup: no change, escalation event for staff | ✅ |
 | `/v1/rider/deliveries/:id/complete` | POST | `rider:delivery:progress` | `requireScope(riderId)` **+ delivery PIN** | `→ delivered`, posts rider pay | ✅ |
 | `/v1/rider/earnings` | GET | `rider:earnings:read:own` | filtered by `actor.riderId` | — | ✅ |
 
@@ -92,7 +94,8 @@ Notes:
 | Endpoint | Method | Permission | Scope | State transition | Cov |
 |---|---|---|---|---|---|
 | `/v1/ops/live` | GET | `ops:livemap:read` | filtered by `actor.cityIds` | — | ✅ |
-| `/v1/ops/orders/:id/reassign` | POST | `ops:dispatch:reassign` | `requireScope(cityId)` | `rider_assigned/rider_arrived → ready` | ✅ |
+| `/v1/ops/orders/:id/reassign` | POST | `ops:order:override` (super admin only) | `requireScope(cityId)` | `rider_assigned/rider_arrived → ready/preparing` (by `readyAt`); refused after pickup | ✅ |
+| `/v1/ops/orders/:id/cancel` | POST | `ops:order:override` (super admin only) | `requireScope(cityId)` | `* → cancelled` (after pickup: incident reason only); paid → refund review flagged | ✅ |
 | `/v1/ops/zones/:id/pause` | POST | `ops:zone:pause` | `requireScope(cityId)` | — | ✅ |
 | `/v1/ops/zones/:id/surge` | POST | `ops:surge:write` | `requireScope(cityId)` | — (capped by city rule) | ✅ |
 | `/v1/support/cases` | GET | `support:case:read` | global for support roles | — | ✅ |

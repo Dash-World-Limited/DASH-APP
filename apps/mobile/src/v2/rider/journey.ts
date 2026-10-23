@@ -92,6 +92,39 @@ export function pickupCodeVisible(status: DeliveryStatus): boolean {
   return status === 'rider_assigned' || status === 'rider_arrived';
 }
 
+/**
+ * Whether the rider may give this job back from the app. Only before pickup:
+ * until then they hold nothing and DASH sends another rider. Once they have
+ * the order the server refuses, and the rider is told to contact support.
+ */
+export function riderCanRelease(status: DeliveryStatus): boolean {
+  return status === 'rider_assigned' || status === 'rider_arrived';
+}
+
+/**
+ * What "Cancel delivery" does at this point. Before pickup the job goes back
+ * to DASH and the next rider is sent (`release`). After pickup the rider has
+ * the order, so it stays with them and DASH staff are alerted (`escalate`).
+ * Nothing once it is delivered.
+ */
+export function riderCancelMode(status: DeliveryStatus): 'release' | 'escalate' | null {
+  if (riderCanRelease(status)) return 'release';
+  if (status === 'picked_up' || status === 'en_route' || status === 'arrived') return 'escalate';
+  return null;
+}
+
+/** The reasons the API accepts for giving a job back, in the words a rider would use. */
+export const RELEASE_REASONS = [
+  { code: 'vehicle_problem', label: 'Problem with my vehicle' },
+  { code: 'emergency', label: 'Personal emergency' },
+  { code: 'vendor_closed_or_unreachable', label: 'Shop is closed or not answering' },
+  { code: 'order_not_ready_too_long', label: 'Order not ready after a long wait' },
+  { code: 'unsafe_location', label: 'I don’t feel safe going there' },
+  { code: 'other', label: 'Something else' },
+] as const;
+
+export type ReleaseReason = (typeof RELEASE_REASONS)[number]['code'];
+
 const EARTH_RADIUS_METRES = 6_371_008.8;
 
 /** Great-circle distance between two real coordinates. Straight line, not road distance. */

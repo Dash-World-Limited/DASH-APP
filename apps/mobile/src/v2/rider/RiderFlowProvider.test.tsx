@@ -415,3 +415,70 @@ describe('rider GPS fixes after going online', () => {
     expect(availabilityPosts()).toEqual(['idle', 'offline']);
   });
 });
+
+describe('cancelling an accepted delivery', () => {
+  const delivery = (status = 'rider_assigned') => ({
+    id: 'test-delivery', code: 'TEST-1', status,
+    branch: { name: 'Test shop', address: 'Test pickup', latitude: 6.2, longitude: 6.7, phone: null },
+    address: { line1: 'Test dropoff', landmark: null, instructions: null, contactPhone: null, latitude: 6.3, longitude: 6.8 },
+    items: [], pickupCode: '1234',
+  });
+  let remote = delivery();
+  let releaseAnswer: unknown = { released: true, escalated: false, status: 'preparing' };
+
+  beforeEach(() => {
+    remote = delivery();
+    releaseAnswer = { released: true, escalated: false, status: 'preparing' };
+    h.request.mockImplementation(async (url: string) => {
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [remote] };
+      if (url === '/v1/rider/deliveries/test-delivery') return { delivery: remote };
+      if (url === '/v1/rider/deliveries/test-delivery/release') {
+        if (releaseAnswer instanceof Error) throw releaseAnswer;
+        return releaseAnswer;
+      }
+      return {};
+    });
+  });
+
+  it('before pickup sends the reason, hands the job back and returns to searching', async () => {
+    await mount('on_delivery');
+    expect(flow.delivery?.id).toBe('test-delivery');
+
+    let outcome: unknown = null;
+    await act(async () => {
+      outcome = await flow.release('vehicle_problem');
+    });
+    expect(outcome).toEqual({ kind: 'released' });
+    const [, options] = posts('/v1/rider/deliveries/test-delivery/release')[0]!;
+    expect((options as { body: unknown }).body).toEqual({ reasonCode: 'vehicle_problem' });
+    expect(flow.delivery).toBeNull();
+  });
+
+  it('after pickup keeps the delivery and returns the server instructions', async () => {
+    remote = delivery('picked_up');
+    releaseAnswer = { released: false, escalated: true, status: 'picked_up', message: 'DASH support has been alerted.' };
+    await mount('on_delivery');
+
+    let outcome: unknown = null;
+    await act(async () => {
+      outcome = await flow.release('emergency');
+    });
+    expect(outcome).toEqual({ kind: 'escalated', message: 'DASH support has been alerted.' });
+    expect(flow.delivery?.status).toBe('picked_up');
+  });
+
+  it('keeps the delivery and shows why when the server refuses', async () => {
+    const { ApiError } = await import('../../api');
+    releaseAnswer = new (ApiError as unknown as new (message: string) => Error)('This delivery can no longer be cancelled.');
+    await mount('on_delivery');
+
+    let outcome: unknown = 'unset';
+    await act(async () => {
+      outcome = await flow.release('other');
+    });
+    expect(outcome).toBeNull();
+    expect(flow.delivery?.id).toBe('test-delivery');
+    expect(flow.error).toBe('This delivery can no longer be cancelled.');
+  });
+});

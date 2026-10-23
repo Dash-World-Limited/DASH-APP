@@ -25,6 +25,8 @@ import {
   isActive,
   isRiderOnOrder,
   phaseOf,
+  FINDING_ANOTHER_RIDER_LABEL,
+  riderSearchState,
   RIDER_RATING_COMMENT_MAX,
   RIDER_RATING_MAX,
   RIDER_RATING_MIN,
@@ -48,6 +50,7 @@ import { recordOrderChange } from '../realtime/notify.js';
 import type { QueuePort } from '@dash/domain/ports';
 import { actorOf, requirePermission, requireScope, withIdempotency } from '../http/context.js';
 import { settlePayment } from '../payments/settle.js';
+import { releaseRidersFromStoppedOrder } from '../orders/rider-release.js';
 
 const basketItemSchema = z.object({
   itemId: z.string().min(1),
@@ -927,7 +930,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
             select: { label: true, line1: true, landmark: true, instructions: true, contactPhone: true, latitude: true, longitude: true },
           },
           items: { select: { nameSnapshot: true, priceSnapshot: true, quantity: true, modifiers: true, lineTotal: true, instructions: true } },
-          statusEvents: { select: { toStatus: true, createdAt: true, actorType: true }, orderBy: { createdAt: 'asc' } },
+          statusEvents: { select: { fromStatus: true, toStatus: true, createdAt: true, actorType: true }, orderBy: { createdAt: 'asc' } },
           // Refunds owed on this order, so the customer can see one arrive.
           // Only what the customer is told — never provider references.
           payments: {
@@ -971,6 +974,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
         { status, riderId: order.riderId, deliveredAt: order.deliveredAt },
         riderReview !== null,
       );
+      const riderSearch = riderSearchState({ status, riderId: order.riderId, mode: order.mode }, order.statusEvents);
 
       return {
         order: {
@@ -1004,7 +1008,10 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
               createdAt: refund.createdAt,
             })),
           ),
-          statusLabel: customerLabel(status, order.vendor.category),
+          // A rider who had accepted was taken off the order: say so, rather
+          // than leave a label from before anyone was coming.
+          statusLabel: riderSearch === 'finding_another' ? FINDING_ANOTHER_RIDER_LABEL : customerLabel(status, order.vendor.category),
+          riderSearch,
           phase: phaseOf(status),
           quoteBreakdown: JSON.parse(order.quoteBreakdown) as unknown,
           // The rider's position is only shared while they are actually
@@ -1148,6 +1155,7 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
           id: true,
           customerId: true,
           status: true,
+          riderId: true,
           total: true,
           payments: { where: { status: 'captured' }, select: { id: true, amount: true }, take: 1 },
         },
@@ -1172,25 +1180,34 @@ export async function registerOrderRoutes(app: FastifyInstance): Promise<void> {
       // notification commits with it rather than after, so there is no window
       // in which the order is cancelled and nobody has been told.
       await prisma.$transaction(async (tx) => {
-        await tx.order.update({
-          where: { id: order.id },
+        // A compare-and-set on the status the policy was judged against. A
+        // rider marking pickup in the meantime moves the order somewhere the
+        // customer may no longer cancel, and the fee above was priced for the
+        // state that was read.
+        const moved = await tx.order.updateMany({
+          where: { id: order.id, status },
           data: {
             status: 'cancelled',
             cancelledAt: new Date(),
             cancelledBy: actor.identityId,
             cancellationReason: body.reason ?? outcome.reasonCode,
-            statusEvents: {
-              create: {
-                fromStatus: status,
-                toStatus: 'cancelled',
-                actorType: 'customer',
-                actorId: actor.identityId,
-                reasonCode: outcome.reasonCode,
-                reason: body.reason ?? null,
-              },
-            },
           },
         });
+        if (moved.count === 0) throw ApiError.conflict('Your order has just changed. Reload it and try again.');
+        await tx.orderStatusEvent.create({
+          data: {
+            orderId: order.id,
+            fromStatus: status,
+            toStatus: 'cancelled',
+            actorType: 'customer',
+            actorId: actor.identityId,
+            reasonCode: outcome.reasonCode,
+            reason: body.reason ?? null,
+          },
+        });
+
+        // No rider may take a cancelled order, and the one who had it is free.
+        await releaseRidersFromStoppedOrder(tx, order);
 
         // Recorded with the cancellation, in the same transaction, so a
         // cancelled paid order can never exist without the refund it owes.

@@ -24,6 +24,7 @@ let vendorA: Actor;
 let riderA: Actor;
 let riderB: Actor;
 let dispatcher: Actor;
+let superAdmin: Actor;
 
 beforeAll(async () => {
   context = await createTestContext();
@@ -33,6 +34,7 @@ beforeAll(async () => {
   riderA = await actAs(context, world.riderA.email);
   riderB = await actAs(context, world.riderB.email);
   dispatcher = await actAs(context, world.dispatcher.email);
+  superAdmin = await actAs(context, world.admin.email);
 }, 180_000);
 
 /**
@@ -953,7 +955,7 @@ describe('ops reassignment', () => {
     const response = await context.app.inject({
       method: 'POST',
       url: `/v1/ops/orders/${order.id}/reassign`,
-      headers: dispatcher.headers,
+      headers: superAdmin.headers,
       payload: { reasonCode: 'rider_unresponsive' },
     });
 
@@ -974,15 +976,18 @@ describe('ops reassignment', () => {
     const response = await context.app.inject({
       method: 'POST',
       url: `/v1/ops/orders/${order.id}/reassign`,
-      headers: dispatcher.headers,
+      headers: superAdmin.headers,
       payload: {},
     });
     expect(response.statusCode).toBe(400);
   });
 
-  it('is refused to a rider, a vendor, and a customer', async () => {
+  // Super admin only (`ops:order:override`): a dispatcher keeps the board but
+  // cannot take a rider off an order.
+  it('is refused to a dispatcher, a rider, a vendor, and a customer', async () => {
     const order = await readyOrder();
     for (const [label, actor] of [
+      ['dispatcher', dispatcher],
       ['rider', riderA],
       ['vendor', vendorA],
       ['customer', customerA],
@@ -1005,7 +1010,7 @@ describe('ops reassignment', () => {
     await context.app.inject({
       method: 'POST',
       url: `/v1/ops/orders/${order.id}/reassign`,
-      headers: dispatcher.headers,
+      headers: superAdmin.headers,
       payload: { reasonCode: 'rider_incident' },
     });
 

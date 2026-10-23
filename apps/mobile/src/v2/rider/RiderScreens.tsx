@@ -46,8 +46,11 @@ import {
   journeyStage,
   offerWindowSeconds,
   pickupCodeVisible,
+  RELEASE_REASONS,
+  riderCancelMode,
   straightLineMetres,
   type JourneyStage,
+  type ReleaseReason,
 } from './journey';
 import { type Coordinate, type DeliveryStatus, type RiderDelivery, type RiderOffer, useRiderFlow } from './RiderFlowProvider';
 import { KeyboardSafeView } from '../chat/KeyboardSafeView';
@@ -490,8 +493,67 @@ function JourneyPanel({ delivery, stage, onChat }: { delivery: RiderDelivery; st
           </View>
         ))}
       </View>
+      {riderCancelMode(delivery.status) ? <ReleaseControl mode={riderCancelMode(delivery.status) ?? 'release'} /> : null}
       {flow.error ? <ErrorNotice message={flow.error} /> : null}
     </Sheet>
+  );
+}
+
+/**
+ * "Cancel delivery" on an accepted job. Two steps — choose a reason, then
+ * confirm — so a stray tap cannot give a job away.
+ *
+ * Before pickup DASH takes the job back and sends the next rider. After
+ * pickup the rider has the customer's order: the request alerts DASH staff and
+ * the delivery stays on this screen, with the server's instructions shown.
+ */
+function ReleaseControl({ mode }: { mode: 'release' | 'escalate' }) {
+  const flow = useRiderFlow();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState<ReleaseReason | null>(null);
+  const [escalation, setEscalation] = useState<string | null>(null);
+
+  if (escalation) {
+    return <InfoNotice icon="lifebuoy" message={escalation} />;
+  }
+  if (!open) {
+    return <SecondaryButton label="Cancel delivery" icon="close-circle-outline" disabled={flow.busy} onPress={() => setOpen(true)} />;
+  }
+  const submit = async () => {
+    if (!reason) return;
+    const outcome = await flow.release(reason);
+    if (outcome?.kind === 'escalated') setEscalation(outcome.message);
+  };
+  return (
+    <View style={{ gap: space.sm }}>
+      <Text variant="label" weight="bold">Why are you cancelling this delivery?</Text>
+      <Text variant="caption" tone="muted">
+        {mode === 'release'
+          ? 'DASH will send another rider. You will not be offered this order again.'
+          : 'You already have the order, so it stays with you. DASH support will be alerted to sort it out with you.'}
+      </Text>
+      {RELEASE_REASONS.map((option) => (
+        <SecondaryButton
+          key={option.code}
+          label={reason === option.code ? `✓ ${option.label}` : option.label}
+          disabled={flow.busy}
+          onPress={() => setReason(option.code)}
+        />
+      ))}
+      <View style={{ flexDirection: 'row', gap: space.sm }}>
+        <View style={{ flex: 1 }}>
+          <SecondaryButton label="Keep delivery" disabled={flow.busy} onPress={() => { setOpen(false); setReason(null); }} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <SecondaryButton
+            label={flow.busy ? 'Sending…' : mode === 'release' ? 'Cancel delivery' : 'Alert DASH support'}
+            icon={mode === 'release' ? 'account-switch-outline' : 'lifebuoy'}
+            disabled={flow.busy || reason === null}
+            onPress={() => void submit()}
+          />
+        </View>
+      </View>
+    </View>
   );
 }
 

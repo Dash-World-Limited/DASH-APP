@@ -13,7 +13,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { customerLabel, deliveryAddressOf, type OrderStatus } from '@dash/domain/orders';
+import { customerLabel, deliveryAddressOf, REFUND_REVIEW_REQUIRED, refundReviewState, riderSearchState, type OrderStatus } from '@dash/domain/orders';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission } from '../http/context.js';
 
@@ -156,7 +156,23 @@ export async function registerOrderHistoryRoutes(app: FastifyInstance): Promise<
             orderBy: { id: 'asc' },
           },
           statusEvents: {
-            select: { fromStatus: true, toStatus: true, actorType: true, reasonCode: true, createdAt: true },
+            select: { fromStatus: true, toStatus: true, actorType: true, reasonCode: true, reason: true, createdAt: true },
+            orderBy: { createdAt: 'asc' },
+          },
+          riderId: true,
+          // Every offer dispatch made, so staff can see who was asked, who
+          // said no, who let it lapse and who is being asked now.
+          offers: {
+            select: {
+              id: true,
+              round: true,
+              status: true,
+              createdAt: true,
+              expiresAt: true,
+              respondedAt: true,
+              declineReason: true,
+              rider: { select: { id: true, identity: { select: { displayName: true } } } },
+            },
             orderBy: { createdAt: 'asc' },
           },
           payments: {
@@ -177,6 +193,14 @@ export async function registerOrderHistoryRoutes(app: FastifyInstance): Promise<
       if (!order) throw ApiError.notFound();
 
       const status = order.status as OrderStatus;
+      // Who cancelled, by name and role rather than a bare id — staff need to
+      // know whether it was the customer, the vendor, a rider or one of them.
+      const canceller = order.cancelledBy
+        ? await prisma.identity.findUnique({
+            where: { id: order.cancelledBy },
+            select: { id: true, displayName: true, email: true, roles: { select: { role: true } } },
+          })
+        : null;
       reply.header('cache-control', 'no-store');
       return {
         order: {
@@ -243,9 +267,47 @@ export async function registerOrderHistoryRoutes(app: FastifyInstance): Promise<
             deliveredAt: order.deliveredAt,
             cancelledAt: order.cancelledAt,
           },
-          cancellation: order.cancelledAt ? { reason: order.cancellationReason, by: order.cancelledBy } : null,
+          cancellation: order.cancelledAt
+            ? {
+                reason: order.cancellationReason,
+                by: order.cancelledBy,
+                byName: canceller?.displayName ?? canceller?.email ?? null,
+                byRoles: canceller ? [...new Set(canceller.roles.map((row) => row.role))] : [],
+                at: order.cancelledAt,
+              }
+            : null,
           payments: order.payments,
           statusEvents: order.statusEvents,
+          riderSearch: riderSearchState({ status, riderId: order.riderId, mode: order.mode }, order.statusEvents),
+          // A staff-cancelled paid order whose refund is still to be decided
+          // (or has since been recorded). See REFUND_REVIEW_REQUIRED.
+          refundReview: (() => {
+            const state = refundReviewState(
+              order.statusEvents,
+              order.payments.reduce((count, payment) => count + payment.refunds.length, 0),
+            );
+            if (!state) return null;
+            const flagged = order.statusEvents.find((event) => event.reasonCode === REFUND_REVIEW_REQUIRED);
+            return {
+              state,
+              flaggedAt: flagged?.createdAt ?? null,
+              capturedAmount: order.payments
+                .filter((payment) => payment.status === 'captured')
+                .reduce((sum, payment) => sum + payment.amount, 0),
+            };
+          })(),
+          dispatchOffers: order.offers.map((offer) => ({
+            id: offer.id,
+            round: offer.round,
+            // A pending offer past its deadline is effectively expired even
+            // before the sweep marks it.
+            status: offer.status === 'pending' && offer.expiresAt.getTime() <= Date.now() ? 'expired' : offer.status,
+            createdAt: offer.createdAt,
+            expiresAt: offer.expiresAt,
+            respondedAt: offer.respondedAt,
+            declineReason: offer.declineReason,
+            rider: { id: offer.rider.id, name: offer.rider.identity.displayName },
+          })),
           riderRating: order.reviews[0] ?? null,
         },
       };

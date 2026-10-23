@@ -141,11 +141,14 @@ const TRANSITIONS: Readonly<Record<OrderStatus, readonly TransitionRule[]>> = {
     { to: 'rejected', actors: ['vendor', 'ops'] },
     { to: 'cancelled', actors: ['customer', 'ops', 'system'] },
   ],
+  // `vendor` on `cancelled` from `accepted` to `rider_arrived`: a vendor that
+  // cannot fulfil an order it has committed to may stop it, up to the moment
+  // a rider takes the food. From `picked_up` on, the vendor no longer has it.
   accepted: [
     { to: 'preparing', actors: ['vendor', 'ops'] },
     // Dispatch can find a rider while the kitchen is still cooking.
     { to: 'rider_assigned', actors: ['ops', 'system'] },
-    { to: 'cancelled', actors: ['customer', 'ops', 'system'] },
+    { to: 'cancelled', actors: ['customer', 'vendor', 'ops', 'system'] },
     { to: 'rejected', actors: ['vendor', 'ops'] },
   ],
   preparing: [
@@ -153,26 +156,31 @@ const TRANSITIONS: Readonly<Record<OrderStatus, readonly TransitionRule[]>> = {
     { to: 'rider_assigned', actors: ['ops', 'system'] },
     // The customer may still cancel here, paying the fee that
     // `evaluateCustomerCancellation` charges to cover the vendor.
-    { to: 'cancelled', actors: ['customer', 'ops'] },
+    { to: 'cancelled', actors: ['customer', 'vendor', 'ops'] },
   ],
   ready: [
     { to: 'rider_assigned', actors: ['ops', 'system'] },
     { to: 'rider_arrived', actors: ['rider', 'ops', 'system'] },
     { to: 'picked_up', actors: ['rider', 'ops'] }, // customer-pickup orders
-    { to: 'cancelled', actors: ['customer', 'ops'] },
+    { to: 'cancelled', actors: ['customer', 'vendor', 'ops'] },
   ],
+  // Releasing the rider before pickup returns the order to the kitchen state
+  // it is really in — `ready` if the food was marked ready, `preparing` if not
+  // (see `statusAfterRiderRelease`) — and re-enters dispatch. `system` carries
+  // out a rider's own release as well as dispatch's; ops reassignment is `ops`.
   rider_assigned: [
     { to: 'rider_arrived', actors: ['rider', 'ops', 'system'] },
-    // Reassignment drops back to `ready` and re-enters dispatch.
     { to: 'ready', actors: ['ops', 'system'] },
-    { to: 'cancelled', actors: ['customer', 'ops'] },
+    { to: 'preparing', actors: ['ops', 'system'] },
+    { to: 'cancelled', actors: ['customer', 'vendor', 'ops'] },
   ],
   rider_arrived: [
     { to: 'picked_up', actors: ['rider', 'ops'] },
     { to: 'ready', actors: ['ops', 'system'] },
+    { to: 'preparing', actors: ['ops', 'system'] },
     // The last point a customer may cancel. From `picked_up` onward the rider
     // is carrying the food and the policy refuses.
-    { to: 'cancelled', actors: ['customer', 'ops'] },
+    { to: 'cancelled', actors: ['customer', 'vendor', 'ops'] },
   ],
   picked_up: [
     { to: 'en_route', actors: ['rider', 'ops', 'system'] },
@@ -281,6 +289,106 @@ export function isPaid(status: OrderStatus): boolean {
 export function isRiderOnOrder(status: OrderStatus): boolean {
   return RIDER_ON_ORDER_STATUSES.has(status);
 }
+
+/**
+ * States where a rider is assigned but does not have the food yet: riding to
+ * the vendor, or waiting at the counter. The only states in which a rider may
+ * be taken off an order and the order sent back to dispatch. From `picked_up`
+ * on the rider has custody, and moving the order is an incident, not a
+ * reassignment.
+ */
+export const RIDER_RELEASABLE_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+  'rider_assigned',
+  'rider_arrived',
+]);
+
+/**
+ * Where an order goes when its rider is released before pickup.
+ *
+ * Once a rider accepts, the status is theirs and the kitchen's progress lives
+ * only in `readyAt` (see the vendor's progress route). So the order returns to
+ * `ready` if the food was marked ready and to `preparing` if it was not —
+ * never `ready` unconditionally, which would tell the next rider and the
+ * customer that food is waiting when it is still being cooked.
+ */
+export function statusAfterRiderRelease(readyAt: Date | string | null): 'ready' | 'preparing' {
+  return readyAt ? 'ready' : 'preparing';
+}
+
+/** States in which dispatch may give an order to a rider. */
+export const RIDER_CLAIMABLE_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+  'accepted',
+  'preparing',
+  'ready',
+]);
+
+/**
+ * Whether DASH is looking for a rider for this order right now.
+ *
+ * Dispatch starts at `preparing`; a delivery order there or at `ready` with no
+ * rider is being searched for. This is what lets a screen say "Finding a
+ * rider" instead of implying one is on the way. A rider is "on the way" only
+ * when the order actually carries one in a rider state.
+ */
+export function isFindingRider(order: {
+  status: OrderStatus | string;
+  riderId: string | null;
+  mode: string;
+}): boolean {
+  return order.mode === 'delivery' && order.riderId === null && (order.status === 'preparing' || order.status === 'ready');
+}
+
+/**
+ * What to tell the customer and vendor about the rider search, if anything.
+ *
+ * `finding_another` once a rider who had accepted was taken off the order
+ * (by themselves or by ops), so nobody is left believing that rider is still
+ * on the way; `finding` while the first search runs; null when there is
+ * nothing to search for or a rider is assigned.
+ */
+export type RiderSearchState = 'finding' | 'finding_another';
+
+export function riderSearchState(
+  order: { status: OrderStatus | string; riderId: string | null; mode: string },
+  events: readonly { fromStatus: string | null; toStatus: string }[],
+): RiderSearchState | null {
+  if (!isFindingRider(order)) return null;
+  const released = events.some(
+    (event) =>
+      event.fromStatus !== null &&
+      RIDER_RELEASABLE_STATUSES.has(event.fromStatus as OrderStatus) &&
+      (event.toStatus === 'preparing' || event.toStatus === 'ready'),
+  );
+  return released ? 'finding_another' : 'finding';
+}
+
+/**
+ * The status-event reason code left on a paid order that staff cancelled.
+ *
+ * A staff cancellation decides no refund: who bears it is a judgement, made in
+ * the existing finance refund flow. This marker is what keeps that judgement
+ * owed — written in the cancelling transaction, so a paid order cannot be
+ * cancelled by staff without it.
+ */
+export const REFUND_REVIEW_REQUIRED = 'refund_review_required';
+
+export type RefundReviewState = 'required' | 'refund_recorded';
+
+/**
+ * Where a staff-cancelled paid order's refund decision stands: `required`
+ * until a refund is recorded against its payment through the finance flow,
+ * then `refund_recorded`. Null for every order that was never flagged.
+ */
+export function refundReviewState(
+  events: readonly { reasonCode: string | null }[],
+  refundsRecorded: number,
+): RefundReviewState | null {
+  if (!events.some((event) => event.reasonCode === REFUND_REVIEW_REQUIRED)) return null;
+  return refundsRecorded > 0 ? 'refund_recorded' : 'required';
+}
+
+/** The customer's label while a replacement rider is being found. */
+export const FINDING_ANOTHER_RIDER_LABEL = 'Finding another rider';
 
 // ---------------------------------------------------------------------------
 // Rating the rider

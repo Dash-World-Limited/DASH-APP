@@ -148,6 +148,14 @@ describe('least privilege — the deny-by-default matrix', () => {
       expect(granted.has('admin:role:write'), `${role} can edit roles`).toBe(false);
     }
   });
+
+  it('reserves manual order intervention for super_admin alone', () => {
+    expect(permissionsForRoles(['super_admin']).has('ops:order:override')).toBe(true);
+    for (const role of ROLES) {
+      if (role === 'super_admin') continue;
+      expect(permissionsForRoles([role]).has('ops:order:override'), `${role} can intervene`).toBe(false);
+    }
+  });
 });
 
 describe('canAll / canAny', () => {

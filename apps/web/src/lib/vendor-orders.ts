@@ -16,6 +16,8 @@
 export interface VendorOrderLike {
   status: string;
   readyAt?: string | null;
+  /** From the API: whether DASH is finding a rider, or finding another one. */
+  riderSearch?: 'finding' | 'finding_another' | null;
 }
 
 export interface VendorActions {
@@ -26,9 +28,16 @@ export interface VendorActions {
   /** Food ready has been recorded on an order a rider already holds. */
   foodReadyRecorded: boolean;
   verifyPickup: boolean;
+  /** Cancel an accepted order the vendor can no longer fulfil, until a rider collects it. */
+  cancel: boolean;
+  /** What to say where the rider would be, while nobody is assigned. */
+  riderSearchNote: string | null;
   /** Stop: the order was cancelled or rejected. */
   stopped: boolean;
 }
+
+/** From accepting until a rider takes the food. Before accepting, Reject is the answer. */
+const VENDOR_CANCELLABLE = new Set(['accepted', 'preparing', 'ready', 'rider_assigned', 'rider_arrived']);
 
 const RIDER_AT_OR_COMING = new Set(['rider_assigned', 'rider_arrived']);
 
@@ -42,6 +51,13 @@ export function vendorActions(order: VendorOrderLike): VendorActions {
     markReady: order.status === 'preparing' || (riderHasIt && !readyRecorded),
     foodReadyRecorded: riderHasIt && readyRecorded,
     verifyPickup: order.status === 'ready' || riderHasIt,
+    cancel: VENDOR_CANCELLABLE.has(order.status),
+    riderSearchNote:
+      order.riderSearch === 'finding_another'
+        ? 'The rider who accepted could not continue. DASH is finding another rider.'
+        : order.riderSearch === 'finding'
+          ? 'DASH is finding a rider. Nobody is on the way yet.'
+          : null,
     stopped: order.status === 'cancelled' || order.status === 'rejected',
   };
 }

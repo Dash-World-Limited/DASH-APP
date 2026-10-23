@@ -5,7 +5,10 @@ import { AppState } from 'react-native';
 import { api, ApiError } from '../../api';
 import { useAppSession } from '../auth/AppSessionProvider';
 import { createForegroundPermission } from './locationPermission';
+import type { ReleaseReason } from './journey';
 import { riderTrace } from './riderTrace';
+
+export type ReleaseOutcome = { kind: 'released' } | { kind: 'escalated'; message: string };
 
 export interface Coordinate {
   latitude: number;
@@ -101,6 +104,13 @@ interface RiderFlowValue {
   expireOffer(offerId: string): void;
   progress(to: Exclude<DeliveryStatus, 'rider_assigned' | 'delivered'>): Promise<boolean>;
   complete(pin: string): Promise<boolean>;
+  /**
+   * Cancel an accepted delivery, with a reason. Before pickup DASH takes the
+   * job back and sends the next rider (`released`). After pickup the order
+   * stays with this rider and DASH staff are alerted (`escalated`, with the
+   * server's message). Null when the request did not go through.
+   */
+  release(reasonCode: ReleaseReason): Promise<ReleaseOutcome | null>;
   /** Put a finished delivery away so the workspace returns to searching. */
   clearCompletedDelivery(): void;
   clearError(): void;
@@ -572,6 +582,34 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     }
   }, [delivery, fail, riderPosition]);
 
+  const release = useCallback(async (reasonCode: ReleaseReason): Promise<ReleaseOutcome | null> => {
+    if (!delivery) return null;
+    setBusy(true);
+    setError(null);
+    try {
+      if (!api.configured) {
+        setError(NOT_CONNECTED);
+        return null;
+      }
+      const response = await api.request<{ released: boolean; escalated: boolean; message?: string }>(
+        `/v1/rider/deliveries/${encodeURIComponent(delivery.id)}/release`,
+        { method: 'POST', body: { reasonCode } },
+      );
+      if (response.escalated) {
+        // The rider still has the order: it stays on their screen.
+        return { kind: 'escalated', message: response.message ?? 'DASH support has been alerted and will contact you.' };
+      }
+      // The job is no longer this rider's; the workspace returns to searching.
+      setDelivery(null);
+      return { kind: 'released' };
+    } catch (caught) {
+      fail(caught);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }, [delivery, fail]);
+
   const value = useMemo<RiderFlowValue>(() => ({
     online,
     busy,
@@ -586,13 +624,14 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     expireOffer: (offerId: string) => setOffer((current) => (current?.id === offerId ? null : current)),
     progress,
     complete,
+    release,
     clearCompletedDelivery: () => setDelivery((current) => (current?.status === 'delivered' ? null : current)),
     clearError: () => setError(null),
     offerSeenAt,
     offersCheckedAt,
     positionUpdatedAt,
     positionAccuracyMetres,
-  }), [busy, complete, delivery, error, findOffers, goOffline, goOnline, offer, offerSeenAt, offersCheckedAt, online, positionAccuracyMetres, positionUpdatedAt, progress, respondToOffer, riderPosition]);
+  }), [busy, complete, delivery, error, findOffers, goOffline, goOnline, offer, offerSeenAt, offersCheckedAt, online, positionAccuracyMetres, positionUpdatedAt, progress, release, respondToOffer, riderPosition]);
 
   return <RiderFlowContext.Provider value={value}>{children}</RiderFlowContext.Provider>;
 }

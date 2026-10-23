@@ -69,6 +69,11 @@ export const PERMISSIONS = [
   'ops:rider:read:all',
   'ops:livemap:read',
   'ops:surge:write',
+  // Manual intervention on a live order: cancel it, take its rider off, or
+  // restart dispatch. Granted to no role list below, so only super_admin
+  // (every permission) holds it. Dispatchers keep the board and their other
+  // ops tools; these three stop or move a customer's order by hand.
+  'ops:order:override',
 
   // --- Support -------------------------------------------------------------
   'support:case:read',

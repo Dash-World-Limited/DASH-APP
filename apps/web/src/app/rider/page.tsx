@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppHeader } from '@/components/AppHeader';
 import { ModeSwitch } from '@/components/ModeSwitch';
 import { MenuButton, SideDrawer } from '@/components/SideDrawer';
+import { RiderReleaseDialog, riderCancelMode } from '@/components/rider-release-dialog';
 import {
   Badge,
   Button,
@@ -592,6 +593,8 @@ export default function RiderPage() {
     }
   };
 
+  const [releasing, setReleasing] = useState<{ id: string; code: string; mode: 'release' | 'escalate' } | null>(null);
+
   const progress = async (id: string, to: string): Promise<void> => {
     setBusy(true);
     try {
@@ -875,11 +878,26 @@ export default function RiderPage() {
                         </Button>
                       </div>
                     )}
+                    {riderCancelMode(delivery.status) ? (
+                      <Button
+                        variant="ghost"
+                        className="mt-3 w-full"
+                        disabled={busy}
+                        onClick={() =>
+                          setReleasing({ id: delivery.id, code: delivery.code, mode: riderCancelMode(delivery.status) ?? 'release' })
+                        }
+                      >
+                        Cancel delivery
+                      </Button>
+                    ) : null}
                   </Card>
                 );
               })}
             </div>
           </section>
+        ) : null}
+        {releasing ? (
+          <RiderReleaseDialog delivery={releasing} mode={releasing.mode} onClose={() => setReleasing(null)} onDone={load} />
         ) : null}
 
         {/* --- Offers --------------------------------------------------------- */}
