@@ -23,8 +23,8 @@
     "@expo/vector-icons": "^15.0.2",
     "@maplibre/maplibre-react-native": "11.4.1",
     "@react-native-async-storage/async-storage": "2.2.0",
-    "@react-native-firebase/app": "27.0.0",
-    "@react-native-firebase/messaging": "27.0.0",
+    "@react-native-firebase/app": "26.0.0",
+    "@react-native-firebase/messaging": "26.0.0",
     "expo": "~57.0.31",
     "expo-build-properties": "57.0.22",
     "expo-constants": "~57.0.22",
@@ -51,9 +51,7 @@
     "typescript": "~6.0.3"
   },
   "overrides": {
-    "@react-native-firebase/app": {
-      "@grpc/grpc-js": "1.14.6"
-    },
+    "@grpc/grpc-js": "1.14.6",
     "expo-modules-core": {
       "react-native-worklets": "0.12.2"
     }

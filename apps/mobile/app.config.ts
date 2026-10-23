@@ -191,7 +191,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   plugins: [
     ...(iosPush ? [
       '@react-native-firebase/app',
-      // RNFB 27 / Firebase Apple SDK 13 uses SPM and dynamic frameworks.
+      // RNFB's SPM integration uses dynamic frameworks on the reviewed iOS toolchain.
       ['expo-build-properties', { ios: { useFrameworks: 'dynamic' } }] as [string, { ios: { useFrameworks: string } }],
     ] : []),
     '@maplibre/maplibre-react-native',
