@@ -5,6 +5,7 @@ import { AppState, Platform } from 'react-native';
 import { api, ApiError } from '../../api';
 import { useAppSession } from '../auth/AppSessionProvider';
 import { createForegroundPermission } from './locationPermission';
+import type { ReleaseReason } from './journey';
 import { riderTrace } from './riderTrace';
 
 export interface Coordinate {
@@ -103,6 +104,8 @@ interface RiderFlowValue {
   expireOffer(offerId: string): void;
   progress(to: Exclude<DeliveryStatus, 'rider_assigned' | 'delivered'>): Promise<boolean>;
   complete(pin: string): Promise<boolean>;
+  /** Give back an accepted job before pickup, with a reason. DASH sends another rider. */
+  release(reasonCode: ReleaseReason): Promise<boolean>;
   /** Put a finished delivery away so the workspace returns to searching. */
   clearCompletedDelivery(): void;
   clearError(): void;
@@ -651,6 +654,31 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     }
   }, [delivery, fail, riderPosition]);
 
+  const release = useCallback(async (reasonCode: ReleaseReason): Promise<boolean> => {
+    if (!delivery) return false;
+    deliveryRevision.current += 1;
+    setBusy(true);
+    setError(null);
+    try {
+      if (!api.configured) {
+        setError(NOT_CONNECTED);
+        return false;
+      }
+      await api.request(`/v1/rider/deliveries/${encodeURIComponent(delivery.id)}/release`, {
+        method: 'POST',
+        body: { reasonCode },
+      });
+      // The job is no longer this rider's; the workspace returns to searching.
+      setDelivery(null);
+      return true;
+    } catch (caught) {
+      fail(caught);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }, [delivery, fail]);
+
   const value = useMemo<RiderFlowValue>(() => ({
     online,
     busy,
@@ -666,6 +694,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     expireOffer: (offerId: string) => setOffer((current) => (current?.id === offerId ? null : current)),
     progress,
     complete,
+    release,
     clearCompletedDelivery: () => {
       deliveryRevision.current += 1;
       setDelivery((current) => (current?.status === 'delivered' ? null : current));
@@ -675,7 +704,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
     offersCheckedAt,
     positionUpdatedAt,
     positionAccuracyMetres,
-  }), [busy, complete, delivery, deliveryRestored, error, findOffers, goOffline, goOnline, offer, offerSeenAt, offersCheckedAt, online, positionAccuracyMetres, positionUpdatedAt, progress, respondToOffer, riderPosition]);
+  }), [busy, complete, delivery, deliveryRestored, error, findOffers, goOffline, goOnline, offer, offerSeenAt, offersCheckedAt, online, positionAccuracyMetres, positionUpdatedAt, progress, release, respondToOffer, riderPosition]);
 
   return <RiderFlowContext.Provider value={value}>{children}</RiderFlowContext.Provider>;
 }

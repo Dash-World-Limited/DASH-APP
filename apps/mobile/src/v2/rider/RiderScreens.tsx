@@ -46,8 +46,11 @@ import {
   journeyStage,
   offerWindowSeconds,
   pickupCodeVisible,
+  RELEASE_REASONS,
+  riderCanRelease,
   straightLineMetres,
   type JourneyStage,
+  type ReleaseReason,
 } from './journey';
 import { type Coordinate, type DeliveryStatus, type RiderDelivery, type RiderOffer, useRiderFlow } from './RiderFlowProvider';
 import { KeyboardSafeView } from '../chat/KeyboardSafeView';
@@ -490,8 +493,52 @@ function JourneyPanel({ delivery, stage, onChat }: { delivery: RiderDelivery; st
           </View>
         ))}
       </View>
+      {riderCanRelease(delivery.status) ? <ReleaseControl /> : null}
       {flow.error ? <ErrorNotice message={flow.error} /> : null}
     </Sheet>
+  );
+}
+
+/**
+ * "Can't complete this delivery", before pickup only. Two steps — choose a
+ * reason, then confirm — so a stray tap cannot give a job away. DASH sends
+ * another rider; after pickup the server refuses and the rider is told to
+ * contact support, because they then have the customer's order.
+ */
+function ReleaseControl() {
+  const flow = useRiderFlow();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState<ReleaseReason | null>(null);
+
+  if (!open) {
+    return <SecondaryButton label="Can’t complete this delivery" icon="close-circle-outline" disabled={flow.busy} onPress={() => setOpen(true)} />;
+  }
+  return (
+    <View style={{ gap: space.sm }}>
+      <Text variant="label" weight="bold">Why can’t you do this delivery?</Text>
+      <Text variant="caption" tone="muted">DASH will send another rider. Only do this before you collect the order.</Text>
+      {RELEASE_REASONS.map((option) => (
+        <SecondaryButton
+          key={option.code}
+          label={reason === option.code ? `✓ ${option.label}` : option.label}
+          disabled={flow.busy}
+          onPress={() => setReason(option.code)}
+        />
+      ))}
+      <View style={{ flexDirection: 'row', gap: space.sm }}>
+        <View style={{ flex: 1 }}>
+          <SecondaryButton label="Keep delivery" disabled={flow.busy} onPress={() => { setOpen(false); setReason(null); }} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <SecondaryButton
+            label={flow.busy ? 'Giving back…' : 'Give it back'}
+            icon="account-switch-outline"
+            disabled={flow.busy || reason === null}
+            onPress={() => { if (reason) void flow.release(reason); }}
+          />
+        </View>
+      </View>
+    </View>
   );
 }
 

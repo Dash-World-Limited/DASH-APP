@@ -73,43 +73,116 @@ const ALERT_LABELS: Record<LiveOrder['alerts'][number], string> = {
   rider_location_stale: 'Rider signal lost',
 };
 
+/** The reasons the API accepts for restarting the search on an order with no rider. */
+const REDISPATCH_REASONS = [
+  { value: 'no_rider_found', label: 'No rider was found' },
+  { value: 'riders_back_online', label: 'Riders are available again' },
+  { value: 'customer_request', label: 'Customer asked us to try again' },
+  { value: 'other', label: 'Another reason' },
+] as const;
+
+/** The reasons the API accepts for a staff cancellation. */
+const CANCEL_REASONS = [
+  { value: 'customer_request', label: 'Customer asked to cancel' },
+  { value: 'vendor_request', label: 'Vendor asked to cancel' },
+  { value: 'vendor_unavailable', label: 'Vendor is closed or unreachable' },
+  { value: 'no_rider_available', label: 'No rider available' },
+  { value: 'duplicate_order', label: 'Duplicate order' },
+  { value: 'suspected_fraud', label: 'Suspected fraud' },
+  { value: 'rider_incident', label: 'Rider incident (rider has the order)' },
+  { value: 'delivery_incident', label: 'Delivery incident (rider has the order)' },
+  { value: 'other', label: 'Another reason' },
+] as const;
+
+/** Rider statuses in which the rider physically has the order. */
+const RIDER_HAS_ORDER = new Set(['picked_up', 'en_route', 'arrived']);
+/** States in which dispatch is running or can be restarted for an order with no rider. */
+const SEARCHABLE = new Set(['preparing', 'ready']);
+
+type OpsAction = 'reassign' | 'redispatch' | 'cancel';
+
+const ACTION_COPY: Record<
+  OpsAction,
+  {
+    title: (code: string) => string;
+    description: string;
+    reasons: readonly { value: string; label: string }[];
+    noteRequired: boolean;
+    confirm: string;
+    busy: string;
+    failure: string;
+  }
+> = {
+  reassign: {
+    title: (code) => `Reassign ${code}`,
+    description:
+      'The current rider is taken off and the order goes straight back to dispatch, without them. Only before pickup.',
+    reasons: REASSIGN_REASONS,
+    noteRequired: false,
+    confirm: 'Reassign',
+    busy: 'Reassigning…',
+    failure: 'The reassignment did not go through.',
+  },
+  redispatch: {
+    title: (code) => `Find a rider for ${code}`,
+    description: 'Restarts the search. Riders offered this order before may be offered it again.',
+    reasons: REDISPATCH_REASONS,
+    noteRequired: false,
+    confirm: 'Restart search',
+    busy: 'Restarting…',
+    failure: 'The search did not restart.',
+  },
+  cancel: {
+    title: (code) => `Cancel ${code}`,
+    description:
+      'Stops the order for everyone: rider offers are withdrawn and any rider is stood down. No refund is made here — if a payment was taken, decide the refund in Refunds.',
+    reasons: CANCEL_REASONS,
+    noteRequired: true,
+    confirm: 'Cancel order',
+    busy: 'Cancelling…',
+    failure: 'The cancellation did not go through.',
+  },
+};
+
 /**
- * Take an order off its rider and return it to the dispatch pool.
+ * One staff action on a live order.
  *
  * The reason is mandatory and audited, so it is picked rather than typed, and
- * the note is free text because the enum never quite covers what happened.
+ * the note is free text because the enum never quite covers what happened. A
+ * cancellation also requires the note: it stops an order for a customer, a
+ * vendor and possibly a rider at once.
  */
-function ReassignDialog({
+function OpsActionDialog({
+  action,
   order,
   onClose,
   onDone,
 }: {
+  action: OpsAction;
   order: { id: string; code: string };
   onClose: () => void;
   onDone: () => Promise<void> | void;
 }) {
+  const copy = ACTION_COPY[action];
   const [reason, setReason] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const noteMissing = copy.noteRequired && note.trim().length < 3;
 
   const submit = async (): Promise<void> => {
-    if (!reason) return;
+    if (!reason || noteMissing) return;
     setBusy(true);
     setFailure(null);
     try {
-      await authedFetch(`/v1/ops/orders/${order.id}/reassign`, {
+      await authedFetch(`/v1/ops/orders/${order.id}/${action}`, {
         method: 'POST',
         body: { reasonCode: reason, ...(note.trim() ? { note: note.trim() } : {}) },
       });
       await onDone();
       onClose();
     } catch (caught) {
-      setFailure(
-        caught instanceof ApiRequestError
-          ? caught.message
-          : 'The reassignment did not go through.',
-      );
+      setFailure(caught instanceof ApiRequestError ? caught.message : copy.failure);
     } finally {
       setBusy(false);
     }
@@ -117,15 +190,15 @@ function ReassignDialog({
 
   return (
     <Modal
-      title={`Reassign ${order.code}`}
-      description="The current rider is released and the order returns to dispatch."
+      title={copy.title(order.code)}
+      description={copy.description}
       onClose={onClose}
-      labelledBy="reassign-title"
+      labelledBy={`${action}-title`}
     >
       <fieldset disabled={busy}>
-        <legend className="sr-only">Reason for reassigning {order.code}</legend>
+        <legend className="sr-only">Reason</legend>
         <div className="space-y-2">
-          {REASSIGN_REASONS.map((option) => (
+          {copy.reasons.map((option) => (
             <label
               key={option.value}
               className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm transition-colors ${
@@ -134,7 +207,7 @@ function ReassignDialog({
             >
               <input
                 type="radio"
-                name="reassign-reason"
+                name={`${action}-reason`}
                 value={option.value}
                 checked={reason === option.value}
                 onChange={() => setReason(option.value)}
@@ -146,11 +219,12 @@ function ReassignDialog({
         </div>
       </fieldset>
 
-      <label htmlFor="reassign-note" className="mt-4 block text-sm font-medium">
-        Note <span className="font-normal text-[var(--ink-muted)]">(optional)</span>
+      <label htmlFor={`${action}-note`} className="mt-4 block text-sm font-medium">
+        Note{' '}
+        <span className="font-normal text-[var(--ink-muted)]">{copy.noteRequired ? '(required)' : '(optional)'}</span>
       </label>
       <textarea
-        id="reassign-note"
+        id={`${action}-note`}
         value={note}
         onChange={(event) => setNote(event.target.value.slice(0, 280))}
         disabled={busy}
@@ -167,10 +241,15 @@ function ReassignDialog({
 
       <div className="mt-5 flex gap-2">
         <Button variant="ghost" onClick={onClose} disabled={busy} className="flex-1">
-          Cancel
+          Back
         </Button>
-        <Button onClick={() => void submit()} disabled={!reason || busy} className="flex-1">
-          {busy ? 'Reassigning…' : 'Reassign'}
+        <Button
+          variant={action === 'cancel' ? 'danger' : undefined}
+          onClick={() => void submit()}
+          disabled={!reason || noteMissing || busy}
+          className="flex-1"
+        >
+          {busy ? copy.busy : copy.confirm}
         </Button>
       </div>
     </Modal>
@@ -179,13 +258,15 @@ function ReassignDialog({
 
 export default function OpsPage() {
   const [orders, setOrders] = useState<LiveOrder[] | null>(null);
-  const [reassigning, setReassigning] = useState<LiveOrder | null>(null);
+  const [acting, setActing] = useState<{ action: OpsAction; order: LiveOrder } | null>(null);
   const [ledger, setLedger] = useState<LedgerIntegrity | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
   const signedIn = useHasSession();
   const { me } = useMe();
   const { permissions } = usePermissions();
   const canReadLedger = permissions.has('finance:ledger:read');
+  const canReassign = permissions.has('ops:dispatch:reassign');
+  const canCancel = permissions.has('ops:order:intervene');
   const [cityIds, setCityIds] = useState<string[]>([]);
 
   const load = useCallback(async (): Promise<void> => {
@@ -420,18 +501,30 @@ export default function OpsPage() {
                             ) : (
                               <span className="text-[var(--ink-muted)]">No rider assigned</span>
                             )}
+                            {order.rider && RIDER_HAS_ORDER.has(order.status) ? (
+                              <span className="text-[var(--ink-muted)]"> · has the order</span>
+                            ) : null}
                           </p>
                         </div>
 
-                        {order.rider ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setReassigning(order)}
-                          >
-                            Reassign
-                          </Button>
-                        ) : null}
+                        <div className="flex flex-wrap gap-2">
+                          {/* Server-enforced too: these only hide what would be refused. */}
+                          {canReassign && order.rider && !RIDER_HAS_ORDER.has(order.status) ? (
+                            <Button variant="ghost" size="sm" onClick={() => setActing({ action: 'reassign', order })}>
+                              Reassign
+                            </Button>
+                          ) : null}
+                          {canReassign && !order.rider && SEARCHABLE.has(order.status) ? (
+                            <Button variant="ghost" size="sm" onClick={() => setActing({ action: 'redispatch', order })}>
+                              Find a rider
+                            </Button>
+                          ) : null}
+                          {canCancel ? (
+                            <Button variant="ghost" size="sm" onClick={() => setActing({ action: 'cancel', order })}>
+                              Cancel
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
                     </Card>
                   ))}
@@ -447,10 +540,11 @@ export default function OpsPage() {
         </p>
       </main>
 
-      {reassigning ? (
-        <ReassignDialog
-          order={reassigning}
-          onClose={() => setReassigning(null)}
+      {acting ? (
+        <OpsActionDialog
+          action={acting.action}
+          order={acting.order}
+          onClose={() => setActing(null)}
           onDone={load}
         />
       ) : null}

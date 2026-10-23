@@ -205,6 +205,41 @@ describe('iOS active delivery recovery after suspension', () => {
     expect(h.location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
   });
 
+  it('gives a job back with the chosen reason and returns to searching', async () => {
+    await mount('on_delivery');
+    expect(flow.delivery?.id).toBe('test-delivery');
+
+    let released = false;
+    await act(async () => {
+      released = await flow.release('vehicle_problem');
+    });
+    expect(released).toBe(true);
+    const [, options] = posts('/v1/rider/deliveries/test-delivery/release')[0]!;
+    expect((options as { body: unknown }).body).toEqual({ reasonCode: 'vehicle_problem' });
+    expect(flow.delivery).toBeNull();
+  });
+
+  it('keeps the job and shows why when the server refuses to release it', async () => {
+    await mount('on_delivery');
+    h.request.mockImplementation(async (url: string) => {
+      if (url.endsWith('/release')) {
+        // The mocked ApiError above takes just a message.
+        const { ApiError } = await import('../../api');
+        throw new (ApiError as unknown as new (message: string) => Error)('You already have this order.');
+      }
+      if (url === '/v1/rider/offers') return { offers: [] };
+      if (url === '/v1/rider/deliveries') return { deliveries: [remote] };
+      return { delivery: remote };
+    });
+    let released = true;
+    await act(async () => {
+      released = await flow.release('emergency');
+    });
+    expect(released).toBe(false);
+    expect(flow.delivery?.id).toBe('test-delivery');
+    expect(flow.error).toBe('You already have this order.');
+  });
+
   it('clears a delivery no longer assigned on the server', async () => {
     await mount('on_delivery');
     h.request.mockImplementation(async (url: string) => {

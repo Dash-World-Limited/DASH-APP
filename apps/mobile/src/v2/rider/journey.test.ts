@@ -16,6 +16,8 @@ import {
   journeyStage,
   offerWindowSeconds,
   pickupCodeVisible,
+  RELEASE_REASONS,
+  riderCanRelease,
   straightLineMetres,
 } from './journey';
 import type { DeliveryStatus } from './RiderFlowProvider';
@@ -128,5 +130,24 @@ describe('externalNavigationUrl', () => {
 
   it('hands iOS to Apple Maps with the destination', () => {
     expect(externalNavigationUrl(shop, 'Shop', 'ios')).toContain('daddr=6.4474,3.4722');
+  });
+});
+
+describe('riderCanRelease', () => {
+  it('offers giving a job back only before the rider has the order', () => {
+    const allowed = (['rider_assigned', 'rider_arrived', 'picked_up', 'en_route', 'arrived', 'delivered'] as DeliveryStatus[]).filter(riderCanRelease);
+    expect(allowed).toEqual(['rider_assigned', 'rider_arrived']);
+  });
+
+  it('offers exactly the reasons the API accepts', () => {
+    // Mirrors RELEASE_REASONS in apps/api/src/routes/rider.ts.
+    expect(RELEASE_REASONS.map((reason) => reason.code)).toEqual([
+      'vehicle_problem',
+      'emergency',
+      'vendor_closed_or_unreachable',
+      'order_not_ready_too_long',
+      'unsafe_location',
+      'other',
+    ]);
   });
 });

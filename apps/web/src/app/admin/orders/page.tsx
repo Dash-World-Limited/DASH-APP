@@ -42,7 +42,18 @@ interface HistoricalOrder {
   timestamps: Record<'createdAt' | 'placedAt' | 'acceptedAt' | 'readyAt' | 'pickedUpAt' | 'deliveredAt' | 'cancelledAt', string | null>;
   cancellation: { reason: string | null; by: string | null } | null;
   payments: Array<{ provider: string; method: string; status: string; amount: number; createdAt: string; capturedAt: string | null; refunds: Array<{ amount: number; status: string }> }>;
-  statusEvents: Array<{ fromStatus: string | null; toStatus: string; actorType: string; createdAt: string }>;
+  statusEvents: Array<{ fromStatus: string | null; toStatus: string; actorType: string; reasonCode: string | null; reason: string | null; createdAt: string }>;
+  riderSearch: 'finding' | 'finding_another' | null;
+  dispatchOffers: Array<{
+    id: string;
+    round: number;
+    status: string;
+    createdAt: string;
+    expiresAt: string;
+    respondedAt: string | null;
+    declineReason: string | null;
+    rider: { id: string; name: string | null };
+  }>;
   riderRating: { rating: number; comment: string | null } | null;
 }
 
@@ -172,7 +183,7 @@ export default function AdminOrdersPage() {
               <h3 className="text-sm font-extrabold uppercase tracking-wide text-[var(--ink-muted)]">People and place</h3>
               <dl className="mt-3 space-y-3">
                 <div><dt className="text-xs text-[var(--ink-muted)]">Customer</dt><dd className="font-bold">{order.customer.name ?? 'Unnamed'}</dd><dd className="text-xs">{[order.customer.email, order.customer.phone].filter(Boolean).join(' · ')}</dd></div>
-                <div><dt className="text-xs text-[var(--ink-muted)]">Rider</dt><dd className="font-bold">{order.rider ? order.rider.name ?? 'Unnamed rider' : 'No rider'}</dd>{order.rider ? <dd className="text-xs">{[order.rider.phone, order.rider.vehicleType].filter(Boolean).join(' · ')}</dd> : null}</div>
+                <div><dt className="text-xs text-[var(--ink-muted)]">Rider</dt><dd className="font-bold">{order.rider ? order.rider.name ?? 'Unnamed rider' : order.riderSearch === 'finding_another' ? 'No rider — finding another' : order.riderSearch === 'finding' ? 'No rider — finding one' : 'No rider'}</dd>{order.rider ? <dd className="text-xs">{[order.rider.phone, order.rider.vehicleType].filter(Boolean).join(' · ')}</dd> : null}</div>
                 <div>
                   <dt className="text-xs text-[var(--ink-muted)]">Delivered to {order.deliveryAddressFrozen ? '(as placed)' : '(saved address — order predates snapshots)'}</dt>
                   {order.deliveryAddress ? (
@@ -196,7 +207,23 @@ export default function AdminOrdersPage() {
               {order.cancellation ? <p className="mt-3 text-xs">Cancelled by {order.cancellation.by ?? 'unknown'}: {order.cancellation.reason ?? 'no reason recorded'}</p> : null}
               <ol className="mt-3 space-y-1 border-t border-[var(--line)] pt-3 text-xs">
                 {order.statusEvents.map((event, index) => (
-                  <li key={index}>{when(event.createdAt)} — {event.fromStatus ?? 'start'} → <strong>{event.toStatus}</strong> ({event.actorType})</li>
+                  <li key={index}>
+                    {when(event.createdAt)} — {event.fromStatus ?? 'start'} → <strong>{event.toStatus}</strong> ({event.actorType})
+                    {event.reasonCode ? <span className="text-[var(--ink-muted)]"> · {event.reasonCode}{event.reason ? `: ${event.reason}` : ''}</span> : null}
+                  </li>
+                ))}
+              </ol>
+            </section>
+
+            <section className="admin-card rounded-3xl p-5 sm:p-6 text-sm">
+              <h3 className="text-sm font-extrabold uppercase tracking-wide text-[var(--ink-muted)]">Rider offers</h3>
+              {order.dispatchOffers.length === 0 ? <p className="mt-3 text-[var(--ink-muted)]">No rider has been offered this order.</p> : null}
+              <ol className="mt-3 space-y-1 text-xs">
+                {order.dispatchOffers.map((offer) => (
+                  <li key={offer.id}>
+                    Round {offer.round} · <strong>{offer.rider.name ?? 'Unnamed rider'}</strong> · {offer.status}
+                    <span className="text-[var(--ink-muted)]"> · offered {when(offer.createdAt)}{offer.respondedAt ? ` · answered ${when(offer.respondedAt)}` : ''}{offer.declineReason ? ` · “${offer.declineReason}”` : ''}</span>
+                  </li>
                 ))}
               </ol>
             </section>

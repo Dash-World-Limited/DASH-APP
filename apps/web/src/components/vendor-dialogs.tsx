@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The two vendor actions that need something from the person at the counter.
+ * The vendor actions that need something from the person at the counter.
  *
  * Both used to be `window.prompt()`. That is not merely an ugliness: `prompt()`
  * throws outright in a sandboxed or embedded browser, and the call sat inside
@@ -47,12 +47,38 @@ function messageFor(caught: unknown, fallback: string): string {
   return caught instanceof ApiRequestError ? caught.message : fallback;
 }
 
-export function RejectDialog({
-  order,
+/**
+ * The reasons the API accepts for cancelling an accepted order.
+ *
+ * Mirrors the `reasonCode` enum on `POST /v1/vendor/orders/:id/cancel`.
+ */
+export const CANCEL_REASONS = [
+  { value: 'out_of_stock', label: 'Ran out of something in the order' },
+  { value: 'kitchen_problem', label: 'Problem in the kitchen or shop' },
+  { value: 'closing_early', label: 'Closing early' },
+  { value: 'cannot_fulfil_instructions', label: 'Cannot meet the instructions' },
+  { value: 'other', label: 'Another reason' },
+] as const;
+
+interface ReasonDialogCopy {
+  url: string;
+  reasons: readonly { value: string; label: string }[];
+  title: string;
+  description: string;
+  name: string;
+  legend: string;
+  keepLabel: string;
+  confirmLabel: string;
+  busyLabel: string;
+}
+
+/** A dialog that will not submit without a reason picked from the API's list. */
+function ReasonDialog({
+  copy,
   onClose,
   onDone,
 }: {
-  order: DialogOrder;
+  copy: ReasonDialogCopy;
   onClose: () => void;
   onDone: () => Promise<void> | void;
 }) {
@@ -65,7 +91,7 @@ export function RejectDialog({
     setBusy(true);
     setFailure(null);
     try {
-      await authedFetch(`/v1/vendor/orders/${order.id}/reject`, {
+      await authedFetch(copy.url, {
         method: 'POST',
         body: { reasonCode: reason },
       });
@@ -82,15 +108,15 @@ export function RejectDialog({
 
   return (
     <Modal
-      title={`Reject ${order.code}?`}
-      description="The customer is refunded in full and told why."
+      title={copy.title}
+      description={copy.description}
       onClose={onClose}
-      labelledBy="reject-title"
+      labelledBy={`${copy.name}-title`}
     >
       <fieldset disabled={busy}>
-        <legend className="sr-only">Reason for rejecting {order.code}</legend>
+        <legend className="sr-only">{copy.legend}</legend>
         <div className="space-y-2">
-          {REJECT_REASONS.map((option) => (
+          {copy.reasons.map((option) => (
             <label
               key={option.value}
               className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 text-sm transition-colors ${
@@ -101,7 +127,7 @@ export function RejectDialog({
             >
               <input
                 type="radio"
-                name="reject-reason"
+                name={`${copy.name}-reason`}
                 value={option.value}
                 checked={reason === option.value}
                 onChange={() => setReason(option.value)}
@@ -121,7 +147,7 @@ export function RejectDialog({
 
       <div className="mt-5 flex gap-2">
         <Button variant="ghost" onClick={onClose} disabled={busy} className="flex-1">
-          Keep order
+          {copy.keepLabel}
         </Button>
         <Button
           variant="danger"
@@ -129,10 +155,72 @@ export function RejectDialog({
           disabled={!reason || busy}
           className="flex-1"
         >
-          {busy ? 'Rejecting…' : 'Reject order'}
+          {busy ? copy.busyLabel : copy.confirmLabel}
         </Button>
       </div>
     </Modal>
+  );
+}
+
+export function RejectDialog({
+  order,
+  onClose,
+  onDone,
+}: {
+  order: DialogOrder;
+  onClose: () => void;
+  onDone: () => Promise<void> | void;
+}) {
+  return (
+    <ReasonDialog
+      copy={{
+        url: `/v1/vendor/orders/${order.id}/reject`,
+        reasons: REJECT_REASONS,
+        title: `Reject ${order.code}?`,
+        description: 'The customer is refunded in full and told why.',
+        name: 'reject',
+        legend: `Reason for rejecting ${order.code}`,
+        keepLabel: 'Keep order',
+        confirmLabel: 'Reject order',
+        busyLabel: 'Rejecting…',
+      }}
+      onClose={onClose}
+      onDone={onDone}
+    />
+  );
+}
+
+/**
+ * Cancel an order the vendor has already accepted, before a rider collects
+ * it. The server withdraws any rider offer, stands down a rider on the way,
+ * and queues the customer's full refund, as for a rejection.
+ */
+export function CancelDialog({
+  order,
+  onClose,
+  onDone,
+}: {
+  order: DialogOrder;
+  onClose: () => void;
+  onDone: () => Promise<void> | void;
+}) {
+  return (
+    <ReasonDialog
+      copy={{
+        url: `/v1/vendor/orders/${order.id}/cancel`,
+        reasons: CANCEL_REASONS,
+        title: `Cancel ${order.code}?`,
+        description:
+          'The customer is refunded in full and told why. Any rider on the way is stood down. This cannot be undone.',
+        name: 'cancel',
+        legend: `Reason for cancelling ${order.code}`,
+        keepLabel: 'Keep order',
+        confirmLabel: 'Cancel order',
+        busyLabel: 'Cancelling…',
+      }}
+      onClose={onClose}
+      onDone={onDone}
+    />
   );
 }
 

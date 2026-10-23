@@ -31,6 +31,21 @@ describe('what the vendor console offers', () => {
     }
   });
 
+  it('offers cancel from accepting until a rider collects the food', () => {
+    for (const status of ['accepted', 'preparing', 'ready', 'rider_assigned', 'rider_arrived']) {
+      expect(vendorActions({ status }).cancel, status).toBe(true);
+    }
+    for (const status of ['placed', 'vendor_reviewing', 'picked_up', 'en_route', 'arrived', 'delivered', 'cancelled', 'rejected']) {
+      expect(vendorActions({ status }).cancel, status).toBe(false);
+    }
+  });
+
+  it('says a rider is being found rather than implying one is coming', () => {
+    expect(vendorActions({ status: 'ready', riderSearch: 'finding' }).riderSearchNote).toMatch(/Nobody is on the way yet/);
+    expect(vendorActions({ status: 'ready', riderSearch: 'finding_another' }).riderSearchNote).toMatch(/finding another rider/);
+    expect(vendorActions({ status: 'rider_assigned', riderSearch: null }).riderSearchNote).toBeNull();
+  });
+
   it('offers nothing on a stopped order, and says so', () => {
     for (const status of ['cancelled', 'rejected']) {
       const actions = vendorActions({ status });

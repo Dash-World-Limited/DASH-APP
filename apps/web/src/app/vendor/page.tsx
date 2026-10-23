@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import { API_BASE, ApiRequestError } from '@/lib/api';
-import { PickupDialog, RejectDialog } from '@/components/vendor-dialogs';
+import { CancelDialog, PickupDialog, RejectDialog } from '@/components/vendor-dialogs';
 import {
   authedFetch,
   signOut,
@@ -77,6 +77,7 @@ interface VendorOrder {
   }[];
   customer: { name: string };
   rider: { name: string | null } | null;
+  riderSearch?: 'finding' | 'finding_another' | null;
 }
 
 interface Branch {
@@ -1183,6 +1184,7 @@ export default function VendorConsolePage() {
   const [categoryForm, setCategoryForm] = useState(false);
   const [reviewForm, setReviewForm] = useState<Review | null>(null);
   const [rejecting, setRejecting] = useState<VendorOrder | null>(null);
+  const [cancelling, setCancelling] = useState<VendorOrder | null>(null);
   const [verifying, setVerifying] = useState<VendorOrder | null>(null);
   const [payout, setPayout] = useState<PayoutResponse['payoutDetails'] | null>(null);
   const [signingOut, setSigningOut] = useState(false);
@@ -1710,6 +1712,9 @@ export default function VendorConsolePage() {
                           <span><small>Assigned rider</small><strong>{selectedOrder.rider.name}</strong></span>
                         </div>
                       ) : null}
+                      {!selectedOrder.rider?.name && selectedActions?.riderSearchNote ? (
+                        <p className={styles.readyLine} role="status">{selectedActions.riderSearchNote}</p>
+                      ) : null}
                       <footer className={styles.orderTotal}>
                         <span>Product subtotal</span><strong>{formatNaira(selectedOrder.itemsSubtotal)}</strong>
                       </footer>
@@ -1753,6 +1758,9 @@ export default function VendorConsolePage() {
                           <button className={styles.primaryButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => void orderAction(selectedOrder, 'ready')}>
                             {selectedOrder.status === 'preparing' ? 'Mark ready' : 'Food is ready'}
                           </button>
+                        ) : null}
+                        {selectedActions?.cancel ? (
+                          <button className={styles.dangerButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => setCancelling(selectedOrder)}>Cancel order</button>
                         ) : null}
                         {selectedActions?.verifyPickup ? (
                           <button className={styles.primaryButton} type="button" disabled={busyKey === selectedOrder.id} onClick={() => setVerifying(selectedOrder)}>Verify pickup code</button>
@@ -2056,6 +2064,13 @@ export default function VendorConsolePage() {
         <RejectDialog
           order={rejecting}
           onClose={() => setRejecting(null)}
+          onDone={loadOrders}
+        />
+      ) : null}
+      {cancelling ? (
+        <CancelDialog
+          order={cancelling}
+          onClose={() => setCancelling(null)}
           onDone={loadOrders}
         />
       ) : null}
