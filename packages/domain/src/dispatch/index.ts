@@ -143,7 +143,7 @@ export const DEFAULT_CONFIG: DispatchConfig = {
   offerGraceSeconds: 600,
   onlineLeaseSeconds: 900,
   offerTtlSeconds: 30,
-  graceOfferTtlSeconds: 90,
+  graceOfferTtlSeconds: 60,
 };
 
 /** How many deliveries each vehicle may carry at once. */
