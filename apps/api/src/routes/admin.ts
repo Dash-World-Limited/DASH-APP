@@ -170,7 +170,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   app.post<{ Params: { id: string } }>(
     '/v1/ops/orders/:id/reassign',
-    { preHandler: requirePermission('ops:dispatch:reassign') },
+    { preHandler: requirePermission('ops:order:override') },
     async (request) => {
       const body = z
         .object({
@@ -263,7 +263,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   app.post<{ Params: { id: string } }>(
     '/v1/ops/orders/:id/redispatch',
-    { preHandler: requirePermission('ops:dispatch:reassign') },
+    { preHandler: requirePermission('ops:order:override') },
     async (request) => {
       const body = z
         .object({
@@ -342,7 +342,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
   // -------------------------------------------------------------------------
   app.post<{ Params: { id: string } }>(
     '/v1/ops/orders/:id/cancel',
-    { preHandler: requirePermission('ops:order:intervene') },
+    { preHandler: requirePermission('ops:order:override') },
     async (request) => {
       const body = z
         .object({

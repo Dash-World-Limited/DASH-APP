@@ -204,6 +204,9 @@ describe('city scoping', () => {
     expect(orders.some((order) => order.id === otherOrderId)).toBe(false);
   });
 
+  // Reassignment is super admin only (`ops:order:override`), so a dispatcher
+  // is refused it in every city, their own included, before scope is
+  // consulted. Both answers are safe; neither reveals the order.
   it("refuses to let a dispatcher reassign another city's order", async () => {
     const response = await context.app.inject({
       method: 'POST',
@@ -212,26 +215,31 @@ describe('city scoping', () => {
       payload: { reasonCode: 'rider_unresponsive' },
     });
 
-    expect(response.statusCode).toBe(404);
-    expect(response.json<{ error: { message: string } }>().error.message).toBe('Not found.');
+    expect(response.statusCode).toBe(403);
   });
 
-  it('lets the dispatcher for that city act on it', async () => {
-    // Reassignment only makes sense for an order that actually has a rider —
-    // an unassigned order is already back in the pool, and the state machine
-    // correctly refuses a same-state transition.
+  it('refuses even the dispatcher for that city, and lets a super admin act on it', async () => {
+    // Reassignment only makes sense for an order that actually has a rider.
     await context.prisma.order.update({
       where: { id: otherOrderId },
       data: { status: 'rider_assigned', riderId: world.riderB.riderId },
     });
 
-    const response = await context.app.inject({
+    const byDispatcher = await context.app.inject({
       method: 'POST',
       url: `/v1/ops/orders/${otherOrderId}/reassign`,
       headers: otherDispatcher.headers,
       payload: { reasonCode: 'rider_unresponsive' },
     });
-    expect(response.statusCode).toBe(200);
+    expect(byDispatcher.statusCode).toBe(403);
+
+    const byAdmin = await context.app.inject({
+      method: 'POST',
+      url: `/v1/ops/orders/${otherOrderId}/reassign`,
+      headers: admin.headers,
+      payload: { reasonCode: 'rider_unresponsive' },
+    });
+    expect(byAdmin.statusCode).toBe(200);
   });
 
   it('refuses to reassign an order that has no rider', async () => {
@@ -243,7 +251,7 @@ describe('city scoping', () => {
     const response = await context.app.inject({
       method: 'POST',
       url: `/v1/ops/orders/${otherOrderId}/reassign`,
-      headers: otherDispatcher.headers,
+      headers: admin.headers,
       payload: { reasonCode: 'other' },
     });
     expect(response.statusCode).toBe(409);

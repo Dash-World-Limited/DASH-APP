@@ -265,8 +265,9 @@ export default function OpsPage() {
   const { me } = useMe();
   const { permissions } = usePermissions();
   const canReadLedger = permissions.has('finance:ledger:read');
-  const canReassign = permissions.has('ops:dispatch:reassign');
-  const canCancel = permissions.has('ops:order:intervene');
+  // Super admin only (see `ops:order:override`); the server enforces it.
+  const canReassign = permissions.has('ops:order:override');
+  const canCancel = permissions.has('ops:order:override');
   const [cityIds, setCityIds] = useState<string[]>([]);
 
   const load = useCallback(async (): Promise<void> => {

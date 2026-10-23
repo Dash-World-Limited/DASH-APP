@@ -92,7 +92,9 @@ Notes:
 | Endpoint | Method | Permission | Scope | State transition | Cov |
 |---|---|---|---|---|---|
 | `/v1/ops/live` | GET | `ops:livemap:read` | filtered by `actor.cityIds` | — | ✅ |
-| `/v1/ops/orders/:id/reassign` | POST | `ops:dispatch:reassign` | `requireScope(cityId)` | `rider_assigned/rider_arrived → ready` | ✅ |
+| `/v1/ops/orders/:id/reassign` | POST | `ops:order:override` (super admin only) | `requireScope(cityId)` | `rider_assigned/rider_arrived → ready/preparing` (by `readyAt`); refused after pickup | ✅ |
+| `/v1/ops/orders/:id/redispatch` | POST | `ops:order:override` (super admin only) | `requireScope(cityId)` | — (reopens dispatch for an order with no rider) | ✅ |
+| `/v1/ops/orders/:id/cancel` | POST | `ops:order:override` (super admin only) | `requireScope(cityId)` | `* → cancelled` (after pickup: incident reason only); paid → refund review flagged | ✅ |
 | `/v1/ops/zones/:id/pause` | POST | `ops:zone:pause` | `requireScope(cityId)` | — | ✅ |
 | `/v1/ops/zones/:id/surge` | POST | `ops:surge:write` | `requireScope(cityId)` | — (capped by city rule) | ✅ |
 | `/v1/support/cases` | GET | `support:case:read` | global for support roles | — | ✅ |

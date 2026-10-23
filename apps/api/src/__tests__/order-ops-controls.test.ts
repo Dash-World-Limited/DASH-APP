@@ -464,9 +464,9 @@ describe('staff cancelling', () => {
     await post(rider, `/v1/rider/deliveries/${orderId}/progress`, { to: 'rider_arrived' });
     await post(rider, `/v1/rider/deliveries/${orderId}/progress`, { to: 'picked_up' });
 
-    const plain = await post(dispatcher, `/v1/ops/orders/${orderId}/cancel`, { reasonCode: 'customer_request', note: 'Asked to' });
+    const plain = await post(superAdmin, `/v1/ops/orders/${orderId}/cancel`, { reasonCode: 'customer_request', note: 'Asked to' });
     expect(plain.statusCode).toBe(409);
-    const incident = await post(dispatcher, `/v1/ops/orders/${orderId}/cancel`, {
+    const incident = await post(superAdmin, `/v1/ops/orders/${orderId}/cancel`, {
       reasonCode: 'delivery_incident',
       note: 'Rider crashed; food lost',
     });
@@ -525,7 +525,7 @@ describe('staff reassigning', () => {
     expect(await offersFor(orderId)).toHaveLength(2);
 
     mark = queue.jobs.length;
-    const reopened = await post(dispatcher, `/v1/ops/orders/${orderId}/redispatch`, { reasonCode: 'riders_back_online' });
+    const reopened = await post(superAdmin, `/v1/ops/orders/${orderId}/redispatch`, { reasonCode: 'riders_back_online' });
     expect(reopened.statusCode, reopened.body).toBe(200);
     await queue.runFindRider(orderId, mark);
     const offers = await offersFor(orderId);
@@ -565,5 +565,40 @@ describe('a delivered order', () => {
     expect((await post(superAdmin, `/v1/ops/orders/${orderId}/reassign`, { reasonCode: 'other' })).statusCode).toBe(409);
     expect((await post(superAdmin, `/v1/ops/orders/${orderId}/redispatch`, { reasonCode: 'other' })).statusCode).toBe(409);
     expect(await orderRow(orderId)).toEqual({ status: 'delivered', riderId });
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('manual intervention is super admin only', () => {
+  it('refuses a dispatcher every intervention, server-side, and leaves the order alone', async () => {
+    const { orderId, riderId } = await assignedOrder();
+    const mark = queue.jobs.length;
+    const attempts = [
+      post(dispatcher, `/v1/ops/orders/${orderId}/cancel`, { reasonCode: 'customer_request', note: 'Asked to cancel' }),
+      post(dispatcher, `/v1/ops/orders/${orderId}/reassign`, { reasonCode: 'rider_unresponsive' }),
+      post(dispatcher, `/v1/ops/orders/${orderId}/redispatch`, { reasonCode: 'no_rider_found' }),
+    ];
+    for (const response of await Promise.all(attempts)) expect(response.statusCode).toBe(403);
+    expect(await orderRow(orderId)).toEqual({ status: 'rider_assigned', riderId });
+    expect(queue.findRiderJobs(orderId, mark)).toHaveLength(0);
+
+    // A dispatcher still sees the order on the board and in the record.
+    const live = await context.app.inject({ method: 'GET', url: '/v1/ops/live', headers: dispatcher.headers });
+    expect(live.statusCode).toBe(200);
+    expect(live.json<{ orders: { id: string }[] }>().orders.some((order) => order.id === orderId)).toBe(true);
+    const record = await context.app.inject({ method: 'GET', url: `/v1/admin/orders/${orderId}`, headers: dispatcher.headers });
+    expect(record.statusCode).toBe(200);
+  });
+
+  it('lets a super admin reassign, restart and cancel', async () => {
+    const { orderId } = await assignedOrder();
+    expect((await post(superAdmin, `/v1/ops/orders/${orderId}/reassign`, { reasonCode: 'rider_unresponsive' })).statusCode).toBe(200);
+    // Reassignment restarted the search; withdraw it so a manual restart is the next step.
+    await context.prisma.dispatchOffer.updateMany({ where: { orderId, status: 'pending' }, data: { status: 'expired' } });
+    expect((await post(superAdmin, `/v1/ops/orders/${orderId}/redispatch`, { reasonCode: 'no_rider_found' })).statusCode).toBe(200);
+    expect(
+      (await post(superAdmin, `/v1/ops/orders/${orderId}/cancel`, { reasonCode: 'customer_request', note: 'Customer called' })).statusCode,
+    ).toBe(200);
+    expect((await orderRow(orderId)).status).toBe('cancelled');
   });
 });
