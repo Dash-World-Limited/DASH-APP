@@ -55,5 +55,12 @@
     "expo-modules-core": {
       "react-native-worklets": "0.12.2"
     }
+  },
+  "expo": {
+    "autolinking": {
+      "ios": {
+        "buildFromSource": ["ExpoModulesCore"]
+      }
+    }
   }
 }
