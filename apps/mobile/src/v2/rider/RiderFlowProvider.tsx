@@ -154,6 +154,24 @@ const FRESH_FIX_TIMEOUT_MS = 30_000;
  */
 const AUTOMATIC_FIX: Location.LocationOptions = { accuracy: Location.Accuracy.High, mayShowUserSettingsDialog: false };
 
+/**
+ * The optional parts of a fix, only when the platform actually measured them.
+ * iOS reports an unknown course, speed or accuracy as -1 (Core Location's
+ * "invalid" sentinel) rather than null, and the API rightly rejects a negative
+ * heading or speed, so sending them through turned every stationary iPhone's
+ * first fix into "Some of the information provided is not valid." and Go
+ * online failed. Same bounds as the server and as `reportLocation` in
+ * data/rider.ts.
+ */
+function optionalMotion(coords: Location.LocationObjectCoords): { accuracy?: number; heading?: number; speed?: number } {
+  const { accuracy, heading, speed } = coords;
+  return {
+    ...(accuracy != null && accuracy >= 0 ? { accuracy: Math.min(accuracy, 10_000) } : {}),
+    ...(heading != null && heading >= 0 && heading <= 360 ? { heading } : {}),
+    ...(speed != null && speed >= 0 && speed <= 100 ? { speed } : {}),
+  };
+}
+
 class FixTimeout extends Error {}
 
 function withFixTimeout<T>(promise: Promise<T>): Promise<T> {
@@ -232,9 +250,7 @@ export function RiderFlowProvider({ children }: { children: ReactNode }) {
         method: 'POST',
         body: {
           ...point,
-          accuracy: position.coords.accuracy ?? undefined,
-          heading: position.coords.heading ?? undefined,
-          speed: position.coords.speed ?? undefined,
+          ...optionalMotion(position.coords),
           recordedAt: new Date(position.timestamp).toISOString(),
         },
       });
