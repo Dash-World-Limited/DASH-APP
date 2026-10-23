@@ -59,7 +59,7 @@
   "expo": {
     "autolinking": {
       "ios": {
-        "buildFromSource": ["ExpoModulesCore"]
+        "buildFromSource": ["expo-modules-core"]
       }
     }
   }

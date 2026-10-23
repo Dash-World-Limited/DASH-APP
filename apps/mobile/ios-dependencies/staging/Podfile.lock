@@ -2117,7 +2117,7 @@ DEPENDENCIES:
   - "ExpoLogBox (from `../node_modules/@expo/log-box`)"
   - ExpoModulesCore (from `../node_modules/expo-modules-core`)
   - ExpoModulesJSI (from `../node_modules/expo-modules-jsi/apple`)
-  - ExpoModulesWorklets (from `../node_modules/expo-modules-core/ExpoModulesWorklets.podspec`)
+  - ExpoModulesWorklets (from `../node_modules/expo-modules-core`)
   - ExpoNotifications (from `../node_modules/expo-notifications/ios`)
   - ExpoSecureStore (from `../node_modules/expo-secure-store/ios`)
   - ExpoSplashScreen (from `../node_modules/expo-splash-screen/ios`)
@@ -2243,7 +2243,7 @@ EXTERNAL SOURCES:
   ExpoModulesJSI:
     :path: "../node_modules/expo-modules-jsi/apple"
   ExpoModulesWorklets:
-    :podspec: "../node_modules/expo-modules-core/ExpoModulesWorklets.podspec"
+    :path: "../node_modules/expo-modules-core"
   ExpoNotifications:
     :path: "../node_modules/expo-notifications/ios"
   ExpoSecureStore:
