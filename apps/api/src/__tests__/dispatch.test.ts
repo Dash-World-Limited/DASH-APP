@@ -713,6 +713,22 @@ describe('location reporting', () => {
     expect(response.statusCode).toBe(400);
   });
 
+  // iOS reports an unknown course and speed as -1. Clients must omit them; the
+  // server keeps refusing them rather than storing an invalid reading.
+  it('rejects the iOS -1 course and speed sentinels by field', async () => {
+    const response = await context.app.inject({
+      method: 'POST',
+      url: '/v1/rider/location',
+      headers: riderA.headers,
+      payload: { latitude: 6.5, longitude: 3.4, accuracy: 35, heading: -1, speed: -1 },
+    });
+    expect(response.statusCode).toBe(400);
+    const body = response.json<{ error: { code: string; message: string; details: { field: string }[] } }>();
+    expect(body.error.code).toBe('validation_failed');
+    expect(body.error.message).toBe('Some of the information provided is not valid.');
+    expect(body.error.details.map((detail) => detail.field).sort()).toEqual(['heading', 'speed']);
+  });
+
   it('rejects a timestamp in the future', async () => {
     const response = await context.app.inject({
       method: 'POST',

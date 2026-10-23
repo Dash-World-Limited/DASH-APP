@@ -568,6 +568,29 @@ describe('rider location permission lifecycle', () => {
     expect(h.location.requestForegroundPermissionsAsync).toHaveBeenCalledTimes(1);
   });
 
+  it('goes online on iOS when Core Location reports unknown course and speed as -1', async () => {
+    h.os = 'ios';
+    h.location.getCurrentPositionAsync.mockImplementation(async () => ({
+      // What a stationary iPhone returns: no course or speed yet, as -1, not null.
+      coords: { latitude: 6.2059, longitude: 6.6959, accuracy: 35, altitude: 40, altitudeAccuracy: 12, heading: -1, speed: -1 },
+      timestamp: Date.now(),
+    }));
+    await mount('offline');
+
+    let wentOnline = false;
+    await act(async () => {
+      wentOnline = await flow.goOnline();
+    });
+    await settle();
+
+    expect(wentOnline).toBe(true);
+    const [, options] = posts('/v1/rider/location')[0]!;
+    const body = (options as { body: Record<string, unknown> }).body;
+    expect(body).toMatchObject({ latitude: 6.2059, longitude: 6.6959, accuracy: 35 });
+    expect(body).not.toHaveProperty('heading');
+    expect(body).not.toHaveProperty('speed');
+  });
+
   it('keeps the rider offline when the permission is refused', async () => {
     permissionState = MISSING;
     requestAnswer = false;

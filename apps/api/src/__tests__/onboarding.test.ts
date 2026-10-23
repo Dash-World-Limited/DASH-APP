@@ -278,6 +278,26 @@ describe('a rider application', () => {
     expect(me.roles).not.toContain('rider');
   });
 
+  it('once approved, a customer-turned-rider can go online exactly as the app does', async () => {
+    const { actor } = await applicant();
+    const applied = await inject(actor, 'POST', '/v1/rider/applications', { vehicleType: 'motorcycle' });
+    const riderId = applied.json<{ application: { riderId: string } }>().application.riderId;
+    await stepUpAdmin();
+    expect((await inject(admin, 'POST', `/v1/admin/riders/${riderId}/decision`, { decision: 'approve' })).statusCode).toBe(200);
+
+    // The app's Go online: availability, then the first fix, on the same session.
+    const online = await inject(actor, 'POST', '/v1/rider/availability', { availability: 'idle' });
+    expect(online.statusCode, online.body).toBe(200);
+    const located = await inject(actor, 'POST', '/v1/rider/location', { latitude: 6.2059, longitude: 6.6959, accuracy: 35 });
+    expect(located.statusCode, located.body).toBe(200);
+    expect(located.json<{ accepted: boolean }>().accepted).toBe(true);
+
+    const rider = await context.prisma.rider.findUniqueOrThrow({ where: { id: riderId } });
+    expect(rider.availability).toBe('idle');
+    expect(rider.onlineUntil).not.toBeNull();
+    expect(rider.locationReportedAt).not.toBeNull();
+  });
+
   it('is approved by a stepped-up admin, and suspension withdraws access at once', async () => {
     const { actor, identityId } = await applicant();
     const applied = await inject(actor, 'POST', '/v1/rider/applications', { vehicleType: 'bicycle' });
