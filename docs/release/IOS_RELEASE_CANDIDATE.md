@@ -44,7 +44,7 @@ Foreground banners use the existing suppression rules for the order/chat/support
 
 ## Repeatable source/config checks
 
-Use Node 22.23.3 and the committed lockfiles:
+Use Node 22.23.3, npm 10.9.9 (the reviewed Node 22 toolchain) and the committed lockfiles. Do not regenerate the mobile lock using npm 11:
 
 ```sh
 npm ci --include=dev
@@ -52,7 +52,7 @@ npm ci --prefix apps/mobile --include=dev
 npm run typecheck --prefix apps/mobile
 npx eslint apps/mobile
 npx vitest run apps/mobile
-npx vitest run apps/api/src/__tests__/account-deletion.test.ts apps/api/src/__tests__/push.test.ts apps/api/src/__tests__/push-notifications.test.ts apps/api/src/__tests__/push-staging.test.ts
+npx vitest run packages/domain apps/api
 npm run doctor --prefix apps/mobile
 node scripts/check-secrets.mjs
 ```
@@ -76,6 +76,8 @@ With the genuine Firebase Apple client configured, also run `npm run ios:verify-
 Use an isolated checkout and separate simulator; preserve the owner's existing staging session and working copy. `DASH_BUILD_PLATFORM=ios` is set by the npm iOS commands; retain it for direct Expo/Xcode commands.
 
 For the credential-free staging baseline, copy `apps/mobile/ios-dependencies/staging/Podfile.lock` into the generated `ios/`, then use CocoaPods 1.17.0 `pod install --deployment`. A dependency patch requires a reviewed lock update first; never silently replace the lock in a release job. A configured Firebase build adds native SDK/SPM resolution, which requires a separately verified and retained dependency resolution record. Do not reuse a non-Firebase native lock as evidence of configured Firebase reproducibility.
+
+The reviewed SDK patch lock updates only Expo, ExpoLocation, ExpoModulesCore, ExpoModulesJSI, ExpoModulesWorklets and ExpoNotifications, plus their checksums. It was resolved with `pod update Expo ExpoLocation ExpoModulesCore ExpoModulesJSI ExpoModulesWorklets ExpoNotifications --no-repo-update`, followed by an unchanged `pod install --deployment`. Normal builds use the committed lock; they do not repeat that update.
 
 Build the generated workspace/scheme listed by `xcodebuild -list -json`, Release, `-sdk iphonesimulator`, with `CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO`. Install/launch the produced app on the isolated simulator, check it survives startup, and run the existing Maestro `apps/mobile/e2e/ios-startup.yaml`. Record source SHA, toolchain, dependency lock, screenshots and actual results.
 
