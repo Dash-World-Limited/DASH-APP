@@ -18,7 +18,12 @@ const h = vi.hoisted(() => ({
   tokenReads: 0,
   clearedResponses: 0,
   clearFails: false,
+  iosConfigured: false,
+  iosToken: 'unit-ios-fcm-registration-token' as string | null,
+  iosPending: null as Promise<string | null> | null,
 }));
+
+vi.mock('./iosFcm', () => ({ iosPushConfigured: () => h.iosConfigured, iosFcmToken: async () => h.iosConfigured ? (h.iosPending ?? h.iosToken) : null }));
 
 vi.mock('@react-native-async-storage/async-storage', () => ({
   default: {
@@ -27,7 +32,7 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 vi.mock('react-native', () => ({ Platform: h.platform }));
-vi.mock('expo-constants', () => ({ default: { expoConfig: { version: '0.1.0', android: { package: 'com.dashworldng.dash.staging' } } } }));
+vi.mock('expo-constants', () => ({ default: { expoConfig: { version: '0.1.0', android: { package: 'com.dashworldng.dash.staging' }, ios: { bundleIdentifier: 'com.dashworldng.dash.staging' } } } }));
 vi.mock('expo-notifications', () => ({
   AndroidImportance: { MAX: 7, HIGH: 6, DEFAULT: 5 },
   setNotificationChannelAsync: async (id: string) => void h.channels.push(id),
@@ -58,6 +63,9 @@ const ME = 'identity_1';
 beforeEach(() => {
   h.store.clear();
   h.platform.OS = 'android';
+  h.iosConfigured = false;
+  h.iosPending = null;
+  h.iosToken = 'unit-ios-fcm-registration-token';
   h.tokenReads = 0;
   h.clearedResponses = 0;
   h.clearFails = false;
@@ -73,6 +81,33 @@ beforeEach(() => {
 const registrations = () => h.request.mock.calls.filter(([path, options]) => path === '/v1/devices' && options?.method === 'POST').map(([, options]) => options.body);
 
 describe('registering after sign-in', () => {
+  it('cannot register or cache a late FCM token after its account signs out', async () => {
+    h.platform.OS = 'ios'; h.iosConfigured = true; h.permission = { granted: true, canAskAgain: true };
+    let current = true;
+    let finish!: (token: string) => void;
+    h.iosPending = new Promise(resolve => { finish = resolve; });
+    const pending = syncPushRegistration(api, { identityId: ME, isCurrent: () => current });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    current = false; finish('unit-late-fcm-registration-token');
+    await pending;
+    expect(h.request).not.toHaveBeenCalled(); expect(h.store.has(PUSH_TOKEN_KEY)).toBe(false);
+  });
+  it('uses the real iOS-provider path with ios platform and exact bundle identity', async () => {
+    h.platform.OS = 'ios'; h.iosConfigured = true;
+    expect(await syncPushRegistration(api, { identityId: ME })).toBe('registered');
+    expect(h.asked).toBe(1); expect(h.channels).toEqual([]); expect(h.tokenReads).toBe(0);
+    expect(registrations()).toEqual([{ pushToken: h.iosToken, platform: 'ios', notifications: 'on', appId: 'com.dashworldng.dash.staging', appVersion: '0.1.0' }]);
+  });
+  it('replaces an old iOS FCM token and reports the account preference', async () => {
+    h.platform.OS = 'ios'; h.iosConfigured = true; h.permission = { granted: true, canAskAgain: true };
+    h.store.set(PUSH_TOKEN_KEY, 'unit-old-fcm-registration-token'); h.store.set(`dash.notifications.v1:${ME}`, 'off');
+    await syncPushRegistration(api, { identityId: ME });
+    expect(h.asked).toBe(0); expect(registrations().at(-1)).toMatchObject({ platform: 'ios', notifications: 'off', replacesPushToken: 'unit-old-fcm-registration-token' });
+  });
+  it('does not register when the configured iOS provider has no deliverable token', async () => {
+    h.platform.OS = 'ios'; h.iosConfigured = true; h.iosToken = null;
+    expect(await syncPushRegistration(api, { identityId: ME })).toBe('unavailable'); expect(h.request).not.toHaveBeenCalled();
+  });
   it('does not prompt iOS or send an APNs token to the FCM backend', async () => {
     h.platform.OS = 'ios';
     h.token = 'a'.repeat(64);

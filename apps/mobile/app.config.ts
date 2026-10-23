@@ -24,6 +24,14 @@
  */
 
 import type { ConfigContext, ExpoConfig } from 'expo/config';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { resolveIosPushConfig, assertIosBuildInputs } = require('./plugins/iosReleaseConfig') as {
+  resolveIosPushConfig: (variant: string, env: NodeJS.ProcessEnv, bundle: string) => { file: string; apnsEnvironment: 'development' | 'production' } | null;
+  assertIosBuildInputs: (variant: string, release: { apiUrl: string | null; mapStyleUrl: string }, source: string) => void;
+};
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plain CommonJS so Expo's config loader and the tests can both load it without a build step
 const { resolveReleaseConfig, resolveGoogleServicesFile } = require('./plugins/releaseConfig') as {
@@ -70,6 +78,9 @@ const identity: Record<Variant, { name: string; id: string }> = {
  * native project or bundle can be generated from a configuration that fails.
  */
 const release = resolveReleaseConfig(variant, process.env);
+const iosBuild = process.env.DASH_BUILD_PLATFORM === 'ios';
+const iosPush = iosBuild ? resolveIosPushConfig(variant, process.env, identity[variant].id) : null;
+if (iosBuild) assertIosBuildInputs(variant, release, readFileSync(join(__dirname, 'src/api/buildConfig.ts'), 'utf8'));
 
 /**
  * Firebase's Android client configuration for push notifications, from
@@ -112,7 +123,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     bundleIdentifier: identity[variant].id,
     buildNumber: String(release.versionCode),
     supportsTablet: false,
+    ...(iosPush ? { googleServicesFile: iosPush.file, entitlements: { 'aps-environment': iosPush.apnsEnvironment } } : {}),
     infoPlist: {
+      ...(iosPush ? { FirebaseMessagingAutoInitEnabled: false } : {}),
       NSLocationWhenInUseUsageDescription:
         'DASH uses your location to show sellers near you and, for riders, to offer deliveries you can reach.',
     },
@@ -176,6 +189,11 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     output: 'single',
   },
   plugins: [
+    ...(iosPush ? [
+      '@react-native-firebase/app',
+      // RNFB 27 / Firebase Apple SDK 13 uses SPM and dynamic frameworks.
+      ['expo-build-properties', { ios: { useFrameworks: 'dynamic' } }] as [string, { ios: { useFrameworks: string } }],
+    ] : []),
     '@maplibre/maplibre-react-native',
     'expo-status-bar',
     'expo-font',
@@ -223,6 +241,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ],
   extra: {
     variant,
+    iosPushConfigured: Boolean(iosPush),
     // The API the app talks to. Never defaulted to localhost: on a phone that
     // is the phone. Missing (outside production) means the app says it is not
     // connected; it has no fixtures to fall back on.

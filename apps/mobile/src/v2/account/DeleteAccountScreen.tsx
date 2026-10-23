@@ -12,10 +12,11 @@
  * shows the status the server reports and the date it gave.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, TextInput, View } from 'react-native';
 
 import { api, ApiError } from '../../api';
+import { newIdempotencyKey } from '../../data/orders';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space } from '../../theme/tokens';
 import { Text } from '../../ui/Text';
@@ -45,6 +46,8 @@ export function DeleteAccountScreen({ onBack, onAccount }: { onBack: () => void;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reason, setReason] = useState('');
+  // Keep retries of one request idempotent if the response is lost.
+  const attemptKey = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     if (!api.configured || auth.state !== 'authenticated') {
@@ -70,12 +73,15 @@ export function DeleteAccountScreen({ onBack, onAccount }: { onBack: () => void;
   const request = async () => {
     setBusy(true);
     setError(null);
+    attemptKey.current ??= newIdempotencyKey();
     try {
       const result = await api.request<{ deletion: Deletion }>('/v1/account/deletion', {
         method: 'POST',
+        headers: { 'Idempotency-Key': attemptKey.current },
         body: reason.trim() ? { reason: reason.trim() } : {},
       });
       setDeletion(result.deletion);
+      attemptKey.current = null;
       setReason('');
     } catch (caught) {
       setError(describeError(caught));

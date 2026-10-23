@@ -23,6 +23,7 @@ import { notificationTarget, readPushData, showInForeground, type PushData, type
 import { useAppSession } from '../auth/AppSessionProvider';
 import type { AppFace, AppRoute } from '../navigation/model';
 import { onPushPreferenceChanged } from './preferenceSignal';
+import { onIosFcmTokenRefresh } from './iosFcm';
 import { pushDataOf, syncPushRegistration, type SyncOutcome } from './pushRegistration';
 
 /** Coming back to the app re-registers at most this often once registered. */
@@ -76,7 +77,7 @@ export function usePushNotifications(input: { current: { face: AppFace; route: A
       }
       if (reason === 'resume' && last?.outcome === 'registered' && Date.now() - last.at < RESUME_SYNC_MS) return;
       running = true;
-      syncPushRegistration(api, { identityId, userAsked })
+      syncPushRegistration(api, { identityId, userAsked, isCurrent: () => !disposed })
         .then((outcome) => {
           last = { outcome, at: Date.now() };
         })
@@ -98,12 +99,14 @@ export function usePushNotifications(input: { current: { face: AppFace; route: A
       if (next === 'active') sync('resume');
     });
     const tokens = Notifications.addPushTokenListener(() => sync('token'));
+    const fcmTokens = onIosFcmTokenRefresh(() => sync('token'));
     const preference = onPushPreferenceChanged((enabled) => sync('preference', enabled));
     return () => {
       disposed = true;
       pending = null;
       appState.remove();
       tokens.remove();
+      fcmTokens();
       preference();
     };
   }, [identityId]);

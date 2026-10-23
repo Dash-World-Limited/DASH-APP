@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   lastResponse: null as unknown,
   responseListeners: new Set<(response: unknown) => void>(),
   tokenListeners: new Set<() => void>(),
+  fcmListeners: new Set<() => void>(),
   appStateListeners: new Set<(state: string) => void>(),
   handler: null as null | { handleNotification: (notification: unknown) => Promise<{ shouldShowBanner: boolean }> },
   os: 'android',
@@ -55,6 +56,10 @@ vi.mock('./pushRegistration', () => ({
   syncPushRegistration: (...args: unknown[]) => h.sync(...args),
   pushDataOf: (notification: { request: { content: { data: unknown } } }) => notification.request.content.data,
 }));
+vi.mock('./iosFcm', () => ({ onIosFcmTokenRefresh: (listener: () => void) => {
+  if (h.os === 'ios') h.fcmListeners.add(listener);
+  return () => { h.fcmListeners.delete(listener); };
+} }));
 
 import { pushPreferenceChanged } from './preferenceSignal';
 import { usePushNotifications } from './usePushNotifications';
@@ -92,6 +97,7 @@ beforeEach(() => {
   h.initialRead.mockReset().mockImplementation(async () => h.lastResponse);
   h.responseListeners.clear();
   h.tokenListeners.clear();
+  h.fcmListeners.clear();
   h.appStateListeners.clear();
   opened = [];
   current = { face: 'customer', route: { name: 'customer.home' } as never };
@@ -103,6 +109,15 @@ afterEach(async () => {
 });
 
 describe('registration', () => {
+  it('iOS FCM refresh re-registers and invalidates its in-flight scope at logout', async () => {
+    h.os = 'ios'; await render();
+    const scope = h.sync.mock.calls[0]![1].isCurrent;
+    expect(scope()).toBe(true);
+    await act(async () => h.fcmListeners.forEach(listener => listener()));
+    expect(h.sync).toHaveBeenCalledTimes(2);
+    h.session = { state: 'unauthenticated', viewer: null }; await rerender();
+    expect(h.fcmListeners.size).toBe(0); expect(scope()).toBe(false);
+  });
   it.each(['ios', 'android'])('%s: coalesces token/preference changes during a pending registration', async (os) => {
     h.os = os;
     let finish!: (value: string) => void;
@@ -116,7 +131,7 @@ describe('registration', () => {
     expect(h.sync).toHaveBeenCalledTimes(1);
     await act(async () => finish('registered'));
     expect(h.sync).toHaveBeenCalledTimes(2);
-    expect(h.sync).toHaveBeenLastCalledWith(expect.anything(), { identityId: 'identity_1', userAsked: true });
+    expect(h.sync).toHaveBeenLastCalledWith(expect.anything(), { identityId: 'identity_1', userAsked: true, isCurrent: expect.any(Function) });
   });
 
   it.each(['ios', 'android'])('%s: discards queued registration work when the account changes', async (os) => {
@@ -129,16 +144,16 @@ describe('registration', () => {
     await rerender();
     await act(async () => finish('registered'));
     expect(h.sync).toHaveBeenCalledTimes(2);
-    expect(h.sync).toHaveBeenLastCalledWith(expect.anything(), { identityId: 'identity_2', userAsked: false });
+    expect(h.sync).toHaveBeenLastCalledWith(expect.anything(), { identityId: 'identity_2', userAsked: false, isCurrent: expect.any(Function) });
   });
   it('registers for the signed-in account, and again when the token rotates or the switch changes', async () => {
     await render();
-    expect(h.sync).toHaveBeenCalledWith(expect.anything(), { identityId: 'identity_1', userAsked: false });
+    expect(h.sync).toHaveBeenCalledWith(expect.anything(), { identityId: 'identity_1', userAsked: false, isCurrent: expect.any(Function) });
 
     await act(async () => h.tokenListeners.forEach((listener) => listener()));
     await act(async () => pushPreferenceChanged(true));
     expect(h.sync).toHaveBeenCalledTimes(3);
-    expect(h.sync).toHaveBeenLastCalledWith(expect.anything(), { identityId: 'identity_1', userAsked: true });
+    expect(h.sync).toHaveBeenLastCalledWith(expect.anything(), { identityId: 'identity_1', userAsked: true, isCurrent: expect.any(Function) });
   });
 
   it('does not re-register on every return to the app once registered', async () => {
