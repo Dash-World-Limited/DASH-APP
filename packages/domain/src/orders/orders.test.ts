@@ -27,6 +27,8 @@ import {
   type OrderStatus,
   type TransitionActor,
   isFindingRider,
+  REFUND_REVIEW_REQUIRED,
+  refundReviewState,
   RIDER_RELEASABLE_STATUSES,
   riderSearchState,
   statusAfterRiderRelease,
@@ -498,5 +500,19 @@ describe('the rider search shown to customers and vendors', () => {
     expect(riderSearchState(order('ready'), [{ fromStatus: 'rider_arrived', toStatus: 'ready' }])).toBe('finding_another');
     // The vendor marking food ready is not a release.
     expect(riderSearchState(order('ready'), [{ fromStatus: 'preparing', toStatus: 'ready' }])).toBe('finding');
+  });
+});
+
+describe('the refund review owed after a staff cancellation', () => {
+  const flagged = [{ reasonCode: 'ops_cancelled:other' }, { reasonCode: REFUND_REVIEW_REQUIRED }];
+
+  it('is owed until a refund is recorded, then reads as recorded', () => {
+    expect(refundReviewState(flagged, 0)).toBe('required');
+    expect(refundReviewState(flagged, 1)).toBe('refund_recorded');
+  });
+
+  it('is never claimed for an order that was not flagged', () => {
+    expect(refundReviewState([{ reasonCode: 'ops_cancelled:other' }], 0)).toBeNull();
+    expect(refundReviewState([], 3)).toBeNull();
   });
 });

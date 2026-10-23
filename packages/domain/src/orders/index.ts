@@ -362,6 +362,31 @@ export function riderSearchState(
   return released ? 'finding_another' : 'finding';
 }
 
+/**
+ * The status-event reason code left on a paid order that staff cancelled.
+ *
+ * A staff cancellation decides no refund: who bears it is a judgement, made in
+ * the existing finance refund flow. This marker is what keeps that judgement
+ * owed — written in the cancelling transaction, so a paid order cannot be
+ * cancelled by staff without it.
+ */
+export const REFUND_REVIEW_REQUIRED = 'refund_review_required';
+
+export type RefundReviewState = 'required' | 'refund_recorded';
+
+/**
+ * Where a staff-cancelled paid order's refund decision stands: `required`
+ * until a refund is recorded against its payment through the finance flow,
+ * then `refund_recorded`. Null for every order that was never flagged.
+ */
+export function refundReviewState(
+  events: readonly { reasonCode: string | null }[],
+  refundsRecorded: number,
+): RefundReviewState | null {
+  if (!events.some((event) => event.reasonCode === REFUND_REVIEW_REQUIRED)) return null;
+  return refundsRecorded > 0 ? 'refund_recorded' : 'required';
+}
+
 /** The customer's label while a replacement rider is being found. */
 export const FINDING_ANOTHER_RIDER_LABEL = 'Finding another rider';
 

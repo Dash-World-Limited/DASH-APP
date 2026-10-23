@@ -161,7 +161,7 @@ function OpsActionDialog({
   action: OpsAction;
   order: { id: string; code: string };
   onClose: () => void;
-  onDone: () => Promise<void> | void;
+  onDone: (result: { refundDecisionNeeded?: boolean }) => Promise<void> | void;
 }) {
   const copy = ACTION_COPY[action];
   const [reason, setReason] = useState<string | null>(null);
@@ -175,11 +175,11 @@ function OpsActionDialog({
     setBusy(true);
     setFailure(null);
     try {
-      await authedFetch(`/v1/ops/orders/${order.id}/${action}`, {
+      const result = await authedFetch<{ refundDecisionNeeded?: boolean }>(`/v1/ops/orders/${order.id}/${action}`, {
         method: 'POST',
         body: { reasonCode: reason, ...(note.trim() ? { note: note.trim() } : {}) },
       });
-      await onDone();
+      await onDone(result);
       onClose();
     } catch (caught) {
       setFailure(caught instanceof ApiRequestError ? caught.message : copy.failure);
@@ -259,6 +259,7 @@ function OpsActionDialog({
 export default function OpsPage() {
   const [orders, setOrders] = useState<LiveOrder[] | null>(null);
   const [acting, setActing] = useState<{ action: OpsAction; order: LiveOrder } | null>(null);
+  const [refundNotice, setRefundNotice] = useState<string | null>(null);
   const [ledger, setLedger] = useState<LedgerIntegrity | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
   const signedIn = useHasSession();
@@ -438,6 +439,12 @@ export default function OpsPage() {
           </div>
         ) : null}
 
+        {refundNotice ? (
+          <div className="mt-4">
+            <ErrorState title="Refund review required" message={refundNotice} />
+          </div>
+        ) : null}
+
         {error ? (
           <div className="mt-4">
             <ErrorState
@@ -546,7 +553,16 @@ export default function OpsPage() {
           action={acting.action}
           order={acting.order}
           onClose={() => setActing(null)}
-          onDone={load}
+          onDone={async (result) => {
+            // A cancelled order leaves this board, so say what it still owes
+            // before it goes. The flag stays on the admin order record.
+            if (acting.action === 'cancel' && result.refundDecisionNeeded) {
+              setRefundNotice(
+                `${acting.order.code} was cancelled after payment was taken. No refund was made. Open the order in Orders and decide the refund in Refunds.`,
+              );
+            }
+            await load();
+          }}
         />
       ) : null}
     </div>

@@ -16,6 +16,7 @@ import {
   ACTIVE_STATUSES,
   assertTransition,
   RIDER_CLAIMABLE_STATUSES,
+  REFUND_REVIEW_REQUIRED,
   RIDER_HOLDING_STATUSES,
   type OrderStatus,
 } from '@dash/domain/orders';
@@ -378,6 +379,7 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
 
       const status = order.status as OrderStatus;
       assertTransition(status, 'cancelled', 'ops');
+      const captured = order.payments[0]?.amount ?? 0;
       const custody = RIDER_HOLDING_STATUSES.has(status);
       if (custody && body.reasonCode !== 'rider_incident' && body.reasonCode !== 'delivery_incident') {
         throw ApiError.conflict(
@@ -408,18 +410,39 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
           },
         });
         await releaseRidersFromStoppedOrder(tx, order);
+        // Money was taken and no refund is decided here, so the decision is
+        // recorded as owed, with the cancellation, in the same commit. It
+        // shows on the admin order record until finance records a refund.
+        if (captured > 0) {
+          await tx.orderStatusEvent.create({
+            data: {
+              orderId: order.id,
+              fromStatus: 'cancelled',
+              toStatus: 'cancelled',
+              actorType: 'ops',
+              actorId: actor.identityId,
+              reasonCode: REFUND_REVIEW_REQUIRED,
+              reason: `Cancelled by staff with ${captured} kobo captured. Decide the refund in the finance refund flow.`,
+            },
+          });
+        }
         await recordOrderChange(tx, order.id);
       });
       await flushOutbox(prisma, queue);
 
-      const captured = order.payments[0]?.amount ?? 0;
       await writeAudit(prisma, {
         identityId: actor.identityId,
         action: 'ops.order.cancelled',
         resourceType: 'order',
         resourceId: order.id,
         before: { status, riderId: order.riderId },
-        after: { reasonCode: body.reasonCode, note: body.note, riderHadCustody: custody, capturedAmount: captured },
+        after: {
+          reasonCode: body.reasonCode,
+          note: body.note,
+          riderHadCustody: custody,
+          capturedAmount: captured,
+          refundReviewRequired: captured > 0,
+        },
         ipAddress: request.ip,
         requestId: request.id,
       });
@@ -427,9 +450,11 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       return {
         cancelled: true,
         riderHadCustody: custody,
-        // Whether a refund decision is owed, for the finance refund flow.
+        // Whether a refund decision is owed, for the finance refund flow. The
+        // same fact is on the admin order record as `refundReview`.
         capturedAmount: kobo(captured),
         refundDecisionNeeded: captured > 0,
+        refundReview: captured > 0 ? 'required' : null,
       };
     },
   );

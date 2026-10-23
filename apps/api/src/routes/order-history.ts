@@ -13,7 +13,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { customerLabel, deliveryAddressOf, riderSearchState, type OrderStatus } from '@dash/domain/orders';
+import { customerLabel, deliveryAddressOf, REFUND_REVIEW_REQUIRED, refundReviewState, riderSearchState, type OrderStatus } from '@dash/domain/orders';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requirePermission } from '../http/context.js';
 
@@ -263,6 +263,23 @@ export async function registerOrderHistoryRoutes(app: FastifyInstance): Promise<
           payments: order.payments,
           statusEvents: order.statusEvents,
           riderSearch: riderSearchState({ status, riderId: order.riderId, mode: order.mode }, order.statusEvents),
+          // A staff-cancelled paid order whose refund is still to be decided
+          // (or has since been recorded). See REFUND_REVIEW_REQUIRED.
+          refundReview: (() => {
+            const state = refundReviewState(
+              order.statusEvents,
+              order.payments.reduce((count, payment) => count + payment.refunds.length, 0),
+            );
+            if (!state) return null;
+            const flagged = order.statusEvents.find((event) => event.reasonCode === REFUND_REVIEW_REQUIRED);
+            return {
+              state,
+              flaggedAt: flagged?.createdAt ?? null,
+              capturedAmount: order.payments
+                .filter((payment) => payment.status === 'captured')
+                .reduce((sum, payment) => sum + payment.amount, 0),
+            };
+          })(),
           dispatchOffers: order.offers.map((offer) => ({
             id: offer.id,
             round: offer.round,

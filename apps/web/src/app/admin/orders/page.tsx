@@ -44,6 +44,7 @@ interface HistoricalOrder {
   payments: Array<{ provider: string; method: string; status: string; amount: number; createdAt: string; capturedAt: string | null; refunds: Array<{ amount: number; status: string }> }>;
   statusEvents: Array<{ fromStatus: string | null; toStatus: string; actorType: string; reasonCode: string | null; reason: string | null; createdAt: string }>;
   riderSearch: 'finding' | 'finding_another' | null;
+  refundReview: { state: 'required' | 'refund_recorded'; flaggedAt: string | null; capturedAmount: number } | null;
   dispatchOffers: Array<{
     id: string;
     round: number;
@@ -214,6 +215,23 @@ export default function AdminOrdersPage() {
                 ))}
               </ol>
             </section>
+
+            {order.refundReview ? (
+              <section
+                role={order.refundReview.state === 'required' ? 'alert' : 'status'}
+                className={`admin-card rounded-3xl p-5 sm:p-6 text-sm ${order.refundReview.state === 'required' ? 'border-2 border-coral-400' : ''}`}
+              >
+                <h3 className="text-sm font-extrabold uppercase tracking-wide text-[var(--ink-muted)]">
+                  {order.refundReview.state === 'required' ? 'Refund review required' : 'Refund recorded'}
+                </h3>
+                <p className="mt-2">
+                  {order.refundReview.state === 'required'
+                    ? `Staff cancelled this order after ${formatNaira(order.refundReview.capturedAmount)} was captured. No refund has been decided. Record the refund (or its amount) in the finance refund flow.`
+                    : 'A refund has been recorded for this staff-cancelled order. Follow it in Refunds.'}
+                </p>
+                {order.refundReview.flaggedAt ? <p className="mt-1 text-xs text-[var(--ink-muted)]">Flagged {when(order.refundReview.flaggedAt)}</p> : null}
+              </section>
+            ) : null}
 
             <section className="admin-card rounded-3xl p-5 sm:p-6 text-sm">
               <h3 className="text-sm font-extrabold uppercase tracking-wide text-[var(--ink-muted)]">Rider offers</h3>

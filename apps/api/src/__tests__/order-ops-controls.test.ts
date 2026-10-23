@@ -602,3 +602,69 @@ describe('manual intervention is super admin only', () => {
     expect((await orderRow(orderId)).status).toBe('cancelled');
   });
 });
+
+// ---------------------------------------------------------------------------
+describe('a staff cancellation of a paid order', () => {
+  async function adminRecord(orderId: string) {
+    const response = await context.app.inject({ method: 'GET', url: `/v1/admin/orders/${orderId}`, headers: superAdmin.headers });
+    expect(response.statusCode, response.body).toBe(200);
+    return response.json<{
+      order: {
+        refundReview: { state: string; capturedAmount: number; flaggedAt: string | null } | null;
+        statusEvents: { reasonCode: string | null }[];
+      };
+    }>().order;
+  }
+
+  it('leaves a refund review owed on the order, and no refund made', async () => {
+    const { orderId } = await dispatchedOrder();
+    const captured = await context.prisma.payment.findFirstOrThrow({ where: { orderId, status: 'captured' } });
+
+    const response = await post(superAdmin, `/v1/ops/orders/${orderId}/cancel`, { reasonCode: 'vendor_unavailable', note: 'Shop closed' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json<{ refundReview: string | null; refundDecisionNeeded: boolean }>()).toMatchObject({
+      refundReview: 'required',
+      refundDecisionNeeded: true,
+    });
+
+    // Nothing was refunded automatically.
+    expect(await context.prisma.refund.count({ where: { paymentId: captured.id } })).toBe(0);
+
+    const record = await adminRecord(orderId);
+    expect(record.refundReview).toMatchObject({ state: 'required', capturedAmount: captured.amount });
+    expect(record.refundReview?.flaggedAt).not.toBeNull();
+    expect(record.statusEvents.some((event) => event.reasonCode === 'refund_review_required')).toBe(true);
+
+    const audit = await context.prisma.auditLog.findFirstOrThrow({ where: { resourceId: orderId, action: 'ops.order.cancelled' } });
+    expect(JSON.stringify(audit)).toContain('refundReviewRequired');
+
+    // Once finance records a refund through the existing flow, the review reads as done.
+    await context.prisma.refund.create({
+      data: {
+        paymentId: captured.id,
+        amount: captured.amount,
+        reason: 'ops_cancellation_reviewed',
+        status: 'refund_pending_manual_review',
+        idempotencyKey: `test_review_${orderId}`,
+        requestedBy: 'finance',
+      },
+    });
+    expect((await adminRecord(orderId)).refundReview?.state).toBe('refund_recorded');
+  });
+
+  it('does not ask for a refund review when nothing was captured', async () => {
+    const { orderId } = await dispatchedOrder();
+    // A payment that never settled.
+    await context.prisma.payment.updateMany({ where: { orderId }, data: { status: 'failed' } });
+
+    const response = await post(superAdmin, `/v1/ops/orders/${orderId}/cancel`, { reasonCode: 'suspected_fraud', note: 'Card declined' });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json<{ refundReview: string | null; refundDecisionNeeded: boolean }>()).toMatchObject({
+      refundReview: null,
+      refundDecisionNeeded: false,
+    });
+    const record = await adminRecord(orderId);
+    expect(record.refundReview).toBeNull();
+    expect(record.statusEvents.some((event) => event.reasonCode === 'refund_review_required')).toBe(false);
+  });
+});
