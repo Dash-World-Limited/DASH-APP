@@ -35,7 +35,10 @@ for (const key of ['NSLocationAlwaysUsageDescription', 'NSLocationAlwaysAndWhenI
 assert.ok(!plist.UIBackgroundModes?.includes('location'), 'Background rider tracking has not been implemented');
 assert.equal(plist.UILaunchStoryboardName, 'SplashScreen');
 assert.equal(plist.UIUserInterfaceStyle, 'Automatic');
-assert.notEqual(plist.NSAppTransportSecurity?.NSAllowsArbitraryLoads, true);
+if (config.extra.variant === 'production') {
+  assert.equal(plist.NSAppTransportSecurity?.NSAllowsArbitraryLoads, false);
+  assert.equal(plist.NSAppTransportSecurity?.NSAllowsLocalNetworking, false);
+}
 for (const asset of [config.icon, config.plugins.find(p => Array.isArray(p) && p[0] === 'expo-splash-screen')?.[1]?.image]) {
   assert.ok(asset, 'Icon and splash must be explicitly configured');
   require('node:fs').accessSync(resolve(mobile, asset));

@@ -11,6 +11,7 @@ The owner reports the completed iPhone 17 Pro staging order â†’ Android Rider â†
 - Existing validated order/chat/support notification targets, server-backed screen reads, Rider restoration/active-delivery guards and warm/cold response handling remain. There is no separate background order/payment state machine or silent-push delivery promise.
 - Android keeps Expo's FCM token acquisition, channel creation and registration behavior. RNFirebase is explicitly excluded from Android autolinking. Unconfigured iOS builds exclude its native modules as well.
 - iOS configuration rejects a stale baked API origin from another build variant and non-production map hosts in production. Existing production API/version checks remain. Production notification test controls remain hidden.
+- Production explicitly enforces HTTPS through App Transport Security; development keeps Expo's Metro network allowance. No arbitrary-load exception is shipped in the production iOS configuration.
 - Dispatch, matching/radius/scoring, pricing, zones, order business rules, location, chat, rating and product layouts are untouched.
 
 ## Build identities and assets

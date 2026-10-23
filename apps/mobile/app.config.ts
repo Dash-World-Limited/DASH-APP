@@ -126,6 +126,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ...(iosPush ? { googleServicesFile: iosPush.file, entitlements: { 'aps-environment': iosPush.apnsEnvironment } } : {}),
     infoPlist: {
       ...(iosPush ? { FirebaseMessagingAutoInitEnabled: false } : {}),
+      ...(variant === 'production' ? {
+        NSAppTransportSecurity: { NSAllowsArbitraryLoads: false, NSAllowsLocalNetworking: false },
+      } : {}),
       NSLocationWhenInUseUsageDescription:
         'DASH uses your location to show sellers near you and, for riders, to offer deliveries you can reach.',
     },
