@@ -10,6 +10,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { haversineMetres } from '@dash/domain/geo';
+import {
+  LEGACY_VENDOR_CATEGORY_IDS,
+  MERCHANT_SERVICE_CATEGORY_IDS,
+  SERVICE_CATEGORIES,
+  serviceCategoryForVendorCategory,
+  vendorCategoriesForService,
+} from '@dash/domain/services';
 import { ApiError } from '../http/errors.js';
 
 const coordinateSchema = z.object({
@@ -20,16 +27,39 @@ const coordinateSchema = z.object({
 const listQuerySchema = z.object({
   latitude: z.coerce.number().min(-90).max(90).optional(),
   longitude: z.coerce.number().min(-180).max(180).optional(),
-  category: z.enum(['restaurant', 'grocery', 'pharmacy', 'retail', 'market']).optional(),
+  service: z.enum(MERCHANT_SERVICE_CATEGORY_IDS).optional(),
+  // Deprecated compatibility filter for clients released before the public
+  // six-service taxonomy. Remove only after usage has reached zero.
+  //
+  // Includes `declutter`: the seeded Declutter seller is a real Vendor row that
+  // the rider logistics tests run against, and the web Declutter section asks
+  // for it by this value. Dropping it here would 400 that request.
+  category: z.enum(LEGACY_VENDOR_CATEGORY_IDS).optional(),
   // Bounded to keep a pathological query from scanning the table.
   search: z.string().trim().max(80).optional(),
   sort: z.enum(['nearest', 'rating', 'name']).default('nearest'),
   cursor: z.string().max(64).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
+}).superRefine((query, context) => {
+  if (query.service && query.category) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Use service or category, not both.',
+      path: ['service'],
+    });
+  }
 });
 
 export async function registerCatalogRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, geo } = app.services;
+
+  // -------------------------------------------------------------------------
+  // GET /v1/service-categories
+  //
+  // Stable public navigation contract shared by native and web clients.
+  // Position is part of the contract: do not alphabetise this list.
+  // -------------------------------------------------------------------------
+  app.get('/v1/service-categories', async () => ({ categories: SERVICE_CATEGORIES }));
 
   // -------------------------------------------------------------------------
   // GET /v1/cities
@@ -51,14 +81,16 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
     return { cities };
   });
 
-  // -------------------------------------------------------------------------
-  // GET /v1/serviceability?latitude=&longitude=
-  //
-  // The first question the customer app asks: "do you deliver here?"
-  // -------------------------------------------------------------------------
-  app.get('/v1/serviceability', async (request) => {
-    const point = coordinateSchema.parse(request.query);
-
+  /**
+   * Resolve one customer coordinate into the service context used by both
+   * serviceability and discovery.
+   *
+   * Keeping this in one function matters: a point must not be described as
+   * outside DASH by /serviceability while /vendors quietly returns merchants
+   * from another city. The catalogue is a delivery catalogue whenever an
+   * origin is supplied, so the same zone decision owns both answers.
+   */
+  async function resolveServiceability(point: { latitude: number; longitude: number }) {
     const cities = await prisma.city.findMany({
       where: { isLive: true },
       select: { id: true, slug: true, name: true },
@@ -70,24 +102,33 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
 
       const zones = await prisma.zone.findMany({
         where: { id: { in: [...zoneIds] } },
-        select: { id: true, name: true, slug: true, isActive: true, pausedReason: true, surgeMultiplier: true },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          isActive: true,
+          pausedReason: true,
+          surgeMultiplier: true,
+        },
       });
 
       const live = zones.filter((zone) => zone.isActive);
       if (live.length === 0) {
         return {
-          serviceable: false,
-          reason: 'zone_paused',
+          serviceable: false as const,
+          reason: 'zone_paused' as const,
           message:
             zones[0]?.pausedReason ??
             'Deliveries here are paused right now. Please try again shortly.',
           city,
+          zone: null,
+          busy: false,
         };
       }
 
       const primary = live[0];
       return {
-        serviceable: true,
+        serviceable: true as const,
         city,
         zone: primary ? { id: primary.id, name: primary.name, slug: primary.slug } : null,
         // Surfaced so the UI can warn before the customer builds a basket.
@@ -96,11 +137,23 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
     }
 
     return {
-      serviceable: false,
-      reason: 'outside_service_area',
+      serviceable: false as const,
+      reason: 'outside_service_area' as const,
       message: 'DASH APP does not deliver to this address yet.',
       city: null,
+      zone: null,
+      busy: false,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // GET /v1/serviceability?latitude=&longitude=
+  //
+  // The first question the customer app asks: "do you deliver here?"
+  // -------------------------------------------------------------------------
+  app.get('/v1/serviceability', async (request) => {
+    const point = coordinateSchema.parse(request.query);
+    return resolveServiceability(point);
   });
 
   // -------------------------------------------------------------------------
@@ -108,11 +161,32 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
   // -------------------------------------------------------------------------
   app.get('/v1/vendors', async (request) => {
     const query = listQuerySchema.parse(request.query);
+    const vendorCategories = query.service
+      ? vendorCategoriesForService(query.service)
+      : query.category
+        ? [query.category]
+        : undefined;
+
+    const origin =
+      query.latitude !== undefined && query.longitude !== undefined
+        ? { latitude: query.latitude, longitude: query.longitude }
+        : null;
+
+    // With a delivery origin, discovery is scoped by the exact same service
+    // decision as /v1/serviceability. Returning a Lagos merchant to somebody
+    // standing in Asaba merely because Lagos happened to be seeded first is not
+    // "nearest"; it is a merchant the customer cannot order from.
+    const service = origin ? await resolveServiceability(origin) : null;
+    if (service && !service.serviceable) {
+      return { vendors: [], nextCursor: null };
+    }
+    const serviceCityId = service?.city.id;
 
     const vendors = await prisma.vendor.findMany({
       where: {
         status: 'approved',
-        ...(query.category ? { category: query.category } : {}),
+        ...(serviceCityId ? { cityId: serviceCityId } : {}),
+        ...(vendorCategories ? { category: { in: [...vendorCategories] } } : {}),
         ...(query.search
           ? {
               OR: [
@@ -158,11 +232,6 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
     const hasMore = vendors.length > query.limit;
     const page = hasMore ? vendors.slice(0, query.limit) : vendors;
 
-    const origin =
-      query.latitude !== undefined && query.longitude !== undefined
-        ? { latitude: query.latitude, longitude: query.longitude }
-        : null;
-
     const shaped = page.map((vendor) => {
       const branch = vendor.branches[0];
       const distanceMetres =
@@ -176,6 +245,7 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
         slug: vendor.slug,
         description: vendor.description,
         category: vendor.category,
+        serviceCategory: serviceCategoryForVendorCategory(vendor.category),
         rating: { average: vendor.ratingAverage, count: vendor.ratingCount },
         branch: branch
           ? {
@@ -256,6 +326,8 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
                 description: true,
                 price: true,
                 imageKey: true,
+                // Only ever set on Declutter listings; null elsewhere.
+                condition: true,
                 prepMinutes: true,
                 isAvailable: true,
                 requiresAgeCheck: true,
@@ -285,7 +357,27 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
     // same response as one that does not exist.
     if (!vendor || vendor.status !== 'approved') throw ApiError.notFound();
 
-    return { vendor };
+    const categories = await Promise.all(
+      vendor.categories.map(async (category) => ({
+        ...category,
+        items: await Promise.all(
+          category.items.map(async (item) => ({
+            ...item,
+            imageKey: item.imageKey
+              ? await app.services.storage.signedUrl(item.imageKey, 3_600)
+              : null,
+          })),
+        ),
+      })),
+    );
+
+    return {
+      vendor: {
+        ...vendor,
+        categories,
+        serviceCategory: serviceCategoryForVendorCategory(vendor.category),
+      },
+    };
   });
 
   // -------------------------------------------------------------------------
@@ -322,6 +414,12 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
       }),
     ]);
 
-    return { vendors, items };
+    return {
+      vendors: vendors.map((vendor) => ({
+        ...vendor,
+        serviceCategory: serviceCategoryForVendorCategory(vendor.category),
+      })),
+      items,
+    };
   });
 }

@@ -21,7 +21,24 @@ const PROJECTS = [
   'packages/db',
   'apps/api',
   'apps/web',
+  'apps/mobile',
 ];
+
+/**
+ * The native app is a standalone project with its own dependencies — React
+ * Native will not share React with the web app — so it is checked with its own
+ * TypeScript (the version Expo pins) against its own node_modules.
+ *
+ * If those are not installed the check FAILS with the command to fix it. It is
+ * never skipped: a gate that quietly passes when it could not run is how a
+ * broken app reaches review.
+ */
+const OWN_TOOLCHAIN = {
+  'apps/mobile': {
+    tsc: 'apps/mobile/node_modules/typescript/bin/tsc',
+    install: 'npm ci --prefix apps/mobile',
+  },
+};
 
 let failed = 0;
 
@@ -34,12 +51,20 @@ for (const project of PROJECTS) {
     continue;
   }
 
+  const own = OWN_TOOLCHAIN[project];
+  if (own && !existsSync(own.tsc)) {
+    console.error(`  FAIL     ${project}`);
+    console.error(`           its dependencies are not installed — run: ${own.install}`);
+    failed += 1;
+    continue;
+  }
+
   // Invoke the tsc binary directly rather than going through `npx`. On Windows
   // `npx` needs `shell: true`, which Node deprecates when arguments are passed
   // (DEP0190) because they are concatenated rather than escaped.
   const result = spawnSync(
     process.execPath,
-    [tscBin, '--noEmit', '-p', config],
+    [own ? own.tsc : tscBin, '--noEmit', '-p', config],
     { encoding: 'utf8' },
   );
 

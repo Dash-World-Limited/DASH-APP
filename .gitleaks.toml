@@ -1,0 +1,22 @@
+title = "DASH APP secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic credential-shaped literals used by redaction tests"
+regexTarget = "line"
+regexes = [
+  '''gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH''',
+  '''unique-apikey-3d81f5c0a94e2b''',
+  '''deep-apikey-4f19c7a2e05b83''',
+  # Historical synthetic fixtures from config.test.ts (2026-09-09).
+  # Exact values only: do not broaden this to a file/path/rule exemption.
+  '''YpTt1KNH1JtX0eaiUaPNFWHApAQl8BggrrhxcNgy604=''',
+  '''k9Xm2Qp7Rt4Vw8Zb1Nc5Hj3Lf6Yg0Ds-aVbNmQwErTyUi''',
+  '''Pq3Wz8Rx1Ty6Ui4Op9As2Df7Gh5Jk0Lm-zXcVbNmQwErT''',
+  '''MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=''',
+  # Historical unencoded form of the same synthetic encryption fixture above.
+  # Match only this exact assignment, not a test file or an entire rule.
+  '''ENCRYPTION_KEY:\s*['"]0123456789abcdef0123456789abcdef['"]'''
+]

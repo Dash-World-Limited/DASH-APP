@@ -64,11 +64,53 @@ describe('hard eligibility filters', () => {
     expect(decision.excluded[0]?.reason).toBe('not_idle');
   });
 
-  it('excludes a rider whose location is stale', () => {
+  it('excludes a rider whose location is stale beyond the grace window', () => {
+    // Past the grace window there is nothing left to justify even waking them:
+    // a position this old says little about where the rider is now.
+    const decision = decideDispatch(REQUEST, [
+      rider({
+        locationReportedAt: new Date(NOW.getTime() - (DEFAULT_CONFIG.offerGraceSeconds + 60) * 1000),
+      }),
+    ]);
+    expect(decision.excluded[0]?.reason).toBe('location_stale');
+    expect(decision.ranked).toHaveLength(0);
+  });
+
+  it('admits a rider inside the grace window, marked as grace', () => {
+    // Too stale to be given the delivery, fresh enough to be worth waking. The
+    // acceptance path demands a current fix before any assignment, so this can
+    // only ever produce a notification — see acceptance.ts.
     const decision = decideDispatch(REQUEST, [
       rider({ locationReportedAt: new Date(NOW.getTime() - 300_000) }),
     ]);
-    expect(decision.excluded[0]?.reason).toBe('location_stale');
+    expect(decision.excluded).toHaveLength(0);
+    expect(decision.ranked[0]?.eligibilityMode).toBe('grace');
+  });
+
+  it('marks a rider inside the normal window as fresh', () => {
+    const decision = decideDispatch(REQUEST, [
+      rider({ locationReportedAt: new Date(NOW.getTime() - 30_000) }),
+    ]);
+    expect(decision.ranked[0]?.eligibilityMode).toBe('fresh');
+  });
+
+  it('offers to a live rider ahead of a closer sleeping one', () => {
+    // Mode is the primary sort key. A grace rider may score higher — they can
+    // be nearer, or better rested — and must still lose to anyone awake, because
+    // reaching them costs a push, a cold start and a GPS fix, and they may turn
+    // out to be ineligible once they wake.
+    const decision = decideDispatch(REQUEST, [
+      rider({
+        riderId: 'sleeping-and-nearer',
+        location: PICKUP,
+        locationReportedAt: new Date(NOW.getTime() - 300_000),
+      }),
+      rider({ riderId: 'awake', locationReportedAt: new Date(NOW.getTime() - 30_000) }),
+    ]);
+
+    expect(decision.ranked[0]?.riderId).toBe('awake');
+    expect(decision.ranked[0]?.eligibilityMode).toBe('fresh');
+    expect(decision.offerTo).toEqual(['awake']);
   });
 
   it('excludes a rider whose location is timestamped in the future', () => {

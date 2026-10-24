@@ -1,3 +1,5 @@
+import type { MerchantServiceCategoryId } from '@dash/domain/services';
+
 /**
  * API client.
  *
@@ -10,7 +12,8 @@
  */
 
 export const API_BASE =
-  process.env['NEXT_PUBLIC_API_URL'] ?? 'http://127.0.0.1:4000';
+  // Next replaces direct NEXT_PUBLIC_* property reads in browser builds.
+  process.env.NEXT_PUBLIC_API_URL ?? 'https://api.dashworldng.com';
 
 /**
  * The CSRF cookie name, mirrored from the API.
@@ -23,12 +26,90 @@ export const API_BASE =
 export const CSRF_COOKIE = 'dash_csrf';
 export const CSRF_HEADER = 'X-CSRF-Token';
 
-function readCsrfToken(): string | null {
+function readCsrfCookie(): string | null {
   if (typeof document === 'undefined') return null;
   const entry = document.cookie
     .split('; ')
     .find((candidate) => candidate.startsWith(`${CSRF_COOKIE}=`));
   return entry ? decodeURIComponent(entry.slice(CSRF_COOKIE.length + 1)) : null;
+}
+
+/**
+ * The token obtained from the API, when the cookie cannot be read.
+ *
+ * In memory only, like the access token and for the same reason. It is also
+ * per-tab, which is correct: it must match the cookie *this* browser holds.
+ */
+let bootstrappedCsrfToken: string | null = null;
+
+/** Deduplicates concurrent bootstraps — a page that fires three writes at once
+ *  should ask for the token once, not three times. */
+let csrfBootstrap: Promise<string | null> | null = null;
+
+/** Forget the cached token, so the next write fetches a fresh one. */
+export function resetCsrfToken(): void {
+  bootstrappedCsrfToken = null;
+  csrfBootstrap = null;
+}
+
+/**
+ * The token to echo, without going to the network.
+ *
+ * Same-origin — development, and the API behind a path proxy — the cookie is
+ * readable and this is all that is ever needed. Cross-subdomain it returns
+ * whatever a previous bootstrap cached, or nothing the first time.
+ */
+function currentCsrfToken(): string | null {
+  return readCsrfCookie() ?? bootstrappedCsrfToken;
+}
+
+/**
+ * Ask the API for the token this browser is holding.
+ *
+ * Called only after the server has said the token was missing or wrong, never
+ * speculatively. That ordering matters: the cookie is readable on every
+ * deployment shape that already worked, so a proactive fetch would add a round
+ * trip for every user in order to fix the one case that is actually broken —
+ * a returning browser on `declutters.dashworldng.com`, which cannot read a
+ * cookie belonging to `api.dashworldng.com`.
+ *
+ * The rejection it responds to costs nothing: CSRF is enforced in an
+ * `onRequest` hook, so a refused request never reached a handler and had no
+ * effect to undo.
+ *
+ * `GET /v1/auth/csrf` returns the value the browser holds, issuing one if
+ * there is none. Only an allowed origin can read that response, so the token
+ * stays as unreachable to an attacker as the cookie was.
+ *
+ * Deliberately not `apiFetch`: a GET needs no token, and routing it back
+ * through here would risk recursion for no benefit.
+ */
+async function bootstrapCsrfToken(): Promise<string | null> {
+  if (csrfBootstrap) return csrfBootstrap;
+
+  csrfBootstrap = (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/v1/auth/csrf`, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      if (!response.ok) return null;
+
+      const body = (await response.json()) as { csrfToken?: string };
+      bootstrappedCsrfToken = body.csrfToken ?? null;
+      return bootstrappedCsrfToken;
+    } catch {
+      // Offline, or the API is unreachable. The request that needed this will
+      // fail on its own and report the real problem; returning null here keeps
+      // that message rather than replacing it with a confusing CSRF one.
+      return null;
+    } finally {
+      csrfBootstrap = null;
+    }
+  })();
+
+  return csrfBootstrap;
 }
 
 export interface ApiErrorBody {
@@ -58,22 +139,47 @@ export class ApiRequestError extends Error {
   }
 
   get needsStepUp(): boolean {
-    return this.code === 'step_up_required';
+    return this.code === 'step_up_required' || this.code === 'step_up_expired';
   }
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
+  /** Raw request bytes, used for bounded image uploads. Mutually exclusive with body. */
+  rawBody?: BodyInit;
+  contentType?: string;
   token?: string | null;
   idempotencyKey?: string;
   signal?: AbortSignal;
 }
 
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return sendRequest<T>(path, options, true);
+}
+
+/**
+ * `mayRetryCsrf` guards a single retry.
+ *
+ * A token can go stale for ordinary reasons — the cookie expired, or the
+ * session was rotated — and the honest recovery is to fetch a new one and try
+ * once more. Bounded to one attempt: if the second also fails, something is
+ * genuinely wrong and looping would only hide it.
+ */
+async function sendRequest<T>(
+  path: string,
+  options: RequestOptions,
+  mayRetryCsrf: boolean,
+): Promise<T> {
   const method = options.method ?? 'GET';
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (options.body !== undefined && options.rawBody !== undefined) {
+    throw new Error('Request cannot have both JSON body and rawBody.');
+  }
+
+  const headers: Record<string, string> = {};
+  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (options.rawBody !== undefined && options.contentType) headers['Content-Type'] = options.contentType;
   if (options.token) headers['Authorization'] = `Bearer ${options.token}`;
   if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
 
@@ -81,7 +187,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   // it when the request actually carries the refresh cookie, but sending it
   // unconditionally is simpler and costs nothing.
   if (method !== 'GET') {
-    const csrfToken = readCsrfToken();
+    const csrfToken = currentCsrfToken();
     if (csrfToken) headers[CSRF_HEADER] = csrfToken;
   }
 
@@ -94,7 +200,11 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
       // web app and the API are different origins during development, and
       // cross-origin fetch omits cookies unless asked.
       credentials: 'include',
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      ...(options.rawBody !== undefined
+        ? { body: options.rawBody }
+        : options.body === undefined
+          ? {}
+          : { body: JSON.stringify(options.body) }),
       ...(options.signal ? { signal: options.signal } : {}),
     });
   } catch {
@@ -119,9 +229,23 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 
   if (!response.ok) {
     const body = payload as Partial<ApiErrorBody>;
+    const code = body.error?.code ?? 'unknown';
+
+    // The token was missing or stale. Fetch the one this browser is actually
+    // holding and try once more.
+    if (
+      mayRetryCsrf &&
+      response.status === 403 &&
+      (code === 'csrf_missing' || code === 'csrf_invalid')
+    ) {
+      resetCsrfToken();
+      const refreshed = await bootstrapCsrfToken();
+      if (refreshed) return sendRequest<T>(path, options, false);
+    }
+
     throw new ApiRequestError(
       response.status,
-      body.error?.code ?? 'unknown',
+      code,
       body.error?.message ?? 'Something went wrong.',
       body.error?.requestId,
       body.error?.details,
@@ -172,7 +296,9 @@ export interface VendorSummary {
   name: string;
   slug: string;
   description: string | null;
+  /** Deprecated storage value retained for old clients. */
   category: string;
+  serviceCategory: MerchantServiceCategoryId | null;
   rating: { average: number; count: number };
   branch: {
     id: string;
@@ -205,6 +331,11 @@ export interface MenuItem {
   description: string | null;
   price: number;
   imageKey: string | null;
+  /**
+   * Second-hand condition. Set on Declutter listings, null everywhere else —
+   * a plate of jollof has no condition.
+   */
+  condition?: string | null;
   prepMinutes: number;
   isAvailable: boolean;
   requiresAgeCheck: boolean;
@@ -217,7 +348,9 @@ export interface VendorDetail {
   name: string;
   slug: string;
   description: string | null;
+  /** Deprecated storage value retained for old clients. */
   category: string;
+  serviceCategory: MerchantServiceCategoryId | null;
   ratingAverage: number;
   ratingCount: number;
   branches: {
@@ -290,5 +423,24 @@ export interface Me {
   permissions: string[];
   vendorId: string | null;
   riderId: string | null;
+  /** The rider's own working state, so the app can recover it after a restart. */
+  riderAvailability: 'offline' | 'idle' | 'on_break' | 'on_delivery' | null;
+  /**
+   * Whether this identity may work as a rider.
+   *
+   * Not the same as having a `riderId`: a pending, suspended or rejected rider
+   * has one. Rider mode is offered only for `approved`, and the server refuses
+   * the rider routes to everyone else independently.
+   */
+  riderStatus: 'pending' | 'approved' | 'suspended' | 'rejected' | null;
   customerId: string | null;
+  /**
+   * Cities this actor is scoped to. Empty for an unscoped ops role, which
+   * reaches every city.
+   *
+   * Used to decide which `city:` realtime topics the dispatch board follows.
+   * It is the actor's own scope and grants nothing — the server re-checks every
+   * subscription against it regardless of what the client asks for.
+   */
+  cityIds: string[];
 }

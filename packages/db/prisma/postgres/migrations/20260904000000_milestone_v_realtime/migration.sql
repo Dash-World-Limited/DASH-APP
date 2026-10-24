@@ -1,0 +1,12 @@
+-- Milestone V: the realtime notification ordering counter.
+--
+-- Mirrors the SQLite migration of the same name. `ALTER TABLE ... ADD COLUMN`
+-- with a non-volatile default is a catalogue-only change in PostgreSQL 11 and
+-- later — it does not rewrite the table and does not hold a long lock, so this
+-- is safe to apply to a populated `Order` table without a maintenance window.
+--
+-- `Order` is a reserved word in SQL and is quoted here exactly as it is
+-- everywhere else in this schema.
+--
+-- Verify with `npm run check:postgres` after applying.
+ALTER TABLE "Order" ADD COLUMN "revision" INTEGER NOT NULL DEFAULT 0;

@@ -4,9 +4,14 @@ node_modules/
 .pnp.js
 
 # builds
+# The PostgreSQL Prisma client, generated on demand by `npm run check:postgres`
+# into its own directory so it cannot overwrite the SQLite client the rest of
+# the workspace uses.
+packages/db/prisma/postgres/.client/
 dist/
 build/
 .next/
+.next-dev/
 out/
 *.tsbuildinfo
 
@@ -14,7 +19,41 @@ out/
 .env
 .env.local
 .env.*.local
+.env.production
+.env.staging
+.env.development
 !.env.example
+
+# key and credential material — NEVER commit any of this
+#
+# gitleaks catches things that match a known credential pattern. These are the
+# files that carry key material without matching one: a PEM body, a binary
+# keystore, a service-account JSON. Excluded by filename so a stray one cannot
+# be added by accident in the first place.
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+service-account*.json
+serviceaccount*.json
+credentials.json
+gcp-*.json
+*.gpg
+*.asc
+
+# database dumps and key backups — a dump carries the real rows, and a key
+# backup stored beside one defeats the separation the encryption depends on
+*.dump
+*.sql.gz
+*.bak
+backups/
 
 # database (local SQLite dev store)
 *.db
@@ -44,3 +83,38 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# --- Legacy Android WebView shell (apps/android-shell) -------------------------------------------
+# Gradle build output and machine-specific paths. The Android project itself
+# is committed; what it produces and where a given machine keeps its SDK are
+# not.
+apps/android-shell/android/build/
+apps/android-shell/android/app/build/
+apps/android-shell/android/.gradle/
+apps/android-shell/android/local.properties
+apps/android-shell/android/app/src/main/assets/public/
+apps/android-shell/android/app/src/main/assets/capacitor.config.json
+apps/android-shell/android/app/src/main/res/xml/network_security_config.xml
+apps/android-shell/android/capacitor-cordova-android-plugins/
+
+# Firebase configuration for the Android shell.
+#
+# Not a server secret — the API key inside ships in every APK by design and is
+# restricted by package name and signing certificate — but it names a specific
+# Firebase project and is per-environment: the test package and a production
+# package need different files. Committing one would bake this project into
+# everybody's build the way a hardcoded LAN address would.
+#
+# The dangerous half is the service-account credential used to *send*. That is
+# never a file in this repository; it goes through the secret-management
+# contract as an environment value.
+apps/android-shell/android/app/google-services.json
+# Written per build from DASH_MOBILE_HOST; committing one would bake one
+# developer's LAN address into everyone else's build.
+apps/android-shell/capacitor.config.json
+apps/android-shell/www/target.json
+*.apk
+.tooling/
+
+# Python bytecode from the design scripts (docs/design/…/wordmark).
+__pycache__/

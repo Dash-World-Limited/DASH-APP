@@ -88,6 +88,39 @@ export interface DispatchConfig {
   readonly detourFactor: number;
   /** How many riders to offer to at once. 1 = strictly sequential. */
   readonly offerBatchSize: number;
+
+  /**
+   * How old a position may be and still be used to decide whom to *wake*.
+   *
+   * Not a relaxation of `maximumLocationAgeSeconds`, which continues to govern
+   * assignment untouched. A rider whose app has been killed stops reporting,
+   * and two minutes later cannot be offered work at all — which makes a push
+   * notification useless precisely when it is most needed, because its whole
+   * purpose is reaching someone who is not looking at the app.
+   *
+   * A position this old is evidence enough to send a notification and nothing
+   * else. Acting on it requires the rider to wake up and produce a fresh fix,
+   * which is re-validated for distance and zone before any assignment. So a
+   * wrong guess here costs one wasted notification, never a bad delivery.
+   */
+  readonly offerGraceSeconds: number;
+
+  /** How long a rider's Online claim survives without a position report. */
+  readonly onlineLeaseSeconds: number;
+
+  /** Seconds a rider has to answer an offer made from a fresh position. */
+  readonly offerTtlSeconds: number;
+
+  /**
+   * Seconds a rider has to answer an offer that had to wake them first.
+   *
+   * Longer than the fresh TTL because the work is different: an app that is
+   * already open answers immediately, while a woken one must be delivered to,
+   * noticed, tapped, cold-started, and then acquire a GPS fix — measured at
+   * 8–48s on real hardware, most often 15–30s. A 30s window fails that race
+   * often, and fails it *after* waking the rider, which is the worst outcome.
+   */
+  readonly graceOfferTtlSeconds: number;
 }
 
 export const DEFAULT_CONFIG: DispatchConfig = {
@@ -105,10 +138,16 @@ export const DEFAULT_CONFIG: DispatchConfig = {
   },
   detourFactor: 1.4,
   offerBatchSize: 1,
+  // Policy, deliberately tunable from observed rider behaviour rather than
+  // scattered as literals through the worker and the routes.
+  offerGraceSeconds: 600,
+  onlineLeaseSeconds: 900,
+  offerTtlSeconds: 30,
+  graceOfferTtlSeconds: 90,
 };
 
-/** Capacity by vehicle — how many deliveries may be stacked. */
-const VEHICLE_CAPACITY: Readonly<Record<VehicleType, number>> = {
+/** How many deliveries each vehicle may carry at once. */
+export const VEHICLE_CAPACITY: Readonly<Record<VehicleType, number>> = {
   on_foot: 1,
   bicycle: 2,
   motorcycle: 3,
@@ -143,12 +182,23 @@ export interface ScoreFactor {
   readonly explanation: string;
 }
 
+/**
+ * Which rule admitted a rider to the ranking.
+ *
+ * `fresh` — everything held, including the 120s position window.
+ * `grace` — the position was older than that but inside the grace window, so
+ * this rider is worth *waking* and nothing more. Acceptance will demand a
+ * fresh fix before any assignment (see acceptance.ts).
+ */
+export type EligibilityMode = 'fresh' | 'grace';
+
 export interface ScoredRider {
   readonly riderId: string;
   readonly score: number;
   readonly factors: readonly ScoreFactor[];
   readonly pickupEtaSeconds: number;
   readonly pickupDistanceMetres: number;
+  readonly eligibilityMode: EligibilityMode;
 }
 
 export interface ExcludedRider {
@@ -190,8 +240,14 @@ function excludeIfIneligible(
     };
   }
 
+  // Freshness is judged against the grace window here, not the assignment
+  // window. A position older than 120s is not good enough to *give* someone a
+  // delivery — acceptance enforces that, and enforces it for every offer — but
+  // it is good enough to decide who is worth waking with a push. Riders
+  // admitted this way are marked `grace` and ranked below every fresh rider, so
+  // they are only ever reached for when nobody live qualifies.
   const ageSeconds = (request.now.getTime() - rider.locationReportedAt.getTime()) / 1000;
-  if (ageSeconds > config.maximumLocationAgeSeconds || ageSeconds < 0) {
+  if (ageSeconds > config.offerGraceSeconds || ageSeconds < 0) {
     return {
       riderId: rider.riderId,
       reason: 'location_stale',
@@ -346,6 +402,7 @@ function scoreRider(
     factors,
     pickupEtaSeconds: Math.round(pickupEtaSeconds),
     pickupDistanceMetres: Math.round(pickupDistanceMetres),
+    eligibilityMode: ageSeconds > config.maximumLocationAgeSeconds ? 'grace' : 'fresh',
   };
 }
 
@@ -375,7 +432,22 @@ export function decideDispatch(
     ranked.push(scoreRider(rider, request, config, seconds, metres));
   }
 
-  ranked.sort((a, b) => b.score - a.score || a.riderId.localeCompare(b.riderId));
+  // Fresh riders always outrank grace riders, whatever the scores say.
+  //
+  // A grace rider is asleep: reaching them costs a push, a cold start and a GPS
+  // acquisition, and they may still turn out to be ineligible once they wake.
+  // A live rider can answer now. Sorting by score alone would let a sleeping
+  // rider two hundred metres away beat a working one a kilometre away, which
+  // trades a certain acceptance for a possible one — so mode is the primary
+  // key and score only breaks ties within a mode. Grace is reached for when
+  // nobody live qualifies, never in preference.
+  const MODE_RANK: Record<EligibilityMode, number> = { fresh: 0, grace: 1 };
+  ranked.sort(
+    (a, b) =>
+      MODE_RANK[a.eligibilityMode] - MODE_RANK[b.eligibilityMode] ||
+      b.score - a.score ||
+      a.riderId.localeCompare(b.riderId),
+  );
 
   return {
     ruleVersion: DISPATCH_RULE_VERSION,
@@ -398,6 +470,57 @@ export type OfferStatus = 'pending' | 'accepted' | 'declined' | 'expired' | 'wit
 export const OFFER_TIMEOUT_SECONDS = 30;
 
 /** How many rounds of offers before escalating to a human dispatcher. */
+/**
+ * How long this rider has to answer, and why freshness cannot decide it.
+ *
+ * The first version keyed the deadline on `eligibilityMode` — a grace offer got
+ * ninety seconds, a fresh one thirty. That was wrong, and a handset proved it:
+ * a rider swiped DASH away and, seconds later, dispatch ran. Their position was
+ * eighty-two seconds old, comfortably inside the freshness window, so the offer
+ * was classified `fresh` and given thirty seconds. But the process was already
+ * dead. The push arrived, the rider tapped it, the app cold-started — and the
+ * offer had expired while they were still signing in.
+ *
+ * The error was using **location freshness as a proxy for app liveness.** They
+ * are unrelated: a position is a fact about where a phone was, not about
+ * whether anything is still running on it. A rider who swipes away has a fresh
+ * position and a dead app for the next two minutes.
+ *
+ * So the deadline asks a different question — *can this rider answer right
+ * now?* — and only a live connection can prove that. Anything else, including
+ * a perfectly fresh position, means assuming they must be woken first.
+ *
+ * The fallback direction matters. Being wrong towards the long deadline costs
+ * an order sixty extra seconds before it re-rounds. Being wrong towards the
+ * short one wakes a rider and then takes the work away before they can reach
+ * it, which is worse for them and worse for the customer. Uncertainty
+ * therefore resolves to the wake deadline, never the short one — which also
+ * means a deployment where liveness cannot be determined degrades safely
+ * rather than silently reintroducing this bug.
+ */
+export function offerTtlSecondsFor(
+  liveness: 'live' | 'unknown',
+  config: DispatchConfig = DEFAULT_CONFIG,
+): number {
+  return liveness === 'live' ? config.offerTtlSeconds : config.graceOfferTtlSeconds;
+}
+
+/**
+ * Acceptance-time validation.
+ *
+ * Re-exported from the dispatch barrel so callers reach one module for both
+ * halves of the decision: who may be offered, and who may be assigned.
+ */
+export {
+  judgeAcceptance,
+  countsAsDecline,
+  shouldRedispatch,
+  type AcceptanceCandidate,
+  type AcceptanceContext,
+  type AcceptanceRefusal,
+  type AcceptanceVerdict,
+} from './acceptance.js';
+
 export const MAX_OFFER_ROUNDS = 4;
 
 export interface OfferOutcome {
