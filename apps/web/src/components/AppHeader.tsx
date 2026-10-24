@@ -89,12 +89,22 @@ export function AppHeader({ variant = 'customer' }: { variant?: 'customer' | 'st
               </button>
             </div>
           ) : (
-            <Link
-              href="/signin"
-              className="rounded-xl bg-graphite-900 px-4 py-2 text-sm font-semibold text-white"
-            >
-              Sign in
-            </Link>
+            <div className="flex items-center gap-2">
+              {variant === 'customer' ? (
+                <Link
+                  href="/signup"
+                  className="rounded-xl border px-3.5 py-2 text-sm font-semibold hover:bg-[var(--surface-raised)]"
+                >
+                  Sign up
+                </Link>
+              ) : null}
+              <Link
+                href="/signin"
+                className="rounded-xl bg-graphite-900 px-4 py-2 text-sm font-semibold text-white"
+              >
+                Sign in
+              </Link>
+            </div>
           )}
         </div>
       </div>

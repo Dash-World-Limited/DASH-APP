@@ -2,12 +2,12 @@
  * API entry point.
  */
 
-import { buildServer } from './server.js';
+import { buildPublicServer } from './public-server.js';
 import { describeAdapters, loadConfig } from './config.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const app = await buildServer({ config });
+  const app = await buildPublicServer({ config });
 
   await app.listen({ port: config.API_PORT, host: config.API_HOST });
 
