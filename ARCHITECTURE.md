@@ -52,6 +52,14 @@ and is described below.
               └─────────────────┘
 ```
 
+### Accepted target client topology (not built yet)
+
+The diagram above is the currently implemented staging harness. ADR-0011
+changes the official product direction: customer and rider become separate
+React Native / Expo applications; vendor, admin, support and finance stay in
+Next.js. All clients continue through the same Fastify API, and none is a
+security boundary.
+
 One rule explains most of the layout: **`packages/domain` has no I/O.** No
 database, no network, no `new Date()` it did not receive as an argument. The
 parts that must be provably correct — money, permissions, the order state
@@ -67,7 +75,9 @@ everything that can fail in the real world lives outside them.
 | `packages/domain` | Business rules. Pure. | nothing but `zod` |
 | `packages/db` | Prisma schema, seed, ledger posting, audit redaction | `domain` |
 | `apps/api` | HTTP surface, auth, workers, adapters | `domain`, `db` |
-| `apps/web` | All four user surfaces | `domain` (types + money formatting) |
+| `apps/web` | Current staging harness; target vendor/admin/support/finance web app | `domain` (types + money formatting) |
+| `apps/customer-mobile` *(planned)* | Native customer experience | API contracts + shared native UI |
+| `apps/rider-mobile` *(planned)* | Native rider experience | API contracts + shared native UI |
 
 Dependencies point one way only. `domain` cannot import `db`; `db` cannot import
 `api`. That is enforced by there being no such import, not by tooling — a
@@ -87,6 +97,7 @@ dependency-cruiser rule is on the roadmap.
 | `dispatch` | Explainable rider scoring, hard eligibility filters, offer rounds |
 | `ledger` | Double-entry, append-only, zero-sum enforced before write |
 | `ports` | Adapter interfaces for every external service, plus an injectable clock |
+| `services` | Stable public service ids, order, labels, kinds, and legacy vendor mapping |
 
 ---
 
@@ -339,7 +350,16 @@ running server and are not part of the CI gate.
 
 ## What this architecture does not yet do
 
-- No websockets. Tracking, the vendor queue, and the ops board all poll.
+- **Realtime is notification-only, and rider position is still polled.** The
+  socket says "order abc is now at version 12"; the client re-reads through
+  the ordinary authorized route ([ADR-0013](docs/DECISIONS.md#adr-0013--realtime-carries-notifications-not-data)).
+  That is deliberate — it is what stops the transport bypassing the API's
+  field-level projection rules — but it means a rider's live position, which
+  changes every few seconds and would multiply re-reads by the number of
+  watchers, is out of scope and still polled.
+- No browser journey covering the realtime path end to end. The client is tested
+  against a fake socket and a real DOM, the server against a real socket on an
+  ephemeral port; the two have never met in a browser.
 - No horizontal scale story. The in-memory queue is per-process, so a second API
   instance would run its own dispatch worker and double-offer. Redis + BullMQ is
   the answer and the worker code is unchanged by it.

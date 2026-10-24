@@ -9,13 +9,25 @@
  * reorders a `superRefine` block.
  */
 
+import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { buildKeyring, loadConfig, parseRetiredKeys, resetConfigCache } from '../config.js';
+import {
+  buildKeyring,
+  describeAdapters,
+  loadConfig,
+  parseRetiredKeys,
+  resetConfigCache,
+} from '../config.js';
 import { assertSecureCookieConfig } from '../auth/cookies.js';
 
 beforeEach(() => {
   resetConfigCache();
 });
+
+const FAKE_LIVE_KEY = ['sk', 'live', 'notarealkey'.repeat(4)].join('_');
+const FAKE_TEST_KEY = ['sk', 'test', 'notarealkey'.repeat(4)].join('_');
 
 /** A production environment that is otherwise entirely valid. */
 function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
@@ -27,17 +39,26 @@ function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEn
     DEV_EXPOSE_OTP: 'false',
     PUBLIC_WEB_URL: 'https://dashapp.ng',
     PAYMENT_PROVIDER: 'paystack',
-    PAYSTACK_SECRET_KEY: 'sk_live_not_a_real_key',
-    PAYSTACK_WEBHOOK_SECRET: 'whsec_not_a_real_secret',
+    // Assembled from parts so no scanner mistakes it for a leaked key.
+    PAYSTACK_SECRET_KEY: FAKE_LIVE_KEY,
+    PAYSTACK_ALLOW_LIVE: 'true',
     MAPS_PROVIDER: 'google',
     GOOGLE_MAPS_API_KEY: 'not-a-real-key',
     SMS_PROVIDER: 'termii',
-    EMAIL_PROVIDER: 'smtp',
+    EMAIL_PROVIDER: 'ses',
+    SES_REGION: 'eu-west-1',
+    EMAIL_FROM_ADDRESS: 'no-reply@notify.dashworldng.com',
+    EMAIL_REPLY_TO: 'admin@dashworldng.com',
     PUSH_PROVIDER: 'fcm',
+    // A path, never a credential. Firebase reads the file; nothing here does.
+    GOOGLE_APPLICATION_CREDENTIALS: '/var/secrets/firebase-service-account.json',
     STORAGE_PROVIDER: 's3',
+    S3_BUCKET: 'dash-declutters',
+    S3_REGION: 'eu-west-1',
     QUEUE_PROVIDER: 'redis',
     REDIS_URL: 'redis://cache.internal:6379',
     RATE_LIMIT_REDIS: 'true',
+    REALTIME_BROADCAST: 'redis',
     GEO_ZONES_PROVIDER: 'postgis',
     // Obviously fake, generated for this file, and only ever used against
     // an in-memory config object. Never decrypts anything real.
@@ -82,10 +103,17 @@ describe('mock adapters are refused in production', () => {
     expectRefusal({ MAPS_PROVIDER: 'local' }, 'MAPS_PROVIDER');
   });
 
-  it('refuses the console SMS adapter', () => {
-    // The one that matters most: with console SMS, no customer ever receives a
-    // login code, and the platform is unusable in a way that looks like a bug.
-    expectRefusal({ SMS_PROVIDER: 'console' }, 'SMS_PROVIDER');
+  it('refuses the console SMS adapter once SMS is switched on', () => {
+    // With console SMS and SMS enabled, no customer would ever receive a phone
+    // code, and the platform is unusable in a way that looks like a bug.
+    expectRefusal({ SMS_ENABLED: 'true', SMS_PROVIDER: 'console' }, 'SMS_PROVIDER');
+  });
+
+  it('starts without any SMS provider while SMS is off, as in V1', () => {
+    // Sign-in is by emailed code and phones are unverified, so production
+    // must not demand — or pay for — an SMS provider it never uses.
+    const config = loadConfig(productionEnv({ SMS_PROVIDER: 'console' }));
+    expect(config.SMS_ENABLED).toBe(false);
   });
 
   it('refuses the console email adapter', () => {
@@ -102,6 +130,37 @@ describe('mock adapters are refused in production', () => {
 
   it('refuses the in-memory queue', () => {
     expectRefusal({ QUEUE_PROVIDER: 'memory' }, 'QUEUE_PROVIDER');
+  });
+
+  it('refuses in-process realtime fan-out', () => {
+    // The failure this prevents is the quiet kind: in-process fan-out works
+    // perfectly on one instance and, on several, reaches only the sockets that
+    // happen to be on the instance whose worker took the job.
+    expectRefusal({ REALTIME_BROADCAST: 'memory' }, 'REALTIME_BROADCAST');
+  });
+
+  it('allows in-process fan-out when realtime is switched off entirely', () => {
+    // Nothing to get wrong when there is no socket to feed, and failing the
+    // boot over an unused setting would be a startup error with no cause.
+    resetConfigCache();
+    const config = loadConfig(
+      productionEnv({ REALTIME_ENABLED: 'false', REALTIME_BROADCAST: 'memory' }),
+    );
+    expect(config.REALTIME_ENABLED).toBe(false);
+  });
+
+  it('requires a Redis URL for realtime broadcast', () => {
+    expectRefusal({ REALTIME_BROADCAST: 'redis', REDIS_URL: '' }, 'REDIS_URL');
+  });
+
+  it('does not claim realtime is live when it is disabled', () => {
+    resetConfigCache();
+    const off = loadConfig(productionEnv({ REALTIME_ENABLED: 'false' }));
+    expect(describeAdapters(off)).toContain('realtime=off');
+
+    resetConfigCache();
+    const on = loadConfig(productionEnv());
+    expect(describeAdapters(on)).toContain('realtime=redis');
   });
 
   it('refuses SQLite', () => {
@@ -128,8 +187,27 @@ describe('DEV_EXPOSE_OTP is refused in production', () => {
       // with it. The guard that enforces this pairing runs in every
       // environment, which is why it applies here.
       GEO_ZONES_PROVIDER: 'local',
+      // Likewise the Paystack rules: a live key and the go-live switch are
+      // refused outside production, so a development environment carries the
+      // test key.
+      PAYSTACK_SECRET_KEY: FAKE_TEST_KEY,
+      PAYSTACK_ALLOW_LIVE: 'false',
     });
     expect(config.DEV_EXPOSE_OTP).toBe(true);
+  });
+});
+
+describe('the per-destination OTP resend cooldown', () => {
+  it('refuses a cooldown under 30 seconds in production', () => {
+    expectRefusal({ OTP_RESEND_COOLDOWN_SECONDS: '0' }, 'OTP_RESEND_COOLDOWN_SECONDS');
+    expectRefusal({ OTP_RESEND_COOLDOWN_SECONDS: '29' }, 'OTP_RESEND_COOLDOWN_SECONDS');
+  });
+
+  it('defaults to a minute and five codes an hour', () => {
+    resetConfigCache();
+    const config = loadConfig(productionEnv());
+    expect(config.OTP_RESEND_COOLDOWN_SECONDS).toBe(60);
+    expect(config.OTP_MAX_CODES_PER_HOUR).toBe(5);
   });
 });
 
@@ -202,15 +280,128 @@ describe('development secrets are refused in production', () => {
   });
 });
 
+describe('a fresh copy of .env.example', () => {
+  /** The committed template, read the way a copied .env is: KEY=value lines, comments ignored. */
+  function templateEnv(): NodeJS.ProcessEnv {
+    const text = readFileSync(fileURLToPath(new URL('../../../../.env.example', import.meta.url)), 'utf8');
+    const env: NodeJS.ProcessEnv = {};
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line.trim());
+      if (match) env[match[1]!] = match[2]!.replace(/^"(.*)"$/, '$1');
+    }
+    return env;
+  }
+
+  it('boots after its one documented step — its empty optional values mean "not set"', () => {
+    // Regression: `S3_BUCKET=` and `S3_ENDPOINT=` were parsed as supplied
+    // empty strings, failed their format checks, and the API refused to start
+    // from the template people are told to copy.
+    //
+    // The one step the template requires is generating ENCRYPTION_KEY: its
+    // placeholder is deliberately invalid so nobody runs on a shared key.
+    // This does that step, the way .env.example says to, and nothing else.
+    resetConfigCache();
+    const config = loadConfig({ ...templateEnv(), ENCRYPTION_KEY: randomBytes(32).toString('base64') });
+    expect(config.S3_BUCKET).toBeUndefined();
+    expect(config.S3_ENDPOINT).toBeUndefined();
+  });
+
+  it('still refuses a required value left empty, as missing', () => {
+    resetConfigCache();
+    expect(() =>
+      loadConfig({ ...templateEnv(), ENCRYPTION_KEY: randomBytes(32).toString('base64'), JWT_ACCESS_SECRET: '' }),
+    ).toThrow(/JWT_ACCESS_SECRET/);
+  });
+});
+
+describe('Brevo email', () => {
+  // Assembled from parts so no scanner mistakes a fixture for a leaked key.
+  const FAKE_BREVO_KEY = ['xkeysib', 'notarealkey'.repeat(4)].join('-');
+  const brevo = { EMAIL_PROVIDER: 'brevo', BREVO_API_KEY: FAKE_BREVO_KEY };
+
+  it('is a valid production email provider — SES is not needed', () => {
+    const env = productionEnv(brevo);
+    delete env['SES_REGION'];
+    const config = loadConfig(env);
+    expect(config.EMAIL_PROVIDER).toBe('brevo');
+    expect(config.SES_REGION).toBeUndefined();
+  });
+
+  it('refuses a missing or malformed key, and a missing sender', () => {
+    expectRefusal({ ...brevo, BREVO_API_KEY: '' }, 'BREVO_API_KEY');
+    expectRefusal({ ...brevo, BREVO_API_KEY: 'not-a-brevo-key' }, 'BREVO_API_KEY');
+    expectRefusal({ ...brevo, EMAIL_FROM_ADDRESS: '' }, 'EMAIL_FROM_ADDRESS');
+  });
+
+  it('refuses a short or placeholder webhook token, and accepts a random one', () => {
+    expectRefusal({ ...brevo, BREVO_WEBHOOK_TOKEN: 'too-short' }, 'BREVO_WEBHOOK_TOKEN');
+    expectRefusal({ ...brevo, BREVO_WEBHOOK_TOKEN: 'replace-me-with-a-long-random-brevo-token' }, 'BREVO_WEBHOOK_TOKEN');
+    expectRefusal({ ...brevo, BREVO_WEBHOOK_TOKEN: 'a'.repeat(48) }, 'BREVO_WEBHOOK_TOKEN');
+    resetConfigCache();
+    const token = randomBytes(32).toString('base64url');
+    expect(loadConfig(productionEnv({ ...brevo, BREVO_WEBHOOK_TOKEN: token })).BREVO_WEBHOOK_TOKEN).toBe(token);
+  });
+
+  it('is checked outside production too', () => {
+    resetConfigCache();
+    expect(() =>
+      loadConfig({
+        NODE_ENV: 'development',
+        DATABASE_URL: 'file:./dev.db',
+        JWT_ACCESS_SECRET: 'a'.repeat(40),
+        JWT_REFRESH_SECRET: 'b'.repeat(40),
+        EMAIL_PROVIDER: 'brevo',
+      }),
+    ).toThrow(/BREVO_API_KEY/);
+  });
+});
+
 describe('required provider credentials', () => {
   it('refuses Paystack without a secret key', () => {
     expectRefusal({ PAYSTACK_SECRET_KEY: '' }, 'PAYSTACK_SECRET_KEY');
   });
 
-  it('refuses Paystack without a webhook secret', () => {
-    // Unsigned webhooks cannot be trusted, and a webhook endpoint that trusts
-    // an unsigned body is a way to mark any order paid.
-    expectRefusal({ PAYSTACK_WEBHOOK_SECRET: '' }, 'PAYSTACK_WEBHOOK_SECRET');
+  it('refuses a webhook secret that differs from the secret key', () => {
+    // Paystack signs webhooks with the secret key itself. A separate value
+    // could only disagree with it, and then every genuine event is rejected
+    // and paid orders never place. Empty (the default) is correct.
+    expectRefusal({ PAYSTACK_WEBHOOK_SECRET: 'something-else' }, 'PAYSTACK_WEBHOOK_SECRET');
+    expect(() => loadConfig(productionEnv({ PAYSTACK_WEBHOOK_SECRET: '' }))).not.toThrow();
+  });
+
+  it('refuses a key that is not shaped like a Paystack secret key', () => {
+    for (const key of ['sk', 'pk_live_' + 'x'.repeat(20), 'sk_live_not_a_real_key']) {
+      expectRefusal({ PAYSTACK_SECRET_KEY: key }, 'PAYSTACK_SECRET_KEY');
+    }
+  });
+
+  it('refuses a live key without the explicit go-live switch', () => {
+    expectRefusal({ PAYSTACK_ALLOW_LIVE: 'false' }, 'PAYSTACK_SECRET_KEY');
+  });
+
+  it('accepts the test key in production without the switch', () => {
+    // Staging runs NODE_ENV=production on test keys.
+    const config = loadConfig(productionEnv({ PAYSTACK_SECRET_KEY: FAKE_TEST_KEY, PAYSTACK_ALLOW_LIVE: 'false' }));
+    expect(config.PAYSTACK_SECRET_KEY).toBe(FAKE_TEST_KEY);
+  });
+
+  it('refuses a live key outside production, even with the switch', () => {
+    // The switch itself is refused outside production, so a developer cannot
+    // turn a pasted live key into real charges.
+    for (const allowLive of ['true', 'false']) {
+      resetConfigCache();
+      expect(() =>
+        loadConfig({
+          NODE_ENV: 'development',
+          DATABASE_URL: 'file:./dev.db',
+          JWT_ACCESS_SECRET: 'a'.repeat(40),
+          JWT_REFRESH_SECRET: 'b'.repeat(40),
+          PAYMENT_PROVIDER: 'paystack',
+          PAYSTACK_SECRET_KEY: FAKE_LIVE_KEY,
+          PAYSTACK_ALLOW_LIVE: allowLive,
+        }),
+      ).toThrow(/PAYSTACK_/);
+    }
   });
 
   it('refuses Redis without a URL', () => {
@@ -274,6 +465,39 @@ describe('reporting', () => {
 });
 
 describe('MFA and encryption configuration', () => {
+  it('refuses HTTPS full staging with MFA turned off', () => {
+    resetConfigCache();
+    let message = '';
+    try {
+      loadConfig({
+        NODE_ENV: 'development',
+        DATABASE_URL: 'postgresql://dash_runtime:pw@db.internal:5432/dashdb_staging',
+        JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+        JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+        PUBLIC_WEB_URL: 'https://staging.dashworldng.com',
+        DEPLOYMENT_PROFILE: 'full',
+        MFA_ENABLED: 'false',
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('MFA_ENABLED');
+  });
+
+  it('still permits MFA-off for local HTTP development', () => {
+    resetConfigCache();
+    const config = loadConfig({
+      NODE_ENV: 'development',
+      DATABASE_URL: 'file:./local-dev.db',
+      JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+      JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+      PUBLIC_WEB_URL: 'http://127.0.0.1:3000',
+      DEPLOYMENT_PROFILE: 'full',
+      MFA_ENABLED: 'false',
+    });
+    expect(config.MFA_ENABLED).toBe(false);
+  });
+
   it('refuses production with MFA turned off', () => {
     // A single leaked staff password would otherwise reach the money.
     expectRefusal({ MFA_ENABLED: 'false' }, 'MFA_ENABLED');
@@ -376,15 +600,27 @@ describe('MFA and encryption configuration', () => {
     expectRefusal({ ENCRYPTION_KEYS_RETIRED: 'no-colon-here' }, 'ENCRYPTION_KEYS_RETIRED');
   });
 
-  it('ignores a retired entry that duplicates the active key id', () => {
+  it('refuses a retired entry that duplicates the active key id', () => {
+    // This used to load, dropping the retired entry on the grounds that the
+    // active one should win. Milestone III refuses it instead, because the two
+    // entries hold *different* key material — that is what a half-applied
+    // rotation looks like — and picking one silently makes every row written
+    // under the other unreadable, with no error anywhere. Nothing in the
+    // configuration can say which of the two rotation steps was skipped, so it
+    // does not guess.
     const older = Buffer.alloc(32, 5).toString('base64');
-    resetConfigCache();
-    const config = loadConfig(
-      productionEnv({ ENCRYPTION_KEY_ID: 'k1', ENCRYPTION_KEYS_RETIRED: `k1:${older}` }),
+    expectRefusal(
+      { ENCRYPTION_KEY_ID: 'k1', ENCRYPTION_KEYS_RETIRED: `k1:${older}` },
+      'ENCRYPTION_KEYS_RETIRED',
     );
-    // A rotation half-applied. The active entry wins rather than there being
-    // two candidates for one id.
-    expect(buildKeyring(config).retired).toHaveLength(0);
+  });
+
+  it('refuses a key id the envelope format could not carry', () => {
+    // The envelope is dot-separated, so an id containing a dot is written into
+    // ciphertext that can never be parsed back out. The value encrypts fine and
+    // is then permanently unreadable, which is the worst failure mode available
+    // — nothing complains until a decrypt, and by then the rows exist.
+    expectRefusal({ ENCRYPTION_KEY_ID: 'live.1' }, 'ENCRYPTION_KEY_ID');
   });
 });
 

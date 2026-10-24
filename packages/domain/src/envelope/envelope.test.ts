@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assembleKeyring,
   assertValidKey,
+  assertValidKeyId,
   decrypt,
   encrypt,
   EnvelopeError,
+  envelopeKeyId,
   generateKey,
   isEnvelope,
   KEY_BYTES,
   parseKey,
+  parseRetiredKeys,
   type EncryptionContext,
   type Keyring,
 } from './index.js';
@@ -202,5 +206,270 @@ describe('isEnvelope', () => {
     expect(isEnvelope('0123456789')).toBe(false);
     expect(isEnvelope(null)).toBe(false);
     expect(isEnvelope(undefined)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Keyring assembly
+//
+// These rules used to live in `apps/api/src/config.ts`, which meant the
+// development seed — which sits below `apps/api` and cannot import it — built
+// keyrings by hand under weaker rules. They live here now, so they are tested
+// here: a domain module that is only exercised from an application suite is a
+// module whose own package cannot tell when it breaks.
+// ---------------------------------------------------------------------------
+
+/** Deterministic synthetic material. Fills, not randomness, so failures repeat. */
+const KEY_A = Buffer.alloc(KEY_BYTES, 0xa1).toString('base64');
+const KEY_B = Buffer.alloc(KEY_BYTES, 0xb2).toString('base64');
+const KEY_C = Buffer.alloc(KEY_BYTES, 0xc3).toString('base64');
+
+describe('base64 key parsing is strict', () => {
+  // `Buffer.from(value, 'base64')` never throws: it silently discards any
+  // character outside the alphabet and tolerates missing padding. A key with a
+  // mistyped character therefore decodes to *something*, and a length-only
+  // check waves it through if that something is 32 bytes — after which the
+  // process encrypts real data under a key nobody can reproduce.
+
+  it('accepts the canonical form the repository documents', () => {
+    // node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+    const canonical = generateKey();
+    expect(canonical).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+    expect(parseKey(canonical)).toHaveLength(KEY_BYTES);
+  });
+
+  it('accepts a deterministic canonical key', () => {
+    expect(parseKey(Buffer.alloc(KEY_BYTES, 0x2a).toString('base64'))).toHaveLength(KEY_BYTES);
+  });
+
+  it('rejects characters outside the base64 alphabet', () => {
+    const canonical = Buffer.alloc(KEY_BYTES, 0x2a).toString('base64');
+
+    for (const bad of [
+      canonical.replace(/^./, '!'),
+      canonical.replace(/^./, ' '),
+      canonical.replace(/^./, '@'),
+      canonical.replace(/^./, '\n'),
+      'not-base64-at-all!!',
+    ]) {
+      expect(() => parseKey(bad), JSON.stringify(bad.slice(0, 12))).toThrow(EnvelopeError);
+    }
+  });
+
+  it('rejects base64url, which is a different spelling of the same key', () => {
+    // base64url is legitimate elsewhere in the envelope — the nonce, ciphertext,
+    // and tag all use it — but a key has one documented spelling. Accepting
+    // both would mean the same key material could be configured two ways, and
+    // an operator comparing a deployed value against the secret store would see
+    // a mismatch that is not one.
+    const urlAlphabet = Buffer.from(
+      // Chosen so the standard encoding definitely contains both `+` and `/`.
+      'fb ff bf fe ef bb 3e 3f fa af ab ba 7e 7f be af cd ef 01 23 45 67 89 ab cd ef fe dc ba 98 76 54'
+        .split(' ')
+        .map((byte) => Number.parseInt(byte, 16)),
+    ).toString('base64');
+
+    expect(urlAlphabet).toMatch(/[+/]/);
+    const asUrl = urlAlphabet.replace(/\+/g, '-').replace(/\//g, '_');
+
+    expect(asUrl).not.toBe(urlAlphabet);
+    expect(() => parseKey(asUrl)).toThrow(EnvelopeError);
+    // The standard spelling of the very same bytes is accepted.
+    expect(parseKey(urlAlphabet)).toHaveLength(KEY_BYTES);
+  });
+
+  it('rejects an invalid character even when the discarded remainder is 32 bytes', () => {
+    // The exact hazard: Node drops the bad characters, the rest happens to
+    // decode to a valid length, and a length-only check accepts a key that is
+    // not the key anyone stored.
+    const canonical = Buffer.alloc(KEY_BYTES, 0x3b).toString('base64');
+    const withJunk = canonical.slice(0, 10) + '!!!' + canonical.slice(10);
+
+    expect(Buffer.from(withJunk, 'base64')).toHaveLength(KEY_BYTES);
+    expect(() => parseKey(withJunk)).toThrow(EnvelopeError);
+  });
+
+  it('rejects missing padding, which decodes to the right bytes anyway', () => {
+    const canonical = Buffer.alloc(KEY_BYTES, 0x11).toString('base64');
+    const unpadded = canonical.replace(/=+$/, '');
+
+    // Proof the old length-only check would have accepted it.
+    expect(Buffer.from(unpadded, 'base64')).toHaveLength(KEY_BYTES);
+    expect(() => parseKey(unpadded)).toThrow(/canonical/);
+  });
+
+  it('rejects excess padding', () => {
+    const canonical = Buffer.alloc(KEY_BYTES, 0x11).toString('base64');
+    expect(() => parseKey(canonical + '=')).toThrow(EnvelopeError);
+  });
+
+  it('rejects the wrong decoded length', () => {
+    expect(() => parseKey(Buffer.alloc(16).fill(9).toString('base64'))).toThrow(/32 bytes/);
+    expect(() => parseKey(Buffer.alloc(64).fill(9).toString('base64'))).toThrow(/32 bytes/);
+    expect(() => parseKey('c2hvcnQ=')).toThrow(/32 bytes/);
+  });
+
+  it('rejects an all-zero key', () => {
+    expect(() => parseKey(Buffer.alloc(KEY_BYTES).toString('base64'))).toThrow(/all zero bytes/);
+  });
+
+  it('rejects an empty value', () => {
+    expect(() => parseKey('')).toThrow(EnvelopeError);
+  });
+
+  it('puts no key material in any refusal message', () => {
+    const canonical = Buffer.alloc(KEY_BYTES, 0x5d).toString('base64');
+    const cases = [
+      canonical.replace(/=+$/, ''),
+      canonical + '=',
+      canonical.slice(0, 10) + '!!!' + canonical.slice(10),
+      Buffer.alloc(16, 4).toString('base64'),
+    ];
+
+    for (const bad of cases) {
+      let message = '';
+      try {
+        parseKey(bad, 'ENCRYPTION_KEY');
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      expect(message).toContain('ENCRYPTION_KEY');
+      // Neither the offending value nor the canonical key it was derived from.
+      expect(message, `leaked for ${bad.slice(0, 8)}`).not.toContain(bad);
+      expect(message).not.toContain(canonical);
+    }
+  });
+});
+
+describe('key ids', () => {
+  it('accepts what the envelope format can carry', () => {
+    for (const id of ['k1', 'live-1', 'staging_2', 'a'.repeat(64)]) {
+      expect(() => assertValidKeyId(id), id).not.toThrow();
+    }
+  });
+
+  it('refuses what it cannot', () => {
+    // The envelope is dot-separated and base64url throughout. An id outside
+    // that character set is written into ciphertext that can never be parsed
+    // back out — the value encrypts fine and is permanently unreadable, with
+    // nothing complaining until a decrypt.
+    for (const id of ['has.a.dot', 'has:colon', 'has space', 'plus+sign', '', 'a'.repeat(65)]) {
+      expect(() => assertValidKeyId(id), JSON.stringify(id)).toThrow(EnvelopeError);
+    }
+  });
+
+  it('refuses to encrypt under an id the format cannot carry', () => {
+    // Checked at the write as well as at boot, so no path can produce an
+    // unreadable row.
+    const bad: Keyring = { active: { keyId: 'bad.id', key: parseKey(KEY_A) }, retired: [] };
+    expect(() => encrypt('secret', bad, CONTEXT)).toThrow(EnvelopeError);
+  });
+});
+
+describe('envelopeKeyId', () => {
+  it('reads the writing key id without decrypting', () => {
+    // This is what lets a rotation survey scan a whole table with no key
+    // material and no cryptography per row.
+    expect(envelopeKeyId(encrypt('v', keyring('k7'), CONTEXT))).toBe('k7');
+  });
+
+  it('returns null for anything that is not an envelope', () => {
+    // Distinguishing "written by a key I do not hold" from "not encrypted at
+    // all" is the difference between an incident and a no-op.
+    expect(envelopeKeyId('plain text')).toBeNull();
+    expect(envelopeKeyId(null)).toBeNull();
+    expect(envelopeKeyId(undefined)).toBeNull();
+  });
+});
+
+describe('parseRetiredKeys', () => {
+  it('parses an empty list', () => {
+    expect(parseRetiredKeys('')).toEqual([]);
+    expect(parseRetiredKeys('   ')).toEqual([]);
+  });
+
+  it('parses several entries and tolerates surrounding whitespace', () => {
+    const parsed = parseRetiredKeys(` k1:${KEY_A} , k2:${KEY_B} `);
+    expect(parsed.map((entry) => entry.keyId)).toEqual(['k1', 'k2']);
+    expect(parsed[0]!.key).toHaveLength(KEY_BYTES);
+  });
+
+  it('refuses an entry that is not in id:key form', () => {
+    expect(() => parseRetiredKeys('no-colon-here')).toThrow(/"id:base64key" form/);
+    expect(() => parseRetiredKeys(`:${KEY_A}`)).toThrow(/"id:base64key" form/);
+  });
+
+  it('refuses a duplicate id', () => {
+    expect(() => parseRetiredKeys(`k1:${KEY_A},k1:${KEY_B}`)).toThrow(/more than once/);
+  });
+
+  it('refuses the same material under two ids', () => {
+    expect(() => parseRetiredKeys(`k1:${KEY_A},k2:${KEY_A}`)).toThrow(/repeats key material/);
+  });
+
+  it('refuses an id the envelope format cannot carry', () => {
+    expect(() => parseRetiredKeys(`bad.id:${KEY_A}`)).toThrow(EnvelopeError);
+  });
+
+  it('refuses malformed key material', () => {
+    expect(() => parseRetiredKeys('k1:not-a-32-byte-key')).toThrow(EnvelopeError);
+  });
+});
+
+describe('assembleKeyring', () => {
+  it('builds an active-only keyring', () => {
+    const ring = assembleKeyring({ activeKey: KEY_A, activeKeyId: 'k1' });
+    expect(ring.active.keyId).toBe('k1');
+    expect(ring.retired).toEqual([]);
+  });
+
+  it('carries retired keys so rotation needs no migration', () => {
+    const ring = assembleKeyring({ activeKey: KEY_B, activeKeyId: 'k2', retired: `k1:${KEY_A}` });
+    expect(ring.active.keyId).toBe('k2');
+    expect(ring.retired.map((entry) => entry.keyId)).toEqual(['k1']);
+
+    // And the retired key genuinely still opens what it wrote.
+    const old = encrypt('v', assembleKeyring({ activeKey: KEY_A, activeKeyId: 'k1' }), CONTEXT);
+    expect(decrypt(old, ring, CONTEXT).usedActiveKey).toBe(false);
+  });
+
+  it('refuses one id that is both active and retired', () => {
+    // Previously this dropped the retired entry and carried on. If the two hold
+    // different material — which is what a half-applied rotation looks like —
+    // that silently makes every row written under the other unreadable.
+    expect(() =>
+      assembleKeyring({ activeKey: KEY_B, activeKeyId: 'k1', retired: `k1:${KEY_A}` }),
+    ).toThrow(/both the active key and a retired key/);
+  });
+
+  it('refuses the active material appearing as a retired key', () => {
+    expect(() =>
+      assembleKeyring({ activeKey: KEY_A, activeKeyId: 'k2', retired: `k1:${KEY_A}` }),
+    ).toThrow(/nothing has actually been rotated/);
+  });
+
+  it('refuses an active id the envelope format cannot carry', () => {
+    expect(() => assembleKeyring({ activeKey: KEY_A, activeKeyId: 'k.1' })).toThrow(EnvelopeError);
+  });
+
+  it('refuses malformed active key material', () => {
+    expect(() => assembleKeyring({ activeKey: 'nope', activeKeyId: 'k1' })).toThrow(EnvelopeError);
+    expect(() =>
+      assembleKeyring({ activeKey: Buffer.alloc(KEY_BYTES).toString('base64'), activeKeyId: 'k1' }),
+    ).toThrow(/all zero bytes/);
+  });
+
+  it('never puts key material in a refusal message', () => {
+    let message = '';
+    try {
+      assembleKeyring({ activeKey: KEY_C, activeKeyId: 'k1', retired: `k1:${KEY_A}` });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain('k1');
+    expect(message).not.toContain(KEY_A);
+    expect(message).not.toContain(KEY_C);
   });
 });

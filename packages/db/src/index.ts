@@ -8,20 +8,85 @@
  * decides what the rows should say.
  */
 
+import { createRequire } from 'node:module';
+
 import { PrismaClient } from '@prisma/client';
 import {
   assertBalanced,
   type LedgerTransactionDraft,
 } from '@dash/domain/ledger';
+import { redactDeep } from '@dash/domain/redaction';
 
 export * from '@prisma/client';
+export { ensureRidersAreCustomers, type RiderCustomerRepair } from './rider-customer.js';
 
 declare global {
   var __dashPrisma: PrismaClient | undefined;
 }
 
+/**
+ * Where the PostgreSQL client is generated, relative to this file.
+ *
+ * `packages/db/prisma/postgres/schema.prisma` sets `output = "./.client"` so
+ * the two generated clients cannot overwrite each other, and that deliberate
+ * separation is exactly why this lookup has to exist. The `@prisma/client`
+ * imported above is the hoisted one, generated from the SQLite schema, and a
+ * SQLite client refuses a `postgresql://` URL outright:
+ *
+ *     Error validating datasource `db`: the URL must start with the protocol `file:`
+ *
+ * It refuses at the first query rather than at boot, so without this the API
+ * starts cleanly against PostgreSQL and then fails on its first request.
+ */
+const POSTGRES_CLIENT_ENTRY = '../prisma/postgres/.client/index.js';
+
+/** Whether a connection string names PostgreSQL rather than SQLite. */
+export function targetsPostgres(url: string | undefined): boolean {
+  return /^postgres(ql)?:\/\//i.test(url ?? '');
+}
+
+/**
+ * The generated client class this process should construct.
+ *
+ * Chosen from the connection string rather than from `NODE_ENV` or a separate
+ * flag, because the connection string is the thing that actually decides which
+ * client can serve it — and it cannot drift out of step with itself. SQLite
+ * stays the default, so local development, the development seed and every test
+ * keep resolving the hoisted client exactly as before; nothing has to opt out.
+ *
+ * The PostgreSQL client is loaded with `createRequire` rather than a dynamic
+ * `import()` so that this stays synchronous. `prisma` below is a module-level
+ * const that the API imports directly, and making its construction async would
+ * turn every consumer of this package into an async import for the sake of one
+ * branch.
+ */
+export function resolvePrismaConstructor(
+  url: string | undefined = process.env['DATABASE_URL'],
+): typeof PrismaClient {
+  if (!targetsPostgres(url)) return PrismaClient;
+
+  try {
+    const requireFrom = createRequire(import.meta.url);
+    return (requireFrom(POSTGRES_CLIENT_ENTRY) as { PrismaClient: typeof PrismaClient })
+      .PrismaClient;
+  } catch (cause) {
+    // Naming the command matters more than it looks. The failure this replaces
+    // was a datasource validation error about the `file:` protocol, which says
+    // nothing about the client being the wrong one and sends an operator
+    // looking at DATABASE_URL, which is correct.
+    throw new Error(
+      'DATABASE_URL names a PostgreSQL database, but the PostgreSQL Prisma client has not ' +
+        'been generated. Run `npm run db:pg:generate` before starting the API, or before ' +
+        'running a migration or seed against PostgreSQL.',
+      { cause },
+    );
+  }
+}
+
 function createClient(): PrismaClient {
-  return new PrismaClient({
+  const Client = resolvePrismaConstructor();
+
+  return new Client({
     log:
       process.env['NODE_ENV'] === 'development'
         ? [{ emit: 'event', level: 'query' }, 'warn', 'error']
@@ -162,46 +227,25 @@ export interface AuditInput {
   requestId?: string | null;
 }
 
-/** Keys whose values must never reach the audit log, however they are nested. */
-const REDACTED_KEYS = new Set([
-  'password',
-  'passwordhash',
-  'token',
-  'refreshtoken',
-  'accesstoken',
-  'secret',
-  'mfasecret',
-  'codehash',
-  'pin',
-  'deliverypinhash',
-  'pickupcodehash',
-  'bankaccountcipher',
-  'bankaccountnumber',
-  'cardnumber',
-  'cvv',
-  'authorization',
-  'apikey',
-]);
-
 /**
  * Strip secrets before anything is written to the audit trail.
  *
  * The audit log is read by support agents and exported for compliance, so it is
  * one of the widest-read tables in the system. A token that lands here is a
  * token that has leaked, so redaction happens at the write, not at the read.
+ *
+ * The vocabulary lives in `@dash/domain/redaction` rather than here. It used to
+ * be a local set of exact key names, which meant `secret` was caught and
+ * `paystackSecretKey` was not, and which drifted from the near-identical list in
+ * the API's observability seam. One list, matched by fragment, fixes both.
+ *
+ * Personal data is deliberately **not** redacted here. An audit entry recording
+ * which phone number an operator changed is the entire point of an audit entry;
+ * the error-tracker seam, which sends to a third party, opts into the wider
+ * list instead.
  */
-export function redact(value: unknown, depth = 0): unknown {
-  if (depth > 8 || value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map((entry) => redact(entry, depth + 1));
-  if (typeof value !== 'object') return value;
-
-  const output: Record<string, unknown> = {};
-  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-    output[key] = REDACTED_KEYS.has(key.toLowerCase())
-      ? '[redacted]'
-      : redact(nested, depth + 1);
-  }
-  return output;
+export function redact(value: unknown): unknown {
+  return redactDeep(value, { includePersonal: false });
 }
 
 export async function writeAudit(db: DbClient, input: AuditInput): Promise<void> {
@@ -241,3 +285,14 @@ export function parseJsonColumn<T>(value: string | null, fallback: T): T {
 export function stringifyJsonColumn(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
 }
+
+/** Declutter reference data. Idempotent; safe against a live database. */
+export { seedDeclutterTaxonomy, type DeclutterSeedResult } from './seed-declutter.js';
+export {
+  seedLegalDocuments,
+  TERMS_SLUG,
+  PRIVACY_SLUG,
+  CURRENT_TERMS_VERSION,
+  CURRENT_PRIVACY_VERSION,
+  type LegalSeedResult,
+} from './seed-legal.js';

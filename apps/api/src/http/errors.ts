@@ -72,6 +72,11 @@ export class ApiError extends Error {
     return new ApiError(429, 'rate_limited', message);
   }
 
+  /** A dependency (the payment provider, say) could not be reached. Safe to retry. */
+  static serviceUnavailable(message: string): ApiError {
+    return new ApiError(503, 'service_unavailable', message);
+  }
+
   static internal(internal: string): ApiError {
     return new ApiError(
       500,

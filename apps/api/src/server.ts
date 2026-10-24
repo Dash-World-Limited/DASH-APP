@@ -12,6 +12,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { randomUUID } from 'node:crypto';
 import { prisma as defaultPrisma } from '@dash/db';
+import type { EmailPort, PaymentPort, StoragePort } from '@dash/domain/ports';
 import {
   ConsoleEmailAdapter,
   ConsolePushAdapter,
@@ -23,15 +24,51 @@ import {
   MockPaymentAdapter,
 } from './adapters/index.js';
 import { PostgisGeoAdapter } from './adapters/postgis.js';
+import {
+  DisabledExportArchiveAdapter,
+  DisabledMapsGeoAdapter,
+  DisabledPaymentAdapter,
+  DisabledPushAdapter,
+  DisabledSmsAdapter,
+} from './adapters/disabled.js';
+import { effectiveCapabilities } from './deployment/profile.js';
+import { S3StorageAdapter } from './adapters/s3.js';
+import { SesEmailAdapter } from './adapters/ses.js';
+import { BrevoEmailAdapter } from './adapters/brevo.js';
+import { PaystackPaymentAdapter } from './adapters/paystack.js';
+import { SuppressionAwareEmailAdapter } from './adapters/suppressed-email.js';
 import { RedisQueueAdapter } from './adapters/redis-queue.js';
-import { createQueueRedis, createRateLimitRedis, pingRedis } from './redis/client.js';
+import {
+  createBroadcastRedis,
+  createQueueRedis,
+  createRateLimitRedis,
+  pingRedis,
+} from './redis/client.js';
+import {
+  InProcessBroadcastAdapter,
+  RedisBroadcastAdapter,
+} from './realtime/broadcast.js';
+import { RealtimeHub } from './realtime/hub.js';
+import { registerRealtimeWorker } from './realtime/worker.js';
+import { createFcmAdapter } from './adapters/fcm.js';
+import { registerPushWorker } from './push/worker.js';
+import { registerRealtimeRoutes } from './routes/realtime.js';
+import { parseNotification } from '@dash/domain/realtime';
 import { buildKeyring, isEncryptionConfigured, loadConfig, type Config } from './config.js';
 import { registerContext, type Services } from './http/context.js';
 import {
   checkDependency,
+  type DependencyCheck,
   ConsoleErrorReporter,
   ConsoleMetrics,
 } from './observability/index.js';
+import {
+  buildErrorSerializer,
+  buildLogMethodHook,
+  knownSecretValues,
+  LOG_REDACT_PATHS,
+  REDACTED,
+} from './secrets/logging.js';
 import { assertCsrf, assertSecureCookieConfig, requiresCsrf } from './auth/cookies.js';
 import { registerErrorHandler } from './http/errors.js';
 import { registerAuthRoutes } from './routes/auth.js';
@@ -40,22 +77,71 @@ import { registerCatalogRoutes } from './routes/catalog.js';
 import { registerOrderRoutes } from './routes/orders.js';
 import { registerVendorRoutes } from './routes/vendor.js';
 import { registerRiderRoutes } from './routes/rider.js';
+import { registerChatRoutes } from './routes/chat.js';
+import { registerOnboardingRoutes } from './routes/onboarding.js';
 import { registerAdminRoutes } from './routes/admin.js';
+import { registerFinanceRefundRoutes } from './routes/finance-refunds.js';
+import { registerDeclutterRoutes } from './routes/declutter.js';
+import { registerValueCheckRoutes } from './routes/valuecheck.js';
+import { registerDeclutterPricingRoutes } from './routes/declutter-pricing.js';
+import { registerDeclutterPhotoRoutes } from './routes/declutter-photos.js';
+import { registerDeclutterListingRoutes } from './routes/declutter-listings.js';
+import { registerFileRoutes } from './routes/files.js';
+import { registerSignupRoutes } from './routes/signup.js';
+import { registerEmailEventRoutes } from './routes/email-events.js';
+import { DeterministicValuationAdapter } from '@dash/domain/valuecheck';
 import { registerWebhookRoutes } from './routes/webhooks.js';
 import { registerAccountRoutes } from './routes/account.js';
+import { registerWalletRoutes } from './routes/wallet.js';
+import { registerDeviceRoutes } from './routes/devices.js';
 import { registerDispatchWorker } from './workers/dispatch.js';
 import { registerAccountExportWorker } from './workers/account-export.js';
 
 export interface BuildOptions {
   config?: Config;
   services?: Partial<Services>;
+  /**
+   * Where the logger writes.
+   *
+   * Exists so the secret-leak suite can assert against the *real* logger — the
+   * same redact paths, the same `err` serializer, the same hook — rather than
+   * rebuilding an approximation of this configuration in a test and proving
+   * only that the approximation works. Unset everywhere else, which leaves
+   * Pino's default destination untouched.
+   */
+  logDestination?: { write(chunk: string): void };
+  /**
+   * Realtime timings, for tests.
+   *
+   * A suite cannot wait 25 seconds for a heartbeat or 60 for a revalidation
+   * sweep, and making those constants smaller everywhere to suit the tests
+   * would change production behaviour to make a test convenient. Overriding
+   * them here keeps the defaults honest.
+   */
+  realtime?: {
+    heartbeatMs?: number;
+    authenticateDeadlineMs?: number;
+    revalidateIntervalMs?: number;
+    maxConnectionsPerIdentity?: number;
+  };
 }
 
 export function buildServices(config: Config, overrides: Partial<Services> = {}): Services {
   const prisma = overrides.prisma ?? defaultPrisma;
+  // Passed to the error reporter so a secret that reached an error message by
+  // some route no pattern matches is still stripped before it leaves.
+  const knownSecrets = knownSecretValues(config as unknown as Record<string, unknown>);
   // A test run should not print a wall of fake SMS. `silent` is the level the
   // test harness sets, so it doubles as the signal here.
   const quiet = config.LOG_LEVEL === 'silent';
+
+  /**
+   * What this deployment runs.
+   *
+   * Read once and used for two things: which adapter each port gets, and which
+   * routes are registered at all. See `deployment/profile.ts`.
+   */
+  const capabilities = effectiveCapabilities(config);
 
   return {
     config,
@@ -63,54 +149,269 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     // the first enrolment.
     keyring: overrides.keyring ?? (isEncryptionConfigured(config) ? buildKeyring(config) : null),
     prisma,
-    payments: overrides.payments ?? new MockPaymentAdapter(),
+    // A disabled capability gets an adapter that throws, never a mock. A
+    // production deployment whose guards no longer check the payment provider
+    // must not still be holding one that reports a successful charge and
+    // settles nothing.
+    payments: overrides.payments ?? (capabilities.has('payments') ? buildPayments(config) : new DisabledPaymentAdapter()),
     // PostGIS answers zone containment; everything else geo still comes from
     // the maps provider, which the PostGIS adapter wraps rather than replaces.
+    // Zone containment survives with maps off, because PostGIS answers it from
+    // the database rather than from a provider. Routing and geocoding are the
+    // parts that need a third party, and those throw.
     geo:
       overrides.geo ??
-      (config.GEO_ZONES_PROVIDER === 'postgis'
-        ? new PostgisGeoAdapter(prisma, new LocalGeoAdapter(prisma))
-        : new LocalGeoAdapter(prisma)),
-    sms: overrides.sms ?? new ConsoleSmsAdapter(quiet),
-    email: overrides.email ?? new ConsoleEmailAdapter(quiet),
-    push: overrides.push ?? new ConsolePushAdapter(quiet),
-    storage: overrides.storage ?? new LocalStorageAdapter(config.STORAGE_LOCAL_DIR),
+      (() => {
+        const zones =
+          config.GEO_ZONES_PROVIDER === 'postgis'
+            ? new PostgisGeoAdapter(prisma, new LocalGeoAdapter(prisma))
+            : new LocalGeoAdapter(prisma);
+        return capabilities.has('maps') ? zones : new DisabledMapsGeoAdapter(zones);
+      })(),
+    sms:
+      overrides.sms ??
+      (capabilities.has('sms') ? new ConsoleSmsAdapter(quiet) : new DisabledSmsAdapter()),
+    // Wrapped, always, and including the override a test supplies: the
+    // suppression list is a policy about who may be written to, and a policy
+    // that only applies to one adapter is one the next adapter forgets.
+    email: new SuppressionAwareEmailAdapter(
+      overrides.email ?? createEmailAdapter(config, quiet),
+      prisma,
+    ),
+    // Console unless a provider is configured, so tests and local development
+    // never need a Firebase credential and never send a real notification.
+    push:
+      overrides.push ??
+      (!capabilities.has('push')
+        ? new DisabledPushAdapter()
+        : config.PUSH_PROVIDER === 'fcm'
+          ? createFcmAdapter()
+          : new ConsolePushAdapter(quiet)),
+    storage: overrides.storage ?? createStorageAdapter(config),
+    // ValueCheck. One value today; a live provider is a new branch and a new
+    // adapter, and no marketplace code changes when one arrives.
+    valuation: overrides.valuation ?? new DeterministicValuationAdapter(),
     exportArchive:
-      overrides.exportArchive ?? new LocalExportArchiveAdapter(config.STORAGE_LOCAL_DIR),
+      overrides.exportArchive ??
+      (capabilities.has('dataExport')
+        ? new LocalExportArchiveAdapter(config.STORAGE_LOCAL_DIR)
+        : new DisabledExportArchiveAdapter()),
     queue:
       overrides.queue ??
       (config.QUEUE_PROVIDER === 'redis' && config.REDIS_URL
         ? new RedisQueueAdapter(createQueueRedis(config.REDIS_URL))
         : new MemoryQueueAdapter()),
+    // Two Redis connections, because a subscriber cannot publish — see
+    // `createBroadcastRedis`. The in-process adapter is correct on a single
+    // instance and refused in production by `config.ts`.
+    broadcast:
+      overrides.broadcast ??
+      (config.REALTIME_BROADCAST === 'redis' && config.REDIS_URL
+        ? new RedisBroadcastAdapter(
+            createBroadcastRedis(config.REDIS_URL),
+            createBroadcastRedis(config.REDIS_URL),
+          )
+        : new InProcessBroadcastAdapter()),
     // Stacks are withheld in production: a stack can carry interpolated values
     // from the frame that threw, and those are exactly what must not travel to
     // a third party.
     errors:
-      overrides.errors ?? new ConsoleErrorReporter(config.NODE_ENV !== 'production', quiet),
-    metrics: overrides.metrics ?? new ConsoleMetrics(quiet),
+      overrides.errors ??
+      new ConsoleErrorReporter(config.NODE_ENV !== 'production', quiet, knownSecrets),
+    metrics: overrides.metrics ?? new ConsoleMetrics(quiet, knownSecrets),
   };
+}
+
+/**
+ * Pick the payment adapter the configuration asked for.
+ *
+ * The same defect `createEmailAdapter` and storage were rescued from, found
+ * last in the one place it costs money: `PAYMENT_PROVIDER=paystack` was
+ * validated and then never read, and every deployment with payments got the
+ * mock — which captures every charge on the spot and accepts webhooks signed
+ * with a secret printed in this repository. The production guard only refused
+ * `mock` by name, so naming Paystack walked straight past it.
+ *
+ * The mock is now reachable only by asking for it.
+ */
+export function buildPayments(config: Config): PaymentPort {
+  if (config.PAYMENT_PROVIDER === 'mock') return new MockPaymentAdapter();
+
+  if (!config.PAYSTACK_SECRET_KEY) {
+    // Config refuses this in every environment; this is the second lock on
+    // the same door, for a caller that built a Config by hand.
+    throw new Error('PAYMENT_PROVIDER=paystack needs PAYSTACK_SECRET_KEY.');
+  }
+  return new PaystackPaymentAdapter({
+    secretKey: config.PAYSTACK_SECRET_KEY,
+    callbackUrl: config.PAYSTACK_CALLBACK_URL ?? `${config.PUBLIC_WEB_URL.replace(/\/+$/, '')}/pay/complete`,
+  });
+}
+
+/**
+ * Pick the email adapter the configuration actually asked for.
+ *
+ * This function exists because `EMAIL_PROVIDER` was validated at boot,
+ * classified as production-required, refused in production when set to
+ * `console` — and then never read. The adapter was hard-wired to the console
+ * one. A production deployment could therefore set `EMAIL_PROVIDER=smtp`, pass
+ * every guard, boot cleanly, and log every verification code to stdout while
+ * believing it was sending email. Nobody would find out until a user said they
+ * never received their code.
+ *
+ * So an unknown provider is now a startup failure rather than a silent
+ * downgrade. There is no SMTP adapter and no SES adapter yet: naming one is a
+ * request for delivery this process cannot perform, and refusing to start is
+ * the only answer that does not quietly lie about it.
+ */
+/**
+ * Pick the storage adapter the configuration asked for.
+ *
+ * Written for the same reason `createEmailAdapter` was: `STORAGE_PROVIDER` was
+ * validated at boot, classified production-required, refused in production when
+ * set to `local` — and then never read. The adapter was hard-wired to the
+ * local-disk one. A production deployment could set `STORAGE_PROVIDER=s3`,
+ * satisfy every guard, boot cleanly, and write every item photograph and every
+ * government identity document to a container filesystem discarded on the next
+ * deploy.
+ *
+ * That failure is quieter than the email one and worse. Nothing errors, the
+ * photographs are there, the listings look right — and they are gone after the
+ * next release, with the KYC evidence behind them.
+ */
+/**
+ * Whether storage can answer for itself, and the memo that keeps it cheap.
+ *
+ * Structural rather than an `instanceof`: a test can substitute anything with a
+ * `reachable()` method, and an adapter without one — the local disk, which is
+ * always "reachable" — simply contributes no check rather than a fake pass.
+ */
+interface SelfChecking {
+  reachable(): Promise<boolean>;
+}
+
+const STORAGE_OK_TTL_MS = 60_000;
+let storageOkUntil = 0;
+
+async function checkStorageReadiness(storage: unknown): Promise<DependencyCheck | null> {
+  const candidate = storage as Partial<SelfChecking>;
+  if (typeof candidate?.reachable !== 'function') return null;
+
+  if (Date.now() < storageOkUntil) return { name: 'storage', status: 'ok', latencyMs: 0 };
+
+  // Through `checkDependency` for its timeout: a readiness probe that can hang
+  // is worse than one that fails, because an orchestrator waiting on it keeps
+  // the instance in service.
+  const check = await checkDependency('storage', async () => {
+    if (!(await (candidate as SelfChecking).reachable())) throw new Error('unreachable');
+    return true;
+  });
+
+  // A failure is never cached, so a bucket that comes back is noticed at the
+  // next poll rather than a minute later.
+  storageOkUntil = check.status === 'ok' ? Date.now() + STORAGE_OK_TTL_MS : 0;
+  return check;
+}
+
+function createStorageAdapter(config: Config): StoragePort {
+  if (config.STORAGE_PROVIDER === 'local') return new LocalStorageAdapter(config.STORAGE_LOCAL_DIR);
+
+  if (config.STORAGE_PROVIDER === 's3') {
+    // The config guards already refused to start without these in production.
+    // Re-checked because `buildServer` is also called by tests and scripts that
+    // never went through them.
+    if (!config.S3_BUCKET || !config.S3_REGION) {
+      throw new Error('STORAGE_PROVIDER=s3 needs S3_BUCKET and S3_REGION.');
+    }
+    return new S3StorageAdapter({
+      bucket: config.S3_BUCKET,
+      region: config.S3_REGION,
+      endpoint: config.S3_ENDPOINT,
+      forcePathStyle: config.S3_FORCE_PATH_STYLE,
+    });
+  }
+
+  throw new Error(
+    `STORAGE_PROVIDER is "${config.STORAGE_PROVIDER}", but no adapter for it is built into ` +
+      'this service. Uploads would go nowhere durable.',
+  );
+}
+
+function createEmailAdapter(config: Config, quiet: boolean): EmailPort {
+  if (config.EMAIL_PROVIDER === 'console') return new ConsoleEmailAdapter(quiet);
+
+  if (config.EMAIL_PROVIDER === 'ses') {
+    // The config guards already refused to start without these in production.
+    // Re-checked here because `buildServer` can also be called by a test or a
+    // script that did not go through them, and a partially configured SES
+    // client fails at the first send rather than at boot.
+    if (!config.SES_REGION || !config.EMAIL_FROM_ADDRESS || !config.EMAIL_REPLY_TO) {
+      throw new Error(
+        'EMAIL_PROVIDER=ses needs SES_REGION, EMAIL_FROM_ADDRESS and EMAIL_REPLY_TO.',
+      );
+    }
+    return new SesEmailAdapter({
+      region: config.SES_REGION,
+      fromAddress: config.EMAIL_FROM_ADDRESS,
+      fromName: config.EMAIL_FROM_NAME,
+      replyTo: config.EMAIL_REPLY_TO,
+      configurationSet: config.SES_CONFIGURATION_SET,
+    });
+  }
+
+  if (config.EMAIL_PROVIDER === 'brevo') {
+    // Refused by config in every environment; re-checked for a caller that
+    // built a Config by hand.
+    if (!config.BREVO_API_KEY || !config.EMAIL_FROM_ADDRESS || !config.EMAIL_REPLY_TO) {
+      throw new Error('EMAIL_PROVIDER=brevo needs BREVO_API_KEY, EMAIL_FROM_ADDRESS and EMAIL_REPLY_TO.');
+    }
+    return new BrevoEmailAdapter({
+      apiKey: config.BREVO_API_KEY,
+      fromAddress: config.EMAIL_FROM_ADDRESS,
+      fromName: config.EMAIL_FROM_NAME,
+      replyTo: config.EMAIL_REPLY_TO,
+    });
+  }
+
+  throw new Error(
+    `EMAIL_PROVIDER is "${config.EMAIL_PROVIDER}", but no adapter for it is built into this ` +
+      'service. Email would silently go nowhere.',
+  );
 }
 
 export async function buildServer(options: BuildOptions = {}): Promise<FastifyInstance> {
   const config = options.config ?? loadConfig();
   const services = buildServices(config, options.services ?? {});
 
+  /**
+   * What this deployment runs, for the route registration at the foot of this
+   * function. `buildServices` reads the same set to decide which adapters to
+   * wire, so the two answers cannot diverge: both come from the profile.
+   */
+  const capabilities = effectiveCapabilities(config);
+
+  // Captured once. The values do not change while the process runs, and
+  // re-reading them per log line would be both slow and a second place secret
+  // material is handled.
+  const knownSecrets = knownSecretValues(config as unknown as Record<string, unknown>);
+
   const app = Fastify({
     logger: {
       level: config.LOG_LEVEL,
-      // Never let a credential reach the logs, even by accident.
+      // Three layers, because one is not enough. Paths censor the fields whose
+      // location is known; the `err` serializer and the log-method hook scrub
+      // credentials that arrive *inside* a string, which no path can reach —
+      // a Prisma or ioredis connection failure carries the whole URL, password
+      // included, in its message. See secrets/logging.ts.
       redact: {
-        paths: [
-          'req.headers.authorization',
-          'req.headers.cookie',
-          'req.headers["idempotency-key"]',
-          'req.body.password',
-          'req.body.code',
-          'req.body.refreshToken',
-          'res.headers["set-cookie"]',
-        ],
-        censor: '[redacted]',
+        paths: [...LOG_REDACT_PATHS],
+        censor: REDACTED,
       },
+      serializers: { err: buildErrorSerializer(knownSecrets) },
+      // Pino copies hooks onto child loggers, so this covers every per-request
+      // logger as well as the root.
+      hooks: { logMethod: buildLogMethodHook(knownSecrets) },
+      ...(options.logDestination ? { stream: options.logDestination } : {}),
       ...(config.NODE_ENV === 'development'
         ? { transport: { target: 'pino-pretty', options: { colorize: true, translateTime: 'HH:MM:ss' } } }
         : {}),
@@ -131,6 +432,17 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     // emitted in development or production, where the key is absent entirely.
     ...(config.NODE_ENV === 'test' ? { disableRequestLogging: true } : {}),
   });
+
+  // Product photos are uploaded as raw image bytes, not multipart form data.
+  // Keeping the parser this narrow means JSON routes retain the 1 MB server
+  // body limit while vendor image uploads get their own bounded 8 MB buffer.
+  // The vendor route still verifies the magic bytes and fully decodes/re-encodes
+  // the image before anything is persisted.
+  app.addContentTypeParser(
+    ['image/jpeg', 'image/png', 'image/webp'],
+    { parseAs: 'buffer', bodyLimit: 8 * 1024 * 1024 },
+    (_request, body, done) => done(null, body),
+  );
 
   // --- Security headers ------------------------------------------------------
   await app.register(helmet, {
@@ -165,7 +477,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     // allowlist above — a reflected origin plus credentials would let any site
     // read authenticated responses.
     credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type',
       'Authorization',
@@ -277,6 +589,21 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
       );
     }
 
+    // Storage, when the adapter can answer for itself.
+    //
+    // Worth checking because a wrong bucket name or a missing credential is
+    // otherwise invisible: the service boots, the marketplace renders, and the
+    // first seller to photograph an item discovers it. Named for its role like
+    // the others — this endpoint is unauthenticated and must not disclose that
+    // storage happens to be S3.
+    //
+    // A success is cached briefly. A load balancer polls this every few
+    // seconds, and an unbounded HeadBucket per poll is a bill and a rate limit
+    // for no extra safety. A *failure* is never cached, so recovery is noticed
+    // at the next poll.
+    const storageCheck = await checkStorageReadiness(request.services.storage);
+    if (storageCheck) checks.push(storageCheck);
+
     const ready = checks.every((check) => check.status === 'ok');
 
     if (!ready) {
@@ -290,26 +617,143 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   });
 
   // --- Routes ----------------------------------------------------------------
+  // Always. Authentication, the admin console, the marketplace, the files it
+  // serves and the mail it receives back.
   await registerAuthRoutes(app);
   await registerMfaRoutes(app);
-  await registerCatalogRoutes(app);
-  await registerOrderRoutes(app);
-  await registerVendorRoutes(app);
-  await registerRiderRoutes(app);
   await registerAdminRoutes(app);
-  await registerWebhookRoutes(app);
+  await registerDeclutterRoutes(app);
+  await registerValueCheckRoutes(app);
+  await registerDeclutterPricingRoutes(app);
+  await registerDeclutterPhotoRoutes(app);
+  await registerDeclutterListingRoutes(app);
+  await registerFileRoutes(app);
+  await registerSignupRoutes(app);
+  await registerEmailEventRoutes(app);
   await registerAccountRoutes(app);
+  await registerWalletRoutes(app);
+
+  /**
+   * Registered only where the capability exists.
+   *
+   * A route left mounted on a deployment that cannot fulfil it is worse than a
+   * 404. `POST /v1/orders` on a service with no payments and no dispatch would
+   * accept an order, take no money, and send nobody — so the honest answer to
+   * a request the deployment cannot perform is that the endpoint is not there.
+   *
+   * Delivery covers the whole basket-to-doorstep path: the vendor catalogue a
+   * basket is built from, the orders themselves, the vendor console and the
+   * rider app.
+   */
+  if (capabilities.has('delivery')) {
+    await registerCatalogRoutes(app);
+    await registerOrderRoutes(app);
+    await registerVendorRoutes(app);
+    await registerRiderRoutes(app);
+    await registerChatRoutes(app);
+    // Applying to sell or ride, and the founder's approval of it. Part of the
+    // delivery product: a Declutters-only deployment has no storefronts or
+    // riders to approve.
+    await registerOnboardingRoutes(app);
+  }
+
+  // The Paystack webhook. Without payments there is nothing for it to confirm,
+  // and an endpoint that accepts payment notifications a deployment cannot act
+  // on is an invitation.
+  if (capabilities.has('payments')) {
+    await registerWebhookRoutes(app);
+    // Linking an owed refund to the Paystack refund that returned it.
+    await registerFinanceRefundRoutes(app);
+  }
+
+  // Device tokens exist to be pushed to.
+  if (capabilities.has('push')) {
+    await registerDeviceRoutes(app);
+  }
+
+  // --- Realtime --------------------------------------------------------------
+  // The hub is per instance and holds only sockets, so it needs no shutdown
+  // beyond the `preClose` hook the route registers.
+  const hub = new RealtimeHub({
+    log: app.log,
+    ...(options.realtime?.maxConnectionsPerIdentity === undefined
+      ? {}
+      : { maxConnectionsPerIdentity: options.realtime.maxConnectionsPerIdentity }),
+  });
+
+  // Every notification that reaches this instance — from its own worker or from
+  // another instance's — arrives here. It is validated before it is believed:
+  // the broadcast channel is shared infrastructure, and `parseNotification`
+  // re-parses every topic name rather than trusting that whatever published it
+  // was one of ours.
+  services.broadcast.subscribe((raw) => {
+    try {
+      hub.publish(parseNotification(raw));
+    } catch {
+      app.log.warn({}, 'realtime: discarded an invalid broadcast');
+    }
+  });
+
+  /**
+   * Both must agree before a socket is served.
+   *
+   * The capability decides whether this deployment has realtime at all; the env
+   * flag decides whether a deployment that has it wants it on right now. A
+   * profile without the capability therefore cannot be talked into serving the
+   * socket by setting `REALTIME_ENABLED=true` — which matters, because that
+   * combination would otherwise fan out in process, past the guard that exists
+   * to stop exactly that in production.
+   */
+  await registerRealtimeRoutes(app, {
+    hub,
+    enabled: capabilities.has('realtime') && config.REALTIME_ENABLED,
+    ...(options.realtime?.heartbeatMs === undefined
+      ? {}
+      : { heartbeatMs: options.realtime.heartbeatMs }),
+    ...(options.realtime?.authenticateDeadlineMs === undefined
+      ? {}
+      : { authenticateDeadlineMs: options.realtime.authenticateDeadlineMs }),
+    ...(options.realtime?.revalidateIntervalMs === undefined
+      ? {}
+      : { revalidateIntervalMs: options.realtime.revalidateIntervalMs }),
+  });
 
   // --- Background workers ----------------------------------------------------
   // Registered after routes so the queue handlers exist before the first job
   // can be enqueued by a request.
-  registerDispatchWorker({ prisma: services.prisma, queue: services.queue, log: app.log });
+  registerDispatchWorker({
+    // The hub is this instance's own socket registry, so this answers "is this
+    // rider connected *here*". In a multi-instance deployment a rider attached
+    // to another instance reads as not-live, which gives them the longer wake
+    // deadline — the safe direction, and the reason this needs no cross-node
+    // presence protocol to be correct.
+    isIdentityLive: (identityId) => hub.connectionsFor(identityId) > 0,
+    prisma: services.prisma,
+    queue: services.queue,
+    log: app.log,
+  });
   registerAccountExportWorker({
     prisma: services.prisma,
     queue: services.queue,
     archive: services.exportArchive,
     ttlHours: config.DATA_EXPORT_TTL_HOURS,
     log: app.log,
+  });
+  // Consumes the notifications the outbox relay published and repeats each to
+  // every instance. Registered even when the endpoint is disabled: the jobs are
+  // still produced by the order routes, and a worker that is not listening
+  // would leave them to expire in the queue rather than be consumed and
+  // harmlessly dropped by a hub with no sockets.
+  registerRealtimeWorker({ queue: services.queue, broadcast: services.broadcast, log: app.log });
+
+  // Push complements the socket rather than replacing it. Both are published
+  // by the same transaction; this consumer delivers the half that reaches a
+  // rider whose app is closed.
+  registerPushWorker({
+    queue: services.queue,
+    prisma: services.prisma,
+    push: services.push,
+    logger: app.log,
   });
 
   return app;

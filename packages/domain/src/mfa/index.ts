@@ -42,6 +42,14 @@ export const MFA_REQUIRED_ROLES: ReadonlySet<Role> = new Set<Role>([
   'city_manager',
   'dispatcher',
   'marketing_manager',
+  // Declutters staff. `declutter_admin` reads sellers' identity documents and
+  // bank details and can release a real phone number to a stranger, which is
+  // the one action in that product nothing can take back. `declutter_moderator`
+  // holds no step-up permission and so would not trip the guard below, but it
+  // still reads private submissions and unpublished seller data — a staff
+  // console login without a second factor is not worth the convenience.
+  'declutter_admin',
+  'declutter_moderator',
 ]);
 
 /** True when any of the identity's roles demands a second factor. */

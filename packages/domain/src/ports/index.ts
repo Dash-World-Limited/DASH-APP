@@ -28,6 +28,20 @@ export type PaymentStatus =
   | 'refunded'
   | 'partially_refunded';
 
+/** The provider's account of one refund. See `PaymentPort.lookupRefund`. */
+export interface RefundLookup {
+  /** The provider's id for the refund, normalised; stored against our refund. */
+  readonly refundReference: string;
+  /** False when the provider has no such refund, or it is for another transaction. */
+  readonly matchesPayment: boolean;
+  /** `processed` is the only state meaning the money has gone back. */
+  readonly status: 'processed' | 'pending' | 'failed';
+  readonly amount: Kobo;
+  readonly currency: string;
+  /** The provider's own word for the state (e.g. `needs-attention`), for staff. */
+  readonly providerStatus: string;
+}
+
 export interface PaymentIntent {
   readonly providerReference: string;
   readonly status: PaymentStatus;
@@ -75,6 +89,17 @@ export interface PaymentPort {
     reason: string;
     idempotencyKey: string;
   }): Promise<{ refundReference: string; status: PaymentStatus }>;
+
+  /**
+   * Ask the provider about one refund, and whether it belongs to this payment.
+   *
+   * `refundReference` is what a person copied from the provider's dashboard;
+   * `providerReference` is our payment's reference. A refund the provider does
+   * not know, or one made against a different transaction, comes back with
+   * `matchesPayment: false`. Throws when the provider cannot be asked — "could
+   * not ask" must never read as "not found".
+   */
+  lookupRefund(input: { refundReference: string; providerReference: string }): Promise<RefundLookup>;
 
   /**
    * Verify a webhook's signature and parse it.
@@ -151,6 +176,27 @@ export interface EmailPort {
   }): Promise<DeliveryReceipt>;
 }
 
+/**
+ * What a push provider tells us after a send.
+ *
+ * `invalidTokens` is the part that matters operationally. A push token dies
+ * without warning — the app is uninstalled, the OS reissues it, the user wipes
+ * the device — and the provider only tells you when you try to use it. Without
+ * somewhere to report that, a table of dead tokens grows for ever and every
+ * send wastes calls on handsets that no longer exist.
+ *
+ * Reporting them is not the same as deleting them: the port describes what the
+ * provider said, and the caller decides what to do about it.
+ */
+export interface PushReceipt extends DeliveryReceipt {
+  /**
+   * Tokens the provider refused as unregistered or malformed. These are dead
+   * for good and should be removed — unlike a transient failure, retrying will
+   * never make them work.
+   */
+  readonly invalidTokens?: readonly string[];
+}
+
 export interface PushPort {
   readonly providerName: string;
   readonly isLive: boolean;
@@ -159,7 +205,7 @@ export interface PushPort {
     title: string;
     body: string;
     data?: Readonly<Record<string, string>> | undefined;
-  }): Promise<DeliveryReceipt>;
+  }): Promise<PushReceipt>;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +294,65 @@ export interface QueuePort {
   process<T>(name: string, handler: (job: QueueJob<T>) => Promise<void>): void;
 
   /** Drain and stop. Used by tests and by graceful shutdown. */
+  close(): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Realtime fan-out
+// ---------------------------------------------------------------------------
+
+/**
+ * Carries one notification to every server instance.
+ *
+ * ## Why this is not the queue
+ *
+ * The queue and this port look similar and do opposite things. A queue job is
+ * delivered to **exactly one** consumer — that is what stops two instances
+ * dispatching the same order twice, and it is the property `QueuePort` exists
+ * to provide. A realtime notification has to reach **every** instance, because
+ * the customer watching order `abc` is connected to whichever instance a load
+ * balancer happened to pick, and that is almost never the instance whose worker
+ * picked up the job.
+ *
+ * Sending a notification through the queue alone would deliver it to one
+ * instance, which would fan it out to its own sockets and silently drop it for
+ * everyone connected elsewhere. The symptom is the worst kind: it works
+ * perfectly on a single-instance development machine and loses most updates in
+ * production, in proportion to how well the deployment is scaled.
+ *
+ * So the path is queue *then* broadcast: the outbox relay publishes a job, one
+ * worker consumes it, and that worker hands it to this port, which repeats it
+ * to every instance including its own. The queue keeps the delivery durable and
+ * exactly-once-ish; this makes it universal.
+ *
+ * ## Failure mode: degradable
+ *
+ * If the broadcast channel is unavailable, notifications stop and clients fall
+ * back to polling the same authorized routes they already use. Nothing is lost,
+ * because nothing here is a record — the durable state committed to PostgreSQL
+ * before any of this began. That classification is registered in
+ * `REDIS_RESPONSIBILITIES` and asserted by `redis.test.ts`.
+ */
+export interface RealtimeBroadcastPort {
+  readonly providerName: string;
+
+  /**
+   * Repeat a notification to every instance, including this one.
+   *
+   * Local delivery must not depend on the round trip succeeding: an instance
+   * that cannot reach the channel still serves its own sockets correctly.
+   */
+  publish(notification: unknown): Promise<void>;
+
+  /**
+   * Register the handler that receives notifications from any instance.
+   *
+   * The payload is `unknown` deliberately. It has crossed a process boundary on
+   * shared infrastructure, so the handler validates it before believing a word
+   * of it — see `parseNotification` in `@dash/domain/realtime`.
+   */
+  subscribe(handler: (notification: unknown) => void): void;
+
   close(): Promise<void>;
 }
 

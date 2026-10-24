@@ -12,6 +12,10 @@ import { decrypt, parseKey, type Keyring } from '@dash/domain/envelope';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, as, buildWorld, type Actor, type World } from './world.js';
 import { decryptPayoutDetailsForSettlement } from '../vendor/payout.js';
+import { useIntegrationTimeouts } from './timeouts.js';
+
+// Real Fastify, real SQLite, real round trips — see timeouts.ts.
+useIntegrationTimeouts();
 
 let context: TestContext;
 let world: World;

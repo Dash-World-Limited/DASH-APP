@@ -468,7 +468,10 @@ wrong for DASH APP, it is a small change now and a migration later.
 
 **Milestone 4b — the remainder.**
 
-1. WebSocket push, replacing polling on the tracking, vendor, and ops screens.
+1. ~~WebSocket push~~ — landed in Milestone V (unmerged), server and client.
+   What remains is a browser journey against a running server: the client is
+   tested against a fake socket and a real DOM, the server against a real
+   socket, but never the two together in a browser.
 2. An automated API integration suite against a test-scoped database, and CI.
    `smoke.mjs` and `dispatch-check.mjs` prove the flows but need a running
    server and are not wired into a pipeline.
@@ -507,7 +510,10 @@ wrong for DASH APP, it is a small change now and a migration later.
   geo path loads a city's candidate zones and tests them in process — correct at
   Lagos zone counts (tens), but it will not scale nationally without the PostGIS
   implementation of `GeoPort`.
-- **No websockets yet.** Order tracking is poll-only; live push is Milestone 4.
+- **Realtime is notification-only.** Order transitions are pushed as
+  `{subject, version}` and the client re-reads through the authorized route.
+  All four live screens consume it and all four keep polling underneath. Rider
+  position is still poll-only, deliberately. Milestone V, on branch, unmerged.
 - **`scripts/smoke.mjs` is not an automated integration suite.** It needs a
   running server and a seeded database, and it is not wired into CI. Proper API
   tests against a test-scoped database are outstanding.
