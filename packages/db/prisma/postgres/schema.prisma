@@ -2846,3 +2846,54 @@ model DeclutterHubNotification {
   createdAt DateTime @default(now())
   @@index([deliveredAt, createdAt])
 }
+
+// DASH Content Studio: additive presentation data; no operational rows change.
+model ContentEntry {
+  id String @id @default(cuid())
+  draft String
+  version Int @default(1)
+  createdBy String
+  updatedBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  publishedRevisionId String? @unique
+  publishedRevision ContentRevision? @relation("ContentLive", fields: [publishedRevisionId], references: [id], onDelete: Restrict)
+  revisions ContentRevision[] @relation("ContentHistory")
+}
+
+model ContentRevision {
+  id String @id @default(cuid())
+  entryId String
+  number Int
+  action String // draft | publish | unpublish | rollback
+  payload String
+  actorId String
+  createdAt DateTime @default(now())
+  mediaId String?
+  logoMediaId String?
+  entry ContentEntry @relation("ContentHistory", fields: [entryId], references: [id], onDelete: Restrict)
+  liveFor ContentEntry? @relation("ContentLive")
+  media ContentMedia? @relation("ContentImage", fields: [mediaId], references: [id], onDelete: Restrict)
+  logoMedia ContentMedia? @relation("ContentLogo", fields: [logoMediaId], references: [id], onDelete: Restrict)
+  @@unique([entryId, number])
+  @@index([mediaId])
+  @@index([logoMediaId])
+}
+
+model ContentMedia {
+  id String @id @default(cuid())
+  storageKey String @unique
+  filename String
+  title String
+  alt String
+  contentType String
+  bytes Int
+  width Int
+  height Int
+  uploadedBy String
+  createdAt DateTime @default(now())
+  archivedAt DateTime?
+  imageRevisions ContentRevision[] @relation("ContentImage")
+  logoRevisions ContentRevision[] @relation("ContentLogo")
+  @@index([createdAt])
+}

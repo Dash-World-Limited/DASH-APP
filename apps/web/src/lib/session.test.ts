@@ -20,7 +20,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearSession, getAccessToken, hasSession, signInWithPassword, verifyMfa } from './session';
+import { clearSession, getAccessToken, hasSession, signInWithPassword, verifyMfa, verifyMfaWithRecoveryCode } from './session';
 
 /** A `fetch` the test controls, returning whatever the API is pretending to say. */
 function stubFetch(responses: { status: number; body: unknown }[]): ReturnType<typeof vi.fn> {
@@ -62,6 +62,15 @@ afterEach(() => {
 });
 
 describe('a staff MFA challenge is not a session', () => {
+  it('adopts a recovery-code session through the same MFA endpoint', async () => {
+    const fetch = stubFetch([{ status: 200, body: SESSION }]);
+    await verifyMfaWithRecoveryCode('challenge', 'recovery-code');
+    expect(await getAccessToken()).toBe(SESSION.accessToken);
+    const expectedBody = JSON.stringify({ challengeToken: 'challenge', recoveryCode: 'recovery-code' });
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/v1/auth/mfa/verify'), expect.objectContaining({
+      body: expectedBody,
+    }));
+  });
   it('reports that a second factor is required rather than signing in', async () => {
     stubFetch([{ status: 200, body: CHALLENGE }]);
 

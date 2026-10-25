@@ -35,6 +35,7 @@ import { ROLES, STEP_UP_PERMISSIONS, buildActor, type Role } from '../permission
  * is a product decision, not a security default.
  */
 export const MFA_REQUIRED_ROLES: ReadonlySet<Role> = new Set<Role>([
+  'content_editor',
   'super_admin',
   'platform_admin',
   'finance_analyst',

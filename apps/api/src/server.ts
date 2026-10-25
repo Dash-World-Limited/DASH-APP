@@ -81,6 +81,7 @@ import { registerRiderPayoutRoutes } from './routes/rider-payout.js';
 import { registerOrderHistoryRoutes } from './routes/order-history.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerOnboardingRoutes } from './routes/onboarding.js';
+import { registerContentRoutes } from './routes/content.js';
 import { registerAdminRoutes } from './routes/admin.js';
 import { registerFinanceRefundRoutes } from './routes/finance-refunds.js';
 import { registerDeclutterRoutes } from './routes/declutter.js';
@@ -634,6 +635,7 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
   await registerAuthRoutes(app);
   await registerMfaRoutes(app);
   await registerAdminRoutes(app);
+  await registerContentRoutes(app);
   await registerDeclutterHubRoutes(app);
   await registerDeclutterRoutes(app);
   await registerValueCheckRoutes(app);

@@ -5,6 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./content/presentation": "./src/content/presentation.ts",
+    "./content": "./src/content/index.ts",
     "./money": "./src/money/index.ts",
     "./crypto": "./src/crypto/index.ts",
     "./geo": "./src/geo/index.ts",

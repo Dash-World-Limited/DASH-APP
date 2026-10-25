@@ -33,6 +33,12 @@ function actorFor(role: Role, extras: Parameters<typeof buildActor>[0] extends i
 }
 
 describe('permission catalogue', () => {
+  it('keeps content_editor strictly Studio-only and publication exclusive to Super Admin', () => {
+    expect([...permissionsForRoles(['content_editor'])]).toEqual(['content:manage']);
+    for (const role of ROLES) {
+      expect(permissionsForRoles([role]).has('content:publish'), role).toBe(role === 'super_admin');
+    }
+  });
   it('has no duplicates', () => {
     expect(new Set(PERMISSIONS).size).toBe(PERMISSIONS.length);
   });

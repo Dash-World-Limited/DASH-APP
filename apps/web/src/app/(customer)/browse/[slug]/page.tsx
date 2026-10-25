@@ -2,6 +2,8 @@
 
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { useStudioContent } from '@/lib/useStudioContent';
+import { StudioVendorArtwork } from '@/components/content/StudioPresentation';
 import { AppHeader } from '@/components/AppHeader';
 import {
   Badge,
@@ -19,6 +21,7 @@ import { apiFetch, ApiRequestError, type MenuItem, type VendorDetail } from '@/l
 import { useBasket } from '@/lib/basket';
 
 export default function VendorPage() {
+  const studio = useStudioContent();
   const params = useParams<{ slug: string }>();
   const router = useRouter();
   const { addLine } = useBasket();
@@ -89,7 +92,7 @@ export default function VendorPage() {
     <>
       <AppHeader />
       <main id="main" className="mx-auto max-w-3xl px-5 py-8">
-        <header>
+        <header><StudioVendorArtwork items={studio} vendorId={vendor.id} storefront />
           <div className="flex flex-wrap items-start justify-between gap-3">
             <h1 className="text-3xl font-extrabold tracking-tight">{vendor.name}</h1>
             {closed ? <Badge tone="danger">Closed</Badge> : <Badge tone="success">Open</Badge>}

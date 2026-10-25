@@ -13,6 +13,9 @@
  */
 
 export const PERMISSIONS = [
+  // Editors prepare drafts; only Super Admin may make content public.
+  'content:manage',
+  'content:publish',
   // --- Customer ------------------------------------------------------------
   'order:create',
   'order:read:own',
@@ -239,6 +242,7 @@ export const FOUR_EYES_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission
 ]);
 
 export const ROLES = [
+  'content_editor',
   'customer',
   'rider',
   'vendor_owner',
@@ -410,6 +414,7 @@ const DECLUTTER_ADMIN_PERMISSIONS: readonly Permission[] = [
  * unreachable. Every other role is an explicit allowlist.
  */
 export const ROLE_PERMISSIONS: Readonly<Record<Role, readonly Permission[]>> = {
+  content_editor: ['content:manage'],
   customer: CUSTOMER_PERMISSIONS,
   rider: RIDER_PERMISSIONS,
   vendor_staff: VENDOR_STAFF_PERMISSIONS,
@@ -438,6 +443,7 @@ export const CITY_SCOPED_ROLES: ReadonlySet<Role> = new Set<Role>(['city_manager
 
 /** Roles that sign in through the staff console and must carry MFA. */
 export const STAFF_ROLES: ReadonlySet<Role> = new Set<Role>([
+  'content_editor',
   'support_agent',
   'dispatcher',
   'finance_analyst',

@@ -167,15 +167,17 @@ describe('the consumers resolve it too', () => {
   }, 120_000);
 
   it('says what to run when the PostgreSQL client was never generated', () => {
-    // The real failure, not a mocked one: the generated directory is moved
-    // aside so the require genuinely cannot resolve. The message an operator
+    // The real failure, not a mocked one: the generated entry point is moved
+    // aside so the require genuinely cannot resolve. Move only the JS file:
+    // Windows locks the engine DLL after the preceding connection test, so
+    // renaming its entire directory fails with EPERM. The message an operator
     // gets has to name the fix, because the failure it replaced talked about
     // the `file:` protocol and sent people to inspect a DATABASE_URL that was
     // correct all along.
     //
     // If this throws before the restore, `beforeAll` regenerates the client on
     // the next run, so a crash here cannot leave the working tree broken.
-    const live = join(repoRoot, 'packages/db/prisma/postgres/.client');
+    const live = postgresClientEntry;
     const parked = `${live}.parked`;
 
     renameSync(live, parked);
