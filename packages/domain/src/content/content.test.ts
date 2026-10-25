@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { ROLE_PERMISSIONS, ROLES } from '../permissions/index.js';
 import { contentIsVisible, contentSchema } from './index.js';
 describe('Studio policy', () => {
-  it('grants content management to super_admin alone', () => {
+  it('grants draft management to editors and Super Admin, with publication reserved for Super Admin', () => {
     expect(
       ROLES.filter((role) => ROLE_PERMISSIONS[role].includes('content:manage')),
-    ).toEqual(['super_admin']);
+    ).toEqual(['content_editor', 'super_admin']);
+    expect(ROLES.filter((role) => ROLE_PERMISSIONS[role].includes('content:publish'))).toEqual(['super_admin']);
   });
   it('uses inclusive start and exclusive end schedule boundaries', () => {
     const data = contentSchema.parse({

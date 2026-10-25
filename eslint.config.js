@@ -92,6 +92,9 @@ export default tseslint.config(
       // resolves to. Module resolution is the thing under test, so it has to
       // happen in a real process rather than behind a mock.
       'packages/db/src/client-resolution.test.ts',
+      // Operator CLI guards are tested in child processes with explicit targets
+      // and confirmation flags, never by connecting to a real service.
+      'packages/db/src/content-editor-cli.test.ts',
       // Expo's build-time configuration. It runs in Node while a binary is
       // being built — never in the app — and its whole job is to read the
       // build variables (APP_VARIANT, EXPO_PUBLIC_API_URL, the Android maps

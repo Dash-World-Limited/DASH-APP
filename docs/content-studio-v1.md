@@ -2,6 +2,8 @@
 
 > Foundation snapshot at 6457a684. Native/web consumer integration status is now
 > documented in [content-studio-integrations.md](content-studio-integrations.md).
+> Employee access now uses `content_editor`, a separate publication permission,
+> and `/studio/signin`; see [content-studio-employee-access.md](content-studio-employee-access.md).
 
 Date: 25 October 2026. Branch: `feature/dash-content-studio-v1`.
 
@@ -77,16 +79,17 @@ no bucket policy or infrastructure was changed.
 
 ### Permissions
 
-`content:manage` is the sole new permission. V1 grants it only through the
-existing `super_admin` bundle, which includes every permission. No vendor,
+`content:manage` is granted to the focused `content_editor` staff role and the
+existing `super_admin` bundle. Separate `content:publish` is held only by
+Super Admin and required for publish, unpublish and rollback. No vendor,
 rider, customer, marketing, support, dispatch, finance or platform-admin role
-was newly granted access. All editorial paths have a common server-side guard,
+was newly granted access. All editorial paths have a common management guard,
 including reads, previews/history, reference lookup, media and writes.
 UI gating is additional; it is never the authorization boundary.
 
-No staff-role provisioning or authentication flow was changed. Editorial staff
-without Super Admin access will need an intentionally designed focused role in
-a later change. Do not casually grant an operational role Studio permissions.
+Editors use the existing password/TOTP staff authentication at `/studio/signin`.
+The staging-only operator provisioning procedure is documented in
+[content-studio-employee-access.md](content-studio-employee-access.md).
 
 ## API contract
 
@@ -207,8 +210,9 @@ plus existing npm deprecation notices. No forced dependency upgrade was used.
 6. Add native Expo consumption through the same optional V1 feed; preserve
    existing native presentation as the default. Then connect category artwork,
    featured vendor lists and vendor cover/logo overrides one surface at a time.
-7. If non-Super-Admin editorial staff are required, add a focused staff role and
-   matching existing-session sign-in routing intentionally, with denial tests.
+7. Employee access is implemented with `content_editor`, shared staff MFA,
+   dedicated Studio routes and direct API publication-denial tests. Provision
+   the staging identity only after separate operator authorization.
 8. Expand the media workflow only when needed: editable alt/title with explicit
    revision semantics, reference navigation, storage quotas, orphan cleanup and
    retention policy. Actor IDs currently appear directly in activity/history.

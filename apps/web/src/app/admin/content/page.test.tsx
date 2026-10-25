@@ -9,30 +9,31 @@ import {
 } from '@testing-library/react';
 import ContentStudio from './page';
 
-const { request, session } = vi.hoisted(() => ({
-  request: vi.fn(),
+const { request, session, signOut, replace } = vi.hoisted(() => ({
+  request: vi.fn(), signOut: vi.fn(), replace: vi.fn(),
   session: {
     loaded: true,
     me: null as null | {
-      permissions: string[];
+      permissions: string[]; roles: string[];
       identity: { displayName: string; email: string };
     },
   },
 }));
 vi.mock('@/lib/session', () => ({
-  authedFetch: request,
+  authedFetch: request, signOut,
   useMe: () => session,
 }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace }) }));
 vi.mock('@/components/brand/DashWordmark', () => ({
   DashWordmark: () => <span>DASH</span>,
 }));
 afterEach(cleanup);
 beforeEach(() => {
   session.me = {
-    permissions: ['content:manage'],
+    permissions: ['content:manage', 'content:publish'], roles: ['super_admin'],
     identity: { displayName: 'Editorial test', email: 'editor@dash.test' },
   };
-  request.mockReset();
+  request.mockReset(); signOut.mockReset(); signOut.mockResolvedValue(undefined); replace.mockReset();
   request.mockImplementation(async (path: string) => {
     if (path.endsWith('/entries')) return { entries: [], nextCursor: null };
     if (path.endsWith('/media')) return { assets: [], nextCursor: null };
@@ -69,6 +70,51 @@ describe('Studio editorial surface', () => {
     await waitFor(() =>
       expect(request).toHaveBeenCalledWith('/v1/admin/content/dashboard'),
     );
+  });
+  it('allows editor draft/preview work while disabling publication and omitting operational links', async () => {
+    session.me!.permissions = ['content:manage'];
+    session.me!.roles = ['content_editor'];
+    render(<ContentStudio />);
+    await screen.findByText('Presentation, with purpose.');
+    expect(screen.queryByText('Operational console ↗')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '+ Create content' }));
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Save draft' }).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(screen.getByText('Your next presentation')).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Publish…' }).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Unpublish…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Restore this publication' })).toBeNull();
+    expect(screen.getByText(/Final publication requires Super Admin approval/)).toBeTruthy();
+  });
+  it('signs out through the existing revocation flow before redirecting to Studio sign-in', async () => {
+    render(<ContentStudio />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    await waitFor(() => expect(signOut).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/studio/signin'));
+  });
+  it('hides unpublish and historical rollback for an editor viewing published content', async () => {
+    session.me!.permissions = ['content:manage']; session.me!.roles = ['content_editor'];
+    const draft = {
+      internalName: 'Published working copy', type: 'announcement', placement: 'home.announcements', title: 'Live news', body: '',
+      mediaId: null, logoMediaId: null, vendorId: null, categoryId: null, href: null, label: '', featured: false,
+      position: 0, visible: true, startsAt: null, endsAt: null,
+    };
+    const defaults = request.getMockImplementation()!;
+    request.mockImplementation(async (path: string) => {
+      if (path.endsWith('/entries')) return { entries: [{ id: 'entry-one', draft, version: 3, publishedRevisionId: 'revision-two', updatedBy: 'admin', updatedAt: '2026-10-25T00:00:00Z' }], nextCursor: null };
+      if (path.endsWith('/entries/entry-one')) return { id: 'entry-one', draft, version: 3, publishedRevisionId: 'revision-two', updatedBy: 'admin', updatedAt: '2026-10-25T00:00:00Z' };
+      if (path.endsWith('/history')) return { revisions: [{ id: 'revision-one', number: 1, action: 'publish', payload: JSON.stringify(draft), actorId: 'admin', createdAt: '2026-10-25T00:00:00Z' }] };
+      return defaults(path);
+    });
+    render(<ContentStudio />);
+    await screen.findByText('Presentation, with purpose.');
+    fireEvent.click(screen.getByRole('button', { name: 'Content & placements' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Published working copy' }));
+    await screen.findByText(/#1 · publish/);
+    expect(screen.queryByRole('button', { name: 'Unpublish…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Restore this publication' })).toBeNull();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Publish…' }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Save draft' })).toBeTruthy();
   });
   it('requires a saved draft and preview before enabling publication', async () => {
     const content = {

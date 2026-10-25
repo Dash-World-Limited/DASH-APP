@@ -65,6 +65,7 @@ describe('which roles require MFA', () => {
 
   it('requires MFA for every staff role', () => {
     const staff = [
+      'content_editor',
       'support_agent',
       'dispatcher',
       'finance_analyst',

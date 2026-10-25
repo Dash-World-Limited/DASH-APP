@@ -394,6 +394,18 @@ export async function verifyMfa(challengeToken: string, code: string): Promise<S
   return session;
 }
 
+/** Redeem the existing single-use MFA recovery-code API, adopting its session. */
+export async function verifyMfaWithRecoveryCode(challengeToken: string, recoveryCode: string): Promise<Session> {
+  const session = await apiFetch<Session>('/v1/auth/mfa/verify', {
+    method: 'POST', body: { challengeToken, recoveryCode },
+  });
+  if (!session.accessToken) {
+    throw new ApiRequestError(0, 'unknown', 'That did not complete sign-in. Please try again.');
+  }
+  storeAccess(session);
+  return session;
+}
+
 export interface MfaEnrolmentOffer {
   secret: string;
   otpauthUri: string;

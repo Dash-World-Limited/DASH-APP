@@ -332,7 +332,7 @@ export async function registerContentRoutes(
         });
       });
       for (const action of ['publish', 'unpublish', 'rollback'] as const) {
-        admin.post(`/entries/:id/${action}`, async (request) => {
+        admin.post(`/entries/:id/${action}`, { preHandler: requirePermission('content:publish') }, async (request) => {
           const { id } = idSchema.parse(request.params);
           const body = actionSchema.parse(request.body);
           return transaction(async (tx) => {
