@@ -119,6 +119,10 @@ export async function registerFileRoutes(app: FastifyInstance): Promise<void> {
       // a browser second-guessing it is how an image becomes a script.
       .header('X-Content-Type-Options', 'nosniff')
       .header('Content-Disposition', 'inline')
+      // Editorial raster assets are deliberately embedded by the web client
+      // (including a different local dev port). Keep every operational upload
+      // on the existing policy; the signed URL is still required for both.
+      .header('Cross-Origin-Resource-Policy', key.startsWith('content-studio/') ? 'cross-origin' : 'same-site')
       // `private` because the URL is signed and short-lived. A shared cache
       // holding it would outlive the permission that produced it.
       .header('Cache-Control', 'private, max-age=300')

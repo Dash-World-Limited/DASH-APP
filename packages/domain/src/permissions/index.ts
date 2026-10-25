@@ -13,6 +13,8 @@
  */
 
 export const PERMISSIONS = [
+  // Editorial access is deliberately granted only to super_admin in V1.
+  'content:manage',
   // --- Customer ------------------------------------------------------------
   'order:create',
   'order:read:own',

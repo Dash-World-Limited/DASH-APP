@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { SERVICE_CATEGORIES } from '@dash/domain/services';
+import { HomePromotion } from '@/components/content/HomePromotion';
 import { AppHeader } from '@/components/AppHeader';
 import {
   Badge,
@@ -190,6 +191,8 @@ export default function BrowsePage() {
             <p className="mt-1 text-sm text-graphite-600">{service.message}</p>
           </div>
         ) : null}
+
+        <HomePromotion />
 
         <div className="mt-6 space-y-4">
           <label className="sr-only" htmlFor="vendor-search">

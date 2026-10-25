@@ -14,6 +14,7 @@ const NAV = [
   { href: '/admin/live', label: 'Live map', icon: 'pulse' },
   { href: '/admin/orders', label: 'Orders', icon: 'box' },
   { href: '/admin/support', label: 'Support', icon: 'chat' },
+  { href: '/admin/content', label: 'Content Studio', icon: 'grid' },
 ] as const;
 
 function NavIcon({ name }: { name: 'grid' | 'people' | 'pulse' | 'wallet' | 'box' | 'chat' }) {
@@ -41,6 +42,9 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const { me, loaded } = useMe();
   const { theme, setTheme } = useAdminTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Studio supplies its own permission gate and editorial navigation.
+  if (pathname.startsWith('/admin/content')) return <>{children}</>;
 
   // The sign-in screen uses the same palette but deliberately no privileged
   // navigation chrome: no dashboard information is mounted before auth.
