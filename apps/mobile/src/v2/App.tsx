@@ -19,6 +19,10 @@ import naira600 from '../../assets/fonts/DashNairaSign-600.ttf';
 import naira700 from '../../assets/fonts/DashNairaSign-700.ttf';
 import naira800 from '../../assets/fonts/DashNairaSign-800.ttf';
 import { api, ApiError } from '../api';
+import { useStudioContent } from '../content/useStudioContent';
+import { StudioHero, StudioDiscovery, StudioImage } from '../content/StudioPresentation';
+import { categoryArtwork } from '@dash/domain/content/presentation';
+import type { PublicContentItem } from '@dash/domain/content';
 import { Wordmark } from '../brand/Wordmark';
 import { CartProvider } from '../features/CartProvider';
 import { homeLocationLines } from '../features/delivery';
@@ -322,6 +326,7 @@ function RouteView({
 }
 
 function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
+  const studio = useStudioContent();
   const { palette } = useTheme();
   const { viewer } = useAppSession();
   const [campaign, setCampaign] = useState(0);
@@ -379,11 +384,12 @@ function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
         <Text variant="heading" style={{ marginBottom: space.md }}>What do you need?</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
           {SERVICES.map((service) => (
-            <ServiceCard key={service.id} {...service} onPress={() => onPush({ name: 'customer.category', params: { id: service.id } })} />
+            <ServiceCard key={service.id} {...service} artwork={categoryArtwork(studio, service.id)} onPress={() => onPush({ name: 'customer.category', params: { id: service.id } })} />
           ))}
         </View>
       </View>
 
+      <StudioHero items={studio} onPush={onPush} fallback={(
       <Pressable
         onPress={() => onPush({ name: 'customer.category', params: { id: activeCampaign.target } })}
         accessibilityRole="button"
@@ -403,11 +409,13 @@ function CustomerHome({ onPush }: { onPush: (route: AppRoute) => void }) {
           {CAMPAIGNS.map((_, index) => <View key={index} style={{ width: index === campaign ? 18 : 5, height: 5, borderRadius: 3, backgroundColor: index === campaign ? '#30230F' : 'rgba(48,35,15,0.3)' }} />)}
         </View>
       </Pressable>
+      )} />
+      <StudioDiscovery items={studio} onPush={onPush} />
     </Page>
   );
 }
 
-function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: string; color: string; onPress: () => void }) {
+function ServiceCard({ id, label, color, onPress, artwork }: { id: ServiceId; label: string; color: string; onPress: () => void; artwork: PublicContentItem['image'] }) {
   const { palette } = useTheme();
   return (
     <Pressable
@@ -428,7 +436,7 @@ function ServiceCard({ id, label, color, onPress }: { id: ServiceId; label: stri
       })}
     >
       <View style={{ width: 78, height: 72, borderRadius: 24, backgroundColor: `${color}28`, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-        <CategoryPhoto id={id} size={74} accessibilityLabel={`${label} category photo`} />
+        <StudioImage image={artwork} style={{ width: 74, height: 74 }} fallback={<CategoryPhoto id={id} size={74} accessibilityLabel={`${label} category photo`} />} />
       </View>
       <Text variant="caption" weight="bold" align="center">{label}</Text>
     </Pressable>

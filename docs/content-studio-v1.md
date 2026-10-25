@@ -1,5 +1,8 @@
 # DASH Content Studio V1 — engineering handoff
 
+> Foundation snapshot at 6457a684. Native/web consumer integration status is now
+> documented in [content-studio-integrations.md](content-studio-integrations.md).
+
 Date: 25 October 2026. Branch: `feature/dash-content-studio-v1`.
 
 Base: `aff3a076480c2580597f94f10fcd667ab25b8d36`, the fetched tip of
@@ -151,7 +154,7 @@ exercised in the browser. Responsive CSS is included; physical tablet/mobile QA
 remains. The browser viewport override did not take effect, so it is not claimed
 as mobile-device evidence.
 
-**Not connected yet:** native Expo home, Android-shell device QA, category tiles,
+**Not connected at the foundation commit (superseded by the integration handoff):** native Expo home, Android-shell device QA, category tiles,
 featured vendor/store lists, vendor storefront cover/logo/badges, promotional
 carousels, FAQ/help and legal consumers. The models/editor/public contract
 support these, but they are not silently treated as implemented integrations.

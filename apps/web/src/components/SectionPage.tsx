@@ -17,6 +17,9 @@
  */
 
 import Link from 'next/link';
+import { useStudioContent } from '@/lib/useStudioContent';
+import { orderStudioVendors } from '@dash/domain/content/presentation';
+import { StudioCategoryArtwork, StudioVendorArtwork } from '@/components/content/StudioPresentation';
 import { useEffect, useState } from 'react';
 
 import { Badge, Card, EmptyState, ErrorState, LoadingBlock, formatDistance, formatNaira } from '@/components/ui';
@@ -42,6 +45,7 @@ interface SellerCard {
 const DEFAULT_POSITION = { latitude: 6.4281, longitude: 3.4219 };
 
 export function SectionPage({ section }: { section: Section }) {
+  const studio = useStudioContent();
   const [sellers, setSellers] = useState<SellerCard[] | null>(null);
   const [error, setError] = useState<ApiRequestError | null>(null);
 
@@ -87,7 +91,7 @@ export function SectionPage({ section }: { section: Section }) {
 
   return (
     <main id="main" className="mx-auto max-w-2xl px-4 py-6">
-      <h1 className="text-2xl font-bold tracking-tight">{section.label}</h1>
+      <StudioCategoryArtwork items={studio} categoryId={section.slug} /><h1 className="text-2xl font-bold tracking-tight">{section.label}</h1>
       <p className="mt-1 text-sm text-[var(--ink-muted)]">{section.blurb}</p>
 
       <div className="mt-5">
@@ -102,10 +106,10 @@ export function SectionPage({ section }: { section: Section }) {
           />
         ) : (
           <ul className="space-y-3">
-            {sellers.map((seller) => (
+            {orderStudioVendors(sellers, studio, (seller) => seller.id).map((seller) => (
               <Card as="li" key={seller.slug} className="p-0">
                 <Link href={`/browse/${seller.slug}`} className="block p-4">
-                  <div className="flex items-start justify-between gap-3">
+                  <StudioVendorArtwork items={studio} vendorId={seller.id} /><div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <h2 className="truncate font-bold">{seller.name}</h2>
                       {seller.description ? (

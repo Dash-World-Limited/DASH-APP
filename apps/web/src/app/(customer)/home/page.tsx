@@ -3,6 +3,9 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { SERVICE_CATEGORIES } from '@dash/domain/services';
+import { useStudioContent } from '@/lib/useStudioContent';
+import { orderStudioVendors } from '@dash/domain/content/presentation';
+import { StudioCategoryArtwork, StudioVendorArtwork, StudioDiscovery } from '@/components/content/StudioPresentation';
 import { HomePromotion } from '@/components/content/HomePromotion';
 import { AppHeader } from '@/components/AppHeader';
 import {
@@ -53,6 +56,7 @@ interface Serviceability {
 }
 
 export default function BrowsePage() {
+  const studio = useStudioContent();
   const [position, setPosition] = useState(DEFAULT_POSITION);
   const [service, setService] = useState<Serviceability | null>(null);
   const [vendors, setVendors] = useState<VendorSummary[] | null>(null);
@@ -192,7 +196,7 @@ export default function BrowsePage() {
           </div>
         ) : null}
 
-        <HomePromotion />
+        <HomePromotion items={studio} /><StudioDiscovery items={studio} />
 
         <div className="mt-6 space-y-4">
           <label className="sr-only" htmlFor="vendor-search">
@@ -228,7 +232,7 @@ export default function BrowsePage() {
                     href={`/${section.slug}`}
                     className="flex h-full flex-col justify-between rounded-[var(--radius-card)] border border-[var(--line)] bg-[var(--surface-raised)] p-4 transition-colors hover:border-[var(--primary)]"
                   >
-                    <span className="font-bold leading-tight">{section.label}</span>
+                    <StudioCategoryArtwork items={studio} categoryId={section.slug} /><span className="font-bold leading-tight">{section.label}</span>
                     <span className="mt-1 text-xs leading-snug text-[var(--ink-muted)]">
                       {section.blurb}
                     </span>
@@ -276,7 +280,7 @@ export default function BrowsePage() {
             />
           ) : (
             <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {vendors.map((vendor) => {
+              {orderStudioVendors(vendors, studio, (vendor) => vendor.id).map((vendor) => {
                 const closed = vendor.branch?.state === 'closed';
                 return (
                   <Card
@@ -288,7 +292,7 @@ export default function BrowsePage() {
                       href={`/browse/${vendor.slug}`}
                       className={`block p-5 ${closed ? 'opacity-60' : ''}`}
                     >
-                      <div className="flex items-start justify-between gap-3">
+                      <StudioVendorArtwork items={studio} vendorId={vendor.id} /><div className="flex items-start justify-between gap-3">
                         <h2 className="text-lg font-bold leading-tight">{vendor.name}</h2>
                         {closed ? (
                           <Badge tone="danger">Closed</Badge>

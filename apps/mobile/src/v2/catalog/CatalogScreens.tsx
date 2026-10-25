@@ -3,6 +3,10 @@ import { ActivityIndicator, Alert, Pressable, ScrollView, TextInput, View } from
 import { formatNairaCompact, type Kobo } from '@dash/domain/money';
 
 import { api, ApiError } from '../../api';
+import type { PublicContentItem } from '@dash/domain/content';
+import { categoryArtwork, orderStudioVendors, vendorPresentation, vendorFeature } from '@dash/domain/content/presentation';
+import { useStudioContent } from '../../content/useStudioContent';
+import { StudioImage, StudioVendorLabel } from '../../content/StudioPresentation';
 import { useCart } from '../../features/CartProvider';
 import { useTheme } from '../../theme/ThemeProvider';
 import { radius, space, touchTarget } from '../../theme/tokens';
@@ -24,6 +28,7 @@ import { DeclutterFeedScreen } from '../declutter/DeclutterScreens';
  * claim about the business.
  */
 interface Merchant {
+  vendorId: string;
   id: string;
   name: string;
   description: string;
@@ -63,6 +68,7 @@ type Feed<T> =
   | { status: 'ready'; data: T };
 
 interface ApiVendorSummary {
+  id: string;
   slug: string;
   name: string;
   description: string;
@@ -71,6 +77,7 @@ interface ApiVendorSummary {
 }
 
 interface ApiVendorDetail {
+  id: string;
   slug: string;
   name: string;
   description: string;
@@ -105,6 +112,7 @@ const SERVICE_COPY: Record<ServiceId, { title: string; intro: string; search: st
 
 export function CategoryDashboard({ id, onBack, onPush }: { id: string; onBack: () => void; onPush: (route: AppRoute) => void }) {
   const service = isServiceId(id) ? id : 'food';
+  const studio = useStudioContent();
   const copy = SERVICE_COPY[service];
   const { palette } = useTheme();
   const { state, reload } = useMerchantList(service);
@@ -122,7 +130,7 @@ export function CategoryDashboard({ id, onBack, onPush }: { id: string; onBack: 
       <BackHeader title={copy.title} onBack={onBack} cart={() => onPush({ name: 'customer.cart' })} />
       <View style={{ minHeight: 132, borderRadius: radius.xl, backgroundColor: palette.accentSoft, padding: space.lg, flexDirection: 'row', alignItems: 'center', overflow: 'hidden' }}>
         <View style={{ flex: 1, gap: space.xs }}><Text variant="title">{copy.title}</Text><Text variant="caption" tone="muted">{copy.intro}</Text></View>
-        <CategoryPhoto id={service} size={112} accessibilityLabel={`${copy.title} category photo`} />
+        <StudioImage image={categoryArtwork(studio, service)} style={{ width: 112, height: 112, borderRadius: radius.md }} fallback={<CategoryPhoto id={service} size={112} accessibilityLabel={`${copy.title} category photo`} />} />
       </View>
       {service === 'logistics' ? (
         <LogisticsNotYet />
@@ -132,7 +140,7 @@ export function CategoryDashboard({ id, onBack, onPush }: { id: string; onBack: 
           {state.status === 'ready' ? (
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}><Text variant="heading">Near you</Text></View>
           ) : null}
-          {merchants.map((merchant) => <MerchantCard key={merchant.id} merchant={merchant} service={service} onPress={() => onPush({ name: 'customer.store', params: { category: service, id: merchant.id } })} />)}
+          {orderStudioVendors(merchants, studio, (merchant) => merchant.vendorId).map((merchant) => <MerchantCard key={merchant.id} merchant={merchant} service={service} presentation={vendorPresentation(studio, merchant.vendorId)} feature={vendorFeature(studio, merchant.vendorId)} onPress={() => onPush({ name: 'customer.store', params: { category: service, id: merchant.id } })} />)}
           {state.status === 'ready' && merchants.length === 0 ? (
             <View style={{ minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: space.sm, padding: space.lg }}>
               <View style={{ width: 70, height: 70, borderRadius: 24, backgroundColor: palette.accentSoft, alignItems: 'center', justifyContent: 'center' }}><Icon name="storefront-outline" size={34} color={palette.accent} /></View>
@@ -165,15 +173,20 @@ function LogisticsNotYet() {
 }
 
 export function Storefront({ category, merchantId, onBack, onPush }: { category: string; merchantId: string; onBack: () => void; onPush: (route: AppRoute) => void }) {
+  const studio = useStudioContent();
   const service = isServiceId(category) ? category : 'food';
   const { state, reload } = useStorefront(service, merchantId);
   const merchant = state.status === 'ready' ? state.data.merchant : null;
+  const presentation = merchant ? vendorPresentation(studio, merchant.vendorId) : undefined;
   const products = state.status === 'ready' ? state.data.products : [];
   return (
     <CatalogPage>
       <BackHeader title={merchant?.name ?? SERVICE_COPY[service].title} onBack={onBack} cart={() => onPush({ name: 'customer.cart' })} />
       {merchant ? (
         <>
+          <StudioImage image={presentation?.image ?? null} style={{ width: '100%', height: 154, borderRadius: radius.xl }} />
+          <StudioImage image={presentation?.logo ?? null} style={{ width: 64, height: 64, borderRadius: radius.md }} />
+          <StudioVendorLabel label={presentation?.label} featured={presentation?.featured} />
           <View style={{ minHeight: 174, borderRadius: radius.xl, backgroundColor: merchant.accent, padding: space.xl, justifyContent: 'flex-end', overflow: 'hidden' }}>
             <View style={{ position: 'absolute', right: -16, top: -10, opacity: 0.96 }}><CategoryPhoto id={service} size={168} accessibilityLabel={`${SERVICE_COPY[service].title} store photo`} /></View>
             <View style={{ maxWidth: '67%' }}><Text variant="title" style={{ color: '#15171A' }}>{merchant.name}</Text><Text variant="caption" style={{ color: '#33312D' }}>{merchant.description}</Text></View>
@@ -368,9 +381,9 @@ export function CustomerSearchScreen({ onBack, onPush }: { onBack: () => void; o
   );
 }
 
-function MerchantCard({ merchant, service, onPress }: { merchant: Merchant; service: ServiceId; onPress: () => void }) {
+function MerchantCard({ merchant, service, onPress, presentation, feature }: { merchant: Merchant; service: ServiceId; onPress: () => void; presentation?: PublicContentItem; feature?: PublicContentItem }) {
   const { palette } = useTheme();
-  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open ${merchant.name}`} style={({ pressed }) => ({ borderRadius: radius.lg, overflow: 'hidden', backgroundColor: pressed ? palette.sand : palette.surface, borderWidth: 1, borderColor: palette.line })}><View style={{ height: 126, backgroundColor: merchant.accent, alignItems: 'flex-end', justifyContent: 'center', paddingRight: space.xl }}><CategoryPhoto id={service} size={126} accessibilityLabel={`${merchant.name} photo`} /></View><View style={{ padding: space.md, gap: 3 }}><Text variant="bodyStrong">{merchant.name}</Text><Text variant="caption" tone="muted">{merchant.description}</Text><View style={{ flexDirection: 'row', gap: space.md, marginTop: space.xs }}><Text variant="micro">★ {merchant.rating}</Text><Text variant="micro" tone="muted">{merchant.eta}</Text></View></View></Pressable>;
+  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open ${merchant.name}`} style={({ pressed }) => ({ borderRadius: radius.lg, overflow: 'hidden', backgroundColor: pressed ? palette.sand : palette.surface, borderWidth: 1, borderColor: palette.line })}><View style={{ height: 126, backgroundColor: merchant.accent, alignItems: 'flex-end', justifyContent: 'center', paddingRight: space.xl }}><StudioImage image={presentation?.image ?? null} style={{ width: "100%", height: 126 }} fallback={<CategoryPhoto id={service} size={126} accessibilityLabel={`${merchant.name} photo`} />} /></View><View style={{ padding: space.md, gap: 3 }}><StudioImage image={presentation?.logo ?? null} style={{ width: 40, height: 40, borderRadius: radius.md }} /><StudioVendorLabel label={presentation?.label || feature?.label} featured={!!feature} /><Text variant="bodyStrong">{merchant.name}</Text><Text variant="caption" tone="muted">{merchant.description}</Text><View style={{ flexDirection: 'row', gap: space.md, marginTop: space.xs }}><Text variant="micro">★ {merchant.rating}</Text><Text variant="micro" tone="muted">{merchant.eta}</Text></View></View></Pressable>;
 }
 
 function ProductCard({ product, service, onPress }: { product: Product; service: ServiceId; onPress: () => void }) {
@@ -547,6 +560,7 @@ function useMerchantList(service: ServiceId): { state: Feed<readonly Merchant[]>
           status: 'ready',
           data: vendors.map((vendor) => ({
             id: vendor.slug,
+            vendorId: vendor.id,
             name: vendor.name,
             description: vendor.description,
             rating: ratingLabel(vendor.rating),
@@ -591,6 +605,7 @@ function useStorefront(service: ServiceId, merchantId: string): { state: Feed<St
           data: {
             merchant: {
               id: vendor.slug,
+            vendorId: vendor.id,
               name: vendor.name,
               description: vendor.description,
               // The detail endpoint sends an average with no count, so a zero
