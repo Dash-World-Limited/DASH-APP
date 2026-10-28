@@ -187,14 +187,14 @@ export function HubChat({
           .map((m) => {
             const own = staff
               ? m.senderType === 'staff'
-              : m.senderType === 'seller';
+              : m.senderType === 'seller' || m.senderType === 'buyer';
             return (
               <article
                 key={m.id}
                 className={`w-fit max-w-[90%] rounded-2xl border border-[var(--line)] p-4 ${own ? 'ml-auto bg-[var(--surface-sunken)]' : 'bg-[var(--surface)]'}`}
               >
                 <p className="mb-2 text-xs font-bold">
-                  {m.senderType === 'staff' ? 'DASH' : staff ? 'Seller' : 'You'}
+                  {m.senderType === 'staff' ? 'DASH' : staff ? (m.senderType === 'buyer' ? 'Buyer' : 'Seller') : 'You'}
                 </p>
                 <p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">
                   {m.body}
@@ -282,6 +282,7 @@ interface Conversation {
   lastMessage: string | null;
   updatedAt: string;
   unreadCount: number;
+  kind: 'buyer_enquiry' | 'seller_support' | 'account_support';
 }
 export function HubInbox({ staff = false }: { staff?: boolean }) {
   const { data, error, refresh, session } = useHub<{
@@ -379,7 +380,13 @@ export function HubInbox({ staff = false }: { staff?: boolean }) {
               className={`${hubCard} w-full text-left ${selected === c.id ? 'ring-2 ring-[var(--primary)]' : ''}`}
             >
               {staff ? (
-                <p className="text-sm font-bold">{c.sellerName ?? 'Seller'}</p>
+                <p className="text-sm font-bold">
+                  {c.kind === 'buyer_enquiry'
+                    ? 'Buyer enquiry'
+                    : c.kind === 'account_support'
+                      ? 'Account support'
+                      : 'Seller support'} · {c.sellerName ?? 'Customer'}
+                </p>
               ) : null}
               <p className="mt-1 break-words font-bold">{c.title}</p>
               <p className="mt-1 text-xs">
@@ -399,7 +406,7 @@ export function HubInbox({ staff = false }: { staff?: boolean }) {
           {active ? (
             <>
               <p className={hubCard}>
-                {active.title} · {active.code} · {active.workflowStatus}
+                {active.kind === 'buyer_enquiry' ? 'Buyer enquiry · ' : ''}{active.title} · {active.code} · {active.workflowStatus}
                 {active.submissionId ? (
                   <Link
                     className="ml-3 underline"
