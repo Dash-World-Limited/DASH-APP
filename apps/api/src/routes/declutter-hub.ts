@@ -25,6 +25,7 @@ import {
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
 import { ApiError } from '../http/errors.js';
 import { auditContext, customerIdOf } from './declutter-shared.js';
+import { notifyDeclutterAdminMessage } from '../declutter/notifications.js';
 
 const idParam = z.object({ id: z.string().min(1).max(60) });
 const editInput = z
@@ -36,7 +37,7 @@ const editInput = z
   })
   .strict();
 export async function registerDeclutterHubRoutes(app: FastifyInstance) {
-  const { prisma } = app.services;
+  const { prisma, email, config } = app.services;
   async function row(id: string) {
     const s = await prisma.declutterSubmission.findUnique({
       where: { id },
@@ -1065,6 +1066,11 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
       cs.map(async (c) => ({
         id: c.id,
         status: c.status,
+        kind: c.scopeKey.includes(':contact:')
+          ? 'buyer_enquiry'
+          : c.submissionId
+            ? 'seller_support'
+            : 'account_support',
         sellerName: c.seller.displayName,
         submissionId: c.submissionId,
         title: c.submission?.title ?? 'Account support',
@@ -1078,7 +1084,7 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
         unreadCount: await prisma.declutterMessage.count({
           where: {
             conversationId: c.id,
-            senderType: identityId ? 'staff' : 'seller',
+            senderType: identityId ? 'staff' : { in: ['seller', 'buyer'] },
             readAt: null,
           },
         }),
@@ -1137,7 +1143,7 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
     { preHandler: requirePermission('declutter:submission:read') },
     async () => ({
       unreadCount: await prisma.declutterMessage.count({
-        where: { senderType: 'seller', readAt: null },
+        where: { senderType: { in: ['seller', 'buyer'] }, readAt: null },
       }),
     }),
   );
@@ -1259,7 +1265,7 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
           await tx.declutterMessage.updateMany({
             where: {
               conversationId: c.id,
-              senderType: staff ? 'seller' : 'staff',
+              senderType: staff ? { in: ['seller', 'buyer'] } : 'staff',
               readAt: null,
               createdAt: { lte: cutoff },
             },
@@ -1317,7 +1323,7 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
               data: {
                 conversationId: c.id,
                 senderIdentityId,
-                senderType: staff ? 'staff' : 'seller',
+                senderType: staff ? 'staff' : c.scopeKey.includes(':contact:') ? 'buyer' : 'seller',
                 clientMessageId: body.clientMessageId,
                 body: body.body,
               },
@@ -1351,7 +1357,40 @@ export async function registerDeclutterHubRoutes(app: FastifyInstance) {
               );
             return winner;
           });
-        if (staff) await queueMessage(c, m.id);
+        if (staff) {
+          await queueMessage(c, m.id);
+        } else {
+          // Customer messages always alert both Declutters mailboxes. The
+          // durable email wrapper deduplicates request retries by message ID.
+          try {
+            const sender = await prisma.identity.findUnique({
+              where: { id: senderIdentityId },
+              select: { displayName: true },
+            });
+            const result = await notifyDeclutterAdminMessage(prisma, email, {
+              messageId: m.id,
+              senderName: sender?.displayName,
+              listingTitle: c.submission?.title ?? null,
+              listingCode: c.submission?.code ?? null,
+              message: m.body,
+              publicWebUrl: config.PUBLIC_WEB_URL,
+              contactRequest: c.scopeKey.includes(':contact:'),
+            });
+            if (result.failed) {
+              app.log.warn(
+                { messageId: m.id, failed: result.failed },
+                'Declutters admin message alert delivery failed',
+              );
+            }
+          } catch (error) {
+            // The saved message remains available in the inbox; an email
+            // provider issue must not turn a successful send into a lost chat.
+            app.log.warn(
+              { error, messageId: m.id },
+              'Declutters admin message alert delivery failed',
+            );
+          }
+        }
         return { messageId: m.id };
       },
     );

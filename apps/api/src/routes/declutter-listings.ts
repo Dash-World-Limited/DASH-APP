@@ -57,6 +57,7 @@ import {
 } from '@dash/domain/declutter';
 import { ApiError } from '../http/errors.js';
 import { publishSnapshot, sendPublicationEmail } from '../declutter/publication.js';
+import { notifyDeclutterAdminMessage } from '../declutter/notifications.js';
 import { facts, hubInclude } from '../declutter/hub.js';
 import { hubBlockers } from '@dash/domain/declutter';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
@@ -110,7 +111,7 @@ const contactDecisionSchema = z.object({
 });
 
 export async function registerDeclutterListingRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma } = app.services;
+  const { prisma, email, config } = app.services;
 
   // =========================================================================
   // Shared shaping
@@ -747,26 +748,85 @@ export async function registerDeclutterListingRoutes(app: FastifyInstance): Prom
         throw ApiError.conflict('You have already asked about this item. DASH will come back to you.');
       }
 
-      const created = await prisma.declutterContactRequest.create({
-        data: {
-          listingId: listing.id,
-          buyerCustomerId: customerId,
-          status: 'pending',
-          message: body.message ?? null,
-        },
+      const created = await prisma.$transaction(async (tx) => {
+        const contactRequest = await tx.declutterContactRequest.create({
+          data: {
+            listingId: listing.id,
+            buyerCustomerId: customerId,
+            status: 'pending',
+            message: body.message ?? null,
+          },
+        });
+
+        // Keep the enquiry in the same staff inbox as ordinary conversations.
+        // The separate contact-request record remains authoritative for the
+        // consent-gated decision to introduce a buyer to the seller.
+        const conversation = await tx.declutterConversation.create({
+          data: {
+            scopeKey: `${actor.identityId}:contact:${contactRequest.id}`,
+            sellerIdentityId: actor.identityId,
+            submissionId: listing.submissionId,
+            status: 'open',
+          },
+        });
+        const message = await tx.declutterMessage.create({
+          data: {
+            conversationId: conversation.id,
+            senderIdentityId: actor.identityId,
+            senderType: 'buyer',
+            clientMessageId: `contact-${contactRequest.id}`,
+            body: body.message?.trim() || 'I would like to request seller contact for this item.',
+          },
+        });
+
+        await writeAudit(tx, {
+          identityId: actor.identityId,
+          action: 'declutter.contact.requested',
+          resourceType: 'DeclutterContactRequest',
+          resourceId: contactRequest.id,
+          after: { listingId: listing.id, conversationId: conversation.id, messageId: message.id },
+          ...auditContext(request),
+        });
+
+        return { contactRequest, conversation, message };
       });
 
-      await writeAudit(prisma, {
-        identityId: actor.identityId,
-        action: 'declutter.contact.requested',
-        resourceType: 'DeclutterContactRequest',
-        resourceId: created.id,
-        after: { listingId: listing.id },
-        ...auditContext(request),
-      });
+      // Message persistence must not be undone just because an email provider
+      // is temporarily unavailable. Delivery is idempotent and failures are
+      // logged without exposing buyer details.
+      try {
+        const sender = await prisma.identity.findUnique({
+          where: { id: actor.identityId },
+          select: { displayName: true },
+        });
+        const result = await notifyDeclutterAdminMessage(prisma, email, {
+          messageId: created.message.id,
+          senderName: sender?.displayName,
+          listingTitle: listing.title,
+          message: created.message.body,
+          publicWebUrl: config.PUBLIC_WEB_URL,
+          contactRequest: true,
+        });
+        if (result.failed) {
+          app.log.warn(
+            { messageId: created.message.id, failed: result.failed },
+            'Declutters contact-request email alert delivery failed',
+          );
+        }
+      } catch (error) {
+        app.log.warn(
+          { error, messageId: created.message.id },
+          'Declutters contact-request email alert delivery failed',
+        );
+      }
 
       reply.code(201);
-      return { contactRequest: { id: created.id, status: created.status } };
+      return {
+        contactRequest: {
+          id: created.contactRequest.id,
+          status: created.contactRequest.status,
+        },
+      };
     },
   );
 

@@ -1,5 +1,7 @@
+import type { PrismaClient } from '@prisma/client';
 import type { EmailPort } from '@dash/domain/ports';
 import { dashEmailHtml } from '../email/dash-brand.js';
+import { notificationEmail } from './notification-delivery.js';
 
 /**
  * Two independent inboxes on purpose. Declutters review must not depend on one
@@ -282,4 +284,61 @@ export async function notifyListingPublished(
       reference: `declutter_listing_live_${input.listingId}`,
     },
   ]);
+}
+
+
+/**
+ * Alert both Declutters admin inboxes when a buyer or seller sends a message.
+ * Uses the existing durable email idempotency wrapper; message content is
+ * included only in the private notification, never in public listing data.
+ */
+export async function notifyDeclutterAdminMessage(
+  prisma: PrismaClient,
+  email: EmailPort,
+  input: {
+    messageId: string;
+    senderName?: string | null;
+    listingTitle?: string | null;
+    listingCode?: string | null;
+    message: string;
+    publicWebUrl: string;
+    contactRequest?: boolean;
+  },
+): Promise<SendResult> {
+  const inboxUrl = `${baseUrl(input.publicWebUrl)}/ops/declutter/inbox`;
+  const itemTitle = input.listingTitle?.trim() || 'Account support';
+  const subject = input.contactRequest
+    ? `New buyer enquiry — ${itemTitle}`
+    : `New Declutters message — ${itemTitle}`;
+  const messageText = input.message.trim().slice(0, 4000);
+  const details = [
+    { label: 'From', value: input.senderName?.trim() || 'Marketplace customer' },
+    ...(input.listingTitle ? [{ label: 'Item', value: input.listingTitle }] : []),
+    ...(input.listingCode ? [{ label: 'Reference', value: input.listingCode }] : []),
+    { label: 'Message', value: messageText || 'The customer requested contact.' },
+  ];
+  const emailPort = notificationEmail(
+    prisma,
+    email,
+    `declutter_admin_message:${input.messageId}`,
+  );
+  const messages: Parameters<EmailPort['send']>[0][] = DECLUTTER_ADMIN_EMAILS.map((to) => ({
+    to,
+    subject,
+    text: `A new message needs your attention in DASH Declutters.\n\nFrom: ${input.senderName?.trim() || 'Marketplace customer'}\nItem: ${itemTitle}\n${input.listingCode ? `Reference: ${input.listingCode}\n` : ''}Message: ${messageText || 'The customer requested contact.'}\n\nOpen the staff inbox: ${inboxUrl}`,
+    html: dashEmailHtml({
+      previewText: subject,
+      eyebrow: 'DASH Declutters · New message',
+      title: input.contactRequest ? 'New buyer enquiry' : 'New customer message',
+      paragraphs: [
+        input.contactRequest
+          ? 'A buyer requested an introduction to the seller. Review the message in the authenticated DASH Ops inbox.'
+          : 'A customer sent a new message. Review it in the authenticated DASH Ops inbox.',
+      ],
+      details,
+      cta: { label: 'Open Declutters inbox', href: inboxUrl },
+    }),
+    reference: `declutter_admin_message_${input.messageId}`,
+  }));
+  return settle(emailPort, messages);
 }

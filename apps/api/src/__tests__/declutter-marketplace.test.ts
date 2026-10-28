@@ -18,10 +18,22 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestContext, type TestContext } from './harness.js';
-import { actAs, buildWorld, type Actor, type World } from './world.js';
-import { useIntegrationTimeouts } from './timeouts.js';
+import type { EmailPort } from '@dash/domain/ports';
 import { seedDeclutterTaxonomy } from '@dash/db';
+import { DECLUTTER_ADMIN_EMAILS } from '../declutter/notifications.js';
+import { createTestContext, type TestContext } from './harness.js';
+import { useIntegrationTimeouts } from './timeouts.js';
+import { actAs, buildWorld, type Actor, type World } from './world.js';
+
+const capturedEmails: Parameters<EmailPort['send']>[0][] = [];
+const captureEmail: EmailPort = {
+  providerName: 'capture',
+  isLive: false,
+  async send(message) {
+    capturedEmails.push(message);
+    return { accepted: true, providerMessageId: `marketplace-${capturedEmails.length}` };
+  },
+};
 
 useIntegrationTimeouts();
 
@@ -51,7 +63,7 @@ const SELLER_SECRETS = {
 };
 
 beforeAll(async () => {
-  context = await createTestContext();
+  context = await createTestContext({}, { email: captureEmail });
   world = await buildWorld(context.prisma);
   await seedDeclutterTaxonomy(context.prisma);
 
@@ -654,6 +666,33 @@ describe('asking to be put in touch', () => {
     expect(JSON.stringify(response.json())).not.toContain(SELLER_SECRETS.phoneE164);
 
     requestId = response.json().contactRequest.id;
+
+    const conversation = await context.prisma.declutterConversation.findFirstOrThrow({
+      where: { scopeKey: { contains: `:contact:${requestId}` } },
+    });
+    const inbox = await get(admin, '/v1/admin/declutter/conversations');
+    const row = inbox.json().conversations.find(
+      (entry: { id: string }) => entry.id === conversation.id,
+    );
+    expect(row?.kind).toBe('buyer_enquiry');
+    expect(row?.title).toBe('Canon EOS for contact test');
+    expect(row?.unreadCount).toBe(1);
+
+    const messages = await get(
+      admin,
+      `/v1/admin/declutter/conversations/${conversation.id}`,
+    );
+    expect(messages.json().messages).toHaveLength(1);
+    expect(messages.json().messages[0].senderType).toBe('buyer');
+    expect(messages.json().messages[0].body).toBe('Is the battery original?');
+    const firstMessageId = messages.json().messages[0].id;
+    const alerts = capturedEmails.filter(
+      (message) => message.reference === `declutter_admin_message_${firstMessageId}`,
+    );
+    expect(alerts.map((message) => message.to).sort()).toEqual(
+      [...DECLUTTER_ADMIN_EMAILS].sort(),
+    );
+    expect(alerts).toHaveLength(2);
   });
 
   it('will not queue the same unanswered question twice', async () => {
