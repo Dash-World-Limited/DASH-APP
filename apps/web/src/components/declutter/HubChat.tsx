@@ -407,7 +407,7 @@ export function HubInbox({ staff = false }: { staff?: boolean }) {
             <>
               <p className={hubCard}>
                 {active.kind === 'buyer_enquiry' ? 'Buyer enquiry · ' : ''}{active.title} · {active.code} · {active.workflowStatus}
-                {active.submissionId ? (
+                {active.submissionId && (staff || active.kind !== 'buyer_enquiry') ? (
                   <Link
                     className="ml-3 underline"
                     href={`${staff ? '/ops/declutter/items' : '/declutter/account/items'}/${active.submissionId}`}
@@ -416,7 +416,7 @@ export function HubInbox({ staff = false }: { staff?: boolean }) {
                   </Link>
                 ) : null}
               </p>
-              {active.submissionId ? (
+              {active.submissionId && (staff || active.kind !== 'buyer_enquiry') ? (
                 <ConversationContext
                   submissionId={active.submissionId}
                   staff={staff}
