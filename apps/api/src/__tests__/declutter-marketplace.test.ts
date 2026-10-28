@@ -678,14 +678,20 @@ describe('asking to be put in touch', () => {
     expect(row?.title).toBe('Canon EOS for contact test');
     expect(row?.unreadCount).toBe(1);
 
-    const messages = await get(admin, `/v1/admin/declutter/conversations/${conversation.id}`);
+    const messages = await get(
+      admin,
+      `/v1/admin/declutter/conversations/${conversation.id}`,
+    );
     expect(messages.json().messages).toHaveLength(1);
     expect(messages.json().messages[0].senderType).toBe('buyer');
     expect(messages.json().messages[0].body).toBe('Is the battery original?');
+    const firstMessageId = messages.json().messages[0].id;
     const alerts = capturedEmails.filter(
-      (message) => message.reference === `declutter_admin_message_${messages.json().messages[0].id}`,
+      (message) => message.reference === `declutter_admin_message_${firstMessageId}`,
     );
-    expect(alerts.map((message) => message.to).sort()).toEqual([...DECLUTTER_ADMIN_EMAILS].sort());
+    expect(alerts.map((message) => message.to).sort()).toEqual(
+      [...DECLUTTER_ADMIN_EMAILS].sort(),
+    );
     expect(alerts).toHaveLength(2);
   });
 
