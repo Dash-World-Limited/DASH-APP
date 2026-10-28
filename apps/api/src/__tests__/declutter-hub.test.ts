@@ -4,6 +4,7 @@ import type { EmailPort } from '@dash/domain/ports';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, type Actor, type World } from './world.js';
 import { deliverHubNotifications } from '../declutter/hub.js';
+import { DECLUTTER_ADMIN_EMAILS } from '../declutter/notifications.js';
 import { useIntegrationTimeouts } from './timeouts.js';
 useIntegrationTimeouts();
 const PNG =
@@ -198,10 +199,20 @@ it('proves submission → dashboard → recorded checks → changed-price email 
     { submissionId: id },
     201,
   );
+  const buyerMessage = await post(seller, `/v1/declutter/conversations/${conversationId}/messages`, {
+    body: 'Why was the price changed?',
+    clientMessageId: 'seller-question-001',
+  });
+  const buyerAlert = sent.filter((m) => m.reference === `declutter_admin_message_${buyerMessage.messageId}`);
+  expect(buyerAlert).toHaveLength(2);
+  expect(buyerAlert.map((m) => m.to).sort()).toEqual([...DECLUTTER_ADMIN_EMAILS].sort());
+  expect(buyerAlert.every((m) => m.html.includes('/ops/declutter/inbox'))).toBe(true);
+  // An HTTP retry of the same message must not send duplicate email alerts.
   await post(seller, `/v1/declutter/conversations/${conversationId}/messages`, {
     body: 'Why was the price changed?',
     clientMessageId: 'seller-question-001',
   });
+  expect(sent.filter((m) => m.reference === `declutter_admin_message_${buyerMessage.messageId}`)).toHaveLength(2);
   const inbox = await get(admin, '/v1/admin/declutter/conversations');
   expect(
     inbox.conversations.find((c: { id: string }) => c.id === conversationId)
