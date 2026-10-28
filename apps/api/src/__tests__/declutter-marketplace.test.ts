@@ -19,8 +19,10 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { EmailPort } from '@dash/domain/ports';
+import { seedDeclutterTaxonomy } from '@dash/db';
 import { DECLUTTER_ADMIN_EMAILS } from '../declutter/notifications.js';
 import { createTestContext, type TestContext } from './harness.js';
+import { useIntegrationTimeouts } from './timeouts.js';
 import { actAs, buildWorld, type Actor, type World } from './world.js';
 
 const capturedEmails: Parameters<EmailPort['send']>[0][] = [];
@@ -32,8 +34,6 @@ const captureEmail: EmailPort = {
     return { accepted: true, providerMessageId: `marketplace-${capturedEmails.length}` };
   },
 };
-import { useIntegrationTimeouts } from './timeouts.js';
-import { seedDeclutterTaxonomy } from '@dash/db';
 
 useIntegrationTimeouts();
 
