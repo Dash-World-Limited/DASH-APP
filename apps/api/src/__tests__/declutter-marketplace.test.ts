@@ -654,6 +654,22 @@ describe('asking to be put in touch', () => {
     expect(JSON.stringify(response.json())).not.toContain(SELLER_SECRETS.phoneE164);
 
     requestId = response.json().contactRequest.id;
+
+    const conversation = await context.prisma.declutterConversation.findFirstOrThrow({
+      where: { scopeKey: { contains: `:contact:${requestId}` } },
+    });
+    const inbox = await get(admin, '/v1/admin/declutter/conversations');
+    const row = inbox.json().conversations.find(
+      (entry: { id: string }) => entry.id === conversation.id,
+    );
+    expect(row?.kind).toBe('buyer_enquiry');
+    expect(row?.title).toBe('Canon EOS for contact test');
+    expect(row?.unreadCount).toBe(1);
+
+    const messages = await get(admin, `/v1/admin/declutter/conversations/${conversation.id}`);
+    expect(messages.json().messages).toHaveLength(1);
+    expect(messages.json().messages[0].senderType).toBe('buyer');
+    expect(messages.json().messages[0].body).toBe('Is the battery original?');
   });
 
   it('will not queue the same unanswered question twice', async () => {
