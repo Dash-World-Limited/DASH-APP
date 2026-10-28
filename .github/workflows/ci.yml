@@ -4,9 +4,9 @@ on:
   # Feature branches are verified through their pull request, not twice through
   # both push and pull_request events. Main still verifies every direct update.
   push:
-    branches: [main]
+    branches: [main, security/zod4-migration]
   pull_request:
-    branches: [main]
+    branches: [main, claude/dash-app-production-release]
 
 # A new push to the same branch cancels the previous run. Reviewing a stale
 # result is worse than having no result.
