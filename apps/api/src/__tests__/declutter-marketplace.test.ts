@@ -18,8 +18,20 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { EmailPort } from '@dash/domain/ports';
+import { DECLUTTER_ADMIN_EMAILS } from '../declutter/notifications.js';
 import { createTestContext, type TestContext } from './harness.js';
 import { actAs, buildWorld, type Actor, type World } from './world.js';
+
+const capturedEmails: Parameters<EmailPort['send']>[0][] = [];
+const captureEmail: EmailPort = {
+  providerName: 'capture',
+  isLive: false,
+  async send(message) {
+    capturedEmails.push(message);
+    return { accepted: true, providerMessageId: `marketplace-${capturedEmails.length}` };
+  },
+};
 import { useIntegrationTimeouts } from './timeouts.js';
 import { seedDeclutterTaxonomy } from '@dash/db';
 
@@ -51,7 +63,7 @@ const SELLER_SECRETS = {
 };
 
 beforeAll(async () => {
-  context = await createTestContext();
+  context = await createTestContext({}, { email: captureEmail });
   world = await buildWorld(context.prisma);
   await seedDeclutterTaxonomy(context.prisma);
 
@@ -670,6 +682,11 @@ describe('asking to be put in touch', () => {
     expect(messages.json().messages).toHaveLength(1);
     expect(messages.json().messages[0].senderType).toBe('buyer');
     expect(messages.json().messages[0].body).toBe('Is the battery original?');
+    const alerts = capturedEmails.filter(
+      (message) => message.reference === `declutter_admin_message_${messages.json().messages[0].id}`,
+    );
+    expect(alerts.map((message) => message.to).sort()).toEqual([...DECLUTTER_ADMIN_EMAILS].sort());
+    expect(alerts).toHaveLength(2);
   });
 
   it('will not queue the same unanswered question twice', async () => {
