@@ -202,9 +202,11 @@ it('proves submission → dashboard → recorded checks → changed-price email 
   const incomingMessage = await post(
     seller,
     `/v1/declutter/conversations/${conversationId}/messages`,
-    body: 'Why was the price changed?',
-    clientMessageId: 'seller-question-001',
-  });
+    {
+      body: 'Why was the price changed?',
+      clientMessageId: 'seller-question-001',
+    },
+  );
   const adminAlerts = sent.filter(
     (m) => m.reference === `declutter_admin_message_${incomingMessage.messageId}`,
   );
