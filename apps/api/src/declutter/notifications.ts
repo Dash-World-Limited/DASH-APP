@@ -325,7 +325,7 @@ export async function notifyDeclutterAdminMessage(
   const messages: Parameters<EmailPort['send']>[0][] = DECLUTTER_ADMIN_EMAILS.map((to) => ({
     to,
     subject,
-    text: `A new message needs your attention in DASH Declutters.\\n\\nFrom: ${input.senderName?.trim() || 'Marketplace customer'}\\nItem: ${itemTitle}\\n${input.listingCode ? `Reference: ${input.listingCode}\\n` : ''}Message: ${messageText || 'The customer requested contact.'}\\n\\nOpen the staff inbox: ${inboxUrl}`,
+    text: `A new message needs your attention in DASH Declutters.\n\nFrom: ${input.senderName?.trim() || 'Marketplace customer'}\nItem: ${itemTitle}\n${input.listingCode ? `Reference: ${input.listingCode}\n` : ''}Message: ${messageText || 'The customer requested contact.'}\n\nOpen the staff inbox: ${inboxUrl}`,
     html: dashEmailHtml({
       previewText: subject,
       eyebrow: 'DASH Declutters · New message',
