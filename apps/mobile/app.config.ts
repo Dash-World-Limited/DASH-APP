@@ -26,11 +26,12 @@
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plain CommonJS so Expo's config loader and the tests can both load it without a build step
-const { resolveReleaseConfig } = require('./plugins/releaseConfig') as {
+const { resolveReleaseConfig, resolveGoogleServicesFile } = require('./plugins/releaseConfig') as {
   resolveReleaseConfig: (
     variant: string,
     env: NodeJS.ProcessEnv,
   ) => { versionCode: number; versionName: string; apiUrl: string | null; mapStyleUrl: string };
+  resolveGoogleServicesFile: (variant: string, env: NodeJS.ProcessEnv, packageName: string) => string | null;
 };
 
 type Variant = 'development' | 'staging' | 'production';
@@ -69,6 +70,14 @@ const identity: Record<Variant, { name: string; id: string }> = {
  * native project or bundle can be generated from a configuration that fails.
  */
 const release = resolveReleaseConfig(variant, process.env);
+
+/**
+ * Firebase's Android client configuration for push notifications, from
+ * `GOOGLE_SERVICES_JSON` (a path; the file is never committed). Required for
+ * production; development and staging build without it and have no push.
+ * See docs/release/PUSH_NOTIFICATIONS.md.
+ */
+const googleServicesFile = resolveGoogleServicesFile(variant, process.env, identity[variant].id);
 
 /**
  * The launcher icon and splash: the measured DASH wordmark in its approved
@@ -114,6 +123,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // Chat and other bottom-anchored forms must resize with the IME instead of
     // being panned underneath it.
     softwareKeyboardLayoutMode: 'resize',
+    ...(googleServicesFile ? { googleServicesFile } : {}),
     adaptiveIcon: {
       foregroundImage: './assets/brand/adaptive-icon.png',
       // Android 13 themed icons recolour this silhouette.
@@ -125,7 +135,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // Foreground location only. Background location for an Online rider needs
     // a foreground service and its own Play policy declaration; it arrives with
     // that milestone and is not requested here in the meantime.
-    permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION'],
+    // POST_NOTIFICATIONS: Android 13+ asks before an app may show
+    // notifications. DASH asks once after sign-in, and never for someone who
+    // has switched its notifications off (src/features/pushNotifications).
+    permissions: ['ACCESS_COARSE_LOCATION', 'ACCESS_FINE_LOCATION', 'POST_NOTIFICATIONS'],
     // Least privilege. The Expo template brings these in by default; the app
     // uses none of them. SYSTEM_ALERT_WINDOW (draw over other apps) is one Play
     // reviews closely — debug builds keep their own copy in the debug
@@ -150,6 +163,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       // Expo's base manifest lists VIBRATE under "optional permissions, remove
       // whatever you do not need". Nothing in the app vibrates (there is no
       // haptics module and no Vibration call), so it goes until a feature does.
+      // Notifications still buzz: on Android 8+ the system vibrates for a
+      // channel, which needs no permission of the app's own.
       'android.permission.VIBRATE',
     ],
   },
@@ -165,6 +180,19 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-font',
     'expo-image',
     'expo-secure-store',
+    // Push notifications through FCM. The status-bar icon is the wordmark's
+    // silhouette (npm run brand:assets); Android tints it with `color`.
+    // RECEIVE_BOOT_COMPLETED, which the module requests to re-schedule local
+    // notifications after a reboot, stays blocked above: DASH schedules none,
+    // and FCM delivery does not need it.
+    [
+      'expo-notifications',
+      {
+        icon: './assets/brand/notification-icon.png',
+        color: '#A67834',
+        defaultChannel: 'orders',
+      },
+    ],
     [
       'expo-splash-screen',
       {

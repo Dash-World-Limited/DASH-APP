@@ -50,8 +50,11 @@ function productionEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEn
     EMAIL_FROM_ADDRESS: 'no-reply@notify.dashworldng.com',
     EMAIL_REPLY_TO: 'admin@dashworldng.com',
     PUSH_PROVIDER: 'fcm',
-    // A path, never a credential. Firebase reads the file; nothing here does.
+    // A path, never a credential. Firebase reads the key; the API only checks
+    // the file's project against FCM_PROJECT_ID when the adapter is built.
     GOOGLE_APPLICATION_CREDENTIALS: '/var/secrets/firebase-service-account.json',
+    FCM_PROJECT_ID: 'dash-app-production',
+    PUSH_APP_IDS: 'com.dashworldng.dash',
     STORAGE_PROVIDER: 's3',
     S3_BUCKET: 'dash-declutters',
     S3_REGION: 'eu-west-1',
@@ -706,5 +709,69 @@ describe('the PostgreSQL and Redis production path', () => {
     }
     expect(message).not.toContain('sup3rs3cret');
     expect(message).not.toContain('hunter2');
+  });
+});
+
+describe('real push notifications are tied to one Firebase project and one app build', () => {
+  /** Connected staging runs as development; the push rules apply there too. */
+  function stagingEnv(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {
+      ...productionEnv(),
+      NODE_ENV: 'development',
+      DATABASE_URL: 'file:./dev.db',
+      GEO_ZONES_PROVIDER: 'local',
+      PAYSTACK_SECRET_KEY: FAKE_TEST_KEY,
+      PAYSTACK_ALLOW_LIVE: 'false',
+      PUSH_PROVIDER: 'fcm',
+      GOOGLE_APPLICATION_CREDENTIALS: '/etc/dash/firebase-service-account.json',
+      FCM_PROJECT_ID: 'dash-app-a49c2',
+      PUSH_APP_IDS: 'com.dashworldng.dash.staging',
+    };
+    for (const [name, value] of Object.entries(overrides)) {
+      if (value === undefined) delete env[name];
+      else env[name] = value;
+    }
+    return env;
+  }
+
+  const refusal = (overrides: Record<string, string | undefined>): string => {
+    resetConfigCache();
+    try {
+      loadConfig(stagingEnv(overrides));
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+    return '';
+  };
+
+  it('loads a staging configuration and reads the app ids as a list', () => {
+    resetConfigCache();
+    const config = loadConfig(stagingEnv({ PUSH_APP_IDS: ' com.dashworldng.dash.staging , com.dashworldng.dash.dev ' }));
+    expect(config.FCM_PROJECT_ID).toBe('dash-app-a49c2');
+    expect(config.PUSH_APP_IDS).toEqual(['com.dashworldng.dash.staging', 'com.dashworldng.dash.dev']);
+  });
+
+  it('refuses FCM without the key path, the project or the app ids — outside production too', () => {
+    expect(refusal({ GOOGLE_APPLICATION_CREDENTIALS: undefined })).toContain('GOOGLE_APPLICATION_CREDENTIALS');
+    expect(refusal({ FCM_PROJECT_ID: undefined })).toContain('FCM_PROJECT_ID');
+    expect(refusal({ PUSH_APP_IDS: undefined })).toContain('PUSH_APP_IDS');
+    expect(refusal({ PUSH_APP_IDS: '' })).toContain('PUSH_APP_IDS');
+  });
+
+  it('refuses a malformed project id or app id', () => {
+    expect(refusal({ FCM_PROJECT_ID: 'Dash App Launch' })).toContain('FCM_PROJECT_ID');
+    expect(refusal({ PUSH_APP_IDS: 'com.dashworldng.dash.staging,not an id' })).toContain('PUSH_APP_IDS');
+  });
+
+  it('asks nothing of a deployment that does not send real pushes', () => {
+    resetConfigCache();
+    const config = loadConfig(
+      stagingEnv({ PUSH_PROVIDER: 'console', GOOGLE_APPLICATION_CREDENTIALS: undefined, FCM_PROJECT_ID: undefined, PUSH_APP_IDS: undefined }),
+    );
+    expect(config.PUSH_APP_IDS).toEqual([]);
+  });
+
+  it('is required in production as well', () => {
+    expectRefusal({ FCM_PROJECT_ID: '' }, 'FCM_PROJECT_ID');
   });
 });
