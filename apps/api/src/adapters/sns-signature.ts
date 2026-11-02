@@ -194,7 +194,11 @@ export async function verifySnsMessage(
   if (cached && now.getTime() - cached.fetchedAt < CERTIFICATE_TTL_MS) {
     pem = cached.pem;
   } else {
-    pem = await (options.fetcher ?? fetchCertificate)(certificateUrl);
+    try {
+      pem = await (options.fetcher ?? fetchCertificate)(certificateUrl);
+    } catch {
+      throw new SnsVerificationError('certificate_unavailable');
+    }
     certificateCache.set(certificateUrl, { pem, fetchedAt: now.getTime() });
   }
 
