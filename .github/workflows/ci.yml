@@ -6,7 +6,7 @@ on:
   push:
     branches: [main, claude/dash-app-production-release]
   pull_request:
-    branches: [main, claude/dash-app-production-release]
+    branches: [main, claude/dash-app-production-release, fix/declutters-inbox-contact-alerts]
 
 # A new push to the same branch cancels the previous run. Reviewing a stale
 # result is worse than having no result.
