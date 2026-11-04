@@ -18,7 +18,8 @@
     "./envelope": "./src/envelope/index.ts",
     "./mfa": "./src/mfa/index.ts",
     "./retention": "./src/retention/index.ts",
-    "./account": "./src/account/index.ts"
+    "./account": "./src/account/index.ts",
+    "./services": "./src/services/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

@@ -10,6 +10,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { haversineMetres } from '@dash/domain/geo';
+import {
+  LEGACY_VENDOR_CATEGORY_IDS,
+  MERCHANT_SERVICE_CATEGORY_IDS,
+  SERVICE_CATEGORIES,
+  serviceCategoryForVendorCategory,
+  vendorCategoriesForService,
+} from '@dash/domain/services';
 import { ApiError } from '../http/errors.js';
 
 const coordinateSchema = z.object({
@@ -20,16 +27,35 @@ const coordinateSchema = z.object({
 const listQuerySchema = z.object({
   latitude: z.coerce.number().min(-90).max(90).optional(),
   longitude: z.coerce.number().min(-180).max(180).optional(),
-  category: z.enum(['restaurant', 'grocery', 'pharmacy', 'retail', 'market']).optional(),
+  service: z.enum(MERCHANT_SERVICE_CATEGORY_IDS).optional(),
+  // Deprecated compatibility filter for clients released before the public
+  // six-service taxonomy. Remove only after usage has reached zero.
+  category: z.enum(LEGACY_VENDOR_CATEGORY_IDS).optional(),
   // Bounded to keep a pathological query from scanning the table.
   search: z.string().trim().max(80).optional(),
   sort: z.enum(['nearest', 'rating', 'name']).default('nearest'),
   cursor: z.string().max(64).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
+}).superRefine((query, context) => {
+  if (query.service && query.category) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Use service or category, not both.',
+      path: ['service'],
+    });
+  }
 });
 
 export async function registerCatalogRoutes(app: FastifyInstance): Promise<void> {
   const { prisma, geo } = app.services;
+
+  // -------------------------------------------------------------------------
+  // GET /v1/service-categories
+  //
+  // Stable public navigation contract shared by native and web clients.
+  // Position is part of the contract: do not alphabetise this list.
+  // -------------------------------------------------------------------------
+  app.get('/v1/service-categories', async () => ({ categories: SERVICE_CATEGORIES }));
 
   // -------------------------------------------------------------------------
   // GET /v1/cities
@@ -108,11 +134,16 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
   // -------------------------------------------------------------------------
   app.get('/v1/vendors', async (request) => {
     const query = listQuerySchema.parse(request.query);
+    const vendorCategories = query.service
+      ? vendorCategoriesForService(query.service)
+      : query.category
+        ? [query.category]
+        : undefined;
 
     const vendors = await prisma.vendor.findMany({
       where: {
         status: 'approved',
-        ...(query.category ? { category: query.category } : {}),
+        ...(vendorCategories ? { category: { in: [...vendorCategories] } } : {}),
         ...(query.search
           ? {
               OR: [
@@ -176,6 +207,7 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
         slug: vendor.slug,
         description: vendor.description,
         category: vendor.category,
+        serviceCategory: serviceCategoryForVendorCategory(vendor.category),
         rating: { average: vendor.ratingAverage, count: vendor.ratingCount },
         branch: branch
           ? {
@@ -285,7 +317,12 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
     // same response as one that does not exist.
     if (!vendor || vendor.status !== 'approved') throw ApiError.notFound();
 
-    return { vendor };
+    return {
+      vendor: {
+        ...vendor,
+        serviceCategory: serviceCategoryForVendorCategory(vendor.category),
+      },
+    };
   });
 
   // -------------------------------------------------------------------------
@@ -322,6 +359,12 @@ export async function registerCatalogRoutes(app: FastifyInstance): Promise<void>
       }),
     ]);
 
-    return { vendors, items };
+    return {
+      vendors: vendors.map((vendor) => ({
+        ...vendor,
+        serviceCategory: serviceCategoryForVendorCategory(vendor.category),
+      })),
+      items,
+    };
   });
 }

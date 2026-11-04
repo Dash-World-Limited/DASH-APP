@@ -164,6 +164,25 @@ Nothing moves to "working" in the docs until a sandbox test proves it.
 
 ---
 
+## Product reset — native apps and six-service foundation
+
+The official product direction changed after the web MVP proved the backend
+flow. Customer and rider now move to genuine React Native / Expo apps; vendor
+and operations remain web applications. The stable public service order is
+FOOD, SHOPS, PHARMACY, LOCAL MARKET, DECLUTTER, LOGISTICS.
+
+This work is deliberately staged:
+
+1. Land the shared service contract and legacy compatibility layer.
+2. Establish the shared native design system and API client.
+3. Build the customer app and rider app as separate native clients.
+4. Add Declutter and Logistics as separate domain aggregates with additive
+   migrations; do not overload the existing merchant Order model.
+5. Run native journeys, accessibility checks, load tests and store builds
+   before any public launch.
+
+---
+
 ## Phase 5 — Product breadth
 
 Features the domain already anticipates but the product does not yet offer:
@@ -198,15 +217,13 @@ Features the domain already anticipates but the product does not yet offer:
 - **Nigerian data-protection (NDPA 2023) and consumer-law review by qualified
   counsel.** Every legal template in this repo is a draft and is not legal
   advice.
-- Store-build configuration if mobile apps are pursued.
+- App Store and Play Store signing, store-build configuration, privacy labels,
+  release tracks, crash reporting and rollback rehearsals for both native apps.
 
 ---
 
 ## Explicitly not planned yet
 
-- **React Native mobile apps.** The rider surface is a responsive web app.
-  Native shells would reuse the same API and domain packages, but the web
-  surfaces should earn their keep first.
 - **Multi-city or multi-country rollout.** Everything is data-driven and
   city-scoped by design, but only Lagos is seeded, and the in-TypeScript geo path
   will not scale past a city's worth of zones without PostGIS.
