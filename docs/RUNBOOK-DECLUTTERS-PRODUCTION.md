@@ -126,6 +126,7 @@ asserts that a `full` production boot still refuses all four.
 | `RATE_LIMIT_ENABLED` | `true` | Production refuses `false` |
 | `RATE_LIMIT_REDIS` | `true` | Production refuses per-process counters: they multiply the real limit by the instance count |
 | `QUEUE_PROVIDER` | `redis` | Production refuses `memory` — it loses jobs on restart |
+| `QUEUE_PREFIX` | `dash-declutters` | Defaults to `dash-<profile>`; set a distinct value per deployment when two deployments share one Redis |
 | `GEO_ZONES_PROVIDER` | `postgis` | Required in production even here. Declutters never asks a geography question, but the guard is DASH APP's and PostGIS must be installed for boot to pass |
 | `VALUECHECK_PROVIDER` | `local` | The only value. No live AI provider is connected — which is why no listing may be publicly labelled *DASH ValueChecked* |
 

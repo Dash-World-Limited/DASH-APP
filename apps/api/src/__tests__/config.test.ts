@@ -708,3 +708,29 @@ describe('the PostgreSQL and Redis production path', () => {
     expect(message).not.toContain('hunter2');
   });
 });
+
+describe('queue prefix', () => {
+  it('defaults to dash-full for the full profile', () => {
+    const config = loadConfig(productionEnv({}));
+    expect(config.QUEUE_PREFIX).toBe('dash-full');
+  });
+
+  it('defaults to dash-declutters for the declutters profile', () => {
+    const config = loadConfig(productionEnv({ DEPLOYMENT_PROFILE: 'declutters' }));
+    expect(config.QUEUE_PREFIX).toBe('dash-declutters');
+  });
+
+  it('lets an explicit prefix win over the profile default', () => {
+    const config = loadConfig(productionEnv({ QUEUE_PREFIX: 'dash-staging' }));
+    expect(config.QUEUE_PREFIX).toBe('dash-staging');
+  });
+
+  it('trims an explicit prefix', () => {
+    const config = loadConfig(productionEnv({ QUEUE_PREFIX: '  dash-staging  ' }));
+    expect(config.QUEUE_PREFIX).toBe('dash-staging');
+  });
+
+  it('refuses a blank prefix rather than namespacing on nothing', () => {
+    expectRefusal({ QUEUE_PREFIX: '   ' }, 'QUEUE_PREFIX');
+  });
+});

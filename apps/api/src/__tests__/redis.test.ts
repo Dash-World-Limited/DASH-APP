@@ -18,7 +18,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Queue } from 'bullmq';
 import { createTestContext, type TestContext } from './harness.js';
+import { loadConfig, resetConfigCache } from '../config.js';
+import { buildServices } from '../server.js';
 import {
   createQueueRedis,
   createRateLimitRedis,
@@ -108,6 +111,77 @@ describe('when Redis is unavailable', () => {
       connection.disconnect();
     }
   }, 20_000);
+});
+
+describe('queue namespace isolation', () => {
+  it('hands the configured prefix to BullMQ', async () => {
+    const connection = createQueueRedis(DEAD_REDIS);
+    const adapter = new RedisQueueAdapter(connection, undefined, 'dash-declutters');
+    try {
+      // `queueFor` is private; the cast reads the BullMQ Queue the adapter
+      // actually builds, so this asserts the wiring rather than the field.
+      const queue = (
+        adapter as unknown as { queueFor(name: string): Queue }
+      ).queueFor('dispatch.offer');
+      expect(queue.opts.prefix).toBe('dash-declutters');
+    } finally {
+      // Teardown is the connection only, deliberately not `adapter.close()`:
+      // closing a BullMQ Queue that never connected (this Redis is dead on
+      // purpose) rejects a promise nobody awaits — BullMQ's `Queue.close()`
+      // races its own still-pending `waitUntilReady` — and Vitest reports
+      // it as an unhandled rejection. Nothing was enqueued or processed
+      // here, so there is no worker or job to drain; disconnecting the
+      // client stops the retry loop. Production `close()` runs after
+      // successful use, so this is a property of the dead-Redis probe, not
+      // of the shutdown path.
+      connection.disconnect();
+    }
+  }, 20_000);
+
+  it('builds the server queue on the declutters prefix', () => {
+    resetConfigCache();
+    try {
+      const config = loadConfig({
+        NODE_ENV: 'test',
+        DATABASE_URL: 'file:./unused.db',
+        JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+        JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+        DEPLOYMENT_PROFILE: 'declutters',
+        QUEUE_PROVIDER: 'redis',
+        REDIS_URL: DEAD_REDIS,
+        LOG_LEVEL: 'silent',
+        // No encryption key in this minimal config, so MFA must be off with it.
+        MFA_ENABLED: 'false',
+      });
+      const services = buildServices(config);
+      expect(services.queue).toBeInstanceOf(RedisQueueAdapter);
+      expect((services.queue as RedisQueueAdapter).prefix).toBe('dash-declutters');
+    } finally {
+      resetConfigCache();
+    }
+  });
+
+  it('builds the server queue on the full prefix', () => {
+    resetConfigCache();
+    try {
+      const config = loadConfig({
+        NODE_ENV: 'test',
+        DATABASE_URL: 'file:./unused.db',
+        JWT_ACCESS_SECRET: 'gJ7xQ2mV9wL4pR8sT1uY6zA3bC5dE0fH-access-KnMqPrSt',
+        JWT_REFRESH_SECRET: 'Zx4Vn8Bq2Wr6Ty0Ui3Op5As7Df9Gh1Jk-refresh-LmNoPqRs',
+        DEPLOYMENT_PROFILE: 'full',
+        QUEUE_PROVIDER: 'redis',
+        REDIS_URL: DEAD_REDIS,
+        LOG_LEVEL: 'silent',
+        MFA_ENABLED: 'false',
+      });
+      const services = buildServices(config);
+      expect(services.queue).toBeInstanceOf(RedisQueueAdapter);
+      expect((services.queue as RedisQueueAdapter).prefix).toBe('dash-full');
+    } finally {
+      resetConfigCache();
+    }
+  });
 });
 
 describe('rate limiting fails closed, not open', () => {

@@ -237,6 +237,21 @@ const shape = z
     STORAGE_LOCAL_DIR: z.string().default('./.storage'),
 
     QUEUE_PROVIDER: z.enum(['memory', 'redis']).default('memory'),
+    /**
+     * BullMQ namespace, so two deployments sharing one Redis do not consume
+     * each other's jobs.
+     *
+     * An explicit value wins: a deployment that shares its Redis with another
+     * environment (staging beside production, say) must set a distinct prefix
+     * per environment — the profile alone cannot tell those apart.
+     *
+     * Unset, the default is derived from the deployment profile in the
+     * transform below (`dash-full`, `dash-declutters`), so the two profiles
+     * are isolated even when nobody sets anything. The upstream change this
+     * rebases (PR #16) defaulted every profile to a bare `dash`, which is
+     * exactly the shared namespace this exists to prevent.
+     */
+    QUEUE_PREFIX: z.string().trim().min(1).optional(),
     REDIS_URL: z.string().optional(),
 
     // --- Realtime ------------------------------------------------------------
@@ -727,7 +742,14 @@ const schema = shape
     if (env.PUBLIC_WEB_URL.startsWith('http://')) {
       fail('PUBLIC_WEB_URL', 'Production must be HTTPS — Secure cookies are not stored over http://');
     }
-  });
+  })
+  .transform((env) => ({
+    ...env,
+    // Derived, not configured: the queue namespace defaults to the deployment
+    // profile, so `full` and `declutters` never share BullMQ keys by omission.
+    // An explicit QUEUE_PREFIX above wins unchanged.
+    QUEUE_PREFIX: env.QUEUE_PREFIX ?? `dash-${env.DEPLOYMENT_PROFILE}`,
+  }));
 
 /**
  * Reject a secret that is a placeholder, a recognisable development string, or
