@@ -61,7 +61,7 @@ const shape = z
      */
     OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(60),
     OTP_MAX_CODES_PER_HOUR: z.coerce.number().int().positive().default(5),
-    DEV_EXPOSE_OTP: booleanish.default('false'),
+    DEV_EXPOSE_OTP: booleanish.prefault('false'),
 
     DEFAULT_CURRENCY: z.literal('NGN').default('NGN'),
     DEFAULT_CITY_SLUG: z.string().default('lagos'),
@@ -80,7 +80,7 @@ const shape = z
      * this is true *and* NODE_ENV is production, so a live key pasted into a
      * staging or developer environment cannot charge anybody.
      */
-    PAYSTACK_ALLOW_LIVE: booleanish.default('false'),
+    PAYSTACK_ALLOW_LIVE: booleanish.prefault('false'),
     /** Where Paystack returns the customer's browser. Defaults to PUBLIC_WEB_URL/pay/complete. */
     PAYSTACK_CALLBACK_URL: z.string().url().optional(),
 
@@ -105,7 +105,7 @@ const shape = z
      * so no SMS is ever sent and no SMS provider is required — in production
      * included. Switched on together with phone verification.
      */
-    SMS_ENABLED: booleanish.default('false'),
+    SMS_ENABLED: booleanish.prefault('false'),
     EMAIL_PROVIDER: z.enum(['console', 'ses', 'brevo']).default('console'),
 
     /**
@@ -246,7 +246,7 @@ const shape = z
     // retrying into an opaque connection error. Every screen it feeds worked by
     // polling before this milestone and still does, so turning it off degrades
     // freshness and nothing else.
-    REALTIME_ENABLED: booleanish.default('true'),
+    REALTIME_ENABLED: booleanish.prefault('true'),
 
     // How a notification reaches the *other* instances. `memory` repeats it
     // inside this process only, which is correct on one instance and silently
@@ -267,7 +267,7 @@ const shape = z
     // rather than counted per process. Off by default; production requires it
     // (see below) because per-process counters multiply the real limit by the
     // instance count.
-    RATE_LIMIT_REDIS: booleanish.default('false'),
+    RATE_LIMIT_REDIS: booleanish.prefault('false'),
 
     // `silent` is a real Pino level and the right one for tests — a passing
     // suite should not print a wall of request logs.
@@ -280,7 +280,7 @@ const shape = z
     // it off explicitly — and `superRefine` below refuses to let production do
     // the same. Turning it off is a decision someone has to make in writing,
     // not a silent side effect of NODE_ENV.
-    RATE_LIMIT_ENABLED: booleanish.default('true'),
+    RATE_LIMIT_ENABLED: booleanish.prefault('true'),
 
     // --- Encryption at rest --------------------------------------------------
     // One keyring serves every encrypted field (the TOTP secret today, vendor
@@ -305,7 +305,7 @@ const shape = z
     // Whether staff accounts must carry TOTP. On by default; the only reason to
     // turn it off is a local environment with no key configured, and production
     // refuses that below.
-    MFA_ENABLED: booleanish.default('true'),
+    MFA_ENABLED: booleanish.prefault('true'),
 
     // --- Retention overrides ----------------------------------------------
     // One variable per tunable period. Unset means the policy default in
