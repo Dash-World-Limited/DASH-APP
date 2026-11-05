@@ -271,6 +271,22 @@ const shape = z
     // it is refused the in-memory queue.
     REALTIME_BROADCAST: z.enum(['memory', 'redis']).default('memory'),
 
+    /**
+     * Redis pub/sub namespace, so two deployments sharing one Redis do not
+     * deliver each other's notifications.
+     *
+     * Same pattern as QUEUE_PREFIX, and a separate variable from it on
+     * purpose: an operator who sets QUEUE_PREFIX back to a bare `dash` to
+     * preserve in-flight queue keys during a migration must not silently
+     * un-isolate the broadcast channel at the same time.
+     *
+     * An explicit value wins. Unset, the default is derived from the
+     * deployment profile in the transform below (`dash-full`,
+     * `dash-declutters`), so the two profiles are isolated even when
+     * nobody sets anything.
+     */
+    BROADCAST_PREFIX: z.string().trim().min(1).optional(),
+
     // Which implementation answers `GeoPort.zonesContaining`. `postgis` pushes
     // the point-in-polygon test into the database as `ST_Contains`; `local`
     // tests rings in process. Kept separate from MAPS_PROVIDER because PostGIS
@@ -749,6 +765,10 @@ const schema = shape
     // profile, so `full` and `declutters` never share BullMQ keys by omission.
     // An explicit QUEUE_PREFIX above wins unchanged.
     QUEUE_PREFIX: env.QUEUE_PREFIX ?? `dash-${env.DEPLOYMENT_PROFILE}`,
+    // Same derivation for the broadcast channel: `full` and `declutters`
+    // never share a pub/sub channel by omission. An explicit
+    // BROADCAST_PREFIX above wins unchanged.
+    BROADCAST_PREFIX: env.BROADCAST_PREFIX ?? `dash-${env.DEPLOYMENT_PROFILE}`,
   }));
 
 /**

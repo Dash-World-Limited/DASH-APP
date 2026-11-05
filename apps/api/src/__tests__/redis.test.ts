@@ -184,6 +184,43 @@ describe('queue namespace isolation', () => {
   });
 });
 
+describe('queue shutdown against dead Redis', () => {
+  it('close() resolves instead of throwing when Redis never answered', async () => {
+    // Regression pin for the N-4 shutdown investigation (BullMQ 5.81.5):
+    // closing a Queue whose connection handshake is still pending leaves
+    // one unhandled rejection, `Error: Connection is closed.`, from inside
+    // BullMQ — but close() itself resolves, so the caller is unaffected
+    // and no job is lost (nothing was enqueued). The test collects any
+    // floating rejections only to name them: the contract pinned here is
+    // that close() resolves, not that BullMQ's internal handshake promise
+    // is silent. Do NOT "fix" this by awaiting the handshake in close():
+    // on a retrying or blackholed connection that await has no bound, and
+    // a shutdown that hangs is worse than a warning on a path production
+    // only reaches when it never connected at all.
+    const seen: unknown[] = [];
+    const collector = (reason: unknown): void => {
+      seen.push(reason);
+    };
+    process.on('unhandledRejection', collector);
+    try {
+      const connection = createQueueRedis(DEAD_REDIS);
+      const adapter = new RedisQueueAdapter(connection);
+      (adapter as unknown as { queueFor(name: string): Queue }).queueFor('probe.job');
+      await expect(adapter.close()).resolves.toBeUndefined();
+      // Give any floating promise a chance to surface.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      for (const reason of seen) {
+        expect(reason instanceof Error ? reason.message : String(reason)).toBe(
+          'Connection is closed.',
+        );
+      }
+      connection.disconnect();
+    } finally {
+      process.removeListener('unhandledRejection', collector);
+    }
+  }, 20_000);
+});
+
 describe('rate limiting fails closed, not open', () => {
   let context: TestContext;
 

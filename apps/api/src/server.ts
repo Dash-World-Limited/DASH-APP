@@ -214,6 +214,8 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
         ? new RedisBroadcastAdapter(
             createBroadcastRedis(config.REDIS_URL),
             createBroadcastRedis(config.REDIS_URL),
+            undefined,
+            config.BROADCAST_PREFIX,
           )
         : new InProcessBroadcastAdapter()),
     // Stacks are withheld in production: a stack can carry interpolated values
