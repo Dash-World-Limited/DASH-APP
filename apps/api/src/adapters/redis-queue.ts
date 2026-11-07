@@ -46,8 +46,14 @@ export class RedisQueueAdapter implements QueuePort {
      * Namespaces every key. Two deployments sharing one Redis — staging and
      * production on the same managed instance, say — must not consume each
      * other's jobs.
+     *
+     * Read-only and public so the effective value is observable: the server
+     * builds this adapter from `config.QUEUE_PREFIX`, and a test asserts the
+     * wiring rather than trusting the constructor call. The `dash` default
+     * here applies only to direct construction; configuration derives the
+     * value from the deployment profile when it is not set explicitly.
      */
-    private readonly prefix = 'dash',
+    readonly prefix = 'dash',
   ) {}
 
   private queueFor(name: string): Queue {

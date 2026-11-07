@@ -74,13 +74,13 @@ const sesNotificationSchema = z.object({
     .object({
       bounceType: z.string().optional(),
       bounceSubType: z.string().optional(),
-      bouncedRecipients: z.array(z.object({ emailAddress: z.string() })).optional(),
+      bouncedRecipients: z.array(z.object({ emailAddress: z.string().max(320) })).max(1000).optional(),
     })
     .optional(),
   complaint: z
     .object({
       complaintFeedbackType: z.string().optional(),
-      complainedRecipients: z.array(z.object({ emailAddress: z.string() })).optional(),
+      complainedRecipients: z.array(z.object({ emailAddress: z.string().max(320) })).max(1000).optional(),
     })
     .optional(),
 });

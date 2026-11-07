@@ -154,7 +154,7 @@ export async function registerWebhookRoutes(app: FastifyInstance): Promise<void>
         for (const refund of linked) {
           try {
             await confirmRefundWithProvider(
-              { prisma, payments },
+              { prisma, payments, queue },
               { refundId: refund.id, actorId: null, source: 'webhook' },
             );
           } catch (error) {

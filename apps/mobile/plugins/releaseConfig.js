@@ -138,10 +138,63 @@ function resolveReleaseConfig(variant, env) {
   return { versionCode, versionName, apiUrl, mapStyleUrl };
 }
 
+/**
+ * Firebase's Android client configuration, `google-services.json`, which the
+ * app needs to receive push notifications (FCM).
+ *
+ * Supplied at build time through `GOOGLE_SERVICES_JSON`, a path to the file
+ * downloaded from the Firebase console, and never committed. It is the public
+ * client configuration — it ships inside every APK — not the server's
+ * credential, which stays on the API host. It must register an Android app
+ * for exactly the package being built, or FCM would hand the build no token.
+ *
+ * Optional for development and staging: a build without it runs, and simply
+ * has no push. Required for production, where a store build that cannot be
+ * notified is a broken release. When `FIREBASE_PROJECT_ID` is set, the file
+ * must belong to that project. Errors name package and project ids only,
+ * never the file's keys.
+ */
+function resolveGoogleServicesFile(variant, env, packageName) {
+  const raw = typeof env.GOOGLE_SERVICES_JSON === 'string' ? env.GOOGLE_SERVICES_JSON.trim() : '';
+  if (!raw) {
+    if (variant === 'production') {
+      throw new Error(
+        'The production build is not configured:\n  - GOOGLE_SERVICES_JSON is required: the path to google-services.json from the Firebase console. Without it the app cannot receive push notifications.',
+      );
+    }
+    return null;
+  }
+  const file = require('node:path').resolve(raw);
+  let parsed;
+  try {
+    parsed = JSON.parse(require('node:fs').readFileSync(file, 'utf8'));
+  } catch {
+    throw new Error(`GOOGLE_SERVICES_JSON (${raw}) is not a readable JSON file.`);
+  }
+  // Optionally pinned to one Firebase project, so a build cannot be made with
+  // another project's file — the separate Dash AI project, say.
+  const expectedProject = typeof env.FIREBASE_PROJECT_ID === 'string' ? env.FIREBASE_PROJECT_ID.trim() : '';
+  const project = parsed && parsed.project_info && parsed.project_info.project_id;
+  if (expectedProject && project !== expectedProject) {
+    throw new Error(`google-services.json is for Firebase project "${String(project)}", but this build expects "${expectedProject}" (FIREBASE_PROJECT_ID).`);
+  }
+  const clients = Array.isArray(parsed && parsed.client) ? parsed.client : [];
+  const packages = clients
+    .map((client) => client && client.client_info && client.client_info.android_client_info && client.client_info.android_client_info.package_name)
+    .filter((name) => typeof name === 'string');
+  if (!packages.includes(packageName)) {
+    throw new Error(
+      `google-services.json has no Android app for ${packageName} (it has: ${packages.join(', ') || 'none'}). Add ${packageName} to the Firebase project and download the file again.`,
+    );
+  }
+  return file;
+}
+
 module.exports = {
   DEFAULT_MAP_STYLE_URL,
   DEFAULT_VERSION_NAME,
   isPrivateHost,
   productionApiOrigin,
+  resolveGoogleServicesFile,
   resolveReleaseConfig,
 };

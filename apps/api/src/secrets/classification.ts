@@ -105,6 +105,8 @@ export const PUBLIC_VARIABLES: readonly ConfigVariable[] = [
   { name: 'SMS_ENABLED', sensitivity: 'public', production: 'optional', purpose: 'Off in V1: no SMS is sent, phones stay unverified, no SMS provider is required' },
   { name: 'EMAIL_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `console` is refused in production' },
   { name: 'PUSH_PROVIDER', sensitivity: 'public', production: 'required', purpose: 'Selector; `console` is refused in production' },
+  { name: 'FCM_PROJECT_ID', sensitivity: 'public', production: 'required', purpose: 'Firebase project this deployment sends pushes through; the service-account key must belong to it' },
+  { name: 'PUSH_APP_IDS', sensitivity: 'public', production: 'required', purpose: 'App build ids (Android application ids) this deployment may register and notify; keeps staging off production phones' },
   { name: 'SES_REGION', sensitivity: 'public', production: 'optional', purpose: 'SES is regional; the sending identity is verified per region' },
   { name: 'EMAIL_FROM_ADDRESS', sensitivity: 'public', production: 'optional', purpose: 'Must be a sender the email provider has verified (Brevo sender or SES identity)' },
   { name: 'EMAIL_FROM_NAME', sensitivity: 'public', production: 'optional', purpose: 'Display name on transactional email' },

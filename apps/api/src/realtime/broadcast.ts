@@ -94,7 +94,19 @@ export class RedisBroadcastAdapter implements RealtimeBroadcastPort {
     private readonly publisher: Redis,
     private readonly subscriber: Redis,
     private readonly log?: BroadcastLogger,
-    prefix = 'dash',
+    /**
+     * Namespaces the pub/sub channel. Two deployments sharing one Redis —
+     * staging and production on the same managed instance, say — must not
+     * deliver each other's notifications.
+     *
+     * Read-only and public so the effective value is observable: the server
+     * builds this adapter from `config.BROADCAST_PREFIX`, and a test asserts
+     * the wiring rather than trusting the constructor call. The `dash`
+     * default here applies only to direct construction; configuration
+     * derives the value from the deployment profile when it is not set
+     * explicitly.
+     */
+    readonly prefix = 'dash',
   ) {
     this.channel = channelFor(prefix);
   }

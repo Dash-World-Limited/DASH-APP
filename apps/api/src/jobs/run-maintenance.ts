@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   const queue =
     dryRun || config.QUEUE_PROVIDER !== 'redis' || !config.REDIS_URL
       ? new MemoryQueueAdapter()
-      : new RedisQueueAdapter(createQueueRedis(config.REDIS_URL));
+      : new RedisQueueAdapter(createQueueRedis(config.REDIS_URL), undefined, config.QUEUE_PREFIX);
 
   const archive = new LocalExportArchiveAdapter(config.STORAGE_LOCAL_DIR);
   const outcomes: MaintenanceJobOutcome[] = [];

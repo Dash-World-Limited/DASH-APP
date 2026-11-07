@@ -327,6 +327,18 @@ model Device {
   createdAt DateTime  @default(now())
   lastSeenAt DateTime @default(now())
 
+  // The phone's Notifications switch (Batch 1), as the app last reported it
+  // for whoever is signed in here. Off stops everything but essential pushes —
+  // an offer while Online, a delivery being carried that is cancelled. Kept on
+  // the device row because the choice is made per phone, per account.
+  pushEnabled Boolean @default(true)
+
+  // Which app build registered the token: its Android application id, e.g.
+  // `com.dashworldng.dash.staging`. A deployment sends only to the builds in
+  // its PUSH_APP_IDS, so a staging API never reaches a production phone even
+  // if one somehow registered with it. Null for rows from before it was kept.
+  appId String?
+
   identity Identity  @relation(fields: [identityId], references: [id], onDelete: Cascade)
   sessions Session[]
 
@@ -1167,6 +1179,13 @@ model Order {
   // Never exposed to clients as a cursor; it is only ever compared with another
   // revision of the same order. See packages/domain/src/realtime.
   revision Int @default(0)
+
+  // The last status a push was considered for, so a push goes out when the
+  // status changes rather than every time the order is announced. Dispatch
+  // announces an order on every offer round without changing its status; this
+  // is what keeps those announcements from being mistaken for news. Written
+  // only by `recordOrderChange`, in the transaction that made the change.
+  pushNotifiedStatus String?
 
   // --- The quote, frozen at checkout -------------------------------------
   // Stored as individual columns for querying plus the full explained

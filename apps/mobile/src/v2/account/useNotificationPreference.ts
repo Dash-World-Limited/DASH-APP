@@ -1,13 +1,16 @@
 /**
  * The notification switch's state: read from this phone's storage for the
  * signed-in account, written straight back when it is flipped, and put back
- * as it was if the write fails. Never touches the notification permission.
+ * as it was if the write fails. A saved change is signalled to the push
+ * registration, which tells DASH; the hook itself never touches the
+ * notification permission.
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { readNotificationPreference, writeNotificationPreference } from '../../features/notificationPreference';
+import { pushPreferenceChanged } from '../push/preferenceSignal';
 
 export interface NotificationPreferenceState {
   /** Null while it is being read. */
@@ -61,6 +64,9 @@ export function useNotificationPreference(identityId: string | null | undefined)
       setError(null);
       try {
         await writeNotificationPreference(AsyncStorage, identityId, next);
+        // DASH hears the new choice at once, and turning it on asks Android
+        // for permission if it has not been given.
+        pushPreferenceChanged(next);
       } catch {
         setEnabledState(previous);
         setError('Your choice could not be saved on this phone. Please try again.');
