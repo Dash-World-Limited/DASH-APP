@@ -69,7 +69,7 @@ const valuationSchema = z.object({
   model: z.string().trim().max(120).optional(),
   variant: z.string().trim().max(120).optional(),
   condition: conditionSchema,
-  attributes: z.record(z.union([z.string().max(200), z.number(), z.boolean(), z.null()])).default({}),
+  attributes: z.record(z.string(), z.union([z.string().max(200), z.number(), z.boolean(), z.null()])).default({}),
   declaredDefects: z
     .array(
       z.object({

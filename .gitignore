@@ -109,6 +109,11 @@ apps/android-shell/android/capacitor-cordova-android-plugins/
 # never a file in this repository; it goes through the secret-management
 # contract as an environment value.
 apps/android-shell/android/app/google-services.json
+# Firebase's Android client configuration for push. Supplied at build time
+# through GOOGLE_SERVICES_JSON (see docs/release/PUSH_NOTIFICATIONS.md); never
+# committed.
+apps/mobile/google-services.json
+apps/mobile/**/google-services.json
 # Written per build from DASH_MOBILE_HOST; committing one would bake one
 # developer's LAN address into everyone else's build.
 apps/android-shell/capacitor.config.json

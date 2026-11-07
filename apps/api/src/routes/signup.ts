@@ -102,10 +102,10 @@ const signupSchema = z
     acquisitionSource: z.enum(ACQUISITION_SOURCES),
     acquisitionDetail: z.string().trim().max(120).optional(),
     confirmedAdult: z.literal(true, {
-      errorMap: () => ({ message: 'You must confirm you are 18 or older' }),
+      error: () => 'You must confirm you are 18 or older',
     }),
     acceptedTerms: z.literal(true, {
-      errorMap: () => ({ message: 'You must accept the terms to create an account' }),
+      error: () => 'You must accept the terms to create an account',
     }),
     marketingOptIn: z.boolean().default(false),
   })

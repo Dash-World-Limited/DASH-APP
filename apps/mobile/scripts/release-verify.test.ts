@@ -90,6 +90,10 @@ const ALLOWED = [
   'android.permission.ACCESS_NETWORK_STATE',
   'android.permission.ACCESS_COARSE_LOCATION',
   'android.permission.ACCESS_FINE_LOCATION',
+  // Push notifications (expo-notifications and Firebase Cloud Messaging).
+  'android.permission.POST_NOTIFICATIONS',
+  'android.permission.WAKE_LOCK',
+  'com.google.android.c2dm.permission.RECEIVE',
   'com.dashworldng.dash.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION',
 ];
 
@@ -104,6 +108,12 @@ describe('manifestProblems', () => {
     'android.permission.RECORD_AUDIO',
     'android.permission.CAMERA',
     'android.permission.READ_EXTERNAL_STORAGE',
+    // Blocked in app.config.ts: DASH schedules no local notifications and
+    // nothing vibrates on its own.
+    'android.permission.RECEIVE_BOOT_COMPLETED',
+    'android.permission.VIBRATE',
+    // Advertising id, which Firebase Analytics would add; DASH does not use it.
+    'com.google.android.gms.permission.AD_ID',
     'com.dashworldng.dash.staging.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION',
   ])('refuses the unreviewed permission %s', (permission) => {
     expect(manifestProblems(manifest([...ALLOWED, permission]), EXPECTED).join('\n')).toContain(`unreviewed permission: ${permission}`);

@@ -97,7 +97,7 @@ const submissionSchema = z.object({
   expectedPriceKobo: z.number().int().positive().max(1_000_000_000).optional(),
   preAuthorizePrice: z.boolean().default(false),
   locationSlug: z.string().trim().max(80).optional(),
-  attributes: z.record(z.unknown()).optional(),
+  attributes: z.record(z.string(), z.unknown()).optional(),
 }).refine(body => !body.preAuthorizePrice || body.expectedPriceKobo !== undefined, {
   path: ['expectedPriceKobo'], message: 'Enter your submitted price before pre-authorising it.',
 });

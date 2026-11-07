@@ -90,15 +90,30 @@ export function registerDispatchWorker(deps: {
     // The order may have been cancelled, rejected, or already assigned between
     // the job being queued and it running. All three are normal, not errors.
     if (order.riderId) {
-      log.debug({ code: order.code }, 'dispatch: already has a rider');
+      log.info({ code: order.code }, 'dispatch: already has a rider');
       return;
     }
     if (!ASSIGNABLE.has(order.status)) {
-      log.debug({ code: order.code, status: order.status }, 'dispatch: no longer assignable');
+      log.info({ code: order.code, status: order.status }, 'dispatch: no longer assignable');
       return;
     }
     if (!order.address) {
-      log.debug({ code: order.code }, 'dispatch: pickup-only order needs no rider');
+      log.info({ code: order.code }, 'dispatch: pickup-only order needs no rider');
+      return;
+    }
+
+    // One round at a time. A decline and the round's expiry sweep both ask for
+    // the next round; they share an idempotency key, but a queue only
+    // remembers keys for as long as it keeps the job. If the same round is
+    // asked for twice and a rider is already being offered the order, the
+    // second request is the same intent again — not a reason to offer it to
+    // another rider at the same time.
+    const liveOffer = await prisma.dispatchOffer.findFirst({
+      where: { orderId: order.id, status: 'pending', expiresAt: { gt: now } },
+      select: { id: true },
+    });
+    if (liveOffer) {
+      log.debug({ code: order.code, round }, 'dispatch: a round is already open');
       return;
     }
 
