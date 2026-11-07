@@ -21,7 +21,10 @@
 
 import { writeAudit, type PrismaClient } from '@dash/db';
 import { decideRefundConfirmation } from '@dash/domain/orders';
-import type { PaymentPort } from '@dash/domain/ports';
+import type { PaymentPort, QueuePort } from '@dash/domain/ports';
+
+import { flushOutbox } from '../events/outbox.js';
+import { enqueuePush } from '../push/notify.js';
 
 export type RefundConfirmationResult =
   | {
@@ -54,7 +57,7 @@ export type RefundConfirmationRefusal =
   | 'concurrent_change';
 
 export async function confirmRefundWithProvider(
-  deps: { prisma: PrismaClient; payments: PaymentPort },
+  deps: { prisma: PrismaClient; payments: PaymentPort; queue?: QueuePort | undefined },
   input: {
     refundId: string;
     /** What a person copied from the provider. Omitted to re-check the linked one. */
@@ -134,17 +137,24 @@ export async function confirmRefundWithProvider(
     // Conditional on what was read. A concurrent confirmation, or a refund
     // re-linked in between, finds zero rows and is reported rather than
     // overwritten.
-    const result = await prisma.refund.updateMany({
-      where: { id: refund.id, status: refund.status, providerReference: refund.providerReference },
-      data: {
-        status: decision.to,
-        providerReference: lookup.refundReference,
-        providerStatus: lookup.providerStatus,
-        providerCheckedAt: now,
-        refundedAt: decision.to === 'refunded' ? now : null,
-      },
+    moved = await prisma.$transaction(async (tx) => {
+      const result = await tx.refund.updateMany({
+        where: { id: refund.id, status: refund.status, providerReference: refund.providerReference },
+        data: {
+          status: decision.to,
+          providerReference: lookup.refundReference,
+          providerStatus: lookup.providerStatus,
+          providerCheckedAt: now,
+          refundedAt: decision.to === 'refunded' ? now : null,
+        },
+      });
+      // The customer hears once that their money has gone back — committed
+      // with the confirmation, and only by the call that made it.
+      if (result.count === 1 && decision.to === 'refunded') {
+        await enqueuePush(tx, { kind: 'payment_update', orderId: refund.payment.orderId, outcome: 'refund_completed', refundId: refund.id });
+      }
+      return result.count;
     });
-    moved = result.count;
   } catch (error) {
     // The unique index on `providerReference`: this provider refund already
     // settles another refund of ours.
@@ -169,6 +179,8 @@ export async function confirmRefundWithProvider(
       },
     });
   }
+
+  if (decision.to === 'refunded' && deps.queue) await flushOutbox(prisma, deps.queue);
 
   return { ok: true, status: decision.to, providerStatus: lookup.providerStatus, changed };
 }

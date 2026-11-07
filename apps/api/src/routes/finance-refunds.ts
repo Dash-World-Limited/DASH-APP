@@ -54,7 +54,7 @@ function refusalError(reason: RefundConfirmationRefusal): ApiError {
 }
 
 export async function registerFinanceRefundRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma, payments } = app.services;
+  const { prisma, payments, queue } = app.services;
 
   // -------------------------------------------------------------------------
   // GET /v1/finance/refunds
@@ -145,7 +145,7 @@ export async function registerFinanceRefundRoutes(app: FastifyInstance): Promise
       let result;
       try {
         result = await confirmRefundWithProvider(
-          { prisma, payments },
+          { prisma, payments, queue },
           { refundId: id, refundReference: body.refundReference, actorId: actor.identityId, source: 'finance' },
         );
       } catch (error) {

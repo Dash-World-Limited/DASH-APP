@@ -37,7 +37,7 @@ import { SesEmailAdapter } from './adapters/ses.js';
 import { BrevoEmailAdapter } from './adapters/brevo.js';
 import { PaystackPaymentAdapter } from './adapters/paystack.js';
 import { SuppressionAwareEmailAdapter } from './adapters/suppressed-email.js';
-import { RedisQueueAdapter } from './adapters/redis-queue.js';
+import { RedisQueueAdapter, type RedisQueueLogger } from './adapters/redis-queue.js';
 import {
   createBroadcastRedis,
   createQueueRedis,
@@ -50,7 +50,7 @@ import {
 } from './realtime/broadcast.js';
 import { RealtimeHub } from './realtime/hub.js';
 import { registerRealtimeWorker } from './realtime/worker.js';
-import { createFcmAdapter } from './adapters/fcm.js';
+import { createFcmAdapter, FcmPushAdapter } from './adapters/fcm.js';
 import { registerPushWorker } from './push/worker.js';
 import { registerRealtimeRoutes } from './routes/realtime.js';
 import { parseNotification } from '@dash/domain/realtime';
@@ -130,7 +130,11 @@ export interface BuildOptions {
   };
 }
 
-export function buildServices(config: Config, overrides: Partial<Services> = {}): Services {
+export function buildServices(
+  config: Config,
+  overrides: Partial<Services> = {},
+  queueLog?: RedisQueueLogger,
+): Services {
   const prisma = overrides.prisma ?? defaultPrisma;
   // Passed to the error reporter so a secret that reached an error message by
   // some route no pattern matches is still stripped before it leaves.
@@ -189,7 +193,7 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
       (!capabilities.has('push')
         ? new DisabledPushAdapter()
         : config.PUSH_PROVIDER === 'fcm'
-          ? createFcmAdapter()
+          ? createFcmAdapter({ projectId: config.FCM_PROJECT_ID, credentialsPath: config.GOOGLE_APPLICATION_CREDENTIALS })
           : new ConsolePushAdapter(quiet)),
     storage: overrides.storage ?? createStorageAdapter(config),
     // ValueCheck. One value today; a live provider is a new branch and a new
@@ -203,7 +207,7 @@ export function buildServices(config: Config, overrides: Partial<Services> = {})
     queue:
       overrides.queue ??
       (config.QUEUE_PROVIDER === 'redis' && config.REDIS_URL
-        ? new RedisQueueAdapter(createQueueRedis(config.REDIS_URL), undefined, config.QUEUE_PREFIX)
+        ? new RedisQueueAdapter(createQueueRedis(config.REDIS_URL), queueLog, config.QUEUE_PREFIX)
         : new MemoryQueueAdapter()),
     // Two Redis connections, because a subscriber cannot publish — see
     // `createBroadcastRedis`. The in-process adapter is correct on a single
@@ -387,7 +391,6 @@ function createEmailAdapter(config: Config, quiet: boolean): EmailPort {
 
 export async function buildServer(options: BuildOptions = {}): Promise<FastifyInstance> {
   const config = options.config ?? loadConfig();
-  const services = buildServices(config, options.services ?? {});
 
   /**
    * What this deployment runs, for the route registration at the foot of this
@@ -438,6 +441,11 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     // emitted in development or production, where the key is absent entirely.
     ...(config.NODE_ENV === 'test' ? { disableRequestLogging: true } : {}),
   });
+
+  // Give BullMQ the same redacted Pino logger used by the API so worker
+  // failures cannot disappear silently while direct buildServices() tests
+  // can continue to omit logging.
+  const services = buildServices(config, options.services ?? {}, app.log);
 
   // Product photos are uploaded as raw image bytes, not multipart form data.
   // Keeping the parser this narrow means JSON routes retain the 1 MB server
@@ -767,7 +775,22 @@ export async function buildServer(options: BuildOptions = {}): Promise<FastifyIn
     prisma: services.prisma,
     push: services.push,
     logger: app.log,
+    appIds: config.PUSH_APP_IDS,
   });
+
+  // Which Firebase project and which app builds this API notifies, and
+  // whether Google accepts its key — logged once at startup, without the key,
+  // so a wrong or missing credential is seen before anyone misses a push.
+  if (services.push instanceof FcmPushAdapter) {
+    const fcm = services.push;
+    app.log.info({ provider: 'fcm', project: config.FCM_PROJECT_ID, apps: config.PUSH_APP_IDS }, 'push: Firebase Cloud Messaging configured');
+    void fcm.verifyCredential().then((result) => {
+      if (result.ok) app.log.info({ project: config.FCM_PROJECT_ID }, 'push: Firebase credential verified');
+      else app.log.error({ project: config.FCM_PROJECT_ID, reason: result.reason }, 'push: Firebase credential could not be verified; no push will be delivered');
+    });
+  } else {
+    app.log.info({ provider: services.push.providerName }, 'push: no live provider; notifications are not delivered to phones');
+  }
 
   return app;
 }
