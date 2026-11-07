@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { api, ApiError, session, type SessionState } from '../../api';
+import { forgetPushRegistration } from '../push/pushRegistration';
 
 export interface Viewer {
   identity: {
@@ -134,6 +135,9 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
     setBusy(true);
     setError(null);
     try {
+      // While the session can still say whose phone this is: stop its pushes.
+      // Never throws; the server also silences the phone when the session ends.
+      await forgetPushRegistration(api);
       await api.signOut();
       setViewer(null);
       setState('unauthenticated');

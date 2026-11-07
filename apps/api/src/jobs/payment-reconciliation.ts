@@ -29,8 +29,10 @@
 import { writeAudit, type PrismaClient } from '@dash/db';
 import { OWED_REFUND_STATES, PROVIDER_REFUND_NEEDS_ATTENTION, REFUND_OVERDUE_MS } from '@dash/domain/orders';
 import type { PaymentPort, QueuePort } from '@dash/domain/ports';
+import { flushOutbox } from '../events/outbox.js';
 import { settlePayment, type SettleOutcome } from '../payments/settle.js';
 import { confirmRefundWithProvider } from '../payments/refund-confirmation.js';
+import { enqueuePush } from '../push/notify.js';
 
 /** Give the webhook and the app their chance first. */
 export const RECONCILE_AFTER_MS = 10 * 60_000;
@@ -127,7 +129,7 @@ export async function runPaymentReconciliation(
   for (const refund of processingRefunds) {
     try {
       const result = await confirmRefundWithProvider(
-        { prisma, payments },
+        { prisma, payments, queue: deps.queue },
         { refundId: refund.id, actorId: null, source: 'reconciliation', now },
       );
       if (result.ok && result.status === 'refunded') report.refunds.refunded += 1;
@@ -171,9 +173,12 @@ export async function runPaymentReconciliation(
               reason: 'payment_not_completed',
             },
           });
+          // Told why, once, with the change: the payment never arrived.
+          await enqueuePush(tx, { kind: 'payment_update', orderId: payment.orderId, outcome: 'payment_not_completed' });
         }
         return moved.count === 1;
       });
+      if (closed && deps.queue) await flushOutbox(prisma, deps.queue);
       if (closed) {
         report.closedUnpaid += 1;
         await writeAudit(prisma, {

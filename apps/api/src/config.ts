@@ -61,7 +61,7 @@ const shape = z
      */
     OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(60),
     OTP_MAX_CODES_PER_HOUR: z.coerce.number().int().positive().default(5),
-    DEV_EXPOSE_OTP: booleanish.default('false'),
+    DEV_EXPOSE_OTP: booleanish.prefault('false'),
 
     DEFAULT_CURRENCY: z.literal('NGN').default('NGN'),
     DEFAULT_CITY_SLUG: z.string().default('lagos'),
@@ -80,7 +80,7 @@ const shape = z
      * this is true *and* NODE_ENV is production, so a live key pasted into a
      * staging or developer environment cannot charge anybody.
      */
-    PAYSTACK_ALLOW_LIVE: booleanish.default('false'),
+    PAYSTACK_ALLOW_LIVE: booleanish.prefault('false'),
     /** Where Paystack returns the customer's browser. Defaults to PUBLIC_WEB_URL/pay/complete. */
     PAYSTACK_CALLBACK_URL: z.string().url().optional(),
 
@@ -105,7 +105,7 @@ const shape = z
      * so no SMS is ever sent and no SMS provider is required — in production
      * included. Switched on together with phone verification.
      */
-    SMS_ENABLED: booleanish.default('false'),
+    SMS_ENABLED: booleanish.prefault('false'),
     EMAIL_PROVIDER: z.enum(['console', 'ses', 'brevo']).default('console'),
 
     /**
@@ -200,13 +200,43 @@ const shape = z
      *
      * Declared here rather than reached for from `process.env` at the point of
      * use, so it is validated with everything else and a test can supply it.
-     * The value is a path and never the credential; nothing in this project
-     * opens the file.
+     * The value is a path and never the credential. DASH opens the file once,
+     * at boot, only to read its `type` and `project_id` and check them against
+     * `FCM_PROJECT_ID` (adapters/fcm.ts); the key itself is read only by the
+     * Firebase SDK, and nothing from the file is ever logged.
      *
      * Optional because a Google-hosted runtime supplies its own service
      * identity with no file at all.
      */
     GOOGLE_APPLICATION_CREDENTIALS: z.string().min(1).optional(),
+    /**
+     * The Firebase project this deployment sends pushes through, e.g. the
+     * staging project. Not a secret. With `PUSH_PROVIDER=fcm` the API refuses
+     * to start when the service-account key belongs to a different project, so
+     * a staging API cannot be run on a production key, or the reverse.
+     */
+    FCM_PROJECT_ID: z
+      .string()
+      .trim()
+      .regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/, 'FCM_PROJECT_ID must be a Firebase project id, e.g. dash-app-a49c2')
+      .optional(),
+    /**
+     * The app builds this deployment serves push to, by Android application
+     * id, comma-separated — `com.dashworldng.dash.staging` on staging,
+     * `com.dashworldng.dash` on production. A phone running any other build
+     * cannot register for push here, and no push is sent to one, so a staging
+     * API can never notify someone using the production app. Unset (local
+     * development) means any build.
+     */
+    PUSH_APP_IDS: z
+      .string()
+      .trim()
+      .optional()
+      .transform((value) => (value ? value.split(',').map((id) => id.trim()).filter(Boolean) : []))
+      .refine(
+        (ids) => ids.every((id) => /^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(id)),
+        'PUSH_APP_IDS must be application ids such as com.dashworldng.dash.staging, separated by commas',
+      ),
 
     /**
      * Which parts of DASH this deployment runs.
@@ -237,6 +267,21 @@ const shape = z
     STORAGE_LOCAL_DIR: z.string().default('./.storage'),
 
     QUEUE_PROVIDER: z.enum(['memory', 'redis']).default('memory'),
+    /**
+     * BullMQ namespace, so two deployments sharing one Redis do not consume
+     * each other's jobs.
+     *
+     * An explicit value wins: a deployment that shares its Redis with another
+     * environment (staging beside production, say) must set a distinct prefix
+     * per environment — the profile alone cannot tell those apart.
+     *
+     * Unset, the default is derived from the deployment profile in the
+     * transform below (`dash-full`, `dash-declutters`), so the two profiles
+     * are isolated even when nobody sets anything. The upstream change this
+     * rebases (PR #16) defaulted every profile to a bare `dash`, which is
+     * exactly the shared namespace this exists to prevent.
+     */
+    QUEUE_PREFIX: z.string().trim().min(1).optional(),
     REDIS_URL: z.string().optional(),
 
     // --- Realtime ------------------------------------------------------------
@@ -246,7 +291,7 @@ const shape = z
     // retrying into an opaque connection error. Every screen it feeds worked by
     // polling before this milestone and still does, so turning it off degrades
     // freshness and nothing else.
-    REALTIME_ENABLED: booleanish.default('true'),
+    REALTIME_ENABLED: booleanish.prefault('true'),
 
     // How a notification reaches the *other* instances. `memory` repeats it
     // inside this process only, which is correct on one instance and silently
@@ -255,6 +300,22 @@ const shape = z
     // whose worker handled the job. Production is refused it below, exactly as
     // it is refused the in-memory queue.
     REALTIME_BROADCAST: z.enum(['memory', 'redis']).default('memory'),
+
+    /**
+     * Redis pub/sub namespace, so two deployments sharing one Redis do not
+     * deliver each other's notifications.
+     *
+     * Same pattern as QUEUE_PREFIX, and a separate variable from it on
+     * purpose: an operator who sets QUEUE_PREFIX back to a bare `dash` to
+     * preserve in-flight queue keys during a migration must not silently
+     * un-isolate the broadcast channel at the same time.
+     *
+     * An explicit value wins. Unset, the default is derived from the
+     * deployment profile in the transform below (`dash-full`,
+     * `dash-declutters`), so the two profiles are isolated even when
+     * nobody sets anything.
+     */
+    BROADCAST_PREFIX: z.string().trim().min(1).optional(),
 
     // Which implementation answers `GeoPort.zonesContaining`. `postgis` pushes
     // the point-in-polygon test into the database as `ST_Contains`; `local`
@@ -267,7 +328,7 @@ const shape = z
     // rather than counted per process. Off by default; production requires it
     // (see below) because per-process counters multiply the real limit by the
     // instance count.
-    RATE_LIMIT_REDIS: booleanish.default('false'),
+    RATE_LIMIT_REDIS: booleanish.prefault('false'),
 
     // `silent` is a real Pino level and the right one for tests — a passing
     // suite should not print a wall of request logs.
@@ -280,7 +341,7 @@ const shape = z
     // it off explicitly — and `superRefine` below refuses to let production do
     // the same. Turning it off is a decision someone has to make in writing,
     // not a silent side effect of NODE_ENV.
-    RATE_LIMIT_ENABLED: booleanish.default('true'),
+    RATE_LIMIT_ENABLED: booleanish.prefault('true'),
 
     // --- Encryption at rest --------------------------------------------------
     // One keyring serves every encrypted field (the TOTP secret today, vendor
@@ -305,7 +366,7 @@ const shape = z
     // Whether staff accounts must carry TOTP. On by default; the only reason to
     // turn it off is a local environment with no key configured, and production
     // refuses that below.
-    MFA_ENABLED: booleanish.default('true'),
+    MFA_ENABLED: booleanish.prefault('true'),
 
     // --- Retention overrides ----------------------------------------------
     // One variable per tunable period. Unset means the policy default in
@@ -556,6 +617,28 @@ const schema = shape
       );
     }
 
+    // Real pushes, in any environment, are tied to this deployment's own
+    // Firebase project and its own app build. That is what keeps a staging API
+    // from ever reaching a production user — so it applies to staging however
+    // its NODE_ENV is set (connected staging runs as development), not only to
+    // production.
+    //
+    // Firebase resolves its credential from the environment, so a missing one
+    // surfaces as an opaque SDK error on the first send rather than at boot —
+    // by which time a rider has already missed an offer. Named here instead.
+    if (env.PUSH_PROVIDER === 'fcm' && !env.GOOGLE_APPLICATION_CREDENTIALS) {
+      fail(
+        'GOOGLE_APPLICATION_CREDENTIALS',
+        'Required when PUSH_PROVIDER is fcm: the path to the Firebase service-account key on this host',
+      );
+    }
+    if (env.PUSH_PROVIDER === 'fcm' && !env.FCM_PROJECT_ID) {
+      fail('FCM_PROJECT_ID', 'Required when PUSH_PROVIDER is fcm: the Firebase project this deployment sends through');
+    }
+    if (env.PUSH_PROVIDER === 'fcm' && env.PUSH_APP_IDS.length === 0) {
+      fail('PUSH_APP_IDS', 'Required when PUSH_PROVIDER is fcm: the app build ids this deployment may notify');
+    }
+
     if (env.NODE_ENV !== 'production') return;
 
     // --- Production-only guards ---------------------------------------------
@@ -710,15 +793,7 @@ const schema = shape
       fail('MAPBOX_ACCESS_TOKEN', 'Required when MAPS_PROVIDER is mapbox');
     }
 
-    // Firebase resolves its credential from the environment, so a missing one
-    // surfaces as an opaque SDK error on the first send rather than at boot —
-    // by which time a rider has already missed an offer. Named here instead.
-    if (env.PUSH_PROVIDER === 'fcm' && !env.GOOGLE_APPLICATION_CREDENTIALS) {
-      fail(
-        'GOOGLE_APPLICATION_CREDENTIALS',
-        'Required when PUSH_PROVIDER is fcm, unless the host supplies its own service identity',
-      );
-    }
+
 
     // --- Transport -----------------------------------------------------------
     // The refresh cookie is issued with `Secure`, so a browser will refuse to
@@ -727,7 +802,18 @@ const schema = shape
     if (env.PUBLIC_WEB_URL.startsWith('http://')) {
       fail('PUBLIC_WEB_URL', 'Production must be HTTPS — Secure cookies are not stored over http://');
     }
-  });
+  })
+  .transform((env) => ({
+    ...env,
+    // Derived, not configured: the queue namespace defaults to the deployment
+    // profile, so `full` and `declutters` never share BullMQ keys by omission.
+    // An explicit QUEUE_PREFIX above wins unchanged.
+    QUEUE_PREFIX: env.QUEUE_PREFIX ?? `dash-${env.DEPLOYMENT_PROFILE}`,
+    // Same derivation for the broadcast channel: `full` and `declutters`
+    // never share a pub/sub channel by omission. An explicit
+    // BROADCAST_PREFIX above wins unchanged.
+    BROADCAST_PREFIX: env.BROADCAST_PREFIX ?? `dash-${env.DEPLOYMENT_PROFILE}`,
+  }));
 
 /**
  * Reject a secret that is a placeholder, a recognisable development string, or

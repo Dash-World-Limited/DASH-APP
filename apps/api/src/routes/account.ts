@@ -142,7 +142,7 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
       // The rules sign-up applies, so an edit can never store what sign-up
       // would have refused.
       name: z.string().trim().min(2, 'Enter your full name').max(80),
-      state: z.enum(NIGERIAN_STATES, { errorMap: () => ({ message: 'Choose your state' }) }),
+      state: z.enum(NIGERIAN_STATES, { error: () => 'Choose your state' }),
       cityArea: z.string().trim().min(2, 'Enter your city, town or area').max(80),
     })
     .partial()

@@ -20,8 +20,10 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { generateReference } from '@dash/domain/crypto';
 import { writeAudit } from '@dash/db';
+import { flushOutbox } from '../events/outbox.js';
 import { ApiError } from '../http/errors.js';
 import { actorOf, requireAuth, requirePermission } from '../http/context.js';
+import { enqueuePush } from '../push/notify.js';
 
 export const SUPPORT_CHAT_CATEGORY = 'in_app_chat';
 const BODY_MAX = 2_000;
@@ -50,7 +52,7 @@ function ownerOf(request: FastifyRequest, audience: Audience): Owner {
 }
 
 export async function registerSupportChatRoutes(app: FastifyInstance): Promise<void> {
-  const { prisma, config } = app.services;
+  const { prisma, config, queue } = app.services;
 
   // -------------------------------------------------------------------------
   // GET /v1/support/channels — how to reach DASH, for the Help screens
@@ -318,11 +320,16 @@ export async function registerSupportChatRoutes(app: FastifyInstance): Promise<v
           where: { id: entry.id },
           data: { status: 'open', resolvedAt: null, ...(entry.firstRespondedAt ? {} : { firstRespondedAt: new Date() }) },
         });
-        return tx.supportAction.create({
+        const created = await tx.supportAction.create({
           data: { caseId: entry.id, actorId: actor.identityId, kind: 'reply', body: body.body },
           select: { id: true, body: true, readAt: true, createdAt: true },
         });
+        // The person is told there is a reply, not what it says.
+        await enqueuePush(tx, { kind: 'support_reply', actionId: created.id });
+        return created;
       });
+      // Never raises; the scheduled relay delivers the push if the queue is down.
+      await flushOutbox(prisma, queue);
 
       await writeAudit(prisma, {
         identityId: actor.identityId,
